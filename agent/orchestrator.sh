@@ -2490,7 +2490,8 @@ run_step9() {
   local ingest_guidelines
   ingest_guidelines=$(_load_command "ingest-review")
 
-  local learn_prompt="You just completed GitHub issue #$issue. Record what you learned.
+  local learn_prompt
+  learn_prompt="You just completed GitHub issue #$issue. Record what you learned.
 
 Review ingestion guidelines (from project commands):
 ${ingest_guidelines:-Record learnings from this development session.}
@@ -3310,7 +3311,7 @@ elif [[ "${1:-}" == "--invariants" ]]; then
       invariants_list
       ;;
     check)
-      local check_dir="${3:-$REPO_ROOT}"
+      check_dir="${3:-$REPO_ROOT}"
       echo "Running invariants against: $check_dir"
       echo ""
       run_invariants "$check_dir" "$BASE_BRANCH"
@@ -3443,7 +3444,6 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
       SELECTED_ITEM="$TOP_ITEM"
     elif [[ "$CHOICE" =~ ^[0-9]+$ ]]; then
       # Could be a line number or an issue number
-      local line_item
       line_item=$(echo "$SCAN_RESULTS" | sed -n "${CHOICE}p")
       if [[ -n "$line_item" ]]; then
         SELECTED_ITEM="$line_item"
@@ -3480,10 +3480,10 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
   # GitHub Issues-based task selection
   if [[ -z "$SPECIFIC_ISSUE" ]]; then
     log_msg INFO step2 "Querying GitHub Issues backlog..."
-    local issue_args=("--state" "open" "--json" "number,title,labels,milestone,assignees")
+    issue_args=("--state" "open" "--json" "number,title,labels,milestone,assignees")
     [[ -n "$ISSUE_MILESTONE" ]] && issue_args+=("--milestone" "$ISSUE_MILESTONE")
 
-    local issue_list
+    issue_list=""
     issue_list=$(gh issue list "${issue_args[@]}" 2>&1) || {
       log_msg ERROR step2 "Error querying GitHub Issues: $issue_list"
       exit 1
