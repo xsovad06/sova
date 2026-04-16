@@ -119,8 +119,15 @@ Examples:
 - `refactor(cli): simplify pak argument parsing`
 - `docs(readme): update installation instructions`
 
+### Pull Requests
+- Always assign PRs to `xsovad06`
+- Link to issue via `Closes #<number>` in PR body
+- Never include "Generated with Claude Code" or similar AI branding in PR descriptions
+- Include a Test Plan section
+
 ### What NOT to Do
 - **No AI Co-Author lines** in commits -- no Claude/AI references anywhere
+- **No "Generated with Claude Code"** in PR descriptions -- no AI branding
 - **No fix-on-fix commits** -- squash fixes into the commit they fix
 - **No separate doc commits** for changes in the same PR
 - **Never push without explicit user approval**

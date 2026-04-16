@@ -32,7 +32,7 @@ gh auth switch --user xsovad06
 
 Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Development Workflow".
 
-## Knowledge System
+## Knowledge System (4-Tier)
 
 ### Tier 1: Project Rules (always loaded, no truncation)
 - `CLAUDE.md` -- This file (Claude Code-specific)
@@ -40,13 +40,23 @@ Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Develop
 - `.claude/rules/*.md` -- Modular knowledge files:
   - `architecture.md` -- Project structure, key paths, design decisions
   - `bash-patterns.md` -- Shell scripting conventions and gotchas
+- `.claude/commands/*.md` -- Workflow commands (on-demand, loaded via `/command`)
 
-### Tier 2: Session Memory (auto-managed by Claude Code)
+### Tier 2: Agent Memory (persists across tasks, gitignored)
+- `.claude/agent-memory/MEMORY.md` -- Quick reference for learned patterns
+- `.claude/agent-memory/learnings.md` -- Framework gotchas, debugging insights
+- `.claude/agent-memory/review-feedback.md` -- Patterns from PR reviews
+- `.claude/agent-memory/common-mistakes.md` -- Recurring errors to avoid
+- `.claude/agent-memory/task-history.md` -- Completed task log
+
+### Tier 3: Session Memory (auto-managed by Claude Code)
 - `~/.claude/projects/.../memory/MEMORY.md` -- User preferences, project state (200-line limit)
 
 ### Adding new knowledge
 - **Confirmed patterns**: Add to `.claude/rules/*.md` (Tier 1)
-- **Session findings**: Update auto-memory (Tier 2)
+- **New findings (not yet confirmed)**: Add to `.claude/agent-memory/` (Tier 2)
+- **Session state / preferences**: Auto-memory (Tier 3)
+- **Promote**: Tier 2 → Tier 1 when confirmed in 2+ tasks
 
 ## Claude Code Behavioral Preferences
 
