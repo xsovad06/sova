@@ -1,6 +1,7 @@
 """Parse agent.log — structured log entries."""
 
 import re
+
 from app import config
 
 # Format: [2026-04-15T10:42:08Z] [INFO] [preflight] Message text
@@ -27,12 +28,14 @@ def _parse_all() -> list[dict]:
     for line in log_file.read_text().splitlines():
         m = LOG_RE.match(line.strip())
         if m:
-            entries.append({
-                "timestamp": m.group(1),
-                "level": m.group(2),
-                "component": m.group(3),
-                "message": m.group(4),
-            })
+            entries.append(
+                {
+                    "timestamp": m.group(1),
+                    "level": m.group(2),
+                    "component": m.group(3),
+                    "message": m.group(4),
+                }
+            )
     _cache = (mtime, entries)
     return entries
 

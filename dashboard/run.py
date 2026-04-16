@@ -2,6 +2,7 @@
 """Morning Agent Dashboard — entry point."""
 
 import argparse
+
 import uvicorn
 
 
@@ -18,6 +19,7 @@ def main():
     args = parser.parse_args()
 
     import os
+
     if args.data_dir:
         os.environ["AGENT_DATA_DIR"] = args.data_dir
 

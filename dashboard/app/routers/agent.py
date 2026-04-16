@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
 from app.services import process_service
 
 router = APIRouter()
@@ -51,8 +52,6 @@ async def respond(req: RespondRequest):
 async def agent_output(since: int = 0):
     lines = process_service.get_output(since)
     return {"lines": lines, "total": since + len(lines)}
-
-
 
 
 @router.get("/agent/notifications")

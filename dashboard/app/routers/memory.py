@@ -1,6 +1,7 @@
 """Memory API — FTS5 search and markdown file access."""
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+
 from app.services import memory_service
 
 router = APIRouter()

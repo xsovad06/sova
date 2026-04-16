@@ -1,7 +1,6 @@
 """Query memory.db (SQLite FTS5) and read markdown memory files."""
 
 import sqlite3
-from pathlib import Path
 
 import markdown
 
@@ -20,8 +19,7 @@ def search(query: str, limit: int = 20) -> list[dict]:
             safe_q = safe_q.replace("^", " ").replace(":", " ").replace("-", " ")
             safe_q = f'"{safe_q.strip()}"'
             rows = conn.execute(
-                "SELECT id, content, tags, created_at, updated_at "
-                "FROM memories WHERE memories_fts MATCH ? LIMIT ?",
+                "SELECT id, content, tags, created_at, updated_at FROM memories WHERE memories_fts MATCH ? LIMIT ?",
                 (safe_q, limit),
             ).fetchall()
             return [dict(r) for r in rows]

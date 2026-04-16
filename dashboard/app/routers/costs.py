@@ -1,6 +1,7 @@
 """Costs API — cost tracking data."""
 
 from fastapi import APIRouter
+
 from app.services import costs_service
 
 router = APIRouter()
