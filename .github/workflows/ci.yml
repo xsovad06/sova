@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck on all bash scripts
+        run: |
+          shellcheck --severity=warning \
+            pak \
+            agent/*.sh \
+            agent/adapters/*.sh \
+            invariants/*.sh
+
+  python-lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check dashboard/
+
+      - name: Ruff format check
+        run: ruff format --check dashboard/
+
+  dashboard:
+    name: Dashboard Import Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: dashboard/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r dashboard/requirements.txt
+
+      - name: Verify app imports and starts
+        working-directory: dashboard
+        run: |
+          python -c "from app.main import app; print(f'OK: {len(app.routes)} routes loaded')"
+
+  validate-commands:
+    name: Validate Commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check YAML frontmatter in all commands
+        run: |
+          errors=0
+          for f in commands/*.md; do
+            name=$(basename "$f")
+            # Check file starts with ---
+            if ! head -1 "$f" | grep -q '^---$'; then
+              echo "ERROR: $name missing frontmatter opening ---"
+              errors=$((errors + 1))
+              continue
+            fi
+            # Extract frontmatter (between first --- and second ---)
+            frontmatter=$(awk 'NR==1{next} /^---$/{exit} {print}' "$f")
+            # Check required fields
+            for field in name description user-invocable; do
+              if ! echo "$frontmatter" | grep -q "^${field}:"; then
+                echo "ERROR: $name missing required field: $field"
+                errors=$((errors + 1))
+              fi
+            done
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors frontmatter errors"
+            exit 1
+          fi
+          echo "All $(find commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
+
+  permissions:
+    name: File Permissions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check executable permissions
+        run: |
+          errors=0
+          for f in pak agent/*.sh agent/adapters/*.sh invariants/*.sh; do
+            if [ ! -x "$f" ]; then
+              echo "ERROR: $f is not executable"
+              errors=$((errors + 1))
+            fi
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors permission errors. Fix with: chmod +x <file>"
+            exit 1
+          fi
+          echo "All scripts have correct permissions"
