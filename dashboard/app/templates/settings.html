@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — Project Automation Kit{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+  <h2 class="text-2xl font-bold mb-2">Settings</h2>
+  <p class="text-gray-400 text-sm mb-6">View and edit runtime configuration, manage invariants and personas.</p>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <!-- Configuration -->
+    <div class="lg:col-span-2">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-gray-300">Configuration</h3>
+          <span id="config-path" class="text-xs text-gray-500"></span>
+        </div>
+        <div id="config-table" class="divide-y divide-gray-700/30">
+          <p class="text-gray-500 text-sm p-4">Loading...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar: Invariants & Personas -->
+    <div class="space-y-6">
+      <!-- Invariants -->
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300">Invariants</h3>
+        </div>
+        <div id="invariants-list" class="p-3 space-y-2">
+          <p class="text-gray-500 text-xs">Loading...</p>
+        </div>
+      </div>
+
+      <!-- Personas -->
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300">Personas</h3>
+        </div>
+        <div id="personas-list" class="p-3 space-y-2">
+          <p class="text-gray-500 text-xs">Loading...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadConfig() {
+  const res = await fetch(apiUrl('/settings/config'));
+  const data = await res.json();
+  document.getElementById('config-path').textContent = data.path;
+
+  const table = document.getElementById('config-table');
+  const entries = Object.entries(data.config);
+  if (entries.length === 0) {
+    table.innerHTML = '<p class="text-gray-500 text-sm p-4">No configuration found. Run setup first.</p>';
+    return;
+  }
+
+  table.innerHTML = entries.map(([key, val]) => `
+    <div class="flex items-center px-4 py-2 hover:bg-surface-hover group">
+      <span class="text-xs text-gray-400 font-mono w-56 shrink-0">${key}</span>
+      <input type="text" value="${val}" data-key="${key}"
+        class="flex-1 bg-transparent text-sm text-gray-200 border-0 focus:outline-none focus:ring-1 focus:ring-accent/50 rounded px-2 py-1 font-mono"
+        onchange="updateConfig('${key}', this.value)">
+      <span class="save-indicator text-xs text-accent-green ml-2 opacity-0 transition-opacity">saved</span>
+    </div>
+  `).join('');
+}
+
+async function updateConfig(key, value) {
+  const res = await fetch(apiUrl('/settings/config'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }),
+  });
+  const data = await res.json();
+  if (data.status === 'ok') {
+    const input = document.querySelector(`[data-key="${key}"]`);
+    const indicator = input.nextElementSibling;
+    indicator.style.opacity = '1';
+    setTimeout(() => indicator.style.opacity = '0', 2000);
+  }
+}
+
+async function loadInvariants() {
+  const res = await fetch(apiUrl('/settings/invariants'));
+  const data = await res.json();
+  const list = document.getElementById('invariants-list');
+  if (data.invariants.length === 0) {
+    list.innerHTML = '<p class="text-gray-500 text-xs">No invariants found</p>';
+    return;
+  }
+  list.innerHTML = data.invariants.map(inv => `
+    <div class="flex items-center gap-2 text-sm">
+      <span class="w-2 h-2 rounded-full ${inv.enabled ? 'bg-accent-green' : 'bg-gray-500'}"></span>
+      <span class="text-gray-300">${inv.name}</span>
+    </div>
+  `).join('');
+}
+
+async function loadPersonas() {
+  const res = await fetch(apiUrl('/settings/personas'));
+  const data = await res.json();
+  const list = document.getElementById('personas-list');
+  if (data.personas.length === 0) {
+    list.innerHTML = '<p class="text-gray-500 text-xs">No personas installed</p>';
+    return;
+  }
+  list.innerHTML = data.personas.map(p => `
+    <div class="flex items-center gap-2 text-sm">
+      <span class="text-gray-300">${p.name}</span>
+      ${p.has_mcp ? '<span class="text-[10px] bg-accent-purple/20 text-accent-purple px-1.5 py-0.5 rounded">MCP</span>' : ''}
+    </div>
+  `).join('');
+}
+
+loadConfig();
+loadInvariants();
+loadPersonas();
+</script>
+{% endblock %}

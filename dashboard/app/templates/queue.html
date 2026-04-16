@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Priority Queue - Morning Agent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Priority Queue</h2>
+<p class="text-sm text-gray-500 mb-6">Simulated priority scan — shows what the agent would pick next in watch mode.</p>
+
+<div id="queue-list">
+  <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const priorityStyles = {
+  0: { bg: 'border-accent-red/50 bg-accent-red/5', label: 'text-accent-red' },
+  1: { bg: 'border-accent-yellow/50 bg-accent-yellow/5', label: 'text-accent-yellow' },
+  2: { bg: 'border-accent/50 bg-accent/5', label: 'text-accent' },
+};
+
+async function loadQueue() {
+  const queue = await fetchAPI(apiUrl('/queue'));
+  const el = document.getElementById('queue-list');
+
+  if (queue.length === 0) {
+    el.innerHTML = `
+      <div class="bg-surface-card rounded-lg p-6 border border-gray-700/50 text-center">
+        <p class="text-gray-400 text-lg mb-2">Queue empty</p>
+        <p class="text-gray-500 text-sm">No active tasks, paused work, or PR issues detected.</p>
+      </div>`;
+    return;
+  }
+
+  el.innerHTML = `<div class="space-y-3">${queue.map((item, i) => {
+    const style = priorityStyles[item.priority] || priorityStyles[2];
+    return `
+      <div class="bg-surface-card rounded-lg p-4 border ${style.bg}">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-mono font-bold ${style.label}">${escapeHtml(item.priority_label)}</span>
+            <span class="text-accent font-medium">${escapeHtml(item.ticket)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+              <button onclick="startTicket('${escapeHtml(item.ticket)}')"
+                      class="text-xs px-2.5 py-1 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors">
+                Start
+              </button>
+              <span class="text-xs text-gray-500">#${i + 1}</span>
+            </div>
+          </div>
+        <p class="text-sm text-gray-300 mb-1">${escapeHtml(item.reason)}</p>
+        <p class="text-xs text-gray-500">Suggested: <span class="text-gray-400">${escapeHtml(item.action)}</span></p>
+      </div>`;
+  }).join('')}</div>`;
+}
+
+async function startTicket(ticket) {
+  const res = await fetch(apiUrl('/agent/start'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode: 'ticket', ticket}),
+  });
+  const data = await res.json();
+  if (data.error) {
+    alert(data.error);
+    return;
+  }
+  window.location.href = '/control';
+}
+
+loadQueue();
+setInterval(loadQueue, 15000);
+</script>
+{% endblock %}

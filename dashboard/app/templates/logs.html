@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Logs - Morning Agent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Agent Logs</h2>
+
+<!-- Filters -->
+<div class="flex flex-wrap items-center gap-3 mb-4">
+  <div class="flex gap-1" id="level-filters">
+    <button onclick="setLevel(null)" class="filter-btn active text-xs px-3 py-1 rounded border border-gray-600">ALL</button>
+    <button onclick="setLevel('INFO')" class="filter-btn text-xs px-3 py-1 rounded border border-gray-600">INFO</button>
+    <button onclick="setLevel('WARN')" class="filter-btn text-xs px-3 py-1 rounded border border-gray-600">WARN</button>
+    <button onclick="setLevel('ERROR')" class="filter-btn text-xs px-3 py-1 rounded border border-gray-600">ERROR</button>
+  </div>
+  <select id="component-filter" onchange="loadLogs()" class="text-xs bg-surface border border-gray-600 rounded px-2 py-1 text-gray-300">
+    <option value="">All components</option>
+  </select>
+  <input id="search-input" type="text" placeholder="Search logs..."
+         onkeyup="debounceSearch()" class="text-xs bg-surface border border-gray-600 rounded px-3 py-1 text-gray-300 w-48">
+  <label class="flex items-center gap-1 text-xs text-gray-400">
+    <input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()">
+    Auto-refresh
+  </label>
+</div>
+
+<!-- Log entries -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="p-4 font-mono text-xs space-y-1 max-h-[70vh] overflow-y-auto" id="log-entries">
+    <p class="text-gray-500">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentLevel = null;
+let refreshTimer = null;
+let searchTimeout = null;
+
+function setLevel(level) {
+  currentLevel = level;
+  document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active', 'bg-sidebar-active'));
+  event.target.classList.add('active', 'bg-sidebar-active');
+  loadLogs();
+}
+
+function debounceSearch() {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(loadLogs, 300);
+}
+
+function toggleAutoRefresh() {
+  if (document.getElementById('auto-refresh').checked) {
+    refreshTimer = setInterval(loadLogs, 5000);
+  } else {
+    clearInterval(refreshTimer);
+  }
+}
+
+async function loadLogs() {
+  const params = new URLSearchParams();
+  if (currentLevel) params.set('level', currentLevel);
+  const comp = document.getElementById('component-filter').value;
+  if (comp) params.set('component', comp);
+  const q = document.getElementById('search-input').value.trim();
+  if (q) params.set('q', q);
+  params.set('limit', '500');
+
+  const logs = await fetchAPI(apiUrl('/logs?' + params.toString()));
+  const el = document.getElementById('log-entries');
+  if (logs.length === 0) {
+    el.innerHTML = '<p class="text-gray-500">No matching log entries</p>';
+    return;
+  }
+  el.innerHTML = logs.map(l => `
+    <div class="flex gap-2 py-0.5 hover:bg-surface-hover px-1 rounded">
+      <span class="text-gray-600 shrink-0">${l.timestamp}</span>
+      <span class="shrink-0 font-semibold ${levelColor(l.level)}">${l.level.padEnd(5)}</span>
+      <span class="text-accent shrink-0">[${l.component}]</span>
+      <span class="text-gray-300 break-all">${escapeHtml(l.message)}</span>
+    </div>
+  `).join('');
+}
+
+async function loadComponents() {
+  const components = await fetchAPI(apiUrl('/logs/components'));
+  const select = document.getElementById('component-filter');
+  components.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    select.appendChild(opt);
+  });
+}
+
+// Pre-fill search from URL param (e.g. /logs?q=RHCLOUD-46769)
+const logUrlParams = new URLSearchParams(window.location.search);
+if (logUrlParams.get('q')) {
+  document.getElementById('search-input').value = logUrlParams.get('q');
+}
+
+loadComponents();
+loadLogs();
+refreshTimer = setInterval(loadLogs, 5000);
+</script>
+{% endblock %}

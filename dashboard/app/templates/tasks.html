@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Tasks - Morning Agent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Tasks</h2>
+
+<!-- Active tasks -->
+<div class="mb-8">
+  <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3">Active Tasks</h3>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="active-tasks">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Task history -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Task History</h3>
+  </div>
+  <div class="overflow-x-auto" id="task-history">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const stepLabels = {
+  step2_selected: 'Task Selected',
+  step2_auto_selected: 'Auto-Selected',
+  step3_worktree: 'Worktree Created',
+  step4_dev: 'Development',
+  step5_review: 'Self-Review',
+  step5b_simplified: 'Simplification',
+  step6_approved: 'Approved',
+  step6_aborted: 'Aborted',
+  step7_tested: 'Manual Test',
+  step8_pr: 'PR Created',
+  step9_learned: 'Learnings',
+  step10_monitored: 'CI Monitored',
+  step11_complete: 'Complete',
+  investigation_posted: 'Investigation Posted',
+};
+
+function statusBadge(status) {
+  const colors = {
+    in_progress: 'bg-accent/20 text-accent',
+    paused: 'bg-accent-yellow/20 text-accent-yellow',
+    done: 'bg-accent-green/20 text-accent-green',
+    failed: 'bg-accent-red/20 text-accent-red',
+  };
+  const cls = colors[status] || 'bg-gray-700 text-gray-400';
+  return `<span class="text-xs px-2 py-0.5 rounded ${cls}">${status}</span>`;
+}
+
+let githubRepo = '';
+
+function prLink(prNum) {
+  if (!prNum || !githubRepo) return escapeHtml(prNum);
+  // Handle cases where pr_number might contain non-numeric data
+  const num = String(prNum).match(/\d+/);
+  if (!num) return escapeHtml(prNum);
+  return `<a href="https://github.com/${githubRepo}/pull/${num[0]}" target="_blank" class="text-accent hover:underline">#${num[0]}</a>`;
+}
+
+function jiraLink(key) {
+  if (!key) return '';
+  return `<a href="https://issues.redhat.com/browse/${escapeHtml(key)}" target="_blank" class="text-accent hover:underline">${escapeHtml(key)}</a>`;
+}
+
+function taskActions(t) {
+  const actions = [];
+  // Link to filtered logs for this ticket
+  if (t.jira_key) {
+    actions.push(`<a href="/logs?q=${encodeURIComponent(t.jira_key)}" class="text-xs px-2 py-1 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors" title="View agent logs for this ticket">Logs</a>`);
+  }
+  // Address PR button
+  if (t.pr_number && t.status === 'in_progress') {
+    const num = String(t.pr_number).match(/\d+/);
+    if (num) {
+      actions.push(`<a href="/control?mode=address-pr&ticket=${num[0]}" class="text-xs px-2 py-1 rounded bg-accent/10 text-accent hover:bg-accent/20 transition-colors" title="Address PR review comments">Address PR</a>`);
+      actions.push(`<a href="/control?mode=maintain-pr&ticket=${num[0]}" class="text-xs px-2 py-1 rounded bg-accent-purple/10 text-accent-purple hover:bg-accent-purple/20 transition-colors" title="Rebase and update PR">Maintain PR</a>`);
+    }
+  }
+  return actions.length > 0 ? `<div class="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-gray-700/30">${actions.join('')}</div>` : '';
+}
+
+async function loadTasks() {
+  const [activeData, history] = await Promise.all([
+    fetchAPI(apiUrl('/tasks/active')),
+    fetchAPI(apiUrl('/tasks/history')),
+  ]);
+
+  const active = activeData.tasks || activeData;
+  if (activeData.github_repo) githubRepo = activeData.github_repo;
+
+  // Active tasks
+  const activeEl = document.getElementById('active-tasks');
+  if (active.length === 0) {
+    activeEl.innerHTML = '<p class="text-gray-500 text-sm col-span-3">No active tasks</p>';
+  } else {
+    activeEl.innerHTML = active.map(t => `
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-medium">${jiraLink(t.jira_key)}</span>
+          ${statusBadge(t.status)}
+        </div>
+        <div class="text-xs space-y-1 text-gray-400">
+          <p>Step: <span class="text-gray-300">${stepLabels[t.last_step] || t.last_step}</span></p>
+          ${t.next_step ? `<p>Next: <span class="text-gray-300">${stepLabels[t.next_step] || t.next_step}</span></p>` : ''}
+          ${t.pr_number ? `<p>PR: ${prLink(t.pr_number)}</p>` : ''}
+          ${t.branch_name ? `<p>Branch: <span class="text-gray-300 text-xs font-mono">${escapeHtml(t.branch_name)}</span></p>` : ''}
+          ${t.time_in_state ? `<p>In state: <span class="text-gray-300">${t.time_in_state}</span></p>` : ''}
+          ${t.paused_reason ? `<p>Reason: <span class="text-accent-yellow">${escapeHtml(t.paused_reason)}</span></p>` : ''}
+        </div>
+        <div class="mt-2 text-xs text-gray-600">
+          Created: ${(t.created_at || '').substring(0, 16)}
+        </div>
+        ${taskActions(t)}
+      </div>
+    `).join('');
+  }
+
+  // History table
+  const histEl = document.getElementById('task-history');
+  if (history.length === 0) {
+    histEl.innerHTML = '<p class="text-gray-500 text-sm p-4">No task history</p>';
+  } else {
+    histEl.innerHTML = `<table class="w-full text-sm">
+      <thead><tr class="text-gray-500 text-xs uppercase">
+        <th class="text-left p-3">Date</th><th class="text-left p-3">Ticket</th>
+        <th class="text-left p-3">Summary</th><th class="text-left p-3">Outcome</th>
+      </tr></thead>
+      <tbody>${history.slice().reverse().map(h => `<tr class="border-t border-gray-700/30 hover:bg-surface-hover">
+        <td class="p-3 text-gray-400 whitespace-nowrap">${escapeHtml(h.date)}</td>
+        <td class="p-3 whitespace-nowrap">${jiraLink(h.ticket)}</td>
+        <td class="p-3 text-gray-300">${escapeHtml(h.summary)}</td>
+        <td class="p-3 text-gray-400">${escapeHtml(h.outcome)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+  }
+}
+
+loadTasks();
+setInterval(loadTasks, 15000);
+</script>
+{% endblock %}

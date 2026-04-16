@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "WebFetch(domain:github.com)",
+      "Read(//Users/damian.sova/.claude/projects/**)",
+      "Read(//Users/damian.sova/**)",
+      "WebSearch"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "tools": [
+    "mcp__mcp_db__*",
+    "mcp__mcp_openapi__*"
+  ]
+}

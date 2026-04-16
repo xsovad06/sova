@@ -1,0 +1,6 @@
+{
+  "tools": [
+    "mcp__mcp_spicedb__*",
+    "mcp__mcp_db__*"
+  ]
+}

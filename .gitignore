@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+dashboard/.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Runtime data
+*.pid
+*.log
+
+# Project-specific
+gwym-agent.conf
+*.conf
+!*.conf.default
+
+# Claude Code (keep settings.json and commands/rules tracked)
+.claude/settings.local.json
+.claude/agent-memory/
+.claude/worktrees/

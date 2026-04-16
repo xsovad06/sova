@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% block title %}Control - Morning Agent{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Agent Control</h2>
+
+<!-- Status bar -->
+<div class="flex items-center gap-4 mb-6 bg-surface-card rounded-lg p-4 border border-gray-700/50">
+  <div class="flex items-center gap-2">
+    <span id="status-dot" class="w-3 h-3 rounded-full bg-gray-500"></span>
+    <span id="status-text" class="text-sm font-medium">Checking...</span>
+  </div>
+  <span id="status-mode" class="text-xs text-gray-500"></span>
+  <span id="status-ticket" class="text-xs text-accent"></span>
+  <span id="status-step" class="text-xs text-gray-400"></span>
+  <div class="ml-auto">
+    <button id="stop-btn" onclick="stopAgent()" class="hidden text-xs px-3 py-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">
+      Stop Agent
+    </button>
+  </div>
+</div>
+
+<!-- Start panel (shown when idle) -->
+<div id="start-panel" class="bg-surface-card rounded-lg p-6 border border-gray-700/50 mb-6">
+  <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide mb-4">Start Agent</h3>
+  <div class="flex flex-wrap items-end gap-4">
+    <div>
+      <label class="text-xs text-gray-500 block mb-1">Mode</label>
+      <select id="start-mode" onchange="toggleTicketInput()" class="bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-300">
+        <option value="workflow">Full Workflow</option>
+        <option value="ticket">Specific Ticket</option>
+        <option value="watch">Watch Mode</option>
+        <option value="address-pr">Address PR</option>
+        <option value="maintain-pr">Maintain PR</option>
+        <option value="learn-from-pr">Learn from PR</option>
+        <option value="investigate">Investigate</option>
+        <option value="readiness">Readiness Assessment</option>
+        <option value="cleanup">Cleanup Worktrees</option>
+      </select>
+    </div>
+    <div id="ticket-input-wrap">
+      <label class="text-xs text-gray-500 block mb-1">Ticket / PR #</label>
+      <input id="start-ticket" type="text" placeholder="RHCLOUD-12345"
+             class="bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-300 w-48">
+    </div>
+    <button onclick="startAgent()" class="px-4 py-2 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors text-sm font-medium">
+      Start
+    </button>
+  </div>
+</div>
+
+<!-- Checkpoint dialog (shown when waiting) -->
+<div id="checkpoint-panel" class="hidden bg-surface-card rounded-lg border border-accent-yellow/50 mb-6">
+  <div class="px-4 py-3 border-b border-accent-yellow/30 bg-accent-yellow/5">
+    <h3 class="text-sm font-medium text-accent-yellow">Checkpoint — Waiting for Response</h3>
+  </div>
+  <div class="p-4">
+    <p id="checkpoint-message" class="text-sm text-gray-300 mb-4"></p>
+    <div id="checkpoint-context" class="mb-4 text-xs bg-surface rounded p-3 border border-gray-700/50 max-h-48 overflow-y-auto font-mono hidden"></div>
+    <div id="checkpoint-options" class="flex flex-wrap gap-2 mb-3"></div>
+    <div id="checkpoint-text-wrap" class="hidden">
+      <div class="flex gap-2">
+        <input id="checkpoint-text" type="text" placeholder="Type your response..."
+               class="bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-300 flex-1"
+               onkeyup="if(event.key==='Enter') sendCheckpointText()">
+        <button onclick="sendCheckpointText()" class="px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors text-sm font-medium">
+          Send
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Live log stream -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+    <h3 class="text-sm font-medium text-gray-400">Live Output</h3>
+    <label class="flex items-center gap-1 text-xs text-gray-500">
+      <input type="checkbox" id="auto-scroll" checked>
+      Auto-scroll
+    </label>
+  </div>
+  <div id="live-output" class="p-4 font-mono text-xs space-y-0.5 max-h-[50vh] overflow-y-auto">
+    <p class="text-gray-500">Agent output will appear here when running...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentRequestId = null;
+let currentRequestOptions = [];
+let outputCursor = 0;
+let ws = null;
+let pollTimer = null;
+
+const statusColors = {
+  idle: 'bg-gray-500',
+  running: 'bg-accent-green',
+  waiting: 'bg-accent-yellow animate-pulse',
+};
+
+const optionColors = {
+  approve: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30',
+  yes: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30',
+  confirm: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30',
+  pass: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30',
+  proceed: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30',
+  done: 'bg-accent/20 text-accent hover:bg-accent/30',
+  ok: 'bg-accent/20 text-accent hover:bg-accent/30',
+  abort: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30',
+  no: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30',
+  fail: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30',
+  veto: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30',
+  skip: 'bg-gray-600/30 text-gray-400 hover:bg-gray-600/50',
+  doc: 'bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30',
+};
+
+function toggleTicketInput() {
+  const mode = document.getElementById('start-mode').value;
+  const needsTicket = ['ticket', 'address-pr', 'maintain-pr', 'learn-from-pr', 'investigate'].includes(mode);
+  document.getElementById('ticket-input-wrap').style.display = needsTicket ? 'block' : 'none';
+}
+
+async function startAgent() {
+  const mode = document.getElementById('start-mode').value;
+  const ticket = document.getElementById('start-ticket').value.trim() || null;
+  const res = await fetch(apiUrl('/agent/start'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({mode, ticket}),
+  });
+  const data = await res.json();
+  if (data.error) {
+    alert(data.error);
+    return;
+  }
+  outputCursor = 0;
+  document.getElementById('live-output').innerHTML = '';
+  connectWs();
+  refreshStatus();
+}
+
+async function stopAgent() {
+  if (!confirm('Stop the running agent?')) return;
+  await fetch(apiUrl('/agent/stop'), {method: 'POST'});
+  refreshStatus();
+}
+
+async function refreshStatus() {
+  const data = await fetchAPI(apiUrl('/agent/status'));
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  dot.className = 'w-3 h-3 rounded-full ' + (statusColors[data.status] || 'bg-gray-500');
+  text.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+  if (data.running) text.textContent += ` (PID ${data.pid})`;
+
+  document.getElementById('status-mode').textContent = data.mode ? `Mode: ${data.mode}` : '';
+  document.getElementById('status-ticket').textContent = data.ticket || '';
+  document.getElementById('status-step').textContent = data.step ? `Step: ${data.step}` : '';
+
+  document.getElementById('start-panel').classList.toggle('hidden', data.running);
+  document.getElementById('stop-btn').classList.toggle('hidden', !data.running);
+
+  // Check for pending checkpoint
+  await checkCheckpoint();
+}
+
+async function checkCheckpoint() {
+  const data = await fetchAPI(apiUrl('/agent/request'));
+  const panel = document.getElementById('checkpoint-panel');
+  if (!data.pending) {
+    panel.classList.add('hidden');
+    currentRequestId = null;
+    return;
+  }
+  const req = data.request;
+  if (req.id === currentRequestId) return; // Already showing
+  currentRequestId = req.id;
+
+  panel.classList.remove('hidden');
+  document.getElementById('checkpoint-message').textContent = req.message;
+
+  // Alert the user — sound + browser notification
+  if (typeof showToast === 'function') showToast(req.message, 'action');
+  if (typeof browserNotify === 'function') browserNotify('Checkpoint: ' + req.message);
+
+  // Context
+  const ctxEl = document.getElementById('checkpoint-context');
+  if (req.context && Object.keys(req.context).length > 0) {
+    ctxEl.classList.remove('hidden');
+    ctxEl.textContent = JSON.stringify(req.context, null, 2);
+  } else {
+    ctxEl.classList.add('hidden');
+  }
+
+  // Option buttons
+  const optionsEl = document.getElementById('checkpoint-options');
+  const options = req.options || [];
+  currentRequestOptions = options;
+  optionsEl.innerHTML = options.map(opt => {
+    const cls = optionColors[opt] || 'bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30';
+    return `<button onclick="sendResponse('${escapeHtml(opt)}')" class="px-4 py-2 rounded text-sm font-medium transition-colors ${cls}">
+      ${opt.charAt(0).toUpperCase() + opt.slice(1)}
+    </button>`;
+  }).join('');
+
+  // Text input
+  const textWrap = document.getElementById('checkpoint-text-wrap');
+  textWrap.classList.toggle('hidden', !req.accepts_text);
+  document.getElementById('checkpoint-text').value = '';
+}
+
+async function sendResponse(action) {
+  if (!currentRequestId) return;
+  const value = document.getElementById('checkpoint-text').value.trim();
+  await fetch(apiUrl('/agent/respond'), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: currentRequestId, action, value}),
+  });
+  currentRequestId = null;
+  currentRequestOptions = [];
+  document.getElementById('checkpoint-panel').classList.add('hidden');
+  refreshStatus();
+}
+
+function sendCheckpointText() {
+  const text = document.getElementById('checkpoint-text').value.trim();
+  if (!text) return;
+  // Use the first available option as the action (e.g. "ok"), fallback to "ok"
+  const action = currentRequestOptions[0] || 'ok';
+  sendResponse(action);
+}
+
+function connectWs() {
+  if (ws) ws.close();
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}${(window.PAK_WS_PREFIX||'')}/ws/logs`);
+  ws.onopen = () => {
+    // WS connected — stop redundant polling fallback
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  };
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.lines) {
+      appendOutput(data.lines);
+      outputCursor = data.cursor;
+    }
+    if (data.checkpoint) {
+      checkCheckpoint();
+    }
+    if (data.notification && typeof showToast === 'function') {
+      showToast(data.notification.message, categorizeNotification(data.notification.message));
+      if (document.hidden && typeof browserNotify === 'function') {
+        browserNotify(data.notification.message);
+      }
+    }
+  };
+  ws.onclose = () => {
+    // Fallback to polling if WS disconnects
+    if (!pollTimer) {
+      pollTimer = setInterval(pollOutput, 2000);
+    }
+  };
+}
+
+async function pollOutput() {
+  try {
+    const data = await fetchAPI(apiUrl(`/agent/output?since=${outputCursor}`));
+    if (data.lines && data.lines.length > 0) {
+      appendOutput(data.lines);
+      outputCursor = data.total;
+    }
+    await checkCheckpoint();
+  } catch (e) { /* ignore */ }
+}
+
+function appendOutput(lines) {
+  const el = document.getElementById('live-output');
+  // Clear placeholder
+  if (el.querySelector('p.text-gray-500')) el.innerHTML = '';
+  const fragment = document.createDocumentFragment();
+  lines.forEach(line => {
+    const div = document.createElement('div');
+    div.textContent = line;
+    const levelMatch = line.match(/\[(ERROR|WARN|INFO)\]/);
+    div.className = 'py-0.5 ' + (levelMatch ? levelColor(levelMatch[1]) : 'text-gray-300');
+    fragment.appendChild(div);
+  });
+  el.appendChild(fragment);
+  if (document.getElementById('auto-scroll').checked) {
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+// Initialize — pre-fill from URL params (e.g. /control?mode=address-pr&ticket=42)
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('mode')) {
+  document.getElementById('start-mode').value = urlParams.get('mode');
+}
+if (urlParams.get('ticket')) {
+  document.getElementById('start-ticket').value = urlParams.get('ticket');
+}
+toggleTicketInput();
+refreshStatus();
+setInterval(refreshStatus, 3000);
+if (typeof requestNotifyPermission === 'function') requestNotifyPermission();
+
+// Control page handles its own checkpoint/notification polling — disable global
+if (typeof _globalPollDisabled === 'undefined') window._globalPollDisabled = true;
+
+// Start polling as fallback (WS connects when agent starts)
+pollTimer = setInterval(pollOutput, 2000);
+</script>
+{% endblock %}

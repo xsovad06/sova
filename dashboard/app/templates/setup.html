@@ -1,0 +1,460 @@
+{% extends "base.html" %}
+
+{% block title %}Setup — Project Automation Kit{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto">
+  <h2 class="text-2xl font-bold mb-2">Project Setup</h2>
+  <p class="text-gray-400 text-sm mb-6">Browse to a project, scan it, then install and configure the agent.</p>
+
+  <!-- Step 1: Project Browser -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+    <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-300">1. Select Project</h3>
+      <div class="flex items-center gap-2">
+        <input id="path-input" type="text" placeholder="Or type a path..."
+          class="w-64 bg-surface border border-gray-600 rounded px-2 py-1 text-xs text-gray-300 font-mono"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();browseTo(this.value)}">
+        <button onclick="browseTo(document.getElementById('path-input').value)"
+          class="px-2 py-1 text-xs bg-surface-hover text-gray-300 rounded hover:bg-gray-600 transition-colors">Go</button>
+      </div>
+    </div>
+
+    <!-- Breadcrumb -->
+    <div id="breadcrumb" class="px-4 py-2 border-b border-gray-700/30 flex items-center gap-1 text-xs text-gray-400 overflow-x-auto">
+    </div>
+
+    <!-- Directory listing -->
+    <div id="dir-listing" class="max-h-72 overflow-y-auto">
+      <p class="text-gray-500 text-sm p-4">Loading...</p>
+    </div>
+
+    <!-- Selected project -->
+    <div id="selected-bar" class="hidden px-4 py-3 border-t border-gray-700/50 bg-accent-green/5 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-accent-green"></span>
+        <span class="text-sm text-gray-200">Selected: <span id="selected-name" class="font-mono text-accent-green"></span></span>
+      </div>
+      <button onclick="scanProject()" id="scan-btn"
+        class="px-4 py-1.5 bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors text-xs font-medium">
+        Scan &amp; Continue
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 2: Scan Results -->
+  <div id="scan-results" class="hidden mb-6">
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-gray-300">2. Scan Results</h3>
+        <span id="install-status" class="text-xs px-2 py-1 rounded-full"></span>
+      </div>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="flex justify-between">
+          <span class="text-gray-400">Project</span>
+          <span id="scan-name" class="text-gray-200 font-mono"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">GitHub</span>
+          <span id="scan-repo" class="text-gray-200 font-mono"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">Tech Stack</span>
+          <span id="scan-stack" class="text-gray-200"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">Persona</span>
+          <span id="scan-persona" class="text-gray-200"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">Base Branch</span>
+          <span id="scan-branch" class="text-gray-200 font-mono"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="text-gray-400">Test</span>
+          <span id="scan-test" class="text-gray-200 font-mono"></span>
+        </div>
+      </div>
+
+      <!-- Install/Update buttons -->
+      <div class="mt-4 pt-3 border-t border-gray-700/30">
+        <div class="flex items-center gap-3">
+          <button onclick="installProject(false)" id="install-btn"
+            class="px-4 py-2 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
+            Install PAK
+          </button>
+          <button onclick="installProject(true)" id="update-btn"
+            class="px-4 py-2 bg-accent/10 text-accent rounded-lg hover:bg-accent/20 transition-colors text-sm font-medium">
+            Update Only
+          </button>
+          <span id="install-output" class="text-xs text-gray-400"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Install Log -->
+  <div id="install-log-section" class="hidden mb-6">
+    <div class="bg-surface-card rounded-lg border border-gray-700/50">
+      <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-300">Install Log</h3>
+        <button onclick="document.getElementById('install-log-section').classList.add('hidden')" class="text-xs text-gray-500 hover:text-gray-300">dismiss</button>
+      </div>
+      <pre id="install-log" class="p-4 text-xs text-gray-300 font-mono max-h-48 overflow-y-auto whitespace-pre-wrap"></pre>
+    </div>
+  </div>
+
+  <!-- Step 3: Configure -->
+  <div id="config-section" class="hidden">
+    <form id="setup-form" class="space-y-6">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-lg font-semibold text-gray-200">3. Configure</h3>
+        <span class="text-xs text-gray-500">Pre-filled from scan. Adjust as needed.</span>
+      </div>
+
+      <!-- Task Source -->
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Task Source</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Source</label>
+            <select name="task_source" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <option value="github">GitHub Issues</option>
+              <option value="jira">JIRA</option>
+              <option value="linear">Linear</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">GitHub Repo</label>
+            <input name="github_repo" type="text" placeholder="owner/repo" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+        </div>
+      </div>
+
+      <!-- Repository & Workflow -->
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Repository & Workflow</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Base Branch</label>
+            <input name="base_branch" type="text" value="main" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Branch Naming</label>
+            <select name="branch_naming" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <option value="conventional">Conventional (feat/42-slug)</option>
+              <option value="freeform">Freeform</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Commit Format</label>
+            <select name="commit_format" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <option value="conventional">Conventional</option>
+              <option value="freeform">Freeform</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent Behavior -->
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Agent Behavior</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Model</label>
+            <select name="agent_model" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <option value="opus">Opus (smarter)</option>
+              <option value="sonnet">Sonnet (faster)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Max Budget (USD)</label>
+            <input name="max_budget" type="text" value="10.00" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Review Rounds</label>
+            <input name="review_max_rounds" type="number" value="2" min="0" max="5" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+        </div>
+      </div>
+
+      <!-- Code Quality -->
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Code Quality</h3>
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Test Command</label>
+            <input name="test_cmd" type="text" placeholder="make test" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Lint Command</label>
+            <input name="lint_cmd" type="text" placeholder="make lint" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">Format Command</label>
+            <input name="format_cmd" type="text" placeholder="make format" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="flex items-center gap-2 text-sm text-gray-300">
+            <input name="no_ai_coauthor" type="checkbox" class="rounded border-gray-600 bg-surface">
+            Strip AI co-author from commits
+          </label>
+        </div>
+      </div>
+
+      <!-- PR Settings -->
+      <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">PR Settings</h3>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs text-gray-400 mb-1">PR Title Format</label>
+            <select name="pr_title_format" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <option value="conventional">Conventional</option>
+              <option value="freeform">Freeform</option>
+            </select>
+          </div>
+          <div class="flex items-end">
+            <label class="flex items-center gap-2 text-sm text-gray-300 pb-2">
+              <input name="pr_auto_link" type="checkbox" checked class="rounded border-gray-600 bg-surface">
+              Auto-link issues (Closes #N)
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Submit -->
+      <div class="flex gap-3">
+        <button type="submit" class="px-6 py-2.5 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
+          Save Configuration
+        </button>
+        <span id="save-status" class="self-center text-xs text-gray-400"></span>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentProjectPath = '';
+let scanData = null;
+
+// ── Directory Browser ───────────────────────────────────────────────────────
+
+async function browseTo(path) {
+  const res = await fetch('/api/setup/browse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: path || '' }),
+  });
+  const data = await res.json();
+  renderBrowser(data);
+}
+
+function renderBrowser(data) {
+  const pathInput = document.getElementById('path-input');
+  pathInput.value = data.current;
+
+  // Breadcrumb
+  const bc = document.getElementById('breadcrumb');
+  const parts = data.current.split('/').filter(Boolean);
+  let crumbPath = '';
+  bc.innerHTML = '<span class="cursor-pointer hover:text-gray-200" onclick="browseTo(\'/\')">/</span>';
+  parts.forEach((part, i) => {
+    crumbPath += '/' + part;
+    const p = crumbPath;
+    bc.innerHTML += `<span class="text-gray-600">/</span><span class="cursor-pointer hover:text-gray-200" onclick="browseTo('${p}')">${part}</span>`;
+  });
+
+  // Directory listing
+  const listing = document.getElementById('dir-listing');
+  if (data.entries.length === 0) {
+    listing.innerHTML = '<p class="text-gray-500 text-xs p-4">Empty directory</p>';
+    return;
+  }
+
+  listing.innerHTML = data.entries.map(e => {
+    const isParent = e.name === '..';
+    const badges = [];
+    if (e.is_project) badges.push('<span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded">project</span>');
+    if (e.has_pak) badges.push('<span class="text-[10px] bg-accent-green/15 text-accent-green px-1.5 py-0.5 rounded">PAK</span>');
+
+    return `
+      <div class="flex items-center px-4 py-2 hover:bg-surface-hover cursor-pointer border-b border-gray-700/20 group"
+           ondblclick="browseTo('${e.path}')"
+           onclick="${e.is_project ? `selectProject('${e.path}', '${e.name}')` : `browseTo('${e.path}')`}">
+        <span class="text-gray-500 w-5 text-center mr-2 text-xs">${isParent ? '&larr;' : (e.is_project ? '&bull;' : '&rsaquo;')}</span>
+        <span class="flex-1 text-sm ${e.is_project ? 'text-gray-200 font-medium' : 'text-gray-400'}">${e.name}</span>
+        <span class="flex items-center gap-1.5">${badges.join('')}</span>
+      </div>`;
+  }).join('');
+}
+
+function selectProject(path, name) {
+  currentProjectPath = path;
+  const bar = document.getElementById('selected-bar');
+  bar.classList.remove('hidden');
+  document.getElementById('selected-name').textContent = name;
+
+  // Highlight the selected row
+  document.querySelectorAll('#dir-listing > div').forEach(row => {
+    row.classList.remove('bg-accent-green/5', 'border-l-2', 'border-accent-green');
+    if (row.querySelector('span.flex-1')?.textContent === name) {
+      row.classList.add('bg-accent-green/5', 'border-l-2', 'border-accent-green');
+    }
+  });
+}
+
+// ── Scan ─────────────────────────────────────────────────────────────────────
+
+async function scanProject() {
+  if (!currentProjectPath) return;
+
+  const btn = document.getElementById('scan-btn');
+  btn.textContent = 'Scanning...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/setup/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_path: currentProjectPath }),
+    });
+    scanData = await res.json();
+    if (scanData.error) { alert(scanData.error); return; }
+
+    document.getElementById('scan-results').classList.remove('hidden');
+    document.getElementById('scan-name').textContent = scanData.project_name;
+    document.getElementById('scan-repo').textContent = scanData.github_repo || '-';
+    document.getElementById('scan-stack').textContent = scanData.tech_stack.join(', ') || 'none';
+    document.getElementById('scan-persona').textContent = scanData.persona || 'none';
+    document.getElementById('scan-branch').textContent = scanData.base_branch;
+    document.getElementById('scan-test').textContent = scanData.test_cmd || '-';
+
+    const badge = document.getElementById('install-status');
+    if (scanData.already_installed) {
+      badge.textContent = 'Installed';
+      badge.className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
+    } else {
+      badge.textContent = 'Not installed';
+      badge.className = 'text-xs px-2 py-1 rounded-full bg-accent-yellow/20 text-accent-yellow';
+    }
+
+    document.getElementById('config-section').classList.remove('hidden');
+    prefillForm(scanData);
+
+    // Scroll to results
+    document.getElementById('scan-results').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } finally {
+    btn.textContent = 'Scan & Continue';
+    btn.disabled = false;
+  }
+}
+
+function prefillForm(data) {
+  const c = data.existing_config || {};
+  const f = (name, val) => { const el = document.querySelector(`[name="${name}"]`); if (el && val) el.value = val; };
+  const fc = (name, val) => { const el = document.querySelector(`[name="${name}"]`); if (el) el.checked = val; };
+
+  f('github_repo', c.GITHUB_REPO || data.github_repo);
+  f('base_branch', c.BASE_BRANCH || data.base_branch);
+  f('branch_naming', c.BRANCH_NAMING || 'conventional');
+  f('commit_format', c.COMMIT_FORMAT || 'conventional');
+  f('task_source', c.TASK_SOURCE || 'github');
+  f('agent_model', c.AGENT_MODEL || 'opus');
+  f('max_budget', c.MAX_BUDGET || '10.00');
+  f('review_max_rounds', c.REVIEW_MAX_ROUNDS || '2');
+  f('test_cmd', c.TEST_CMD || data.test_cmd);
+  f('lint_cmd', c.LINT_CMD || data.lint_cmd);
+  f('format_cmd', c.FORMAT_CMD || data.format_cmd);
+  f('pr_title_format', c.PR_TITLE_FORMAT || 'conventional');
+  fc('no_ai_coauthor', c.NO_AI_COAUTHOR === 'true');
+  fc('pr_auto_link', c.PR_AUTO_LINK_ISSUES !== 'false');
+}
+
+// ── Install ──────────────────────────────────────────────────────────────────
+
+async function installProject(updateOnly) {
+  if (!currentProjectPath) return;
+
+  const btn = document.getElementById(updateOnly ? 'update-btn' : 'install-btn');
+  const origText = btn.textContent;
+  btn.textContent = 'Installing...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/setup/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_path: currentProjectPath, no_dashboard: true }),
+    });
+    const result = await res.json();
+
+    document.getElementById('install-log-section').classList.remove('hidden');
+    document.getElementById('install-log').textContent = result.stdout || result.stderr || result.error || 'No output';
+
+    const output = document.getElementById('install-output');
+    if (result.status === 'ok') {
+      output.textContent = 'Success';
+      output.className = 'text-xs text-accent-green';
+      document.getElementById('install-status').textContent = 'Installed';
+      document.getElementById('install-status').className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
+    } else {
+      output.textContent = 'Failed — see log';
+      output.className = 'text-xs text-accent-red';
+    }
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
+
+// ── Save Config ──────────────────────────────────────────────────────────────
+
+document.getElementById('setup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!currentProjectPath) { alert('Select and scan a project first'); return; }
+
+  const fd = new FormData(e.target);
+  const body = {
+    project_path: currentProjectPath,
+    task_source: fd.get('task_source'),
+    github_repo: fd.get('github_repo'),
+    base_branch: fd.get('base_branch'),
+    branch_naming: fd.get('branch_naming'),
+    commit_format: fd.get('commit_format'),
+    agent_model: fd.get('agent_model'),
+    max_budget: fd.get('max_budget'),
+    review_max_rounds: parseInt(fd.get('review_max_rounds')) || 2,
+    test_cmd: fd.get('test_cmd'),
+    lint_cmd: fd.get('lint_cmd'),
+    format_cmd: fd.get('format_cmd'),
+    no_ai_coauthor: !!fd.get('no_ai_coauthor'),
+    pr_title_format: fd.get('pr_title_format'),
+    pr_auto_link: !!fd.get('pr_auto_link'),
+  };
+
+  const res = await fetch('/api/setup/configure', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = await res.json();
+  const status = document.getElementById('save-status');
+  if (result.status === 'ok') {
+    status.textContent = 'Saved to ' + result.config_path;
+    status.className = 'self-center text-xs text-accent-green';
+  } else {
+    status.textContent = 'Error: ' + (result.error || 'unknown');
+    status.className = 'self-center text-xs text-accent-red';
+  }
+});
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+// Start browsing from a sensible default
+browseTo('~/Documents/Private/Programming');
+</script>
+{% endblock %}
