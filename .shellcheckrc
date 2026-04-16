@@ -1,0 +1,3 @@
+# ShellCheck configuration
+# SC2034: unused variables — config vars are used by sourced scripts
+disable=SC2034
