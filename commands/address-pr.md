@@ -1,59 +1,73 @@
 ---
 name: address-pr
-description: Address PR review comments — score, fix, reply, resolve threads.
-user-invocable: false
+description: Address PR review comments -- score, fix or decline, reply, resolve threads. Provide PR number.
+user-invocable: true
 ---
 
 # Address PR Review Comments
 
-You are the GWYM Agent. A PR has been reviewed and you need to address the feedback.
+Score each review comment, fix valuable ones, politely decline low-value ones, and reply on GitHub.
 
-## Process
+## Instructions
 
-### 1. Evaluate Each Comment
+1. Get the PR number from `$ARGUMENTS`.
 
-For every review comment, score it 1-10:
-- **1-2**: Cosmetic, subjective, or incorrect — politely decline
-- **3-5**: Minor improvement — fix it
-- **6-8**: Meaningful issue — fix it
-- **9-10**: Critical bug or security issue — fix immediately
-
-### 2. Fix Comments Scoring 3+
-
-For each comment to fix:
-1. Make the code change in the worktree
-2. Run linter and tests to verify
-3. Amend the fix into the appropriate existing commit (NEVER create fix commits)
-4. Reply to the comment explaining what was done (include the commit SHA)
-5. Resolve the thread via GraphQL — this is mandatory after every fix:
+2. Fetch review data:
    ```bash
-   # First, find the thread ID for the comment
-   gh api graphql -f query='{ repository(owner: "OWNER", name: "REPO") { pullRequest(number: PR) { reviewThreads(first: 50) { nodes { id isResolved comments(first: 1) { nodes { id databaseId } } } } } } }'
-   # Then resolve it
+   gh pr view <PR_NUMBER> --json comments,reviews,body,title,headRefName
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/comments
+   gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews
+   ```
+
+3. Find the working directory -- check for an existing worktree or create one:
+   ```bash
+   git worktree list
+   ```
+
+4. **Score each comment 1-10**:
+   - 1-2: cosmetic nitpicks, subjective style, trivial renames
+   - 3-5: minor improvements -- DRY violations, missing edge cases, readability
+   - 6-8: meaningful -- potential bugs, missing validation, test gaps
+   - 9-10: critical -- security, data loss, correctness bugs
+
+5. **For comments scoring 3+**: Fix the issue in the code.
+   - If you CANNOT fix it (needs architectural decision, unclear requirements): add to NEEDS_HUMAN_INPUT list.
+
+6. **For comments scoring below 3**: Decline politely.
+   - Acknowledge the suggestion briefly.
+   - Explain why the current code is sufficient.
+   - Keep tone respectful but firm.
+
+7. **After all fixes**:
+   Run the project's linter and tests (see CLAUDE.md for commands).
+   ```bash
+   git add -A && git commit --amend --no-edit
+   git push --force-with-lease
+   ```
+   NEVER create new 'fix' commits -- always amend/squash into existing commits.
+
+8. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
+   - Addressed (3+): `Fixed: [what changed].` or `Added [what].`
+   - Declined (<3): brief explanation of why current code is sufficient.
+   - No filler words, no 'Great catch!', no emojis.
+
+9. **Resolve each thread** using GraphQL:
+   ```bash
    gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
    ```
-   Never leave a fixed conversation unresolved.
 
-### 3. Decline Comments Scoring < 3
+10. **Update memory**: Append lessons from comments scored 3+ to `.claude/agent-memory/review-feedback.md`.
 
-For each declined comment:
-1. Reply with a brief, professional explanation of why
-2. Do NOT resolve the thread (let the reviewer decide)
+11. **Print summary**:
+    - Table: | Comment | Source | Score | Action |
+    - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
 
-### 4. Push and Verify
+## Cross-References
 
-1. Force push with lease: `git push --force-with-lease`
-2. Verify tests still pass
-
-### 5. Update Memory
-
-Record any patterns from the review in `.claude/agent-memory/review-feedback.md`:
-- Only actionable, specific lessons
-- One line per finding
+- **Automated review tool comments?** Use `/address-sourcery` for Sourcery AI specifically
+- **Want to learn from the feedback?** Run `/ingest-review <PR_NUMBER>` after merge
+- **Need to reorganize commits after fixes?** Run `/rearrange-commits`
 
 ## Rules
 
-- NEVER create new 'fix' commits — always amend/squash into existing commits
-- NEVER add Co-Authored-By or any AI reference in commits
 - NEVER use emojis in any output
-- Keep replies concise and professional
