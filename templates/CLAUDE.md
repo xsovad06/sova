@@ -7,16 +7,37 @@
 
 ## Run Commands
 
+### Testing
+
 ```bash
-# Testing
+# Run all tests
 {{TEST_CMD}}
 
-# Linting
+# Run a specific test
+{{TEST_SPECIFIC_CMD}}
+```
+
+### Linting and Formatting
+
+```bash
+# Lint
 {{LINT_CMD}}
 
-# Formatting
+# Format
 {{FORMAT_CMD}}
 ```
+
+{{#DEV_CMD}}
+### Building / Running
+
+```bash
+# Start local environment
+{{DEV_CMD}}
+
+# Run migrations (if applicable)
+{{MIGRATE_CMD}}
+```
+{{/DEV_CMD}}
 
 {{#COMMON_COMMANDS}}
 ### Other Commands
@@ -28,17 +49,30 @@
 
 ## Knowledge System (4-Tier)
 
-| Tier | Location | Loaded |
-|------|----------|--------|
-| 0 | `~/.claude/shared-knowledge/` | Every session (cross-project) |
-| 1 | This file, `AGENTS.md`, `.claude/rules/`, `.claude/commands/` | Every session |
-| 2 | `.claude/agent-memory/` | At task start (agent-only) |
-| 3 | `~/.claude/projects/.../memory/` | Auto-managed by Claude Code |
+### Tier 1: Always-loaded context (no truncation)
+- `CLAUDE.md` — This file (Claude Code-specific)
+- `AGENTS.md` — Cross-cutting conventions for all AI tools
+- `.claude/rules/*.md` — Modular knowledge files, loaded every session
 
-- Check `.claude/agent-memory/MEMORY.md` for past learnings before starting work
-- Check `.claude/rules/*.md` for project-specific patterns and conventions
-- After completing a task, record learnings in agent memory (Tier 2)
-- Promote validated patterns: Tier 2 → Tier 1 (after 2+ tasks) → Tier 0 (after 2+ projects)
+### Tier 1b: On-demand knowledge (loaded via commands)
+- `.claude/commands/*.md` — Workflow commands and deep domain skills
+
+### Tier 2: Agent memory (persists across tasks, gitignored)
+- `.claude/agent-memory/MEMORY.md` — Quick reference for learned patterns
+- `.claude/agent-memory/learnings.md` — Framework gotchas, debugging insights
+- `.claude/agent-memory/review-feedback.md` — Patterns from PR reviews
+- `.claude/agent-memory/common-mistakes.md` — Recurring errors to avoid
+- `.claude/agent-memory/task-history.md` — Completed task log
+
+### Tier 3: Session memory (auto-managed by Claude Code)
+- `~/.claude/projects/.../memory/MEMORY.md` — User preferences, project state
+
+### Adding new knowledge
+- **Confirmed patterns**: Add to `.claude/rules/*.md` (Tier 1)
+- **Deep domain knowledge**: Create a command in `.claude/commands/<topic>.md` (Tier 1)
+- **New findings (not yet confirmed)**: Add to `.claude/agent-memory/` (Tier 2)
+- **User preferences**: Auto-memory handles this (Tier 3)
+- **Promote**: Tier 2 → Tier 1 when confirmed in 2+ tasks
 
 ## Agent Configuration
 
@@ -56,3 +90,13 @@
 5. Self-review your changes before pushing
 6. Create a PR with a clear description linking to the issue
 7. Record learnings in `.claude/agent-memory/`
+
+## Claude Code Behavioral Preferences
+
+{{#NO_AI_COAUTHOR}}
+- Do NOT include `Co-Authored-By` lines in commits
+- Do NOT include "Generated with Claude Code" in PR descriptions
+{{/NO_AI_COAUTHOR}}
+- Always run linter/formatter before creating commits
+- Never push without explicit user approval
+{{EXTRA_PREFERENCES}}

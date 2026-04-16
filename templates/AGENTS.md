@@ -21,6 +21,66 @@
 |------|---------|
 {{KEY_PATHS}}
 
+## Domain Guidelines Index
+
+| File | Scope |
+|------|-------|
+{{#DOMAIN_GUIDELINES}}
+| [`{{PATH}}`]({{PATH}}) | {{SCOPE}} |
+{{/DOMAIN_GUIDELINES}}
+
+*Remove rows for domains that don't apply. Add custom domains as needed.*
+
+## Context Index
+
+| File | Purpose |
+|------|---------|
+| `.claude/CLAUDE.md` | Claude Code-specific commands and behaviors |
+| `.claude/commands/` | Workflow commands (develop, test, PR, review, etc.) |
+| `.claude/rules/*.md` | Modular knowledge files (architecture, patterns, testing) |
+| `CONTRIBUTING.md` | Contribution workflow, code style, PR format |
+| `README.md` | Project overview, setup, getting started |
+
+## Knowledge System
+
+This project uses a four-tier knowledge management system. See [KNOWLEDGE.md](KNOWLEDGE.md) for full architecture.
+
+| Tier | Location | Scope | In Git? |
+|------|----------|-------|---------|
+| 0 | `~/.claude/shared-knowledge/` | Cross-project patterns | No |
+| 1 | `AGENTS.md`, `CLAUDE.md`, `.claude/rules/*.md` | Project conventions (always loaded) | Yes |
+| 2 | `.claude/agent-memory/` | Agent learnings (loaded at task start) | No |
+| 3 | `~/.claude/projects/.../memory/` | User session memory (auto-managed) | No |
+
+**Promotion flow**: Tier 2 (confirmed in 2+ tasks) → Tier 1 (confirmed in 2+ projects) → Tier 0.
+
+### Rules Files
+
+| File | Scope |
+|------|-------|
+| `.claude/rules/architecture.md` | App structure, key paths, architectural decisions |
+| `.claude/rules/patterns.md` | Framework/language gotchas and lessons learned |
+| `.claude/rules/testing.md` | Test framework, fixtures, factories, conventions |
+
+*Each file < 150 lines. Confirmed, stable patterns only. Add more as the project grows.*
+
+## Project Tracker
+
+{{#TASK_SOURCE_GITHUB}}
+This project uses **GitHub Issues** for task tracking.
+
+- **Issue commands**: `gh issue list`, `gh issue view <NUMBER>`
+{{/TASK_SOURCE_GITHUB}}
+{{#TASK_SOURCE_JIRA}}
+This project uses **JIRA** for task tracking.
+{{/TASK_SOURCE_JIRA}}
+{{#TASK_SOURCE_LINEAR}}
+This project uses **Linear** for task tracking.
+{{/TASK_SOURCE_LINEAR}}
+{{#TASK_SOURCE_MANUAL}}
+This project uses **manual** task input.
+{{/TASK_SOURCE_MANUAL}}
+
 ## Conventions
 
 ### Branches
@@ -68,6 +128,12 @@
 - Coverage threshold: {{COVERAGE_THRESHOLD}}%
 {{/COVERAGE_THRESHOLD}}
 
+### What NOT to Do
+- Don't modify code unrelated to the current task
+- Don't add dependencies without discussing first
+- Don't skip tests or lower coverage
+- Don't push without running the full test suite
+
 ## Important Patterns
 
 {{PATTERNS}}
@@ -80,3 +146,41 @@ These constraints are checked automatically before push:
 ## Persona
 
 {{PERSONA_GUIDANCE}}
+
+## Agentic Workflow Commands
+
+This repo has Claude Code commands in `.claude/commands/`:
+
+### Core Development
+- `/develop` — implement a feature or fix (TDD approach)
+- `/develop-full` — full workflow: develop + test + review + PR
+- `/develop-explain` — explain approaches without implementing
+- `/test` — run and fix tests iteratively
+- `/review` — pre-push code review with auto-fix
+- `/coding-standards` — review changes against project conventions
+- `/debug` — systematic debugging workflow
+
+### Pull Requests
+- `/pr` — create PR with standard template
+- `/address-pr` — address PR review comments
+- `/address-sourcery` — handle Sourcery AI review comments
+- `/review-pr` — review a teammate's PR
+
+### Project Management
+- `/standup` — daily context summary
+- `/find-task` — browse issue backlog
+- `/sprint-plan` — prioritize assigned issues
+- `/issue` — fetch and analyze a GitHub Issue
+- `/new-feature` — set up a new feature branch
+- `/status` — project health check
+
+### Post-Work
+- `/after-merge` — post-merge cleanup
+- `/rearrange-commits` — reorganize branch commits
+- `/ingest-review` — learn from PR feedback
+- `/extract-knowledge` — capture reusable patterns
+- `/quarterly-report` — generate impact report
+
+### Meta
+- `/agent-readiness` — assess and improve AI readiness
+- `/sync-instructions` — sync commands from PAK upstream
