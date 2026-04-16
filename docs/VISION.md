@@ -223,7 +223,11 @@ cd /path/to/project
 - [DONE] Define 4-tier knowledge management system (KNOWLEDGE.md)
 - [DONE] First integration: GWYM project (AGENTS.md, slimmed CLAUDE.md, all commands tracked)
 - [ ] Rename repo (TBD -- "project-automation-kit", "pak", or keep "gwym-agent"?)
-- [ ] Copy KNOWLEDGE.md into the kit as canonical reference
+- [DONE] Copy KNOWLEDGE.md into the kit (`knowledge/KNOWLEDGE.md`)
+- [DONE] Copy PORTING.md into the kit (`docs/PORTING.md`)
+- [DONE] Merge Project-instructions repo: all 24 commands, templates, knowledge docs
+- [DONE] Merge AGENTS.md template (PAK template structure + PI's Domain Guidelines, Knowledge System, Agentic Workflow Commands)
+- [DONE] Merge CLAUDE.md template (PAK template structure + PI's Behavioral Preferences, detailed Knowledge tiers)
 
 ### Phase 2: Task Source Abstraction
 - Extract GitHub adapter from orchestrator
