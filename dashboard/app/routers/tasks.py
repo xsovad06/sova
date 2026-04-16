@@ -1,8 +1,9 @@
 """Tasks API — active tasks and history."""
 
 from fastapi import APIRouter
-from app.services import task_service
+
 from app import config
+from app.services import task_service
 
 router = APIRouter()
 

@@ -63,6 +63,7 @@ async def list_invariants():
     invariants_dir = config.DATA_DIR.parent / "invariants"
     if not invariants_dir.exists():
         import os
+
         pak_root = os.environ.get("PAK_ROOT", "")
         if pak_root:
             invariants_dir = config.DATA_DIR.parent.parent / "invariants"
@@ -70,11 +71,13 @@ async def list_invariants():
     result = []
     if invariants_dir.exists():
         for f in sorted(invariants_dir.glob("*.sh")):
-            result.append({
-                "name": f.stem,
-                "path": str(f),
-                "enabled": True,
-            })
+            result.append(
+                {
+                    "name": f.stem,
+                    "path": str(f),
+                    "enabled": True,
+                }
+            )
 
     return {"invariants": result}
 
@@ -86,10 +89,12 @@ async def list_personas():
     personas_dir = config.SCRIPTS_DIR / "personas"
     if personas_dir.exists():
         for f in sorted(personas_dir.glob("*.md")):
-            personas.append({
-                "name": f.stem,
-                "path": str(f),
-                "has_mcp": (f.parent / f"{f.stem}.mcp.json").exists(),
-            })
+            personas.append(
+                {
+                    "name": f.stem,
+                    "path": str(f),
+                    "has_mcp": (f.parent / f"{f.stem}.mcp.json").exists(),
+                }
+            )
 
     return {"personas": personas}

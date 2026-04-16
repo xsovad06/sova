@@ -7,10 +7,11 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import config
-from app.routers import overview, costs, logs, tasks, memory, queue, agent, setup, settings
+from app.routers import agent, costs, logs, memory, overview, queue, settings, setup, tasks
 from app.services import process_service
 
 app = FastAPI(title="Project Automation Kit — Dashboard")
@@ -21,6 +22,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 
 
 # ── Middleware: set project context from /p/{slug}/ URLs ─────────────────────
+
 
 class ProjectContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -59,22 +61,32 @@ app.add_middleware(ProjectContextMiddleware)
 
 # ── Home page: project list ─────────────────────────────────────────────────
 
+
 @app.get("/")
 async def home(request: Request):
     projects = config.list_projects()
     if not projects:
         # No projects registered — go to setup
-        return templates.TemplateResponse(request, "home.html", {
+        return templates.TemplateResponse(
+            request,
+            "home.html",
+            {
+                "page": "home",
+                "projects": {},
+            },
+        )
+    return templates.TemplateResponse(
+        request,
+        "home.html",
+        {
             "page": "home",
-            "projects": {},
-        })
-    return templates.TemplateResponse(request, "home.html", {
-        "page": "home",
-        "projects": projects,
-    })
+            "projects": projects,
+        },
+    )
 
 
 # ── Project-scoped page routes (/p/{slug}/...) ──────────────────────────────
+
 
 @app.get("/p/{slug}")
 async def project_redirect(slug: str):
@@ -83,74 +95,106 @@ async def project_redirect(slug: str):
 
 @app.get("/p/{slug}/")
 async def project_overview(request: Request, slug: str):
-    return templates.TemplateResponse(request, "overview.html", {
-        "page": "overview",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "overview.html",
+        {
+            "page": "overview",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/costs")
 async def project_costs(request: Request, slug: str):
-    return templates.TemplateResponse(request, "costs.html", {
-        "page": "costs",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "costs.html",
+        {
+            "page": "costs",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/logs")
 async def project_logs(request: Request, slug: str):
-    return templates.TemplateResponse(request, "logs.html", {
-        "page": "logs",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "page": "logs",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/tasks")
 async def project_tasks(request: Request, slug: str):
-    return templates.TemplateResponse(request, "tasks.html", {
-        "page": "tasks",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "tasks.html",
+        {
+            "page": "tasks",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/memory")
 async def project_memory(request: Request, slug: str):
-    return templates.TemplateResponse(request, "memory.html", {
-        "page": "memory",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "memory.html",
+        {
+            "page": "memory",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/queue")
 async def project_queue(request: Request, slug: str):
-    return templates.TemplateResponse(request, "queue.html", {
-        "page": "queue",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "queue.html",
+        {
+            "page": "queue",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/control")
 async def project_control(request: Request, slug: str):
-    return templates.TemplateResponse(request, "control.html", {
-        "page": "control",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "control.html",
+        {
+            "page": "control",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 @app.get("/p/{slug}/settings")
 async def project_settings(request: Request, slug: str):
-    return templates.TemplateResponse(request, "settings.html", {
-        "page": "settings",
-        "project_slug": slug,
-        "project_name": getattr(request.state, "project_name", slug),
-    })
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "page": "settings",
+            "project_slug": slug,
+            "project_name": getattr(request.state, "project_name", slug),
+        },
+    )
 
 
 # Setup is global (not project-scoped) — it's where you add new projects
@@ -189,63 +233,109 @@ app.include_router(settings.router, prefix="/api")
 # Legacy page routes (default project)
 @app.get("/overview")
 async def legacy_overview(request: Request):
-    return templates.TemplateResponse(request, "overview.html", {
-        "page": "overview", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "overview.html",
+        {
+            "page": "overview",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/costs")
 async def legacy_costs(request: Request):
-    return templates.TemplateResponse(request, "costs.html", {
-        "page": "costs", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "costs.html",
+        {
+            "page": "costs",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/logs")
 async def legacy_logs(request: Request):
-    return templates.TemplateResponse(request, "logs.html", {
-        "page": "logs", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "page": "logs",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/tasks")
 async def legacy_tasks(request: Request):
-    return templates.TemplateResponse(request, "tasks.html", {
-        "page": "tasks", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "tasks.html",
+        {
+            "page": "tasks",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/memory")
 async def legacy_memory(request: Request):
-    return templates.TemplateResponse(request, "memory.html", {
-        "page": "memory", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "memory.html",
+        {
+            "page": "memory",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/queue")
 async def legacy_queue(request: Request):
-    return templates.TemplateResponse(request, "queue.html", {
-        "page": "queue", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "queue.html",
+        {
+            "page": "queue",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/control")
 async def legacy_control(request: Request):
-    return templates.TemplateResponse(request, "control.html", {
-        "page": "control", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "control.html",
+        {
+            "page": "control",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 @app.get("/settings")
 async def legacy_settings(request: Request):
-    return templates.TemplateResponse(request, "settings.html", {
-        "page": "settings", "project_slug": "", "project_name": "",
-    })
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "page": "settings",
+            "project_slug": "",
+            "project_name": "",
+        },
+    )
 
 
 # ── Project registry API ────────────────────────────────────────────────────
-
-from pydantic import BaseModel
 
 
 class RegisterProjectRequest(BaseModel):
@@ -271,6 +361,7 @@ async def unregister_project(req: RegisterProjectRequest):
 
 
 # ── WebSocket routes ────────────────────────────────────────────────────────
+
 
 @app.websocket("/p/{slug}/ws/logs")
 async def ws_logs_project(websocket: WebSocket, slug: str):

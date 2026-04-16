@@ -129,7 +129,10 @@ def _detect_github_repo(project: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5, cwd=str(project),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(project),
         )
         if r.returncode == 0:
             m = re.search(r"github\.com[^:/]*[:/]([^/]+/[^/.]+)", r.stdout.strip())
@@ -144,7 +147,9 @@ def _detect_base_branch(project: Path) -> str:
     for branch in ["main", "master", "develop", "dev"]:
         r = subprocess.run(
             ["git", "rev-parse", "--verify", branch],
-            capture_output=True, cwd=str(project), timeout=5,
+            capture_output=True,
+            cwd=str(project),
+            timeout=5,
         )
         if r.returncode == 0:
             return branch
@@ -174,13 +179,13 @@ async def setup_status(project_path: str = ""):
         conf_file = config.SCRIPTS_DIR / "gwym-agent.conf"
         project = config.DATA_DIR.parent
 
-    config = _read_conf(conf_file)
+    conf_data = _read_conf(conf_file)
     has_agent = (project / ".claude" / "scripts" / "gwym-agent.sh").exists()
 
     return {
         "installed": conf_file.exists(),
         "has_agent": has_agent,
-        "config": config,
+        "config": conf_data,
         "project_path": str(project),
         "data_dir": str(project / ".claude"),
     }
@@ -199,11 +204,13 @@ async def browse_directory(req: BrowseRequest):
 
     # Parent directory
     if path != path.parent:
-        entries.append({
-            "name": "..",
-            "path": str(path.parent),
-            "is_project": False,
-        })
+        entries.append(
+            {
+                "name": "..",
+                "path": str(path.parent),
+                "is_project": False,
+            }
+        )
 
     # Subdirectories (sorted, skip hidden except .claude)
     try:
@@ -220,19 +227,29 @@ async def browse_directory(req: BrowseRequest):
             # Detect if this looks like a project (has git, package.json, etc.)
             is_project = any(
                 (child / marker).exists()
-                for marker in [".git", "package.json", "pyproject.toml", "Cargo.toml",
-                               "go.mod", "manage.py", "Makefile", "requirements.txt"]
+                for marker in [
+                    ".git",
+                    "package.json",
+                    "pyproject.toml",
+                    "Cargo.toml",
+                    "go.mod",
+                    "manage.py",
+                    "Makefile",
+                    "requirements.txt",
+                ]
             )
 
             # Check if PAK is already installed
             has_pak = (child / ".claude" / "scripts" / "gwym-agent.sh").exists()
 
-            entries.append({
-                "name": name,
-                "path": str(child),
-                "is_project": is_project,
-                "has_pak": has_pak,
-            })
+            entries.append(
+                {
+                    "name": name,
+                    "path": str(child),
+                    "is_project": is_project,
+                    "has_pak": has_pak,
+                }
+            )
     except PermissionError:
         pass
 
@@ -294,7 +311,11 @@ async def install_project(req: InstallRequest):
 
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=30, cwd=str(project),
+            args,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(project),
         )
         # Auto-register on successful install
         slug = ""
@@ -341,10 +362,10 @@ REVIEW_ENABLED="true"
 REVIEW_MAX_ROUNDS={req.review_max_rounds}
 
 # Commit & PR Settings
-NO_AI_COAUTHOR="{'true' if req.no_ai_coauthor else 'false'}"
+NO_AI_COAUTHOR="{"true" if req.no_ai_coauthor else "false"}"
 COMMIT_FORMAT="{req.commit_format}"
 PR_TITLE_FORMAT="{req.pr_title_format}"
-PR_AUTO_LINK_ISSUES="{'true' if req.pr_auto_link else 'false'}"
+PR_AUTO_LINK_ISSUES="{"true" if req.pr_auto_link else "false"}"
 BRANCH_NAMING="{req.branch_naming}"
 
 # Defaults

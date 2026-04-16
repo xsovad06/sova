@@ -15,9 +15,7 @@ from pathlib import Path
 
 # ── Project context (set per-request by middleware) ──────────────────────────
 
-_project_data_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
-    "project_data_dir", default=None
-)
+_project_data_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar("project_data_dir", default=None)
 
 
 def set_project_context(data_dir: Path):
@@ -41,6 +39,7 @@ _DEFAULT_DATA_DIR = _default_data_dir()
 
 
 # ── Dynamic attribute resolution ────────────────────────────────────────────
+
 
 def _get_data_dir() -> Path:
     return _project_data_dir.get() or _DEFAULT_DATA_DIR

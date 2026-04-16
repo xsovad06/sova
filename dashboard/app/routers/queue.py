@@ -1,6 +1,7 @@
 """Priority Queue API — simulated priority scan."""
 
 from fastapi import APIRouter
+
 from app.services import queue_service
 
 router = APIRouter()

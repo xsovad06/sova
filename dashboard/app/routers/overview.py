@@ -1,7 +1,8 @@
 """Overview API — aggregated dashboard data."""
 
 from fastapi import APIRouter
-from app.services import costs_service, log_service, task_service, memory_service
+
+from app.services import costs_service, log_service, memory_service, task_service
 
 router = APIRouter()
 

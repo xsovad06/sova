@@ -3,7 +3,6 @@
 import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 from app import config
 
@@ -57,12 +56,14 @@ def get_task_history() -> list[dict]:
         # Skip separator line
         if m.group(1).startswith("-"):
             continue
-        entries.append({
-            "date": m.group(1).strip(),
-            "ticket": m.group(2).strip(),
-            "summary": m.group(3).strip(),
-            "outcome": m.group(4).strip(),
-        })
+        entries.append(
+            {
+                "date": m.group(1).strip(),
+                "ticket": m.group(2).strip(),
+                "summary": m.group(3).strip(),
+                "outcome": m.group(4).strip(),
+            }
+        )
     return entries
 
 
@@ -72,7 +73,9 @@ def get_task_summary() -> dict:
     in_progress = [t for t in active if t.get("status") == "in_progress"]
     paused = [t for t in active if t.get("status") == "paused"]
     done_count = sum(1 for h in history if "PR" in h.get("outcome", "") or "merged" in h.get("outcome", "").lower())
-    failed_count = sum(1 for h in history if "fail" in h.get("outcome", "").lower() or "abort" in h.get("outcome", "").lower())
+    failed_count = sum(
+        1 for h in history if "fail" in h.get("outcome", "").lower() or "abort" in h.get("outcome", "").lower()
+    )
     return {
         "active_count": len(in_progress) + len(paused),
         "in_progress": len(in_progress),

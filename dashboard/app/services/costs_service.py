@@ -38,19 +38,13 @@ def get_all() -> list[dict]:
 def get_today_total() -> float:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return sum(
-        e.get("cost_usd", 0)
-        for e in _parse_lines(config.COSTS_FILE)
-        if e.get("timestamp", "").startswith(today)
+        e.get("cost_usd", 0) for e in _parse_lines(config.COSTS_FILE) if e.get("timestamp", "").startswith(today)
     )
 
 
 def get_rolling_total(days: int = 7) -> float:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    return sum(
-        e.get("cost_usd", 0)
-        for e in _parse_lines(config.COSTS_FILE)
-        if e.get("timestamp", "") >= cutoff
-    )
+    return sum(e.get("cost_usd", 0) for e in _parse_lines(config.COSTS_FILE) if e.get("timestamp", "") >= cutoff)
 
 
 def get_daily_totals(days: int = 14) -> list[dict]:

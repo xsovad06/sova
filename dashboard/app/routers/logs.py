@@ -1,6 +1,7 @@
 """Logs API — structured log access."""
 
 from fastapi import APIRouter, Query
+
 from app.services import log_service
 
 router = APIRouter()
