@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.services import process_service, handoff_service
+from app.services import handoff_service, process_service
 
 router = APIRouter()
 
@@ -197,7 +197,9 @@ async def worktree_summary(path: str):
         diff = subprocess.run(
             ["git", "diff", "HEAD~1", "--stat"],
             cwd=str(worktree),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if diff.returncode == 0:
             result["diff_stat"] = diff.stdout.strip()
@@ -205,7 +207,9 @@ async def worktree_summary(path: str):
         diff_files = subprocess.run(
             ["git", "diff", "HEAD~1", "--name-status"],
             cwd=str(worktree),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if diff_files.returncode == 0:
             for line in diff_files.stdout.strip().splitlines():
@@ -213,10 +217,12 @@ async def worktree_summary(path: str):
                 if len(parts) == 2:
                     status_letter = parts[0].strip()
                     status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
-                    result["files"].append({
-                        "path": parts[1],
-                        "status": status_map.get(status_letter[0], status_letter),
-                    })
+                    result["files"].append(
+                        {
+                            "path": parts[1],
+                            "status": status_map.get(status_letter[0], status_letter),
+                        }
+                    )
     except (subprocess.TimeoutExpired, OSError):
         pass
 

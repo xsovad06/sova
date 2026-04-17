@@ -286,8 +286,10 @@ def start_claude_command(command_name: str, args: dict | None = None) -> dict:
         claude,
         "--print",
         "--dangerously-skip-permissions",
-        "--model", "sonnet",
-        "-p", prompt,
+        "--model",
+        "sonnet",
+        "-p",
+        prompt,
     ]
 
     proc = _spawn_and_stream(cmd)
