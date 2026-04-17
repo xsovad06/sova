@@ -34,9 +34,26 @@ PAK has three main components:
 - **Claude command execution**: dashboard can run Claude Code commands via `start_claude_command()`
 
 ## Config System
-- Template: `agent/gwym-agent.conf.default`
-- Per-project: `.claude/scripts/gwym-agent.conf` (shell-sourceable)
+- Template: `agent/pak-agent.conf.default`
+- Per-project: `.claude/scripts/pak-agent.conf` (shell-sourceable)
 - Key fields: AGENT_MODEL, MAX_BUDGET, TASK_SOURCE, TASK_SOURCE_CONFIG, COMMIT_FORMAT, PR_TITLE_FORMAT, BRANCH_NAMING
+
+## Naming Convention
+
+The project's full name is **Project Automation Kit**. The abbreviation **PAK** is used internally
+and as the CLI command (`pak`). This is a deliberate namespacing strategy:
+
+- **Marketing / docs / README**: use the full name "Project Automation Kit" to avoid ambiguity
+- **CLI command**: `pak` (short, ergonomic)
+- **Config files / internal references**: `pak-` prefix (e.g., `pak-agent.conf`, `pak-agent.sh`)
+- **Never use "PAK" as a standalone brand** -- always pair with context (e.g., "PAK CLI", "the PAK agent")
+
+This decision was made after a naming conflict analysis (April 2026). Known conflicts:
+- **Stakpak "paks"** (`paks` CLI) -- an AI agent skills package manager in the same ecosystem. Different domain (DevOps + skill packaging vs. autonomous development), but the CLI names are one character apart.
+- **pak (R)** -- R package installer (`pak.r-lib.org`). Different ecosystem entirely.
+- **IBM Cloud Pak** -- enterprise container tooling. Namespaced as `ibm-pak` / `cloudctl`.
+
+The full name "Project Automation Kit" has no known conflicts and is descriptive enough to stand on its own in search results and documentation.
 
 ## Key Design Decisions
 - **Bash for agent**: zero runtime deps beyond git/gh/jq/claude, runs everywhere
