@@ -70,10 +70,26 @@ if $UPDATE_ONLY; then
   if [[ -d "$PERSONAS_DIR" ]]; then
     cp "$PERSONAS_DIR"/*.md "$SCRIPTS_DIR/personas/" 2>/dev/null || true
     cp "$PERSONAS_DIR"/*.mcp.json "$SCRIPTS_DIR/personas/" 2>/dev/null || true
+    # Remove personas that no longer exist in source
+    for f in "$SCRIPTS_DIR/personas/"*.md; do
+      [[ -f "$f" ]] || continue
+      base=$(basename "$f")
+      if [[ ! -f "$PERSONAS_DIR/$base" ]]; then
+        rm -f "$f" "${f%.md}.mcp.json"
+      fi
+    done
   fi
   if [[ -d "$PAK_ROOT/commands" ]]; then
     mkdir -p "$COMMANDS_DIR"
     cp "$PAK_ROOT/commands/"*.md "$COMMANDS_DIR/" 2>/dev/null || true
+    # Remove commands that no longer exist in source
+    for f in "$COMMANDS_DIR/"*.md; do
+      [[ -f "$f" ]] || continue
+      base=$(basename "$f")
+      if [[ ! -f "$PAK_ROOT/commands/$base" ]]; then
+        rm -f "$f"
+      fi
+    done
   fi
   echo "Agent updated in $(pwd)"
   exit 0
@@ -96,16 +112,30 @@ fi
 cp "$SCRIPT_DIR/orchestrator.sh" "$SCRIPTS_DIR/pak-agent.sh"
 chmod +x "$SCRIPTS_DIR/pak-agent.sh"
 
-# Copy persona files (always update to latest)
+# Copy persona files (always update to latest, remove stale ones)
 if [[ -d "$PERSONAS_DIR" ]]; then
   cp "$PERSONAS_DIR"/*.md "$SCRIPTS_DIR/personas/" 2>/dev/null || true
   cp "$PERSONAS_DIR"/*.mcp.json "$SCRIPTS_DIR/personas/" 2>/dev/null || true
+  for f in "$SCRIPTS_DIR/personas/"*.md; do
+    [[ -f "$f" ]] || continue
+    base=$(basename "$f")
+    if [[ ! -f "$PERSONAS_DIR/$base" ]]; then
+      rm -f "$f" "${f%.md}.mcp.json"
+    fi
+  done
   echo "Copied personas: $(find "$SCRIPTS_DIR/personas/" -maxdepth 1 -type f -exec basename {} \; | tr '\n' ' ')"
 fi
 
-# Copy agent-specific commands (don't overwrite repo's .claude/commands/)
+# Copy agent-specific commands (always update to latest, remove stale ones)
 if [[ -d "$PAK_ROOT/commands" ]]; then
   cp "$PAK_ROOT/commands/"*.md "$COMMANDS_DIR/" 2>/dev/null || true
+  for f in "$COMMANDS_DIR/"*.md; do
+    [[ -f "$f" ]] || continue
+    base=$(basename "$f")
+    if [[ ! -f "$PAK_ROOT/commands/$base" ]]; then
+      rm -f "$f"
+    fi
+  done
   echo "Copied agent commands: $(find "$COMMANDS_DIR/" -maxdepth 1 -name '*.md' 2>/dev/null | sed 's|.*/||' | tr '\n' ' ')"
 fi
 
