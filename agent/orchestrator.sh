@@ -369,6 +369,24 @@ restore_task_context() {
 
 # ─── Priority Scanner ────────────────────────────────────────────────────────
 
+_check_unresolved_threads() {
+  local pr_number="$1"
+  local repo_owner repo_name
+  repo_owner=$(echo "$GITHUB_REPO" | cut -d/ -f1)
+  repo_name=$(echo "$GITHUB_REPO" | cut -d/ -f2)
+
+  gh api graphql -f query="
+    query {
+      repository(owner:\"$repo_owner\", name:\"$repo_name\") {
+        pullRequest(number:$pr_number) {
+          reviewThreads(first:100) {
+            nodes { isResolved comments(first:1) { nodes { body author { login } } } }
+          }
+        }
+      }
+    }" 2>/dev/null | jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' 2>/dev/null || echo "0"
+}
+
 priority_scan() {
   local results_file
   results_file=$(mktemp)
@@ -429,12 +447,11 @@ priority_scan() {
         continue
       fi
 
-      # Check for review comments
-      local comment_count
-      comment_count=$(gh api "repos/$GITHUB_REPO/pulls/$pr_num/comments" 2>/dev/null \
-        | jq '[.[] | select(.user.login | test("dependabot") | not)] | length' 2>/dev/null || echo "0")
-      if [[ "$comment_count" -gt 0 ]]; then
-        echo "P1|COMMENTS|$pr_num|PR #$pr_num ($pr_title) has $comment_count review comments" >> "$results_file"
+      # Check for unresolved review threads (GraphQL -- REST API lacks isResolved)
+      local unresolved_threads
+      unresolved_threads=$(_check_unresolved_threads "$pr_num" 2>/dev/null || echo "0")
+      if [[ "$unresolved_threads" -gt 0 ]] 2>/dev/null; then
+        echo "P1|COMMENTS|$pr_num|PR #$pr_num ($pr_title) has $unresolved_threads unresolved threads" >> "$results_file"
       fi
     done < <(echo "$open_prs" | jq -c '.[]' 2>/dev/null)
   fi
@@ -3424,12 +3441,13 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
       items_json=$(echo "$SCAN_RESULTS" | jq -Rs 'split("\n") | map(select(length > 0))')
       dashboard_request "select_task" \
         "Priority scan found items. Recommended: [$TOP_PRIORITY] #$TOP_KEY — $TOP_REASON" \
-        '["confirm","skip"]' \
+        '["confirm","backlog","skip"]' \
         "{\"recommended\":\"$TOP_KEY\",\"type\":\"$TOP_TYPE\",\"priority\":\"$TOP_PRIORITY\",\"reason\":$(printf '%s' "$TOP_REASON" | jq -Rs .),\"items\":$items_json}" \
         true
       CHOICE="$DASHBOARD_RESPONSE_VALUE"
       [[ -z "$CHOICE" && "$DASHBOARD_RESPONSE" == "confirm" ]] && CHOICE=""
       [[ "$DASHBOARD_RESPONSE" == "skip" ]] && CHOICE="skip"
+      [[ "$DASHBOARD_RESPONSE" == "backlog" ]] && CHOICE="backlog"
     else
       CHOICE=$(ask "Proceed with #$TOP_KEY? (Enter=yes, number=pick, issue#=direct, skip=exit): ")
     fi
@@ -3437,6 +3455,9 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
     if [[ "$CHOICE" == "skip" ]]; then
       echo "Skipping. Goodbye!"
       exit 0
+    elif [[ "$CHOICE" == "backlog" ]]; then
+      SPECIFIC_ISSUE=""
+      # Fall through to GitHub Issues selection below
     fi
 
     SELECTED_ITEM=""
