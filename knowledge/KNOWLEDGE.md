@@ -36,7 +36,7 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 **Location**: `~/.claude/shared-knowledge/`
 **Scope**: Cross-project -- patterns that apply regardless of tech stack or project
 **Tracked in git**: No (lives outside any repo)
-**Loaded by**: Agent startup scripts (e.g., gwym-agent)
+**Loaded by**: Agent startup scripts (e.g., pak-agent)
 
 ### Structure
 

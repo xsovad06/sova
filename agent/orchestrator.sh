@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# GWYM Agent — Autonomous development workflow for GWYM (Grow With Your Money)
+# PAK Agent — Autonomous development workflow
 # Usage:
-#   ./gwym-agent.sh                        # Full workflow (task selection -> PR -> monitor)
-#   ./gwym-agent.sh 42                     # Work on specific GitHub issue #42
-#   ./gwym-agent.sh --address-pr 42        # Address PR review comments, fix, push
-#   ./gwym-agent.sh --maintain-pr 42       # Rebase PR on main + sync description with changes
-#   ./gwym-agent.sh --learn-from-pr 42     # Ingest PR review feedback into memory
-#   ./gwym-agent.sh --review-pr 42         # Run Koda (automated reviewer) on a PR
-#   ./gwym-agent.sh --investigate 42       # Run investigation mode on an issue
-#   ./gwym-agent.sh --investigate 42 --doc # Investigation + Google Doc creation
-#   ./gwym-agent.sh --watch                # Continuous mode (loop with priority scanner)
-#   ./gwym-agent.sh --parallel 42 45       # Run agent on multiple issues concurrently
-#   ./gwym-agent.sh --parallel             # Auto-select issues for parallel execution
-#   ./gwym-agent.sh --memory search <q>    # Search agent memory (full-text)
-#   ./gwym-agent.sh --memory prune         # Remove stale memories (>90 days, closed issues)
-#   ./gwym-agent.sh --readiness            # Assess + improve repo's AI-development readiness
-#   ./gwym-agent.sh --status               # Show status dashboard
-#   ./gwym-agent.sh --cleanup              # Remove stale worktrees (interactive)
-#   ./gwym-agent.sh --costs                # Show cost tracking summary
+#   ./pak-agent.sh                        # Full workflow (task selection -> PR -> monitor)
+#   ./pak-agent.sh 42                     # Work on specific GitHub issue #42
+#   ./pak-agent.sh --address-pr 42        # Address PR review comments, fix, push
+#   ./pak-agent.sh --maintain-pr 42       # Rebase PR on main + sync description with changes
+#   ./pak-agent.sh --learn-from-pr 42     # Ingest PR review feedback into memory
+#   ./pak-agent.sh --review-pr 42         # Run Koda (automated reviewer) on a PR
+#   ./pak-agent.sh --investigate 42       # Run investigation mode on an issue
+#   ./pak-agent.sh --investigate 42 --doc # Investigation + Google Doc creation
+#   ./pak-agent.sh --watch                # Continuous mode (loop with priority scanner)
+#   ./pak-agent.sh --parallel 42 45       # Run agent on multiple issues concurrently
+#   ./pak-agent.sh --parallel             # Auto-select issues for parallel execution
+#   ./pak-agent.sh --memory search <q>    # Search agent memory (full-text)
+#   ./pak-agent.sh --memory prune         # Remove stale memories (>90 days, closed issues)
+#   ./pak-agent.sh --readiness            # Assess + improve repo's AI-development readiness
+#   ./pak-agent.sh --status               # Show status dashboard
+#   ./pak-agent.sh --cleanup              # Remove stale worktrees (interactive)
+#   ./pak-agent.sh --costs                # Show cost tracking summary
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-CONF_FILE="$REPO_ROOT/.claude/scripts/gwym-agent.conf"
+CONF_FILE="$REPO_ROOT/.claude/scripts/pak-agent.conf"
 WORKTREE_BASE="$REPO_ROOT/.claude/worktrees"
 MEMORY_DIR="$REPO_ROOT/.claude/agent-memory"
 mkdir -p "$MEMORY_DIR"
@@ -31,7 +31,7 @@ mkdir -p "$MEMORY_DIR"
 # ─── Load config ───────────────────────────────────────────────────────────────
 
 if [[ ! -f "$CONF_FILE" ]]; then
-  cp "$SCRIPT_DIR/gwym-agent.conf.default" "$CONF_FILE" 2>/dev/null || true
+  cp "$SCRIPT_DIR/pak-agent.conf.default" "$CONF_FILE" 2>/dev/null || true
 fi
 
 # Defaults (overridden by conf file)
@@ -540,7 +540,7 @@ _learn_from_pr_core() {
   ingest_guidelines=$(_load_command "ingest-review")
 
   local result
-  result=$(claude_run_tracked "learn-pr" "PR-$pr_number" "You are the GWYM Agent. You just received review feedback on a PR.
+  result=$(claude_run_tracked "learn-pr" "PR-$pr_number" "You are the PAK Agent. You just received review feedback on a PR.
 
 PR data:
 $pr_data
@@ -1089,7 +1089,7 @@ watch_auto_select_issue() {
 
   log_msg INFO watch-issues "Using Claude to auto-select the best issue..."
   local selection
-  selection=$(claude_run_tracked "watch-select" "auto-select" "You are the GWYM Agent in autonomous watch mode. Pick the single best GitHub issue to work on next.
+  selection=$(claude_run_tracked "watch-select" "auto-select" "You are the PAK Agent in autonomous watch mode. Pick the single best GitHub issue to work on next.
 
 GitHub issues:
 $task_list
@@ -1171,23 +1171,23 @@ SELECTED: NONE | reason")
 
 # ─── Watch Mode ──────────────────────────────────────────────────────────────
 
-WATCH_LOCK_FILE="/tmp/gwym-agent.lock"
+WATCH_LOCK_FILE="/tmp/pak-agent.lock"
 
 watch_mode() {
   # Atomic file lock via flock
   exec 9>"$WATCH_LOCK_FILE"
   if ! flock -n 9; then
-    log_msg ERROR watch "Another gwym-agent instance is running"
+    log_msg ERROR watch "Another pak-agent instance is running"
     exit 1
   fi
   trap 'rm -f "$WATCH_LOCK_FILE"' EXIT
 
   # Graceful shutdown
   local watch_running=true
-  trap 'watch_running=false; log_msg INFO watch "Shutting down..."; notify "GWYM Agent stopped"' INT TERM
+  trap 'watch_running=false; log_msg INFO watch "Shutting down..."; notify "PAK Agent stopped"' INT TERM
 
   log_msg INFO watch "Watch mode started (active: ${WATCH_INTERVAL_ACTIVE}s, idle: ${WATCH_INTERVAL_IDLE}s)"
-  notify "GWYM Agent watch mode started"
+  notify "PAK Agent watch mode started"
 
   local cycle=0
   while $watch_running; do
@@ -1461,7 +1461,7 @@ These may need attention from the team." 2>/dev/null || true
 render_dashboard() {
   echo ""
   echo "================================================================"
-  echo "  GWYM Agent Dashboard"
+  echo "  PAK Agent Dashboard"
   echo "================================================================"
   echo ""
   echo "Config: model=$AGENT_MODEL | budget=\$$MAX_BUDGET/task | repo=$GITHUB_REPO"
@@ -1614,13 +1614,13 @@ notify() {
   if command -v terminal-notifier &>/dev/null; then
     local extra_args=()
     [[ -f "$AGENT_ICON" ]] && extra_args+=(-contentImage "$AGENT_ICON")
-    terminal-notifier -title "GWYM Agent" -message "$msg" -sound "$sound" \
+    terminal-notifier -title "PAK Agent" -message "$msg" -sound "$sound" \
       "${extra_args[@]}" \
-      -activate com.apple.Terminal -group "gwym-agent" 2>/dev/null || true
+      -activate com.apple.Terminal -group "pak-agent" 2>/dev/null || true
   else
     local msg_safe
     msg_safe=$(printf '%s' "$msg" | sed 's/[\"\\]/\\&/g')
-    osascript -e "display notification \"$msg_safe\" with title \"GWYM Agent\" sound name \"$sound\"" 2>/dev/null || true
+    osascript -e "display notification \"$msg_safe\" with title \"PAK Agent\" sound name \"$sound\"" 2>/dev/null || true
   fi
 }
 
@@ -1845,7 +1845,7 @@ run_step4() {
   issue_title=$(echo "$TICKET_DETAILS" | jq -r '.title // ""' 2>/dev/null)
   issue_body=$(echo "$TICKET_DETAILS" | jq -r '.body // ""' 2>/dev/null)
 
-  local dev_prompt="You are the GWYM Agent working autonomously on GitHub issue #$issue.
+  local dev_prompt="You are the PAK Agent working autonomously on GitHub issue #$issue.
 
 Issue title: $issue_title
 Issue body:
@@ -2396,7 +2396,7 @@ run_step8c() {
     local worktree_dir="${WORKTREE_DIR:-$WORKTREE_BASE/$issue}"
 
     local agent_output
-    agent_output=$(claude_run_tracked "step8c-fix-r$review_round" "$issue" "You are the GWYM Agent. Koda (the automated reviewer) has requested changes on your PR.
+    agent_output=$(claude_run_tracked "step8c-fix-r$review_round" "$issue" "You are the PAK Agent. Koda (the automated reviewer) has requested changes on your PR.
 
 PR #$PR_NUMBER
 Working directory: $worktree_dir
@@ -2569,7 +2569,7 @@ run_investigation() {
   issue_title=$(echo "$TICKET_DETAILS" | jq -r '.title // ""' 2>/dev/null)
   issue_body=$(echo "$TICKET_DETAILS" | jq -r '.body // ""' 2>/dev/null)
 
-  local investigate_prompt="You are the GWYM Agent in INVESTIGATION MODE for GitHub issue #$issue.
+  local investigate_prompt="You are the PAK Agent in INVESTIGATION MODE for GitHub issue #$issue.
 
 Issue title: $issue_title
 Issue body:
@@ -2822,7 +2822,7 @@ handle_address_pr() {
   address_pr_guidelines=$(_load_command "address-pr")
 
   local agent_output
-  agent_output=$(claude_run_tracked "address-pr" "PR-$pr_number" "You are the GWYM Agent. A PR has been reviewed and you need to address the feedback.
+  agent_output=$(claude_run_tracked "address-pr" "PR-$pr_number" "You are the PAK Agent. A PR has been reviewed and you need to address the feedback.
 
 PR #$pr_number
 Working directory: $worktree_dir
@@ -3034,7 +3034,7 @@ handle_maintain_pr() {
   local commit_messages
   commit_messages=$(gh pr view "$pr_number" --json commits -q '.commits[].messageHeadline' 2>&1)
 
-  claude_run_tracked "maintain-pr" "PR-$pr_number" "You are the GWYM Agent. Update the PR description to accurately reflect the CURRENT state of PR #$pr_number.
+  claude_run_tracked "maintain-pr" "PR-$pr_number" "You are the PAK Agent. Update the PR description to accurately reflect the CURRENT state of PR #$pr_number.
 
 Current PR title: $(echo "$pr_json" | jq -r '.title')
 
@@ -3385,7 +3385,7 @@ fi
 
 # ─── Pre-flight checks ────────────────────────────────────────────────────────
 
-banner "GWYM Agent — Pre-flight Checks" preflight
+banner "PAK Agent — Pre-flight Checks" preflight
 
 for cmd in claude gh git jq; do
   if ! command -v "$cmd" &>/dev/null; then

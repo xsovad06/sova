@@ -214,7 +214,7 @@ project-automation-kit/
     install.sh                   # Per-project installer
     setup-wizard.sh              # Interactive setup wizard
     detect-persona.sh            # Auto-detection for personas
-    gwym-agent.conf.default      # Config template
+    pak-agent.conf.default       # Config template
     adapters/                    # Task source adapters
       interface.sh               # Adapter interface + loader
       github.sh                  # GitHub Issues adapter

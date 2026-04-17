@@ -26,7 +26,7 @@ dashboard/.venv/
 *.log
 
 # Project-specific
-gwym-agent.conf
+pak-agent.conf
 *.conf
 !*.conf.default
 

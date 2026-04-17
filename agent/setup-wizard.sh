@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$(pwd)"
 CONF_DIR="$PROJECT_DIR/.claude/scripts"
-CONF_FILE="$CONF_DIR/gwym-agent.conf"
+CONF_FILE="$CONF_DIR/pak-agent.conf"
 
 # Colors
 BOLD='\033[1m'
@@ -308,7 +308,7 @@ BRANCH_NAMING="$BRANCH_NAMING"
 # ─── Persona ─────────────────────────────────────────────────────────────────
 PERSONA_MAP=""  # Auto-detection is default
 
-# ─── Remaining defaults (from gwym-agent.conf.default) ───────────────────────
+# ─── Remaining defaults (from pak-agent.conf.default) ───────────────────────
 ISSUE_MILESTONE=""
 ISSUE_LABELS=""
 SKIP_MANUAL_TEST="true"

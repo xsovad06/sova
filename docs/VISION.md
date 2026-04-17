@@ -6,7 +6,7 @@
 
 ## What This Becomes
 
-The gwym-agent and Project-instructions repositories merge into a single **Project Automation Kit** -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
+The original agent and Project-instructions repositories merged into a single **Project Automation Kit** -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
 
 It is not just a script collection. It is a **product** with a UI, setup wizard, and runtime dashboard.
 
@@ -24,7 +24,7 @@ A unified repository that ships:
 ```
 project-automation-kit/
   agent/
-    orchestrator.sh            # Main autonomous agent (current gwym-agent.sh)
+    orchestrator.sh            # Main autonomous agent (installed as pak-agent.sh)
     install.sh                 # Per-project installer
   commands/
     develop.md                 # 26 standardized commands (from Project-instructions)
@@ -145,7 +145,7 @@ Extends the existing FastAPI dashboard with:
 The agent currently hardcodes GitHub Issues. This must become pluggable:
 
 ```bash
-# In gwym-agent.conf:
+# In pak-agent.conf:
 TASK_SOURCE="github"          # github | jira | odoo | linear | manual
 TASK_SOURCE_CONFIG="..."      # Source-specific config (project ID, board, etc.)
 ```
@@ -162,13 +162,13 @@ GitHub adapter exists. JIRA, Odoo (via MCP), and Linear adapters to be built.
 
 **Status: DONE** (completed 2026-04-16)
 
-The Project-instructions command library and gwym-agent commands have been unified:
+The Project-instructions command library and PAK agent commands have been unified:
 - **26 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
 - JIRA references replaced with GitHub Issues (`gh` CLI) throughout
-- Commands ported from GWYM to the template: debug, new-feature, status, coding-standards
+- Commands ported from the original agent to the template: debug, new-feature, status, coding-standards
 - Old `jira.md` replaced by generic `issue.md`
 - `request-review.md` removed (unnecessary)
 - Project-specific commands (e.g., architecture-overview, import-patterns, design, review-pr with Koda personality) stay in the target project alongside the generic ones
@@ -208,8 +208,8 @@ cd /path/to/project
 ~/.claude/project-automation-kit/install.sh .
 
 # Creates:
-# .claude/scripts/gwym-agent.sh (copy or symlink)
-# .claude/scripts/gwym-agent.conf (generated from wizard or defaults)
+# .claude/scripts/pak-agent.sh (copy or symlink)
+# .claude/scripts/pak-agent.conf (generated from wizard or defaults)
 # .claude/commands/*.md (from command library)
 ```
 
@@ -221,8 +221,8 @@ cd /path/to/project
 - [DONE] Convert all JIRA references to GitHub Issues
 - [DONE] Standardize AGENTS.md + CLAUDE.md cooperation model
 - [DONE] Define 4-tier knowledge management system (KNOWLEDGE.md)
-- [DONE] First integration: GWYM project (AGENTS.md, slimmed CLAUDE.md, all commands tracked)
-- [ ] Rename repo (TBD -- "project-automation-kit", "pak", or keep "gwym-agent"?)
+- [DONE] First integration: Income Processor project (AGENTS.md, slimmed CLAUDE.md, all commands tracked)
+- [DONE] Rename internal references from gwym-agent to pak-agent
 - [DONE] Copy KNOWLEDGE.md into the kit (`knowledge/KNOWLEDGE.md`)
 - [DONE] Copy PORTING.md into the kit (`docs/PORTING.md`)
 - [DONE] Merge Project-instructions repo: all 24 commands, templates, knowledge docs
@@ -245,7 +245,7 @@ cd /path/to/project
 - [DONE] Multi-project support: `/p/{slug}/` routing, project registry, contextvars-based per-request config
 
 ### Phase 5: Deploy to All Projects
-- GWYM (Income_processor) -- [DONE] agent + unified commands + AGENTS.md + 4-tier knowledge
+- Income Processor -- [DONE] agent + unified commands + AGENTS.md + 4-tier knowledge
 - ave-monorepo -- already has agent, update commands + AGENTS.md integration
 - odoo-dev -- fresh install with Odoo persona + Odoo task adapter
 

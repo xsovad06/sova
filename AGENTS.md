@@ -25,7 +25,7 @@ project-automation-kit/
     install.sh                     # Per-project installer
     setup-wizard.sh                # Interactive CLI setup wizard
     detect-persona.sh              # Auto-detects project tech stack
-    gwym-agent.conf.default        # Config template (shell-sourceable key=value)
+    pak-agent.conf.default         # Config template (shell-sourceable key=value)
     adapters/                      # Task source adapters
       interface.sh                 # Adapter interface + loader
       github.sh                   # GitHub Issues adapter
@@ -140,7 +140,7 @@ Examples:
 - Add, remove, or upgrade dependencies
 - Delete files or branches
 - Modify CI/CD pipeline configuration
-- Change project configuration files (`gwym-agent.conf`, `.claude/settings.json`)
+- Change project configuration files (`pak-agent.conf`, `.claude/settings.json`)
 - Run commands that affect external services (GitHub API writes, notifications)
 
 **Never do**:

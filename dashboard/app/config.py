@@ -60,14 +60,14 @@ def __getattr__(name: str):
         "MEMORY_DB": mem / "memory.db",
         "REVIEW_DB": mem / "review-patterns.db",
         "TASK_HISTORY_FILE": mem / "task-history.md",
-        "AGENT_CONF": scripts / "gwym-agent.conf",
+        "AGENT_CONF": scripts / "pak-agent.conf",
         "MARKDOWN_FILES": {
             "MEMORY": mem / "MEMORY.md",
             "learnings": mem / "learnings.md",
             "review-feedback": mem / "review-feedback.md",
             "common-mistakes": mem / "common-mistakes.md",
         },
-        "GITHUB_REPO": _read_github_repo(scripts / "gwym-agent.conf"),
+        "GITHUB_REPO": _read_github_repo(scripts / "pak-agent.conf"),
     }
 
     if name in attrs:

@@ -174,13 +174,13 @@ async def setup_status(project_path: str = ""):
     """Get setup status for a project (or the current dashboard project)."""
     if project_path:
         project = _resolve_project(project_path)
-        conf_file = project / ".claude" / "scripts" / "gwym-agent.conf"
+        conf_file = project / ".claude" / "scripts" / "pak-agent.conf"
     else:
-        conf_file = config.SCRIPTS_DIR / "gwym-agent.conf"
+        conf_file = config.SCRIPTS_DIR / "pak-agent.conf"
         project = config.DATA_DIR.parent
 
     conf_data = _read_conf(conf_file)
-    has_agent = (project / ".claude" / "scripts" / "gwym-agent.sh").exists()
+    has_agent = (project / ".claude" / "scripts" / "pak-agent.sh").exists()
 
     return {
         "installed": conf_file.exists(),
@@ -240,7 +240,7 @@ async def browse_directory(req: BrowseRequest):
             )
 
             # Check if PAK is already installed
-            has_pak = (child / ".claude" / "scripts" / "gwym-agent.sh").exists()
+            has_pak = (child / ".claude" / "scripts" / "pak-agent.sh").exists()
 
             entries.append(
                 {
@@ -276,7 +276,7 @@ async def scan_project(req: ScanRequest):
     format_cmd = _detect_cmd(project, "format", "format", "")
 
     # Check existing install
-    conf_file = project / ".claude" / "scripts" / "gwym-agent.conf"
+    conf_file = project / ".claude" / "scripts" / "pak-agent.conf"
     existing_config = _read_conf(conf_file)
 
     return {
@@ -337,7 +337,7 @@ async def configure_project(req: SetupRequest):
     """Generate project configuration from wizard input."""
     project = _resolve_project(req.project_path)
     conf_dir = project / ".claude" / "scripts"
-    conf_file = conf_dir / "gwym-agent.conf"
+    conf_file = conf_dir / "pak-agent.conf"
     conf_dir.mkdir(parents=True, exist_ok=True)
 
     conf_content = f"""# Project Automation Kit — Configuration

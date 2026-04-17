@@ -1,5 +1,5 @@
 # Project Automation Kit — Configuration
-# Copy to gwym-agent.conf to customize (auto-created on first run)
+# Copy to pak-agent.conf to customize (auto-created on first run)
 # Or run: pak setup  (interactive wizard)
 
 # ─── Task Source ─────────────────────────────────────────────────────────────

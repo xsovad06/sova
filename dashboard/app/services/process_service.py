@@ -26,16 +26,16 @@ def _control_dir() -> Path:
 
 
 def _agent_script() -> Path:
-    return config.SCRIPTS_DIR / "gwym-agent.sh"
+    return config.SCRIPTS_DIR / "pak-agent.sh"
 
 
 def _find_agent_script() -> Path:
-    """Find the gwym-agent.sh script."""
+    """Find the pak-agent.sh script."""
     script = _agent_script()
     if script.exists():
         return script
     dashboard_dir = Path(__file__).parent.parent.parent
-    candidate = dashboard_dir.parent / "gwym-agent.sh"
+    candidate = dashboard_dir.parent / "pak-agent.sh"
     if candidate.exists():
         return candidate
     return script

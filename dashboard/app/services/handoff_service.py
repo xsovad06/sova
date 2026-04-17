@@ -135,7 +135,7 @@ def build_action_command(action: dict) -> dict:
     args = action.get("args", {})
 
     if mode == "agent":
-        # Map to gwym-agent.sh mode
+        # Map to pak-agent.sh mode
         agent_mode = command  # e.g., "handle-pr"
         ticket = args.get("ticket") or str(args.get("pr", ""))
         return {"type": "agent", "mode": agent_mode, "ticket": ticket}
