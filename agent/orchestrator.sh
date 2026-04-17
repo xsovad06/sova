@@ -3515,9 +3515,31 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
       exit 0
     fi
 
+    # Sort and group issues by priority label
     echo "Open issues:"
-    echo "$issue_list" | jq -r '.[] | "  #\(.number) \(.title) [\(.labels | map(.name) | join(", "))]"'
     echo ""
+    echo "$issue_list" | jq -r '
+      # Extract priority from labels, handling "priority:high" and "priority: high"
+      def priority_label:
+        [.labels[].name | select(test("^priority[: ]"))] | first // "priority:none"
+        | sub("^priority[: ]+"; "")
+        | gsub("^\\s+|\\s+$"; "");
+      def priority_rank:
+        if . == "critical" then 0
+        elif . == "high" then 1
+        elif . == "medium" then 2
+        elif . == "low" then 3
+        else 4 end;
+
+      # Sort by priority rank, group, then sort within groups by issue number
+      [.[] | . + {pri: priority_label, rank: (priority_label | priority_rank)}]
+      | sort_by(.rank)
+      | group_by(.rank)[]
+      | sort_by(-.number)
+      | "--- \(.[0].pri | ascii_upcase) ---",
+        (.[] | "  #\(.number)  \(.title)  [\(.labels | map(.name) | join(", "))]"),
+        ""
+    '
 
     SPECIFIC_ISSUE=$(ask "Enter issue number to work on: ")
     if [[ -z "$SPECIFIC_ISSUE" || ! "$SPECIFIC_ISSUE" =~ ^[0-9]+$ ]]; then
