@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Reject commits containing AI co-author or branding lines
+# Policy: AGENTS.md "Never do" section
+
+msg_file="$1"
+
+if grep -qi "Co-Authored-By:" "$msg_file"; then
+  echo "REJECTED: Commit message contains Co-Authored-By line."
+  echo "Policy: No AI co-author lines or AI branding in commits."
+  echo "Remove the Co-Authored-By line and try again."
+  exit 1
+fi
+
+if grep -qi "Generated with Claude" "$msg_file"; then
+  echo "REJECTED: Commit message contains AI branding."
+  echo "Policy: No AI co-author lines or AI branding in commits."
+  exit 1
+fi

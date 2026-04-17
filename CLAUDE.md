@@ -16,6 +16,9 @@ This file provides Claude Code-specific commands and behaviors. Architecture, co
 cd dashboard && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ./pak dashboard                     # Start web UI at http://localhost:8111
 
+# Git hooks (after fresh clone)
+git config core.hooksPath .githooks
+
 # Linting (bash scripts)
 shellcheck pak agent/*.sh agent/adapters/*.sh invariants/*.sh
 

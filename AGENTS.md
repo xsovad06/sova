@@ -33,6 +33,7 @@ project-automation-kit/
       linear.sh                   # Linear adapter (skeleton)
       manual.sh                   # Manual task input
   commands/                        # 26 standardized commands (markdown)
+  .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
   knowledge/
