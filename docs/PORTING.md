@@ -26,7 +26,7 @@ touch /path/to/target/.claude/agent-memory/{MEMORY,learnings,review-feedback,com
 
 ### Scenario B: Target project has SOME existing commands
 
-Use the `/sync-instructions` command from team-productivity-utils -- it will compare, classify, and merge intelligently. Or follow the manual process below.
+Follow the manual merge process below.
 
 ---
 
@@ -87,7 +87,7 @@ target-project/
 
 ## Manual Merge Process
 
-When `/sync-instructions` isn't available or you want full control.
+For full control over the merge process.
 
 ### Step 1: Inventory What Exists
 
@@ -275,19 +275,6 @@ diff -rq commands/ /path/to/target/.claude/commands/ | grep -v "Only in /path"
 
 Then copy updated files.
 
-### Using /sync-instructions
-
-From `team-productivity-utils`, run:
-```
-/sync-instructions /path/to/target
-```
-
-This will:
-1. Compare all template commands against the target
-2. Show what's NEW, OUTDATED, CUSTOMIZED, or IDENTICAL
-3. Let you approve changes per-file
-4. Commit updated commands
-
 ### Recommended Sync Frequency
 
 - After adding new commands to the template
@@ -326,7 +313,7 @@ The template AGENTS.md is a starting point with placeholders. Run `/agent-readin
 Most commands are framework-agnostic. They rely on CLAUDE.md and AGENTS.md for project specifics. If a command assumes something about your project that isn't true:
 1. Check if the relevant info is in your CLAUDE.md/AGENTS.md
 2. If not, add it -- the command should then work
-3. If the command genuinely doesn't apply (e.g., `/address-sourcery` but you don't use Sourcery), just don't sync it
+3. If the command genuinely doesn't apply to your project, just don't sync it
 
 ### I want to customize a synced command
 

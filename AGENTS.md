@@ -32,7 +32,7 @@ project-automation-kit/
       jira.sh                     # JIRA adapter (skeleton)
       linear.sh                   # Linear adapter (skeleton)
       manual.sh                   # Manual task input
-  commands/                        # 26 standardized commands (markdown)
+  commands/                        # 19 standardized commands (markdown)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
@@ -98,16 +98,21 @@ This project uses **GitHub Issues** with a project board.
 - **Code blocks**: always specify language (```bash, ```python, etc.)
 
 ### Testing
-- **Bash scripts**: test with `shellcheck` + manual invocation with `--help` / dry-run
-- **Dashboard**: pytest (when test suite exists)
+- **All checks**: `make check` (lint + test, CI-equivalent)
+- **Bash scripts**: `make lint-bash` (shellcheck) + `make test-bash` (invariant `--help`)
+- **Dashboard**: `make test-py` (pytest suite in `dashboard/tests/`)
 - **Invariants**: each invariant script should handle `--help` gracefully
 - **Commands**: validate markdown structure (frontmatter, sections)
 
 ### Documentation
-- Every significant code change should be reflected in documentation
-- `README.md` -- update when project structure, usage, or features change
-- `docs/VISION.md` -- update when roadmap changes
+- **Every code change must leave docs accurate** -- verify before committing
+- `README.md` -- update when project structure, features, usage, or commands change
+- `CLAUDE.md` -- update when run commands, knowledge tiers, or workflow change
+- `AGENTS.md` -- update when conventions, testing, or tooling change
+- `.claude/rules/architecture.md` -- update when components, config, or design decisions change
+- `docs/VISION.md` -- update when roadmap phases change
 - Keep docs concise: document what exists, not plans
+- The `/review` command checks doc freshness automatically -- stale docs score 4/10+
 
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.

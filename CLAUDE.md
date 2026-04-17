@@ -8,22 +8,21 @@ This file provides Claude Code-specific commands and behaviors. Architecture, co
 
 ```bash
 # CLI entry point (bash)
-./pak help                          # Show all commands
-./pak install /path/to/project      # Install PAK into a project
-./pak setup /path/to/project        # Run setup wizard
+pak help                            # Show all commands (requires pak on PATH)
+pak install /path/to/project        # Install PAK into a project
+pak setup /path/to/project          # Run setup wizard
 
-# Dashboard (Python/FastAPI)
-cd dashboard && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-./pak dashboard                     # Start web UI at http://localhost:8111
+# Dashboard
+make serve                          # Start web UI at http://localhost:8111
+
+# Development
+make check                          # Run all linters + tests (CI-equivalent)
+make test                           # Run bash + python tests
+make lint                           # ShellCheck + Ruff
+make format                         # Auto-format Python code
 
 # Git hooks (after fresh clone)
 git config core.hooksPath .githooks
-
-# Linting (bash scripts)
-shellcheck pak agent/*.sh agent/adapters/*.sh invariants/*.sh
-
-# Testing invariant scripts
-for f in invariants/*.sh; do bash "$f" --help 2>/dev/null; done
 ```
 
 ## Starting a Session

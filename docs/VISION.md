@@ -27,14 +27,14 @@ project-automation-kit/
     orchestrator.sh            # Main autonomous agent (installed as pak-agent.sh)
     install.sh                 # Per-project installer
   commands/
-    develop.md                 # 26 standardized commands (from Project-instructions)
+    develop.md                 # 19 standardized commands
     develop-full.md            # End-to-end workflow (develop + test + review + PR)
     test.md
     review.md
     pr.md
     ...
   invariants/                  # Pluggable pre-push constraint checks
-  personas/                    # Framework-specific guidance (Django, FastAPI, Odoo, Go, React, ...)
+  personas/                    # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
     KNOWLEDGE.md               # Standardized 4-tier knowledge management system
   templates/
@@ -163,12 +163,12 @@ GitHub adapter exists. JIRA, Odoo (via MCP), and Linear adapters to be built.
 **Status: DONE** (completed 2026-04-16)
 
 The Project-instructions command library and PAK agent commands have been unified:
-- **26 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
+- **19 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
 - JIRA references replaced with GitHub Issues (`gh` CLI) throughout
-- Commands ported from the original agent to the template: debug, new-feature, status, coding-standards
+- Commands ported from the original agent to the template: debug, new-feature, status
 - Old `jira.md` replaced by generic `issue.md`
 - `request-review.md` removed (unnecessary)
 - Project-specific commands (e.g., architecture-overview, import-patterns, design, review-pr with Koda personality) stay in the target project alongside the generic ones
@@ -177,14 +177,14 @@ The Project-instructions command library and PAK agent commands have been unifie
 
 Auto-detect project type and load relevant guidance:
 
-| Detection Signal | Persona | Guidance |
-|-----------------|---------|----------|
-| `manage.py` + Django in requirements | `django.md` | Models, views, services, migrations |
-| `go.mod` | `go-service.md` | Interfaces, error handling, testing |
-| `__manifest__.py` pattern | `odoo.md` | ORM, XML views, TransactionCase |
-| `package.json` + React | `react.md` | Components, hooks, testing |
-| `fastapi` in requirements | `fastapi.md` | Routers, Pydantic, async patterns |
-| `Cargo.toml` | `rust.md` | Ownership, traits, error handling |
+| Detection Signal | Persona | Guidance | Status |
+|-----------------|---------|----------|--------|
+| `manage.py` + Django in requirements | `django.md` | Models, views, services, migrations | Ready |
+| `fastapi` in requirements | `fastapi.md` | Routers, Pydantic, async patterns | Ready |
+| `__manifest__.py` pattern | `odoo.md` | ORM, XML views, TransactionCase | Ready |
+| `go.mod` | `go-service.md` | Interfaces, error handling, testing | Planned |
+| `package.json` + React | `react.md` | Components, hooks, testing | Planned |
+| `Cargo.toml` | `rust.md` | Ownership, traits, error handling | Planned |
 
 Users can also create custom personas or override detection.
 
@@ -216,7 +216,7 @@ cd /path/to/project
 ## Migration Path
 
 ### Phase 1: Merge Repos & Standardize Knowledge [IN PROGRESS]
-- [DONE] Merge Project-instructions commands into unified library (26 commands)
+- [DONE] Merge Project-instructions commands into unified library (consolidated to 19)
 - [DONE] Reconcile overlapping commands (develop-full wraps develop, etc.)
 - [DONE] Convert all JIRA references to GitHub Issues
 - [DONE] Standardize AGENTS.md + CLAUDE.md cooperation model
@@ -225,7 +225,7 @@ cd /path/to/project
 - [DONE] Rename internal references from gwym-agent to pak-agent
 - [DONE] Copy KNOWLEDGE.md into the kit (`knowledge/KNOWLEDGE.md`)
 - [DONE] Copy PORTING.md into the kit (`docs/PORTING.md`)
-- [DONE] Merge Project-instructions repo: all 24 commands, templates, knowledge docs
+- [DONE] Merge Project-instructions repo: all commands, templates, knowledge docs
 - [DONE] Merge AGENTS.md template (PAK template structure + PI's Domain Guidelines, Knowledge System, Agentic Workflow Commands)
 - [DONE] Merge CLAUDE.md template (PAK template structure + PI's Behavioral Preferences, detailed Knowledge tiers)
 
@@ -287,6 +287,15 @@ The current implementation handles the routing and config isolation. Key areas t
 4. **Quick actions from home** — start/stop agents, see checkpoint alerts, jump to control page — all from the project list without navigating first.
 
 5. **Auto-discovery** — optionally scan common directories (`~/projects/`, `~/Documents/`) for PAK-installed projects and suggest registration.
+
+### Phase 6: Intelligence and Autonomy
+- Intelligent model routing -- dynamically select Opus/Sonnet/Haiku based on task complexity and phase
+- Agent self-assessment -- periodic analysis of approval rates, time-to-merge, cost patterns; auto-tune config
+- Team knowledge sharing -- sync generalizable learnings (review feedback, codebase patterns) across PAK installations
+- VM deployment / always-on mode -- systemd service, notification abstraction (email/webhook), hybrid laptop+VM operation
+- Task complexity dispatcher -- classify tickets by complexity, route simple tasks to lightweight agent configs
+
+See `docs/IDEAS-FROM-MORNING-AGENT.md` for detailed descriptions and current status of each idea.
 
 ## Design Principles
 

@@ -157,19 +157,16 @@ This repo has Claude Code commands in `.claude/commands/`:
 - `/develop-explain` — explain approaches without implementing
 - `/test` — run and fix tests iteratively
 - `/review` — pre-push code review with auto-fix
-- `/coding-standards` — review changes against project conventions
 - `/debug` — systematic debugging workflow
 
 ### Pull Requests
 - `/pr` — create PR with standard template
-- `/address-pr` — address PR review comments
-- `/address-sourcery` — handle Sourcery AI review comments
+- `/address-pr` — address PR review comments (human and bot)
 - `/review-pr` — review a teammate's PR
 
 ### Project Management
 - `/standup` — daily context summary
-- `/find-task` — browse issue backlog
-- `/sprint-plan` — prioritize assigned issues
+- `/find-task` — browse issue backlog and prioritize sprint work
 - `/issue` — fetch and analyze a GitHub Issue
 - `/new-feature` — set up a new feature branch
 - `/status` — project health check
@@ -179,8 +176,6 @@ This repo has Claude Code commands in `.claude/commands/`:
 - `/rearrange-commits` — reorganize branch commits
 - `/ingest-review` — learn from PR feedback
 - `/extract-knowledge` — capture reusable patterns
-- `/quarterly-report` — generate impact report
 
 ### Meta
 - `/agent-readiness` — assess and improve AI readiness
-- `/sync-instructions` — sync commands from PAK upstream

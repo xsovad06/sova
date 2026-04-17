@@ -6,10 +6,10 @@ A standalone application that any software project can install to gain autonomou
 
 - **Autonomous Agent** -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI
 - **Pluggable Task Sources** -- GitHub Issues, JIRA, Linear, or manual input
-- **26 Standardized Commands** -- develop, test, review, PR, debug, and more -- works on any project
+- **19 Standardized Commands** -- develop, test, review, PR, debug, and more -- works on any project
 - **Setup Wizard** -- CLI or web UI to configure the agent for your project
 - **Dashboard** -- web UI for monitoring, configuration, and project onboarding
-- **Persona System** -- auto-detects your tech stack (Django, FastAPI, React, Go, Rust, Odoo) and loads relevant guidance
+- **Persona System** -- auto-detects your tech stack (Django, FastAPI, Odoo) and loads relevant guidance
 - **Knowledge System** -- standardized 4-tier layered knowledge with cross-project learning
 - **Invariant Checks** -- pluggable pre-push constraint checks
 
@@ -25,12 +25,17 @@ A standalone application that any software project can install to gain autonomou
 ### Global Install (Recommended)
 
 ```bash
-git clone <repo> ~/.claude/project-automation-kit
-cd ~/.claude/project-automation-kit
+git clone <repo> ~/project-automation-kit
+cd ~/project-automation-kit
 
-# Add pak to your PATH (add to ~/.zshrc or ~/.bashrc):
-export PATH="$HOME/.claude/project-automation-kit:$PATH"
+# Option A: Symlink (preferred)
+ln -sf "$(pwd)/pak" ~/.local/bin/pak
+
+# Option B: Add to PATH (in ~/.zshrc or ~/.bashrc)
+export PATH="$HOME/project-automation-kit:$PATH"
 ```
+
+After either option, `pak` is available globally -- run it from inside any project directory.
 
 ### Per-Project Install
 
@@ -58,6 +63,16 @@ pak watch
 ```
 
 ## Usage
+
+### Dashboard (Recommended)
+
+The dashboard is the primary interface for controlling agents, monitoring tasks, and onboarding projects:
+
+```bash
+make serve                       # Start dashboard at http://localhost:8111
+```
+
+### CLI
 
 ```bash
 # Core workflow
@@ -88,6 +103,15 @@ pak readiness                  # Assess repo AI-readiness
 # Maintenance
 pak cleanup                   # Remove stale worktrees
 pak help                      # Show all commands
+```
+
+### Development
+
+```bash
+make check                    # Run linter + tests (CI-equivalent)
+make test                     # Run all tests (bash + python)
+make lint                     # ShellCheck + Ruff
+make format                   # Auto-format Python code
 ```
 
 ## Workflow
@@ -149,12 +173,9 @@ Auto-detected from project files:
 |-----------------|---------|----------|
 | `manage.py` + Django in requirements | `django` | Models, views, services, migrations |
 | `fastapi` in requirements | `fastapi` | Routers, Pydantic, async patterns |
-| `package.json` + React | `react` | Components, hooks, testing |
-| `go.mod` | `go-service` | Interfaces, error handling, testing |
-| `Cargo.toml` | `rust` | Ownership, traits, error handling |
 | `__manifest__.py` | `odoo` | ORM, XML views, testing |
 
-Override with `PERSONA_MAP` config or explicit mapping.
+More personas (React, Go, Rust, etc.) planned. Override with `PERSONA_MAP` config or explicit mapping.
 
 ## Dashboard
 
@@ -196,6 +217,8 @@ pak knowledge demote patterns.md      # Remove from shared
 ## Invariants
 
 Pre-push constraint checks (bundled):
+- `branch-naming` -- Enforce branch naming conventions
+- `commit-format` -- Enforce conventional commit format
 - `money-decimal` -- No float() for monetary values
 - `no-ai-coauthor` -- No AI co-author references in commits
 - `no-emojis` -- No emoji characters in code/docs
@@ -209,6 +232,7 @@ Add custom invariants by placing `.sh` scripts in the invariants directory.
 ```
 project-automation-kit/
   pak                            # CLI entry point
+  Makefile                       # Development workflow (make serve/test/lint/check)
   agent/
     orchestrator.sh              # Main autonomous agent
     install.sh                   # Per-project installer
@@ -221,7 +245,7 @@ project-automation-kit/
       jira.sh                    # JIRA adapter (skeleton)
       linear.sh                  # Linear adapter (skeleton)
       manual.sh                  # Manual task input
-  commands/                       # 26 standardized commands
+  commands/                       # 19 standardized commands
     develop.md                   # Development workflow
     develop-full.md              # End-to-end (develop + test + review + PR)
     test.md                      # Testing workflow
@@ -230,8 +254,10 @@ project-automation-kit/
     address-pr.md                # PR review comment handling
     ingest-review.md             # Post-PR learning extraction
     debug.md                     # Debugging workflow
-    ...                          # + 18 more standardized commands
+    ...                          # + 11 more standardized commands
   invariants/
+    branch-naming.sh
+    commit-format.sh
     money-decimal.sh
     no-ai-coauthor.sh
     no-emojis.sh
@@ -240,12 +266,7 @@ project-automation-kit/
   personas/
     django.md                    # Django persona
     fastapi.md                   # FastAPI persona
-    react.md                     # React persona
-    rust.md                      # Rust persona
     odoo.md                      # Odoo persona
-    go-service.md                # Go service persona
-    frontend.md                  # Generic frontend persona
-    rbac.md                      # RBAC/backend persona
   knowledge/
     KNOWLEDGE.md                 # 4-tier knowledge management system
   templates/
@@ -265,9 +286,14 @@ project-automation-kit/
       services/                  # Business logic
       templates/                 # Jinja2 HTML templates
       static/                    # JS + CSS
+    tests/                       # pytest smoke tests
+    pyproject.toml               # pytest + ruff config
     requirements.txt
   docs/
     VISION.md                    # Product vision and roadmap
+    PORTING.md                   # Integration guide for new projects
+    handoff-protocol.md          # Inter-agent handoff protocol spec
+    IDEAS-FROM-MORNING-AGENT.md  # Future ideas from predecessor agent
   assets/
     agent-icon.png               # Notification icon
 ```

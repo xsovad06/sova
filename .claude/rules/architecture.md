@@ -27,6 +27,8 @@ PAK has three main components:
 - Jinja2 templates + Tailwind CSS (via CDN)
 - Reads agent state from `.claude/` directory of target project
 - Tabs: overview, control, setup, settings, costs, logs, tasks, memory, queue
+- Tests: `dashboard/tests/` (pytest + httpx async client), run via `make test-py`
+- Config: `dashboard/pyproject.toml` (pytest + ruff settings)
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the control page
@@ -54,6 +56,14 @@ This decision was made after a naming conflict analysis (April 2026). Known conf
 - **IBM Cloud Pak** -- enterprise container tooling. Namespaced as `ibm-pak` / `cloudctl`.
 
 The full name "Project Automation Kit" has no known conflicts and is descriptive enough to stand on its own in search results and documentation.
+
+## Development Workflow
+- `Makefile` at repo root provides all development targets
+- `make serve` -- start dashboard
+- `make check` -- lint + test (CI-equivalent)
+- `make test` -- bash (shellcheck + invariant --help) + python (pytest)
+- `make lint` -- shellcheck + ruff
+- `make format` -- ruff auto-format
 
 ## Key Design Decisions
 - **Bash for agent**: zero runtime deps beyond git/gh/jq/claude, runs everywhere
