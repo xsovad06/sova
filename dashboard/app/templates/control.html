@@ -703,14 +703,25 @@ async function checkCheckpoint() {
     } catch (e) {
       renderFallbackContext(req.context);
     }
-  } else if (req.type === 'select_task' && req.context?.items) {
+  } else if (req.type === 'select_task') {
     summarySection.classList.add('hidden');
     document.getElementById('checkpoint-message').textContent = req.message;
-    rawContext.classList.remove('hidden');
-    rawContext.innerHTML = renderTaskItems(req.context);
+    rawContext.classList.remove('hidden', 'font-mono', 'max-h-48', 'text-xs');
+    rawContext.classList.add('max-h-96', 'text-sm');
+    if (req.context?.items) {
+      rawContext.innerHTML = renderTaskItems(req.context);
+    } else if (req.context?.suggestions) {
+      rawContext.innerHTML = renderTaskSuggestions(req.context.suggestions);
+    } else {
+      rawContext.innerHTML = renderCleanContext(req.context || {});
+    }
   } else {
     summarySection.classList.add('hidden');
     document.getElementById('checkpoint-message').textContent = req.message;
+
+    // Reset context styling to default
+    rawContext.classList.remove('max-h-96', 'text-sm');
+    rawContext.classList.add('font-mono', 'max-h-48', 'text-xs');
 
     if (req.context && Object.keys(req.context).length > 0) {
       rawContext.classList.remove('hidden');
@@ -816,6 +827,42 @@ function renderFallbackContext(context) {
   document.getElementById('checkpoint-files-section').classList.add('hidden');
 }
 
+function renderTaskSuggestions(text) {
+  // Parse numbered task suggestions: "**1. ISSUE-123** -- description. **2. ..."
+  const items = [];
+  const regex = /\*\*(\d+)\.\s*([\w-]+)\*\*\s*[-\u2013\u2014]\s*(.*?)(?=\s*\*\*\d+\.|$)/gs;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const num = match[1];
+    const ticket = match[2];
+    const desc = match[3].trim();
+    const sentenceEnd = desc.search(/\.\s/);
+    const title = sentenceEnd > 0 ? desc.substring(0, sentenceEnd + 1) : desc;
+    const details = sentenceEnd > 0 ? desc.substring(sentenceEnd + 2).trim() : '';
+    items.push({num, ticket, title, details});
+  }
+
+  if (items.length === 0) {
+    return `<div class="text-gray-300 whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+  }
+
+  return items.map(item => `
+    <div class="border border-gray-700/50 rounded-lg p-3 mb-2 hover:border-accent/40 transition-colors cursor-pointer group"
+         onclick="document.getElementById('checkpoint-text').value='${escapeHtml(item.num)}'; document.getElementById('checkpoint-text-wrap').classList.remove('hidden');">
+      <div class="flex items-start gap-3">
+        <span class="text-accent font-bold text-sm shrink-0 mt-0.5">${escapeHtml(item.num)}.</span>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple font-mono">${escapeHtml(item.ticket)}</span>
+          </div>
+          <p class="text-sm text-gray-300 group-hover:text-gray-200">${escapeHtml(item.title)}</p>
+          ${item.details ? `<p class="text-xs text-gray-500 mt-1">${escapeHtml(item.details)}</p>` : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
 function renderCleanContext(context) {
   let html = '';
   for (const [key, value] of Object.entries(context)) {
@@ -897,17 +944,32 @@ function openWorktreeInVscode() {
 
 async function sendResponse(action) {
   if (!currentRequestId) return;
-  const value = document.getElementById('checkpoint-text').value.trim();
-  await fetch(apiUrl('/agent/respond'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id: currentRequestId, action, value}),
+
+  // Disable all checkpoint buttons for instant feedback
+  const optionsEl = document.getElementById('checkpoint-options');
+  optionsEl.querySelectorAll('button').forEach(btn => {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
   });
-  currentRequestId = null;
-  currentRequestOptions = [];
-  currentWorktreePath = null;
-  document.getElementById('checkpoint-panel').classList.add('hidden');
-  refreshStatus();
+
+  const value = document.getElementById('checkpoint-text').value.trim();
+  try {
+    await fetch(apiUrl('/agent/respond'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: currentRequestId, action, value}),
+    });
+    currentRequestId = null;
+    currentRequestOptions = [];
+    currentWorktreePath = null;
+    document.getElementById('checkpoint-panel').classList.add('hidden');
+    refreshStatus();
+  } catch (e) {
+    optionsEl.querySelectorAll('button').forEach(btn => {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+    });
+  }
 }
 
 function sendCheckpointText() {
