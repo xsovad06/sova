@@ -1,0 +1,111 @@
+---
+description: Rebase an approved PR onto the base branch, push, and wait for CI. Autonomous -- no approval gates.
+user-invocable: true
+---
+
+# Ship PR
+
+Prepare an approved PR for merging by rebasing it onto the latest base branch and pushing. This command is autonomous and writes a handoff file when done so the dashboard can present merge options.
+
+PR: $ARGUMENTS
+
+## Instructions
+
+You are an autonomous agent handling the "ship" phase of a PR. The PR is already approved by a human reviewer. Your job is to get it ready for merge.
+
+### 1. Gather PR State
+
+```bash
+# PR metadata
+gh pr view <PR_NUMBER> --json title,body,state,baseRefName,headRefName,statusCheckRollup,reviewDecision,commits,mergeable
+
+# Current CI status
+gh pr checks <PR_NUMBER>
+```
+
+Verify:
+- PR state is `OPEN`
+- Review decision is `APPROVED`
+- Note the base branch (usually `main`) and head branch
+
+If the PR is not approved, write a handoff with status `failed` and stop.
+
+### 2. Sync and Rebase
+
+```bash
+# Fetch latest
+git fetch origin
+
+# Check out the PR branch
+git checkout <HEAD_BRANCH>
+
+# Rebase onto base branch
+git rebase origin/<BASE_BRANCH>
+```
+
+If there are merge conflicts:
+- Write a handoff with status `failed`, listing the conflicting files
+- Include a "Resolve conflicts" action that opens the worktree for manual resolution
+- Stop -- do not attempt to auto-resolve conflicts
+
+### 3. Push
+
+```bash
+git push --force-with-lease
+```
+
+If push fails (e.g., branch protection, permissions), write a failed handoff and stop.
+
+### 4. Check CI
+
+```bash
+gh pr checks <PR_NUMBER>
+```
+
+Classify CI status:
+- **All passed**: Proceed to write handoff with merge option
+- **Pending**: Write handoff with "Wait for CI" and "Merge now" options
+- **Failed**: Analyze failures. If known flaky checks, write handoff noting this. If real failures, write failed handoff.
+
+### 5. Write Handoff
+
+Write the handoff file to `.claude/agent-control/handoff.json`. Ensure the directory exists first.
+
+```bash
+mkdir -p .claude/agent-control
+```
+
+The handoff must follow the handoff protocol schema. Include:
+- `source`: `"ship-pr"`
+- `issue`: extracted from PR title or branch name (pattern: `#NNN` or issue number)
+- `pr_number`: the PR number
+- `branch`: the head branch name
+- `status`: `"awaiting_action"` (or `"failed"` if something went wrong)
+- `summary`: what happened (rebased, pushed, CI status)
+- `details.actions_taken`: list of steps completed
+- `details.ci_status`: current CI status (`passed`, `pending`, `failed`)
+
+**Next actions to include:**
+
+If CI passed or pending:
+1. **Merge PR** (style: `approve`) -- mode: `claude-command`, command: `approve-merge`, args: `{pr, issue}`
+2. **Wait for CI** (style: `neutral`) -- mode: `claude-command`, command: `agent-resume`, args: `{pr, wait_for: "ci"}`
+3. **Abort** (style: `danger`) -- mode: `shell`, clears the handoff file
+
+If CI failed:
+1. **Retry CI** (style: `neutral`) -- mode: `shell`, command: posts `/retest` comment
+2. **Investigate** (style: `neutral`) -- mode: `claude-command`, command: `agent-resume`, args: `{pr, investigate_ci: true}`
+3. **Abort** (style: `danger`)
+
+### 6. Report
+
+Output a brief summary of what was done and what the user can do next from the dashboard.
+
+## Rules
+
+- Never merge the PR -- that is the next agent's job (approve-merge)
+- Never modify code -- this command only rebases and pushes
+- Always write a handoff file, even on failure
+- Use `--force-with-lease` for pushes, never `--force`
+- Extract the issue number from the PR title (look for patterns like `#NNN` or `Closes #NNN`)
+- NEVER use emojis in any output
