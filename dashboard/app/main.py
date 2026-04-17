@@ -1,6 +1,8 @@
 """Project Automation Kit — Dashboard (multi-project)."""
 
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -14,7 +16,15 @@ from app import config
 from app.routers import agent, costs, logs, memory, overview, queue, settings, setup, tasks
 from app.services import process_service
 
-app = FastAPI(title="Project Automation Kit — Dashboard")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    # Startup: recover any orphaned agent runs from previous session
+    process_service.recover_orphaned_runs()
+    yield
+
+
+app = FastAPI(title="Project Automation Kit — Dashboard", lifespan=lifespan)
 
 BASE = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
@@ -388,6 +398,7 @@ async def _ws_logs_handler(websocket: WebSocket):
     last_checkpoint_id = None
     last_handoff_id = None
     notif_cursor = process_service.get_notification_count()
+    await websocket.send_json({"connected": True, "cursor": cursor})
     try:
         while True:
             # Log lines
@@ -417,6 +428,6 @@ async def _ws_logs_handler(websocket: WebSocket):
             for notif in new_notifs:
                 await websocket.send_json({"notification": notif})
             notif_cursor += len(new_notifs)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.3)
     except WebSocketDisconnect:
         pass

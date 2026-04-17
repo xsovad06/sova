@@ -2,6 +2,7 @@
 
 import itertools
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -10,15 +11,20 @@ from collections import deque
 from pathlib import Path
 
 from app import config
+from app.services import run_journal_service
+
+log = logging.getLogger(__name__)
 
 COMMANDS_DIR = Path(__file__).parent.parent.parent.parent / "commands"
 
 # Module-level process state
 _process: subprocess.Popen | None = None
 _output_lines: deque[str] = deque(maxlen=5000)
+_current_run_id: str | None = None
 
-# mtime-based cache for notifications
+# mtime-based caches
 _notif_cache: tuple[float, list[dict]] = (0.0, [])
+_request_cache: tuple[float, dict | None] = (0.0, None)
 
 
 def _control_dir() -> Path:
@@ -48,6 +54,23 @@ def _check_running() -> dict | None:
     return None
 
 
+def _record_run(pid: int, mode: str, command: str, ticket: str | None = None) -> None:
+    """Create a journal entry for a spawned process. Non-fatal on failure."""
+    global _current_run_id
+    try:
+        run = run_journal_service.start_run(
+            pid=pid,
+            mode=mode,
+            command=command,
+            ticket=ticket,
+            started_by="dashboard",
+        )
+        _current_run_id = run["run_id"]
+    except Exception:
+        log.exception("Failed to write run journal entry")
+        _current_run_id = None
+
+
 def _spawn_and_stream(cmd: list[str]) -> subprocess.Popen:
     """Clear output, spawn a subprocess, and start a reader thread."""
     global _process
@@ -64,9 +87,21 @@ def _spawn_and_stream(cmd: list[str]) -> subprocess.Popen:
         bufsize=1,
     )
 
+    proc_ref = _process
+
     def _reader():
-        for line in _process.stdout:
+        for line in proc_ref.stdout:
             _output_lines.append(line.rstrip("\n"))
+        # Process exited -- finalize the run journal entry.
+        # Capture _current_run_id now (set by caller right after spawn).
+        run_id = _current_run_id
+        if run_id:
+            exit_code = proc_ref.poll()
+            run_journal_service.finalize_run(
+                run_id,
+                exit_code,
+                output_tail=list(_output_lines),
+            )
 
     threading.Thread(target=_reader, daemon=True).start()
     return _process
@@ -108,15 +143,17 @@ def start_agent(mode: str = "workflow", ticket: str | None = None, extra_args: l
         cmd.extend(extra_args)
 
     proc = _spawn_and_stream(cmd)
+    _record_run(pid=proc.pid, mode=mode, command=" ".join(cmd), ticket=ticket)
     return {"status": "started", "pid": proc.pid, "mode": mode, "ticket": ticket}
 
 
 def stop_agent() -> dict:
     """Stop the running agent gracefully."""
-    global _process
+    global _process, _current_run_id
 
     if not _process or _process.poll() is not None:
         _process = None
+        _current_run_id = None
         return {"status": "not_running"}
 
     pid = _process.pid
@@ -126,6 +163,16 @@ def stop_agent() -> dict:
     except subprocess.TimeoutExpired:
         _process.kill()
         _process.wait(timeout=5)
+
+    # Finalize run as stopped (reader thread may also finalize, but
+    # finalize_run is idempotent -- second call is a no-op if already finalized)
+    if _current_run_id:
+        run_journal_service.finalize_run(
+            _current_run_id,
+            exit_code=_process.returncode,
+            output_tail=list(_output_lines),
+        )
+        _current_run_id = None
 
     _process = None
     return {"status": "stopped", "pid": pid}
@@ -164,12 +211,19 @@ def get_status() -> dict:
 
 
 def get_pending_request() -> dict | None:
-    """Read pending request.json if it exists."""
+    """Read pending request.json if it exists, with mtime-based caching."""
+    global _request_cache
     req_file = _control_dir() / "request.json"
     if not req_file.exists():
+        _request_cache = (0.0, None)
         return None
     try:
-        return json.loads(req_file.read_text())
+        mtime = req_file.stat().st_mtime
+        if mtime == _request_cache[0]:
+            return _request_cache[1]
+        data = json.loads(req_file.read_text())
+        _request_cache = (mtime, data)
+        return data
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -294,6 +348,7 @@ def start_claude_command(command_name: str, args: dict | None = None) -> dict:
 
     proc = _spawn_and_stream(cmd)
     source = "project" if (config.DATA_DIR / "commands" / f"{command_name}.md").exists() else "general"
+    _record_run(pid=proc.pid, mode=f"cmd:{command_name}", command=" ".join(cmd))
     return {
         "status": "started",
         "pid": proc.pid,
@@ -301,6 +356,11 @@ def start_claude_command(command_name: str, args: dict | None = None) -> dict:
         "source": source,
         "args": args,
     }
+
+
+def recover_orphaned_runs() -> dict | None:
+    """Check for orphaned runs on startup and mark them as abandoned."""
+    return run_journal_service.recover_orphaned_runs()
 
 
 def run_shell_command(command: str, args: dict | None = None) -> dict:
@@ -316,4 +376,5 @@ def run_shell_command(command: str, args: dict | None = None) -> dict:
             cmd_parts.append(str(args["pr"]))
 
     proc = _spawn_and_stream(cmd_parts)
+    _record_run(pid=proc.pid, mode="shell", command=" ".join(cmd_parts))
     return {"status": "started", "pid": proc.pid, "command": " ".join(cmd_parts)}
