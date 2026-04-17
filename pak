@@ -55,6 +55,8 @@ Commands:
   maintain-pr <pr>          Rebase PR on main + sync description
   review-pr <pr>            Run automated reviewer on a PR
   learn-from-pr <pr>        Ingest PR review feedback into memory
+  triage [issue]            Assess issues for autonomous suitability
+  harden [issue]            Enrich issues with context, criteria, and re-triage
   investigate <issue>       Run investigation mode on an issue
 
   memory <subcommand>       Manage agent memory (search, prune, tags)
@@ -188,6 +190,16 @@ case "$COMMAND" in
   learn-from-pr)
     if [[ -n "${PROJECT_DIR:-}" ]]; then cd "$PROJECT_DIR"; fi
     exec "$AGENT_SCRIPT" --learn-from-pr "$@"
+    ;;
+
+  triage)
+    if [[ -n "${PROJECT_DIR:-}" ]]; then cd "$PROJECT_DIR"; fi
+    exec "$AGENT_SCRIPT" --triage "$@"
+    ;;
+
+  harden)
+    if [[ -n "${PROJECT_DIR:-}" ]]; then cd "$PROJECT_DIR"; fi
+    exec "$AGENT_SCRIPT" --harden "$@"
     ;;
 
   investigate)

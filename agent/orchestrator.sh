@@ -9,6 +9,10 @@ set -euo pipefail
 #   ./pak-agent.sh --maintain-pr 42       # Rebase PR on main + sync description with changes
 #   ./pak-agent.sh --learn-from-pr 42     # Ingest PR review feedback into memory
 #   ./pak-agent.sh --review-pr 42         # Run Koda (automated reviewer) on a PR
+#   ./pak-agent.sh --triage               # Triage all open issues for autonomous suitability
+#   ./pak-agent.sh --triage 42            # Triage a single issue
+#   ./pak-agent.sh --harden              # Harden all open issues (enrich + re-triage)
+#   ./pak-agent.sh --harden 42           # Harden a single issue
 #   ./pak-agent.sh --investigate 42       # Run investigation mode on an issue
 #   ./pak-agent.sh --investigate 42 --doc # Investigation + Google Doc creation
 #   ./pak-agent.sh --watch                # Continuous mode (loop with priority scanner)
@@ -77,6 +81,10 @@ PR_NUMBER=""
 SESSION_ID=""
 WORKTREE_DIR=""
 TICKET_DETAILS=""
+TRIAGE_VERDICT=""
+
+# Git pathspec patterns to exclude agent-internal artifacts from change detection
+AGENT_ARTIFACT_EXCLUDE=(':!task-state.json' ':!.agent-summary.md' ':!.venv')
 
 # ─── Dashboard Control Mode ──────────────────────────────────────────────────
 
@@ -365,6 +373,36 @@ restore_task_context() {
   [[ -z "$BRANCH_NAME" ]] && BRANCH_NAME="agent/feat/$issue"
   TICKET_DETAILS=""
   TICKET_DETAILS=$(gh issue view "$issue" --json title,body,labels,milestone 2>/dev/null) || true
+}
+
+# Check if a worktree has meaningful code changes beyond agent artifacts.
+# Returns 0 if stale (no real work), 1 if meaningful changes exist.
+worktree_is_stale() {
+  local wt_dir="$1"
+  [[ -d "$wt_dir" ]] || return 0
+
+  # Check for commits ahead of base branch
+  local ahead
+  ahead=$(git -C "$wt_dir" rev-list --count "origin/$BASE_BRANCH..HEAD" 2>/dev/null || echo "0")
+  if [[ "$ahead" -gt 0 ]]; then
+    # Has commits — check if they contain real changes (not just agent artifacts)
+    local real_diff
+    real_diff=$(git -C "$wt_dir" diff "origin/$BASE_BRANCH" --stat -- \
+      "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+    if [[ -n "$real_diff" ]]; then
+      return 1  # Meaningful changes exist
+    fi
+  fi
+
+  # Check for uncommitted changes beyond artifacts
+  local uncommitted
+  uncommitted=$(git -C "$wt_dir" status --porcelain -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+  if [[ -n "$uncommitted" ]]; then
+    return 1  # Meaningful uncommitted changes
+  fi
+
+  return 0  # Stale — no real work
 }
 
 # ─── Priority Scanner ────────────────────────────────────────────────────────
@@ -1160,6 +1198,28 @@ SELECTED: NONE | reason")
     return 0
   fi
 
+  # Triage before starting (skip if already triaged)
+  local triage_details
+  triage_details=$(gh issue view "$selected_issue" --json title,body,labels,milestone 2>/dev/null) || true
+  local existing_labels
+  existing_labels=$(echo "$triage_details" | jq -r '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+  if echo "$existing_labels" | grep -qE 'agent:(autonomous|guided|human)'; then
+    # Already triaged — extract existing verdict from label
+    if echo "$existing_labels" | grep -q 'agent:human'; then
+      log_msg WARN watch-issues "Task #$selected_issue already triaged as human-only. Skipping."
+      notify "Skipped #$selected_issue — needs human-led development"
+      return 0
+    fi
+    log_msg INFO watch-issues "Task #$selected_issue already triaged. Proceeding."
+  else
+    triage_task "$selected_issue" "$triage_details"
+    if [[ "$TRIAGE_VERDICT" == "human" ]]; then
+      log_msg WARN watch-issues "Task #$selected_issue triaged as needing human-led development. Skipping."
+      notify "Skipped #$selected_issue — needs human-led development"
+      return 0
+    fi
+  fi
+
   log_msg INFO watch-issues "Starting full workflow for #$selected_issue"
   task_state_write "$selected_issue" "in_progress" "step2_auto_selected" "step3"
 
@@ -1227,6 +1287,14 @@ watch_mode() {
             local resume_step
             resume_step=$(jq -r '.next_step // ""' "$(task_state_file "$top_key")" 2>/dev/null || echo "")
             [[ -z "$resume_step" ]] && resume_step="step3"
+
+            # Detect stale worktree — restart from step3 if no real work
+            if [[ "$resume_step" != "step3" ]] && worktree_is_stale "$WORKTREE_DIR"; then
+              log_msg WARN watch "Worktree for #$top_key has no meaningful changes. Restarting from step3."
+              cleanup_worktree "$WORKTREE_DIR" "$BRANCH_NAME"
+              resume_step="step3"
+            fi
+
             run_from_step "$resume_step" "$top_key"
           ) || true
           sleep_interval="$WATCH_INTERVAL_ACTIVE"
@@ -1774,6 +1842,25 @@ run_step3() {
     fi
   fi
 
+  # Exclude agent artifacts from git tracking (prevent accidental commits)
+  # Use absolute path — worktrees return relative paths from rev-parse --git-dir
+  local git_dir
+  git_dir=$(cd "$WORKTREE_DIR" && git rev-parse --absolute-git-dir 2>/dev/null) || \
+    git_dir=$(cd "$WORKTREE_DIR" && git rev-parse --git-dir 2>/dev/null)
+  if [[ -n "$git_dir" ]]; then
+    # Resolve relative path if --absolute-git-dir wasn't available
+    [[ "$git_dir" != /* ]] && git_dir="$WORKTREE_DIR/$git_dir"
+    mkdir -p "$git_dir/info"
+    local exclude_file="$git_dir/info/exclude"
+    for raw_pattern in "${AGENT_ARTIFACT_EXCLUDE[@]}"; do
+      local pattern="${raw_pattern#':!'}"  # Strip ':!' pathspec prefix
+      if ! grep -qxF "$pattern" "$exclude_file" 2>/dev/null; then
+        echo "$pattern" >> "$exclude_file"
+      fi
+    done
+    log_msg INFO step3 "Agent artifacts excluded from git tracking"
+  fi
+
   # Ensure Docker DB is running
   docker compose -f "$REPO_ROOT/docker-compose.yml" up -d db 2>/dev/null || true
 
@@ -1800,15 +1887,25 @@ run_step4() {
   local issue="$1"
   banner "Step 4: Developing (autonomous)" step4
 
-  # Resume-aware: skip dev if work already exists
+  # Resume-aware: skip dev if work already exists (exclude agent artifacts)
   local ahead
   ahead=$(git -C "$WORKTREE_DIR" rev-list --count "origin/$BASE_BRANCH..HEAD" 2>/dev/null || echo "0")
   if [[ "$ahead" -gt 0 ]]; then
-    log_msg INFO step4 "Found $ahead commits ahead of $BASE_BRANCH. Skipping dev."
-    task_state_write "$issue" "in_progress" "step4_dev" "step5"
-    return 0
+    # Only skip if there are meaningful changes (not just agent artifacts)
+    local real_diff
+    real_diff=$(git -C "$WORKTREE_DIR" diff "origin/$BASE_BRANCH" --stat -- \
+      "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+    if [[ -n "$real_diff" ]]; then
+      log_msg INFO step4 "Found $ahead commits with real changes ahead of $BASE_BRANCH. Skipping dev."
+      task_state_write "$issue" "in_progress" "step4_dev" "step5"
+      return 0
+    fi
+    log_msg WARN step4 "Found $ahead commits but only agent artifacts. Proceeding with dev."
   fi
-  if [[ -n $(git -C "$WORKTREE_DIR" status --porcelain 2>/dev/null) ]]; then
+  local uncommitted
+  uncommitted=$(git -C "$WORKTREE_DIR" status --porcelain -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+  if [[ -n "$uncommitted" ]]; then
     log_msg INFO step4 "Uncommitted changes found. Skipping dev, will self-review."
     task_state_write "$issue" "in_progress" "step4_dev" "step5"
     return 0
@@ -1911,10 +2008,14 @@ Important:
     task_state_set_field "$issue" "session_id" "$SESSION_ID"
   fi
 
-  # Check if dev actually produced changes
-  local changes_after
+  # Check if dev actually produced changes (exclude agent artifacts)
+  local changes_after real_changes uncommitted_real
   changes_after=$(git -C "$WORKTREE_DIR" rev-list --count "origin/$BASE_BRANCH..HEAD" 2>/dev/null || echo "0")
-  if [[ "$changes_after" -eq 0 && -z $(git -C "$WORKTREE_DIR" status --porcelain 2>/dev/null) ]]; then
+  real_changes=$(git -C "$WORKTREE_DIR" diff "origin/$BASE_BRANCH" --stat -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+  uncommitted_real=$(git -C "$WORKTREE_DIR" status --porcelain -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+  if [[ -z "$real_changes" && -z "$uncommitted_real" ]]; then
     pause_task "$issue" "step4_dev" "Development session produced no changes"
     return 1
   fi
@@ -1929,7 +2030,15 @@ run_step5() {
   log_msg INFO step5 "Running /simplify on changes..."
 
   local simplify_diff
-  simplify_diff=$(git -C "$WORKTREE_DIR" diff "origin/$BASE_BRANCH" 2>/dev/null)
+  simplify_diff=$(git -C "$WORKTREE_DIR" diff "origin/$BASE_BRANCH" -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null)
+
+  # Skip simplification if there are no meaningful changes
+  if [[ -z "$simplify_diff" ]]; then
+    log_msg INFO step5 "No meaningful code changes to simplify. Skipping."
+    task_state_write "$issue" "in_progress" "step5_simplified" "step5b"
+    return 0
+  fi
 
   local reuse_prompt="Review the following diff for code reuse opportunities in the codebase at $WORKTREE_DIR.
 
@@ -2007,10 +2116,13 @@ Check for:
     log_msg WARN step5 "Tests failed after simplification."
   }
 
-  # Amend changes into existing commits
-  if [[ -n $(git -C "$WORKTREE_DIR" status --porcelain 2>/dev/null) ]]; then
+  # Amend changes into existing commits (exclude agent artifacts)
+  local step5_changes
+  step5_changes=$(git -C "$WORKTREE_DIR" status --porcelain -- \
+    "${AGENT_ARTIFACT_EXCLUDE[@]}" 2>/dev/null || echo "")
+  if [[ -n "$step5_changes" ]]; then
     log_msg INFO step5 "Amending simplification fixes into commits..."
-    git -C "$WORKTREE_DIR" add -A
+    git -C "$WORKTREE_DIR" add -A -- "${AGENT_ARTIFACT_EXCLUDE[@]}"
     git -C "$WORKTREE_DIR" commit --amend --no-edit
   fi
 
@@ -2686,6 +2798,256 @@ Keep the document professional. No emojis."
   echo "To resume: $0 $issue"
 }
 
+# ─── Task Triage ─────────────────────────────────────────────────────────────
+
+# Assess whether a task is suitable for autonomous development.
+# Outputs a triage verdict: "autonomous", "guided", or "human".
+# - autonomous: agent can handle end-to-end without intervention
+# - guided: agent can develop but needs human checkpoints
+# - human: too complex/vague for autonomous work, needs human lead
+triage_task() {
+  local issue="$1"
+  local ticket_json="$2"
+
+  local title body labels
+  title=$(echo "$ticket_json" | jq -r '.title // ""' 2>/dev/null)
+  body=$(echo "$ticket_json" | jq -r '.body // ""' 2>/dev/null)
+  labels=$(echo "$ticket_json" | jq -r '[.labels[].name] | join(", ")' 2>/dev/null)
+
+  # Heuristic scoring (fast, no LLM call needed)
+  local score=0
+  local reasons=""
+
+  # Type labels: bugs and refactors are more autonomous-friendly
+  if echo "$labels" | grep -qiE 'bug|fix|patch'; then
+    score=$((score + 3))
+    reasons="${reasons}+ Bug/fix (well-scoped)\n"
+  elif echo "$labels" | grep -qiE 'refactor|chore|cleanup|tech.?debt'; then
+    score=$((score + 2))
+    reasons="${reasons}+ Refactor/chore (predictable)\n"
+  elif echo "$labels" | grep -qiE 'feature|enhancement'; then
+    score=$((score + 1))
+    reasons="${reasons}~ Feature (may need design decisions)\n"
+  fi
+
+  # Acceptance criteria: body with checkboxes or numbered steps
+  if echo "$body" | grep -qE '\- \[[ x]\]|^\d+\.|acceptance criteria|expected behavior'; then
+    score=$((score + 3))
+    reasons="${reasons}+ Clear acceptance criteria\n"
+  elif [[ ${#body} -gt 200 ]]; then
+    score=$((score + 1))
+    reasons="${reasons}~ Detailed description (no explicit criteria)\n"
+  elif [[ ${#body} -lt 50 ]]; then
+    score=$((score - 2))
+    reasons="${reasons}- Vague/minimal description\n"
+  fi
+
+  # Complexity signals: UI/design, multiple components, external deps
+  local was_set=false
+  shopt -q nocasematch && was_set=true
+  shopt -s nocasematch
+  if [[ "$title $body" =~ (visualization|d3|canvas|animation|drag.?and.?drop|ui.?design|ux|mockup|figma|prototype) ]]; then
+    score=$((score - 3))
+    reasons="${reasons}- Complex UI/visualization work\n"
+  fi
+  if [[ "$title $body" =~ (migration|schema.?change|breaking.?change|api.?redesign|architecture) ]]; then
+    score=$((score - 2))
+    reasons="${reasons}- Architectural/migration work\n"
+  fi
+  if [[ "$title $body" =~ (third.?party|external.?api|oauth|payment|webhook) ]]; then
+    score=$((score - 1))
+    reasons="${reasons}- External dependency integration\n"
+  fi
+  $was_set || shopt -u nocasematch
+
+  # Priority: critical tasks should go faster (human oversight recommended)
+  if echo "$labels" | grep -qiE 'priority[: ]*critical'; then
+    score=$((score - 1))
+    reasons="${reasons}~ Critical priority (human oversight recommended)\n"
+  fi
+
+  # Determine verdict
+  local verdict
+  if [[ $score -ge 4 ]]; then
+    verdict="autonomous"
+  elif [[ $score -ge 1 ]]; then
+    verdict="guided"
+  else
+    verdict="human"
+  fi
+
+  # Output assessment
+  log_msg INFO triage "Task #$issue triage: verdict=$verdict score=$score"
+  echo ""
+  echo "Task Triage: #$issue — $title"
+  echo "────────────────────────────────────────────────────────────"
+  echo -e "$reasons"
+  echo "Score: $score | Verdict: $verdict"
+  case "$verdict" in
+    autonomous) echo "Recommendation: Agent can handle this autonomously." ;;
+    guided)     echo "Recommendation: Agent can develop, but expect checkpoints." ;;
+    human)      echo "Recommendation: This task needs human-led development." ;;
+  esac
+  echo "────────────────────────────────────────────────────────────"
+  echo ""
+
+  # Apply triage label on GitHub (batch: remove stale + add new in one call)
+  local triage_label="agent:$verdict"
+  local remove_csv=""
+  for v in autonomous guided human; do
+    [[ "$v" != "$verdict" ]] && remove_csv="${remove_csv:+$remove_csv,}agent:$v"
+  done
+  gh issue edit "$issue" --remove-label "$remove_csv" --add-label "$triage_label" 2>/dev/null || true
+  log_msg INFO triage "Applied label '$triage_label' to #$issue"
+
+  # Return verdict via global variable (bash limitation)
+  TRIAGE_VERDICT="$verdict"
+}
+
+# ─── Issue Hardening ─────────────────────────────────────────────────────────
+
+# Scan project for vision/strategy/plan documents.
+# Outputs their content concatenated, or empty string if none found.
+_load_project_docs() {
+  local docs=""
+  local doc_patterns=(
+    "docs/vision*.md" "docs/VISION*.md"
+    "docs/strategy*.md" "docs/STRATEGY*.md"
+    "docs/roadmap*.md" "docs/ROADMAP*.md"
+    "docs/plan*.md" "docs/PLAN*.md"
+    "VISION.md" "ROADMAP.md" "PLAN.md" "STRATEGY.md"
+    "docs/architecture*.md"
+  )
+  for pattern in "${doc_patterns[@]}"; do
+    # shellcheck disable=SC2086
+    for f in $REPO_ROOT/$pattern; do
+      [[ -f "$f" ]] || continue
+      local name
+      name=$(basename "$f")
+      docs="${docs}
+--- $name ---
+$(head -200 "$f")
+"
+    done
+  done
+  echo "$docs"
+}
+
+# Harden a single issue: enrich with context, assess priority, post as comment.
+harden_task() {
+  local issue="$1"
+
+  log_msg INFO harden "Hardening issue #$issue..."
+
+  # Fetch issue details
+  local issue_json
+  issue_json=$(gh issue view "$issue" --json title,body,labels,milestone,assignees 2>/dev/null) || {
+    log_msg ERROR harden "Could not fetch issue #$issue"
+    return 1
+  }
+
+  local title body labels
+  title=$(echo "$issue_json" | jq -r '.title // ""')
+  body=$(echo "$issue_json" | jq -r '.body // ""')
+  labels=$(echo "$issue_json" | jq -r '[.labels[].name] | join(", ")')
+
+  # Load project vision/strategy docs
+  local project_docs
+  project_docs=$(_load_project_docs)
+
+  # Fetch all open issues for dependency/ordering analysis
+  local all_issues
+  all_issues=$(gh issue list --state open --json number,title,labels -q \
+    '[.[] | {number, title, labels: [.labels[].name]}]' 2>/dev/null || echo "[]")
+
+  local harden_prompt="You are analyzing GitHub issue #$issue to prepare it for autonomous agent development.
+
+Issue #$issue: $title
+Labels: $labels
+Current body:
+$body
+
+Project vision and strategy documents:
+${project_docs:-No project vision/strategy documents found. Use your best judgment based on the issue context.}
+
+All open issues in this project (for dependency/ordering analysis):
+$all_issues
+
+Your task:
+1. CONTEXT ENRICHMENT: Search the project vision/strategy docs for any details relevant to this issue.
+   Extract specific requirements, design decisions, or constraints that should be reflected in the issue.
+
+2. ACCEPTANCE CRITERIA: Write clear, testable acceptance criteria as checkboxes.
+   Each criterion should be independently verifiable. Be specific, not generic.
+   If the issue already has acceptance criteria, improve them (make them more specific, add missing ones).
+
+3. SCOPE ANALYSIS: Identify which components/areas are affected. Estimate complexity (S/M/L/XL).
+
+4. USER VALUE: Explain how the end user benefits from this feature/fix. What problem does it solve?
+   How could the implementation maximize user value?
+
+5. PRIORITY ASSESSMENT: Based on the project vision, dependencies, and user value:
+   - Is the current priority label correct? If not, what should it be and why?
+   - Are there dependency issues? Does another issue need to be completed first?
+   - Should this issue be done earlier or later than its current position suggests?
+
+6. IMPLEMENTATION HINTS: Brief technical guidance for the developer/agent.
+   Key files to look at, patterns to follow, gotchas to watch for.
+
+Output your analysis in this exact markdown format (nothing else):
+
+## Hardening Analysis for #$issue
+
+### Context from Project Vision
+<!-- What the project docs say about this area -->
+
+### Enriched Acceptance Criteria
+- [ ] criterion 1
+- [ ] criterion 2
+...
+
+### Scope
+- **Components affected**: ...
+- **Complexity**: S / M / L / XL
+- **Dependencies**: #issue_numbers or 'none'
+
+### User Value
+<!-- How the end user benefits -->
+
+### Priority Assessment
+- **Current priority**: ...
+- **Recommended priority**: ... (or 'correct as-is')
+- **Reasoning**: ...
+- **Ordering notes**: ... (any issues that should come before/after)
+
+### Implementation Hints
+<!-- Technical guidance for the developer/agent -->"
+
+  # Run Claude analysis
+  local analysis
+  analysis=$(claude_run_tracked "harden" "$issue" "$harden_prompt")
+
+  if [[ -z "$analysis" ]]; then
+    log_msg ERROR harden "Claude returned empty analysis for #$issue"
+    return 1
+  fi
+
+  # Post as comment on the issue
+  gh issue comment "$issue" --body "$analysis" 2>/dev/null || {
+    log_msg ERROR harden "Failed to post comment on #$issue"
+    echo "$analysis"
+    return 1
+  }
+  log_msg INFO harden "Posted hardening analysis as comment on #$issue"
+
+  # Re-run triage with enriched context (original body + analysis)
+  local enriched_json
+  enriched_json=$(echo "$issue_json" | jq --arg extra "$analysis" '.body = .body + "\n\n" + $extra')
+  triage_task "$issue" "$enriched_json"
+
+  log_msg INFO harden "Issue #$issue hardened and re-triaged (verdict: $TRIAGE_VERDICT)"
+}
+
 # ─── Step Dispatcher ─────────────────────────────────────────────────────────
 
 run_from_step() {
@@ -3274,6 +3636,43 @@ elif [[ "${1:-}" == "--maintain-pr" ]]; then
 elif [[ "${1:-}" == "--review-pr" ]]; then
   [[ -z "${2:-}" ]] && { echo "Usage: $0 --review-pr <PR_NUMBER>"; exit 1; }
   handle_review_pr "$2"
+elif [[ "${1:-}" == "--triage" ]]; then
+  # Triage one or all open issues for autonomous suitability
+  if [[ -n "${2:-}" && "${2:-}" =~ ^[0-9]+$ ]]; then
+    # Single issue triage
+    TICKET_DETAILS=$(gh issue view "$2" --json title,body,labels,milestone 2>/dev/null) || true
+    triage_task "$2" "$TICKET_DETAILS"
+  else
+    # Triage all open issues
+    issue_args=("--state" "open" "--json" "number,title,body,labels,milestone")
+    [[ -n "$ISSUE_MILESTONE" ]] && issue_args+=("--milestone" "$ISSUE_MILESTONE")
+    all_issues=$(gh issue list "${issue_args[@]}" 2>/dev/null) || { echo "Error querying issues."; exit 1; }
+    echo "Triaging all open issues..."
+    echo ""
+    while IFS= read -r issue_json; do
+      issue_num=$(echo "$issue_json" | jq -r '.number')
+      triage_task "$issue_num" "$issue_json"
+    done < <(echo "$all_issues" | jq -c '.[]')
+    echo ""
+    echo "Legend: autonomous (agent can handle), guided (agent + checkpoints), human (needs human lead)"
+  fi
+  exit 0
+elif [[ "${1:-}" == "--harden" ]]; then
+  # Harden one or all open issues (enrich, assess priority, post comment)
+  if [[ -n "${2:-}" && "${2:-}" =~ ^[0-9]+$ ]]; then
+    harden_task "$2"
+  else
+    issue_args=("--state" "open" "--json" "number,title,labels")
+    [[ -n "$ISSUE_MILESTONE" ]] && issue_args+=("--milestone" "$ISSUE_MILESTONE")
+    all_issues=$(gh issue list "${issue_args[@]}" 2>/dev/null) || { echo "Error querying issues."; exit 1; }
+    echo "Hardening all open issues..."
+    echo ""
+    while IFS= read -r issue_json; do
+      issue_num=$(echo "$issue_json" | jq -r '.number')
+      harden_task "$issue_num"
+    done < <(echo "$all_issues" | jq -c '.[]')
+  fi
+  exit 0
 elif [[ "${1:-}" == "--investigate" ]]; then
   [[ -z "${2:-}" ]] && { echo "Usage: $0 --investigate <ISSUE_NUMBER> [--doc]"; exit 1; }
   ISSUE="$2"
@@ -3483,6 +3882,14 @@ if [[ -z "$SPECIFIC_ISSUE" ]]; then
           restore_task_context "$SPECIFIC_ISSUE"
           resume_step=$(jq -r '.next_step // .last_step' "$(task_state_file "$SPECIFIC_ISSUE")" 2>/dev/null)
           [[ -z "$resume_step" ]] && resume_step="step3"
+
+          # Detect stale worktree — restart from step3 if no meaningful work exists
+          if [[ "$resume_step" != "step3" ]] && worktree_is_stale "$WORKTREE_DIR"; then
+            log_msg WARN step2 "Worktree for #$SPECIFIC_ISSUE has no meaningful changes. Restarting from step3."
+            cleanup_worktree "$WORKTREE_DIR" "$BRANCH_NAME"
+            resume_step="step3"
+          fi
+
           log_msg INFO step2 "Resuming #$SPECIFIC_ISSUE from $resume_step"
           task_state_write "$SPECIFIC_ISSUE" "in_progress" "$resume_step" ""
           run_from_step "$resume_step" "$SPECIFIC_ISSUE"
@@ -3560,11 +3967,42 @@ if [[ -f "$sf" ]]; then
   resume_step=$(jq -r '.next_step // ""' "$sf" 2>/dev/null || echo "")
   if [[ -n "$resume_step" && "$resume_step" != "step3" ]]; then
     restore_task_context "$SPECIFIC_ISSUE"
-    log_msg INFO main "Existing progress found. Resuming #$SPECIFIC_ISSUE from $resume_step"
-    task_state_write "$SPECIFIC_ISSUE" "in_progress" "$resume_step" ""
-    run_from_step "$resume_step" "$SPECIFIC_ISSUE"
-    exit 0
+
+    # Detect stale worktree — restart fresh if no meaningful work exists
+    if worktree_is_stale "$WORKTREE_DIR"; then
+      log_msg WARN main "Worktree for #$SPECIFIC_ISSUE has no meaningful changes. Restarting fresh."
+      cleanup_worktree "$WORKTREE_DIR" "$BRANCH_NAME"
+    else
+      log_msg INFO main "Existing progress found. Resuming #$SPECIFIC_ISSUE from $resume_step"
+      task_state_write "$SPECIFIC_ISSUE" "in_progress" "$resume_step" ""
+      run_from_step "$resume_step" "$SPECIFIC_ISSUE"
+      exit 0
+    fi
   fi
+fi
+
+# Task triage: assess autonomous suitability
+triage_task "$SPECIFIC_ISSUE" "$TICKET_DETAILS"
+
+if [[ "$TRIAGE_VERDICT" == "human" ]]; then
+  log_msg WARN triage "Task #$SPECIFIC_ISSUE assessed as needing human-led development"
+  if $DASHBOARD_MODE; then
+    dashboard_request "confirm" \
+      "Task triage: this issue is complex and may need human-led development. Proceed anyway?" \
+      '["yes","no"]' \
+      "{\"issue\":\"$SPECIFIC_ISSUE\",\"verdict\":\"$TRIAGE_VERDICT\"}" \
+      false
+    triage_choice="$DASHBOARD_RESPONSE"
+  else
+    read -r -p "Proceed with autonomous development anyway? [y/N] " triage_choice
+  fi
+  case "${triage_choice,,}" in
+    y|yes) log_msg INFO triage "User overrode triage — proceeding autonomously." ;;
+    *)
+      echo "Task skipped. Consider working on this issue manually."
+      exit 0
+      ;;
+  esac
 fi
 
 # Check if this is an investigation/spike issue
