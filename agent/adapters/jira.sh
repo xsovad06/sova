@@ -55,8 +55,8 @@ adapter_set_status() {
   esac
 
   # Get available transitions
-  # shellcheck disable=SC2086
   local transition_id
+  # shellcheck disable=SC2086
   transition_id=$(curl -s $JIRA_AUTH \
     "${JIRA_URL}/rest/api/3/issue/${issue_key}/transitions" \
     2>/dev/null | jq -r ".transitions[] | select(.name==\"$transition_name\") | .id")

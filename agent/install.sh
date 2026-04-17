@@ -106,7 +106,7 @@ fi
 # Copy agent-specific commands (don't overwrite repo's .claude/commands/)
 if [[ -d "$PAK_ROOT/commands" ]]; then
   cp "$PAK_ROOT/commands/"*.md "$COMMANDS_DIR/" 2>/dev/null || true
-  echo "Copied agent commands: $(ls "$COMMANDS_DIR/" 2>/dev/null | tr '\n' ' ')"
+  echo "Copied agent commands: $(find "$COMMANDS_DIR/" -maxdepth 1 -name '*.md' 2>/dev/null | sed 's|.*/||' | tr '\n' ' ')"
 fi
 
 # Copy config template (don't overwrite existing config)
