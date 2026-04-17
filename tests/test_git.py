@@ -1,0 +1,463 @@
+"""Tests for SOVA git operations module."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from sova.git.operations import (
+    CheckConclusion,
+    CheckStatus,
+    CICheck,
+    PRInfo,
+    PRStatus,
+    commit,
+    create_branch,
+    create_pr,
+    get_ci_checks,
+    get_current_branch,
+    get_pr_status,
+    push,
+    rebase,
+    sync_branch,
+)
+from sova.git.worktree import WorktreeInfo, cleanup_worktree, create_worktree, list_worktrees
+from sova.utils.shell import ShellResult
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _shell_ok(stdout: str = "", stderr: str = "") -> ShellResult:
+    return ShellResult(returncode=0, stdout=stdout, stderr=stderr)
+
+
+def _shell_fail(stderr: str = "error", returncode: int = 1) -> ShellResult:
+    return ShellResult(returncode=returncode, stdout="", stderr=stderr)
+
+
+# ---------------------------------------------------------------------------
+# Git Operations -- branch management
+# ---------------------------------------------------------------------------
+
+
+class TestGetCurrentBranch:
+    async def test_returns_branch_name(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="feat/my-feature\n")
+
+            branch = await get_current_branch(cwd=Path("/repo"))
+
+            assert branch == "feat/my-feature"
+            mock_run.assert_called_once()
+
+    async def test_strips_whitespace(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="  main  \n")
+
+            branch = await get_current_branch()
+            assert branch == "main"
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not a git repo")
+
+            with pytest.raises(RuntimeError, match="Failed to get current branch"):
+                await get_current_branch()
+
+
+class TestCreateBranch:
+    async def test_creates_branch_from_base(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await create_branch("feat/login", base="main", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            # Should checkout base first, then create new branch
+            assert any("main" in args for args in calls)
+            assert any("feat/login" in args for args in calls)
+
+    async def test_creates_branch_default_cwd(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await create_branch("fix/bug", base="main")
+            assert mock_run.called
+
+
+class TestSyncBranch:
+    async def test_fetches_and_pulls(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await sync_branch("main", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            assert any("fetch" in args for args in calls)
+
+
+class TestRebase:
+    async def test_rebases_onto_base(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await rebase("main", cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "rebase" in call_args
+            assert "main" in call_args
+
+
+# ---------------------------------------------------------------------------
+# Git Operations -- commit and push
+# ---------------------------------------------------------------------------
+
+
+class TestCommit:
+    async def test_commits_with_message(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await commit("feat: add login page", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            commit_call = [args for args in calls if "commit" in args]
+            assert len(commit_call) >= 1
+            assert "feat: add login page" in commit_call[0]
+
+    async def test_commits_specific_files(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await commit("fix: typo", files=["src/app.py", "tests/test_app.py"], cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            add_call = [args for args in calls if "add" in args]
+            assert len(add_call) >= 1
+            assert "src/app.py" in add_call[0]
+
+    async def test_commits_all_when_no_files(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await commit("chore: update", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            add_call = [args for args in calls if "add" in args]
+            assert len(add_call) >= 1
+            # Should use -A when no specific files
+            assert "-A" in add_call[0]
+
+
+class TestPush:
+    async def test_pushes_branch(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "push" in call_args
+            assert "feat/login" in call_args
+
+    async def test_pushes_with_force(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", force=True, cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "--force-with-lease" in call_args
+
+    async def test_pushes_with_set_upstream(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await push("feat/login", set_upstream=True, cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "-u" in call_args
+
+
+# ---------------------------------------------------------------------------
+# Git Operations -- PR management
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePR:
+    async def test_creates_pr_returns_info(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="https://github.com/user/repo/pull/42\n")
+
+            pr = await create_pr(
+                title="feat: add login",
+                body="Closes #10",
+                base="main",
+                head="feat/login",
+                repo="user/repo",
+            )
+
+            assert pr.number == 42
+            assert pr.url == "https://github.com/user/repo/pull/42"
+
+    async def test_creates_pr_raises_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="already exists")
+
+            with pytest.raises(RuntimeError, match="Failed to create PR"):
+                await create_pr(
+                    title="feat: add login",
+                    body="body",
+                    base="main",
+                    head="feat/login",
+                    repo="user/repo",
+                )
+
+
+class TestGetPRStatus:
+    async def test_returns_pr_status(self) -> None:
+        pr_json = json.dumps(
+            {
+                "number": 42,
+                "state": "OPEN",
+                "mergeable": "MERGEABLE",
+                "reviewDecision": "APPROVED",
+                "url": "https://github.com/user/repo/pull/42",
+                "title": "feat: add login",
+            }
+        )
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            status = await get_pr_status(42, repo="user/repo")
+
+            assert status.number == 42
+            assert status.state == "OPEN"
+            assert status.mergeable == "MERGEABLE"
+            assert status.review_decision == "APPROVED"
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            with pytest.raises(RuntimeError, match="Failed to get PR"):
+                await get_pr_status(999, repo="user/repo")
+
+
+class TestGetCIChecks:
+    async def test_returns_ci_checks(self) -> None:
+        checks_json = json.dumps(
+            [
+                {
+                    "name": "tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": "https://github.com/runs/1",
+                },
+                {
+                    "name": "lint",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "detailsUrl": "https://github.com/runs/2",
+                },
+            ]
+        )
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 2
+            assert checks[0].name == "tests"
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.SUCCESS
+            assert checks[1].conclusion == CheckConclusion.FAILURE
+
+    async def test_returns_empty_on_no_checks(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="[]")
+
+            checks = await get_ci_checks(42, repo="user/repo")
+            assert checks == []
+
+    async def test_returns_empty_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            checks = await get_ci_checks(42, repo="user/repo")
+            assert checks == []
+
+
+# ---------------------------------------------------------------------------
+# Worktree management
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWorktree:
+    async def test_creates_worktree(self) -> None:
+        with patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.worktree.Path.mkdir"):
+                with patch("sova.git.worktree._copy_worktree_files"):
+                    info = await create_worktree(
+                        issue_id="42",
+                        branch="feat/login",
+                        base_branch="main",
+                        project_dir=Path("/repo"),
+                    )
+
+                    assert isinstance(info, WorktreeInfo)
+                    assert info.issue_id == "42"
+                    assert info.branch == "feat/login"
+                    assert ".claude/worktrees" in str(info.path)
+                    mock_run.assert_called()
+
+    async def test_worktree_path_includes_issue_id(self) -> None:
+        with patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.worktree.Path.mkdir"):
+                with patch("sova.git.worktree._copy_worktree_files"):
+                    info = await create_worktree(
+                        issue_id="42",
+                        branch="feat/login",
+                        base_branch="main",
+                        project_dir=Path("/repo"),
+                    )
+
+                    assert "42" in str(info.path)
+
+
+class TestCleanupWorktree:
+    async def test_removes_worktree(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await cleanup_worktree(Path("/repo/.claude/worktrees/42"), cwd=Path("/repo"))
+
+            call_args = mock_run.call_args[0]
+            assert "worktree" in call_args
+            assert "remove" in call_args
+
+
+class TestListWorktrees:
+    async def test_lists_worktrees(self) -> None:
+        worktree_output = "/repo 0000000 [main]\n/repo/.claude/worktrees/42 abc1234 [feat/login]\n"
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=worktree_output)
+
+            worktrees = await list_worktrees(cwd=Path("/repo"))
+
+            assert len(worktrees) == 2
+
+    async def test_returns_empty_on_failure(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+
+            worktrees = await list_worktrees(cwd=Path("/repo"))
+            assert worktrees == []
+
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+
+
+class TestPRInfo:
+    def test_pr_info_fields(self) -> None:
+        pr = PRInfo(number=42, url="https://github.com/user/repo/pull/42")
+        assert pr.number == 42
+        assert pr.url == "https://github.com/user/repo/pull/42"
+
+
+class TestPRStatus:
+    def test_pr_status_fields(self) -> None:
+        status = PRStatus(
+            number=42,
+            state="OPEN",
+            mergeable="MERGEABLE",
+            review_decision="APPROVED",
+            url="https://github.com/user/repo/pull/42",
+            title="feat: add login",
+        )
+        assert status.number == 42
+        assert status.is_open
+        assert status.is_mergeable
+        assert status.is_approved
+
+    def test_closed_pr(self) -> None:
+        status = PRStatus(number=1, state="CLOSED", mergeable="", review_decision="", url="", title="")
+        assert not status.is_open
+
+    def test_not_mergeable(self) -> None:
+        status = PRStatus(number=1, state="OPEN", mergeable="CONFLICTING", review_decision="", url="", title="")
+        assert not status.is_mergeable
+
+    def test_not_approved(self) -> None:
+        status = PRStatus(
+            number=1, state="OPEN", mergeable="MERGEABLE", review_decision="CHANGES_REQUESTED", url="", title=""
+        )
+        assert not status.is_approved
+
+
+class TestCICheck:
+    def test_check_fields(self) -> None:
+        check = CICheck(
+            name="tests",
+            status=CheckStatus.COMPLETED,
+            conclusion=CheckConclusion.SUCCESS,
+            details_url="https://example.com",
+        )
+        assert check.name == "tests"
+        assert check.is_passed
+
+    def test_failed_check(self) -> None:
+        check = CICheck(
+            name="lint",
+            status=CheckStatus.COMPLETED,
+            conclusion=CheckConclusion.FAILURE,
+            details_url="",
+        )
+        assert not check.is_passed
+
+    def test_in_progress_check(self) -> None:
+        check = CICheck(
+            name="build",
+            status=CheckStatus.IN_PROGRESS,
+            conclusion=None,
+            details_url="",
+        )
+        assert not check.is_passed
+        assert not check.is_completed
+
+
+class TestCheckStatus:
+    def test_all_statuses(self) -> None:
+        statuses = {s.value for s in CheckStatus}
+        assert "COMPLETED" in statuses
+        assert "IN_PROGRESS" in statuses
+        assert "QUEUED" in statuses
+
+
+class TestCheckConclusion:
+    def test_all_conclusions(self) -> None:
+        conclusions = {c.value for c in CheckConclusion}
+        assert "SUCCESS" in conclusions
+        assert "FAILURE" in conclusions
+        assert "NEUTRAL" in conclusions
+
+
+class TestWorktreeInfo:
+    def test_worktree_info_fields(self) -> None:
+        info = WorktreeInfo(
+            path=Path("/repo/.claude/worktrees/42"),
+            branch="feat/login",
+            issue_id="42",
+        )
+        assert info.path == Path("/repo/.claude/worktrees/42")
+        assert info.branch == "feat/login"
+        assert info.issue_id == "42"
