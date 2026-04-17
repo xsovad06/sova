@@ -381,16 +381,21 @@ async def ws_logs_legacy(websocket: WebSocket):
 
 async def _ws_logs_handler(websocket: WebSocket):
     """Shared WebSocket handler for agent output streaming."""
+    from app.services import handoff_service
+
     await websocket.accept()
     cursor = len(process_service.get_output())
     last_checkpoint_id = None
+    last_handoff_id = None
     notif_cursor = process_service.get_notification_count()
     try:
         while True:
+            # Log lines
             lines = process_service.get_output(cursor)
             if lines:
                 cursor += len(lines)
                 await websocket.send_json({"lines": lines, "cursor": cursor})
+            # Checkpoint (only send when new/changed)
             req = process_service.get_pending_request()
             req_id = req.get("id") if req else None
             if req and req_id != last_checkpoint_id:
@@ -398,6 +403,16 @@ async def _ws_logs_handler(websocket: WebSocket):
                 await websocket.send_json({"checkpoint": req})
             elif not req:
                 last_checkpoint_id = None
+            # Handoff state (only send when new/changed)
+            handoff = handoff_service.get_handoff()
+            handoff_id = handoff.get("id") if handoff else None
+            if handoff and handoff_id != last_handoff_id:
+                last_handoff_id = handoff_id
+                await websocket.send_json({"handoff": handoff})
+            elif not handoff and last_handoff_id:
+                last_handoff_id = None
+                await websocket.send_json({"handoff_cleared": True})
+            # Notifications
             new_notifs = process_service.get_notifications(notif_cursor)
             for notif in new_notifs:
                 await websocket.send_json({"notification": notif})

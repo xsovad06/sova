@@ -1,13 +1,17 @@
-"""Process management — spawn, stop, and monitor the agent."""
+"""Process management — spawn, stop, and monitor the agent and Claude Code commands."""
 
+import itertools
 import json
 import os
+import shutil
 import subprocess
 import threading
 from collections import deque
 from pathlib import Path
 
 from app import config
+
+COMMANDS_DIR = Path(__file__).parent.parent.parent.parent / "commands"
 
 # Module-level process state
 _process: subprocess.Popen | None = None
@@ -37,43 +41,18 @@ def _find_agent_script() -> Path:
     return script
 
 
-def start_agent(mode: str = "workflow", ticket: str | None = None, extra_args: list[str] | None = None) -> dict:
-    """Start the agent as a subprocess with --dashboard flag."""
-    global _process
-
+def _check_running() -> dict | None:
+    """Return an error dict if a process is already running, else None."""
     if _process and _process.poll() is None:
         return {"error": "Agent is already running", "pid": _process.pid}
+    return None
 
-    script = _find_agent_script()
-    if not script.exists():
-        return {"error": f"Agent script not found at {script}"}
 
-    cmd = [str(script), "--dashboard"]
-
-    if mode == "watch":
-        cmd.append("--watch")
-    elif mode == "cleanup":
-        cmd.append("--cleanup")
-    elif mode == "readiness":
-        cmd.append("--readiness")
-    elif mode == "costs":
-        cmd.append("--costs")
-    elif mode == "address-pr" and ticket:
-        cmd.extend(["--address-pr", ticket])
-    elif mode == "maintain-pr" and ticket:
-        cmd.extend(["--maintain-pr", ticket])
-    elif mode == "learn-from-pr" and ticket:
-        cmd.extend(["--learn-from-pr", ticket])
-    elif mode == "investigate" and ticket:
-        cmd.extend(["--investigate", ticket])
-    elif mode == "ticket" and ticket:
-        cmd.append(ticket)
-
-    if extra_args:
-        cmd.extend(extra_args)
+def _spawn_and_stream(cmd: list[str]) -> subprocess.Popen:
+    """Clear output, spawn a subprocess, and start a reader thread."""
+    global _process
 
     _output_lines.clear()
-
     repo_root = config.DATA_DIR.parent
     _process = subprocess.Popen(
         cmd,
@@ -90,8 +69,46 @@ def start_agent(mode: str = "workflow", ticket: str | None = None, extra_args: l
             _output_lines.append(line.rstrip("\n"))
 
     threading.Thread(target=_reader, daemon=True).start()
+    return _process
 
-    return {"status": "started", "pid": _process.pid, "mode": mode, "ticket": ticket}
+
+def start_agent(mode: str = "workflow", ticket: str | None = None, extra_args: list[str] | None = None) -> dict:
+    """Start the agent as a subprocess with --dashboard flag."""
+    if err := _check_running():
+        return err
+
+    script = _find_agent_script()
+    if not script.exists():
+        return {"error": f"Agent script not found at {script}"}
+
+    cmd = [str(script), "--dashboard"]
+
+    if mode == "watch":
+        cmd.append("--watch")
+    elif mode == "cleanup":
+        cmd.append("--cleanup")
+    elif mode == "readiness":
+        cmd.append("--readiness")
+    elif mode == "costs":
+        cmd.append("--costs")
+    elif mode == "handle-pr" and ticket:
+        cmd.extend(["--handle-pr", ticket])
+    elif mode == "address-pr" and ticket:
+        cmd.extend(["--address-pr", ticket])
+    elif mode == "maintain-pr" and ticket:
+        cmd.extend(["--maintain-pr", ticket])
+    elif mode == "learn-from-pr" and ticket:
+        cmd.extend(["--learn-from-pr", ticket])
+    elif mode == "investigate" and ticket:
+        cmd.extend(["--investigate", ticket])
+    elif mode == "ticket" and ticket:
+        cmd.append(ticket)
+
+    if extra_args:
+        cmd.extend(extra_args)
+
+    proc = _spawn_and_stream(cmd)
+    return {"status": "started", "pid": proc.pid, "mode": mode, "ticket": ticket}
 
 
 def stop_agent() -> dict:
@@ -168,7 +185,7 @@ def send_response(request_id: str, action: str, value: str = "") -> dict:
 
 def get_output(since: int = 0) -> list[str]:
     """Get agent stdout lines since a given index."""
-    return list(_output_lines)[since:]
+    return list(itertools.islice(_output_lines, since, None))
 
 
 def _read_notifications() -> list[dict]:
@@ -203,3 +220,98 @@ def get_notifications(since: int = 0) -> list[dict]:
 def get_notification_count() -> int:
     """Get total number of notifications."""
     return len(_read_notifications())
+
+
+def _find_claude_cli() -> str | None:
+    """Find the Claude Code CLI binary."""
+    claude = shutil.which("claude")
+    if claude:
+        return claude
+    for candidate in [
+        Path.home() / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+    ]:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _find_command_file(command_name: str) -> Path | None:
+    """Find a command .md file by name.
+
+    Search order:
+    1. Project-level commands (.claude/commands/ in the target repo)
+    2. General PAK commands (commands/)
+    """
+    project_cmd = config.DATA_DIR / "commands" / f"{command_name}.md"
+    if project_cmd.exists():
+        return project_cmd
+
+    general_cmd = COMMANDS_DIR / f"{command_name}.md"
+    if general_cmd.exists():
+        return general_cmd
+
+    return None
+
+
+def start_claude_command(command_name: str, args: dict | None = None) -> dict:
+    """Start a Claude Code command as a subprocess.
+
+    Finds the command .md file (project-level first, then general),
+    reads its content, and runs it via the Claude CLI with --print mode.
+    """
+    if err := _check_running():
+        return err
+
+    claude = _find_claude_cli()
+    if not claude:
+        return {"error": "Claude Code CLI not found"}
+
+    cmd_file = _find_command_file(command_name)
+    if not cmd_file:
+        return {"error": f"Command file not found: {command_name}.md"}
+
+    # Build the argument string from the args dict
+    arg_parts = []
+    if args:
+        for key, value in args.items():
+            arg_parts.append(f"{key}={value}")
+    arg_str = " ".join(arg_parts) if arg_parts else ""
+
+    # Read the command file and substitute $ARGUMENTS
+    prompt = cmd_file.read_text()
+    prompt = prompt.replace("$ARGUMENTS", arg_str)
+
+    cmd = [
+        claude,
+        "--print",
+        "--dangerously-skip-permissions",
+        "--model", "sonnet",
+        "-p", prompt,
+    ]
+
+    proc = _spawn_and_stream(cmd)
+    source = "project" if (config.DATA_DIR / "commands" / f"{command_name}.md").exists() else "general"
+    return {
+        "status": "started",
+        "pid": proc.pid,
+        "command": command_name,
+        "source": source,
+        "args": args,
+    }
+
+
+def run_shell_command(command: str, args: dict | None = None) -> dict:
+    """Run a simple shell command (for handoff shell actions)."""
+    if err := _check_running():
+        return err
+
+    cmd_parts = [command]
+    if args:
+        if "message" in args:
+            cmd_parts.append(str(args["message"]))
+        elif "pr" in args:
+            cmd_parts.append(str(args["pr"]))
+
+    proc = _spawn_and_stream(cmd_parts)
+    return {"status": "started", "pid": proc.pid, "command": " ".join(cmd_parts)}
