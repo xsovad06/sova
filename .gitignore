@@ -34,3 +34,4 @@ pak-agent.conf
 .claude/settings.local.json
 .claude/agent-memory/
 .claude/worktrees/
+.claude/assets/
