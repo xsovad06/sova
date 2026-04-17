@@ -443,14 +443,6 @@ class TestRecordCost:
 
 
 class TestInvokeStreaming:
-    @pytest.fixture
-    def mock_process(self):
-        """Create a mock asyncio subprocess for streaming tests."""
-        proc = AsyncMock()
-        proc.returncode = 0
-        proc.pid = 12345
-        return proc
-
     async def test_invoke_streaming_yields_events(self) -> None:
         from sova.llm.client import invoke_streaming
 
