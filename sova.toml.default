@@ -1,0 +1,94 @@
+# SOVA -- Project Configuration
+# Software Orchestration Via Agents
+# Copy to sova.toml in your project root and customize.
+# Or run: sova setup (interactive wizard)
+# All settings have sensible defaults -- only override what you need.
+
+[project]
+# GitHub repo (owner/name) -- detected from git remote if empty
+github_repo = ""
+# GitHub user (for auth switching)
+github_user = ""
+# Base branch for PRs
+base_branch = "main"
+# Commands to run from worktree directory
+test_cmd = "make test"
+lint_cmd = "make lint"
+format_cmd = "make format"
+
+[task_source]
+# Task source: github | jira | linear | manual
+type = "github"
+# GitHub Issues: filter by milestone (empty = all)
+milestone = ""
+# GitHub Issues: filter by labels (comma-separated, empty = all)
+labels = ""
+
+[agent]
+# Model to use: "opus" (smarter) or "sonnet" (faster, cheaper)
+model = "opus"
+# Max spend per task in USD
+max_budget = 10.00
+
+[review]
+# Enable automated PR review after CI passes
+enabled = true
+# Max review-fix rounds before pausing
+max_rounds = 2
+
+[ci]
+# How often to poll CI checks (seconds)
+poll_interval = 60
+# Max time to wait for CI (seconds)
+max_wait = 600
+# Known flaky check names (list of regex patterns)
+flaky_checks = []
+
+[watch]
+# Interval between cycles when previous cycle found work (seconds)
+interval_active = 300
+# Interval between cycles when idle (seconds)
+interval_idle = 1800
+# Auto-select issues in watch mode
+auto_select_issues = true
+# Seconds to wait before starting auto-selected task (veto window)
+veto_seconds = 30
+
+[worktree]
+# Files to copy into worktrees (gitignored but needed for dev)
+copy_files = [".env", ".env.local"]
+# Auto-remove done worktrees older than N days
+ttl_done_days = 3
+# Notify about paused worktrees older than N days
+ttl_paused_days = 7
+
+[commit]
+# Commit format: "conventional" (type(scope): desc) or "freeform"
+format = "conventional"
+# PR title format: "conventional" or "freeform"
+pr_title_format = "conventional"
+# Branch naming: "conventional" (feat/fix/refactor-N-slug) or "freeform"
+branch_naming = "conventional"
+# Auto-link issues in PR body ("Closes #N")
+pr_auto_link_issues = true
+# Prevent AI co-author lines in commits
+no_ai_coauthor = false
+
+[triage]
+# Auto-apply agent:ready/needs-spec labels during triage
+auto_label = true
+# Minimum confidence to mark an issue as agent:ready
+min_confidence = 0.7
+
+[roles]
+# Default role for `sova run`
+default = "developer"
+# Model override for researcher role
+researcher_model = "opus"
+# Model override for triage role (can use cheaper model)
+triage_model = "sonnet"
+
+# Optional display names shown in dashboard
+# [roles.nicknames]
+# reviewer = "Koda"
+# developer = "Builder"

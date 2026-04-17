@@ -1,10 +1,59 @@
+[project]
+name = "sova"
+version = "0.1.0"
+description = "SOVA -- Software Orchestration Via Agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "Damian Sova", email = "sovicka99@gmail.com" },
+]
+dependencies = [
+    "typer[all]>=0.12",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "alembic>=1.13",
+    "pydantic-settings>=2.2",
+    "aiosqlite>=0.20",
+    "transitions>=0.9",
+    "jinja2>=3.1",
+    "httpx>=0.27",
+    "rich>=13.0",
+    "structlog>=24.0",
+    "python-multipart>=0.0.9",
+    "markdown>=3.5",
+]
+
+[project.optional-dependencies]
+postgres = ["asyncpg>=0.30"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.4",
+    "respx>=0.22",
+]
+
+[project.scripts]
+sova = "sova.cli.app:main"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["sova*"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["sova", "app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
