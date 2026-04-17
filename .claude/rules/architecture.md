@@ -34,6 +34,11 @@ PAK has three main components:
   - Dashboard renders handoff action buttons on the control page
   - Enables chaining: `ship-pr` -> `agent-resume` -> `approve-merge`
 - **Claude command execution**: dashboard can run Claude Code commands via `start_claude_command()`
+- **Run journal**: persistent audit trail for all agent/command runs
+  - `run_journal_service.py` -- create/finalize/recover/list run records
+  - Records stored in `.claude/agent-control/runs/<run_id>.json`
+  - `current.json` tracks the active run; orphaned runs recovered on startup
+  - Survives dashboard restarts and agent crashes
 
 ## Config System
 - Template: `agent/pak-agent.conf.default`

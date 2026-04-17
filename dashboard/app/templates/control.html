@@ -215,18 +215,38 @@
   </div>
 </div>
 
-<!-- Handoff History (collapsible) -->
-<div id="history-panel" class="mb-6">
-  <button onclick="toggleHistory()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors mb-2">
-    <span id="history-toggle-text">Show handoff history</span>
-  </button>
-  <div id="history-content" class="hidden">
-    <div class="bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">
-      <div class="px-4 py-3 border-b border-gray-700/50">
-        <h3 class="text-sm font-medium text-gray-400">Recent Handoffs</h3>
+<!-- Run History + Handoff History (collapsible) -->
+<div class="flex gap-4 mb-6">
+  <!-- Run Journal -->
+  <div id="runs-panel" class="flex-1">
+    <button onclick="toggleRuns()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors mb-2">
+      <span id="runs-toggle-text">Show run history</span>
+    </button>
+    <div id="runs-content" class="hidden">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-medium text-gray-400">Run Journal</h3>
+        </div>
+        <div id="runs-list" class="divide-y divide-gray-700/30 max-h-64 overflow-y-auto">
+          <p class="text-gray-500 text-xs p-3">Loading...</p>
+        </div>
       </div>
-      <div id="history-list" class="divide-y divide-gray-700/30 max-h-64 overflow-y-auto">
-        <p class="text-gray-500 text-xs p-3">Loading...</p>
+    </div>
+  </div>
+
+  <!-- Handoff History -->
+  <div id="history-panel" class="flex-1">
+    <button onclick="toggleHistory()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors mb-2">
+      <span id="history-toggle-text">Show handoff history</span>
+    </button>
+    <div id="history-content" class="hidden">
+      <div class="bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-medium text-gray-400">Recent Handoffs</h3>
+        </div>
+        <div id="history-list" class="divide-y divide-gray-700/30 max-h-64 overflow-y-auto">
+          <p class="text-gray-500 text-xs p-3">Loading...</p>
+        </div>
       </div>
     </div>
   </div>
@@ -256,6 +276,7 @@ let outputCursor = 0;
 let ws = null;
 let pollTimer = null;
 let historyVisible = false;
+let runsVisible = false;
 
 const statusColors = {
   idle: 'bg-gray-500',
@@ -581,6 +602,92 @@ async function loadHistory() {
   } catch (e) {
     console.error('Failed to load history:', e);
   }
+}
+
+/* --- Run journal --- */
+
+function toggleRuns() {
+  runsVisible = !runsVisible;
+  document.getElementById('runs-content').classList.toggle('hidden', !runsVisible);
+  document.getElementById('runs-toggle-text').textContent =
+    runsVisible ? 'Hide run history' : 'Show run history';
+  if (runsVisible) loadRuns();
+}
+
+async function loadRuns() {
+  try {
+    const data = await fetchAPI(apiUrl('/agent/runs?limit=20'));
+    const listEl = document.getElementById('runs-list');
+    const runs = data.runs || [];
+    if (runs.length === 0) {
+      listEl.innerHTML = '<p class="text-gray-500 text-xs p-3">No runs recorded yet</p>';
+      return;
+    }
+    listEl.innerHTML = runs.map(r => {
+      const statusColor = {
+        completed: 'bg-accent-green', crashed: 'bg-accent-red',
+        abandoned: 'bg-accent-yellow', running: 'bg-accent-green animate-pulse',
+      }[r.status] || 'bg-gray-500';
+      const started = r.started_at ? new Date(r.started_at).toLocaleString() : '';
+      const duration = r.ended_at && r.started_at
+        ? formatDuration(new Date(r.ended_at) - new Date(r.started_at))
+        : (r.status === 'running' ? 'in progress' : '--');
+      const exitInfo = r.exit_code !== null && r.exit_code !== undefined
+        ? `exit ${r.exit_code}` : '';
+      return `
+        <div class="px-3 py-2 flex items-center gap-3 group cursor-pointer hover:bg-gray-800/50"
+             onclick="toggleRunDetails(this)">
+          <span class="w-1.5 h-1.5 rounded-full ${statusColor} shrink-0"></span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-medium text-gray-300">${escapeHtml(r.mode || '')}</span>
+              <span class="text-[10px] text-gray-500">${escapeHtml(r.ticket || '')}</span>
+              <span class="text-[10px] ${r.status === 'crashed' || r.status === 'abandoned' ? 'text-accent-red' : 'text-gray-500'}">${escapeHtml(r.status)}</span>
+              ${exitInfo ? `<span class="text-[10px] text-gray-600">${exitInfo}</span>` : ''}
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] text-gray-500">by ${escapeHtml(r.started_by || 'unknown')}</span>
+              <span class="text-[10px] text-gray-600">PID ${r.pid || '?'}</span>
+            </div>
+          </div>
+          <div class="text-right shrink-0">
+            <div class="text-[10px] text-gray-500">${started}</div>
+            <div class="text-[10px] text-gray-600">${duration}</div>
+          </div>
+        </div>
+        ${r.error || (r.output_tail && r.output_tail.length > 0) ? `
+        <div class="hidden run-details bg-surface border-t border-gray-700/30 px-3 py-2">
+          ${r.error ? `<p class="text-[10px] text-accent-red mb-1">${escapeHtml(r.error)}</p>` : ''}
+          ${r.output_tail && r.output_tail.length > 0 ? `
+          <details class="text-[10px]">
+            <summary class="text-gray-500 cursor-pointer hover:text-gray-300">Last ${r.output_tail.length} output lines</summary>
+            <pre class="text-gray-400 mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap">${escapeHtml(r.output_tail.join('\n'))}</pre>
+          </details>` : ''}
+        </div>` : ''}
+      `;
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load runs:', e);
+  }
+}
+
+function toggleRunDetails(el) {
+  const details = el.nextElementSibling;
+  if (details && details.classList.contains('run-details')) {
+    details.classList.toggle('hidden');
+  }
+}
+
+function formatDuration(ms) {
+  if (ms < 0) return '--';
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return secs + 's';
+  const mins = Math.floor(secs / 60);
+  const remainSecs = secs % 60;
+  if (mins < 60) return mins + 'm ' + remainSecs + 's';
+  const hrs = Math.floor(mins / 60);
+  const remainMins = mins % 60;
+  return hrs + 'h ' + remainMins + 'm';
 }
 
 /* --- Checkpoint handling (rich context rendering) --- */
@@ -990,6 +1097,10 @@ function connectWs() {
   };
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
+    if (data.connected) {
+      outputCursor = data.cursor;
+      return;
+    }
     if (data.lines) {
       appendOutput(data.lines);
       outputCursor = data.cursor;
@@ -1062,9 +1173,9 @@ async function controlPoll() {
   await Promise.all([refreshStatus(), checkCheckpoint(), checkHandoff()]);
 }
 controlPoll();
-setInterval(controlPoll, 5000);
+setInterval(controlPoll, 3000);
 
-pollTimer = setInterval(pollOutput, 2000);
+connectWs();
 
 if (typeof requestNotifyPermission === 'function') requestNotifyPermission();
 </script>

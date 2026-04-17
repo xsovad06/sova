@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.services import handoff_service, process_service
+from app.services import handoff_service, process_service, run_journal_service
 
 router = APIRouter()
 
@@ -227,6 +227,24 @@ async def worktree_summary(path: str):
         pass
 
     return result
+
+
+# --- Run journal endpoints ---
+
+
+@router.get("/agent/runs")
+async def list_runs(limit: int = 20):
+    """Get recent run history."""
+    return {"runs": run_journal_service.list_runs(limit)}
+
+
+@router.get("/agent/runs/current")
+async def current_run():
+    """Get the currently active run, if any."""
+    run = run_journal_service.get_current_run()
+    if run is None:
+        return {"has_run": False}
+    return {"has_run": True, "run": run}
 
 
 # WebSocket endpoint is registered in main.py (outside /api prefix)
