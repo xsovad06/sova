@@ -17,13 +17,19 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    ```bash
    gh issue view <ISSUE_NUMBER> --json number,title,body,labels,milestone
    ```
-3. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
-4. Read agent memory files if they exist:
+3. **Claim the issue** (GitHub Issues only):
+   ```bash
+   # Assign to self
+   gh issue edit <ISSUE_NUMBER> --add-assignee @me
+   ```
+   If the project uses a GitHub Projects board, move the issue to "In Progress".
+4. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
+5. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/learnings.md`
    - `.claude/agent-memory/review-feedback.md`
    - `.claude/agent-memory/common-mistakes.md`
-5. Identify which module(s) this work touches and read relevant source code.
+6. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)
 

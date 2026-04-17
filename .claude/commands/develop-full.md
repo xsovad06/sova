@@ -17,13 +17,24 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    ```bash
    gh issue view <ISSUE_NUMBER>
    ```
-3. Read the project's CLAUDE.md for conventions and patterns.
-4. Read agent memory files if they exist:
+3. **Claim the issue** (GitHub Issues only):
+   ```bash
+   # Assign to self
+   gh issue edit <ISSUE_NUMBER> --add-assignee xsovad06
+
+   # Move to "In Progress" on project board
+   ITEM_ID=$(gh api graphql -f query='query { user(login:"xsovad06") { projectV2(number:2) { items(first:50) { nodes { id content { ... on Issue { number } } } } } } }' --jq '.data.user.projectV2.items.nodes[] | select(.content.number == <ISSUE_NUMBER>) | .id')
+   if [ -n "$ITEM_ID" ]; then
+     gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: { projectId: "PVT_kwHOArVFrc4BU8uF", itemId: "'"$ITEM_ID"'", fieldId: "PVTSSF_lAHOArVFrc4BU8uFzhMdaz8", value: { singleSelectOptionId: "47fc9ee4" } }) { projectV2Item { id } } }'
+   fi
+   ```
+4. Read the project's CLAUDE.md for conventions and patterns.
+5. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/learnings.md`
    - `.claude/agent-memory/review-feedback.md`
    - `.claude/agent-memory/common-mistakes.md`
-5. Identify which module(s) this work touches and read relevant source code.
+6. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)
 

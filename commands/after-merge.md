@@ -36,10 +36,11 @@ Run this after a PR has been merged to clean up local state and capture learning
    git worktree remove .claude/worktrees/<ID> --force 2>/dev/null || true
    ```
 
-5. **Close linked issue** (if not auto-closed by PR):
+5. **Close linked issue and update project board** (if not auto-closed by PR):
    ```bash
    gh issue close <ISSUE_NUMBER> 2>/dev/null || true
    ```
+   If the project uses a GitHub Projects board, move the issue to "Done".
 
 6. **Capture learnings** from the PR review (run `/ingest-review` workflow):
    - Fetch PR review data
