@@ -9,6 +9,27 @@ cd "$REPO_ROOT"
 
 errors=0
 
+# Resolve ruff binary once
+RUFF=""
+if command -v ruff &>/dev/null; then
+  RUFF="ruff"
+elif [[ -x "dashboard/.venv/bin/ruff" ]]; then
+  RUFF="dashboard/.venv/bin/ruff"
+fi
+
+run_ruff() {
+  if [[ -z "$RUFF" ]]; then
+    echo "  SKIP (ruff not installed)"
+    return 0
+  fi
+  if $RUFF "$@" 2>&1; then
+    echo "  PASS"
+  else
+    echo "  FAIL"
+    errors=$((errors + 1))
+  fi
+}
+
 echo "=== Pre-push CI checks ==="
 
 # 1. ShellCheck
@@ -32,48 +53,12 @@ fi
 # 2. Ruff lint
 echo ""
 echo "[2/5] Ruff check..."
-if command -v ruff &>/dev/null; then
-  if ruff check dashboard/ 2>&1; then
-    echo "  PASS"
-  else
-    echo "  FAIL"
-    errors=$((errors + 1))
-  fi
-else
-  if [[ -x "dashboard/.venv/bin/ruff" ]]; then
-    if dashboard/.venv/bin/ruff check dashboard/ 2>&1; then
-      echo "  PASS"
-    else
-      echo "  FAIL"
-      errors=$((errors + 1))
-    fi
-  else
-    echo "  SKIP (ruff not installed)"
-  fi
-fi
+run_ruff check dashboard/
 
 # 3. Ruff format
 echo ""
 echo "[3/5] Ruff format..."
-if command -v ruff &>/dev/null; then
-  if ruff format --check dashboard/ 2>&1; then
-    echo "  PASS"
-  else
-    echo "  FAIL"
-    errors=$((errors + 1))
-  fi
-else
-  if [[ -x "dashboard/.venv/bin/ruff" ]]; then
-    if dashboard/.venv/bin/ruff format --check dashboard/ 2>&1; then
-      echo "  PASS"
-    else
-      echo "  FAIL"
-      errors=$((errors + 1))
-    fi
-  else
-    echo "  SKIP (ruff not installed)"
-  fi
-fi
+run_ruff format --check dashboard/
 
 # 4. Validate command frontmatter
 echo ""
@@ -81,18 +66,29 @@ echo "[4/5] Command frontmatter..."
 fm_errors=0
 for f in commands/*.md; do
   name=$(basename "$f")
-  if ! head -1 "$f" | grep -q '^---$'; then
+  # Single awk pass: check first line and extract required fields
+  result=$(awk '
+    NR==1 { if ($0 != "---") { print "NO_FRONTMATTER"; exit } next }
+    /^---$/ { exit }
+    /^(name|description|user-invocable):/ { found[$1]=1 }
+    END {
+      split("name: description: user-invocable:", required, " ")
+      for (i in required) {
+        if (!(required[i] in found)) print "MISSING " required[i]
+      }
+    }
+  ' "$f")
+  if [[ "$result" == "NO_FRONTMATTER" ]]; then
     echo "  ERROR: $name missing frontmatter opening ---"
     fm_errors=$((fm_errors + 1))
-    continue
-  fi
-  frontmatter=$(awk 'NR==1{next} /^---$/{exit} {print}' "$f")
-  for field in name description user-invocable; do
-    if ! echo "$frontmatter" | grep -q "^${field}:"; then
+  elif [[ -n "$result" ]]; then
+    while IFS= read -r line; do
+      field="${line#MISSING }"
+      field="${field%:}"
       echo "  ERROR: $name missing required field: $field"
       fm_errors=$((fm_errors + 1))
-    fi
-  done
+    done <<< "$result"
+  fi
 done
 if [ "$fm_errors" -gt 0 ]; then
   echo "  FAIL ($fm_errors errors)"
