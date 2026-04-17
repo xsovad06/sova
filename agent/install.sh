@@ -36,7 +36,29 @@ for arg in "$@"; do
   esac
 done
 
-# Quick update mode: sync agent script + personas, nothing else
+# ── Migration: gwym-agent -> pak-agent ────────────────────────────────────────
+# Automatically rename old files if found, preserving user config.
+migrate_legacy_files() {
+  if [[ -f "$SCRIPTS_DIR/gwym-agent.sh" ]]; then
+    rm "$SCRIPTS_DIR/gwym-agent.sh"
+    echo "Migrated: removed gwym-agent.sh"
+  fi
+  if [[ -f "$SCRIPTS_DIR/gwym-agent.conf.default" ]]; then
+    rm "$SCRIPTS_DIR/gwym-agent.conf.default"
+    echo "Migrated: removed gwym-agent.conf.default"
+  fi
+  if [[ -f "$SCRIPTS_DIR/gwym-agent.conf" && ! -f "$SCRIPTS_DIR/pak-agent.conf" ]]; then
+    mv "$SCRIPTS_DIR/gwym-agent.conf" "$SCRIPTS_DIR/pak-agent.conf"
+    echo "Migrated: renamed gwym-agent.conf -> pak-agent.conf"
+  elif [[ -f "$SCRIPTS_DIR/gwym-agent.conf" ]]; then
+    rm "$SCRIPTS_DIR/gwym-agent.conf"
+    echo "Migrated: removed gwym-agent.conf (pak-agent.conf already exists)"
+  fi
+}
+
+migrate_legacy_files
+
+# Quick update mode: sync agent script, personas, and commands
 if $UPDATE_ONLY; then
   if [[ ! -f "$SCRIPTS_DIR/pak-agent.sh" ]]; then
     echo "Error: No existing install found. Run install.sh without --update first."
@@ -48,6 +70,10 @@ if $UPDATE_ONLY; then
   if [[ -d "$PERSONAS_DIR" ]]; then
     cp "$PERSONAS_DIR"/*.md "$SCRIPTS_DIR/personas/" 2>/dev/null || true
     cp "$PERSONAS_DIR"/*.mcp.json "$SCRIPTS_DIR/personas/" 2>/dev/null || true
+  fi
+  if [[ -d "$PAK_ROOT/commands" ]]; then
+    mkdir -p "$COMMANDS_DIR"
+    cp "$PAK_ROOT/commands/"*.md "$COMMANDS_DIR/" 2>/dev/null || true
   fi
   echo "Agent updated in $(pwd)"
   exit 0
