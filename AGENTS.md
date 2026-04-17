@@ -175,6 +175,7 @@ This repo has Claude Code commands in `.claude/commands/`:
 - `/develop-full` -- full workflow: TDD, lint, test, self-review, commit organization
 - `/test` -- run linter and tests iteratively
 - `/review` -- pre-push code review with scoring and auto-fix (>=3/10)
+- `/review-full` -- full pre-push pipeline: simplify -> review -> rearrange-commits
 - `/debug` -- systematic debugging workflow
 
 ### Pull Requests
