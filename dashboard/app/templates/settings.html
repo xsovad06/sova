@@ -42,6 +42,25 @@
           <p class="text-gray-500 text-xs">Loading...</p>
         </div>
       </div>
+
+      <!-- PAK Maintenance -->
+      {% if project_path is defined and project_path %}
+      <div class="bg-surface-card rounded-lg border border-gray-700/50">
+        <div class="px-4 py-3 border-b border-gray-700/50">
+          <h3 class="text-sm font-semibold text-gray-300">Maintenance</h3>
+        </div>
+        <div class="p-3 space-y-2">
+          <button onclick="updatePak()" id="update-pak-btn"
+            class="w-full px-3 py-2 bg-accent/10 text-accent rounded hover:bg-accent/20 transition-colors text-xs font-medium">
+            Update PAK
+          </button>
+          <p class="text-[10px] text-gray-500">Sync agent script, personas, and commands to latest version.</p>
+          <div id="update-log" class="hidden mt-2">
+            <pre id="update-log-content" class="text-[10px] text-gray-400 font-mono max-h-32 overflow-y-auto bg-surface rounded p-2 whitespace-pre-wrap"></pre>
+          </div>
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -119,6 +138,40 @@ async function loadPersonas() {
       ${p.has_mcp ? '<span class="text-[10px] bg-accent-purple/20 text-accent-purple px-1.5 py-0.5 rounded">MCP</span>' : ''}
     </div>
   `).join('');
+}
+
+async function updatePak() {
+  const btn = document.getElementById('update-pak-btn');
+  btn.textContent = 'Updating...';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/setup/install', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_path: '{{ project_path }}', no_dashboard: true, update_only: true}),
+    });
+    const result = await res.json();
+    const logEl = document.getElementById('update-log');
+    const logContent = document.getElementById('update-log-content');
+    logEl.classList.remove('hidden');
+    logContent.textContent = result.stdout || result.stderr || result.error || 'No output';
+    if (result.status === 'ok') {
+      btn.textContent = 'Updated';
+      btn.className = btn.className.replace('text-accent', 'text-accent-green').replace('bg-accent', 'bg-accent-green');
+      loadPersonas();
+      loadInvariants();
+    } else {
+      btn.textContent = 'Failed';
+      btn.className = btn.className.replace('text-accent', 'text-accent-red').replace('bg-accent', 'bg-accent-red');
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+  }
+  setTimeout(() => {
+    btn.textContent = 'Update PAK';
+    btn.disabled = false;
+    btn.className = 'w-full px-3 py-2 bg-accent/10 text-accent rounded hover:bg-accent/20 transition-colors text-xs font-medium';
+  }, 3000);
 }
 
 loadConfig();

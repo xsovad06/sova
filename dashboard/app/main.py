@@ -203,6 +203,7 @@ async def project_settings(request: Request, slug: str):
             "page": "settings",
             "project_slug": slug,
             "project_name": getattr(request.state, "project_name", slug),
+            "project_path": getattr(request.state, "project_path", ""),
         },
     )
 
