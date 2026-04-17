@@ -1,108 +1,117 @@
+---
+name: review
+description: Review changed code as a senior engineer before pushing. Scores findings by fix value and auto-fixes high-value issues (>=3/10).
+user-invocable: true
+---
+
 # Code Review
 
-Act as an independent senior software engineer who specializes in code reviews. You are also a domain expert in bash scripting, Python/FastAPI, and the patterns used in this codebase. Your job is to find real problems -- not to nitpick style or add noise.
+Review the current branch changes as a senior engineer. Catch issues before pushing, score them by value, and auto-fix high-value findings.
 
-Scope: $ARGUMENTS
+## Instructions
 
-## 1. Gather the Diff
+### Step 1: Get the Changes
 
-Determine the review scope:
-
-- **No arguments**: review all commits on the current branch vs `main` (`git diff main...HEAD`) plus any uncommitted changes (`git diff`)
-- **PR number**: fetch that PR's diff via `gh pr diff <number>`
-- **File paths**: focus review on those files only, but still read full diff for context
-
-Run `git log --oneline main..HEAD` to understand the commit structure and intent.
-
-## 2. Read Changed Files in Full
-
-For every file touched in the diff:
-- Read the **entire file** (not just the diff hunk) to understand surrounding context
-- Identify the file's role (CLI, orchestrator, adapter, invariant, persona, command, dashboard)
-- Note any related files that interact with the changed code
-
-## 3. Deep Analysis
-
-Review across these dimensions, in priority order:
-
-### Correctness (Critical)
-- Does the logic actually solve the stated problem?
-- Edge cases: empty inputs, missing files, unset variables, spaces in paths?
-- Are error paths handled (what happens when things go wrong)?
-- Bash: proper quoting, word splitting, glob expansion issues?
-- Python: type mismatches, None reference risks?
-
-### Robustness (High)
-- Bash: `set -euo pipefail` at top? Proper trap cleanup?
-- Error messages actionable and sent to stderr?
-- External command failures handled (`command -v`, `|| true` where appropriate)?
-- Race conditions in parallel execution?
-- Config file parsing handles missing/malformed values?
-
-### Security (High)
-- Command injection via unquoted variables or unsanitized input?
-- Path traversal risks in file operations?
-- Secrets or credentials exposed in logs or output?
-- Eval usage (should be avoided)?
-
-### Compatibility (Medium)
-- macOS + Linux compatibility (no GNU-only flags)?
-- ShellCheck clean (no warnings)?
-- Dependencies documented (git, gh, jq, claude)?
-
-### Code Quality (Medium)
-- Consistent with existing codebase patterns?
-- DRY -- duplicated logic that should be extracted?
-- Dead code, unused variables, debug artifacts?
-- Functions too long (>50 lines should be split)?
-
-### Documentation (Low)
-- Changed behavior reflected in README.md or help text?
-- New commands have proper frontmatter and cross-references?
-- Config changes reflected in `.conf.default`?
-
-## 4. Present Findings
-
-Output a structured review report:
-
-### Summary
-One paragraph: what the changes do, overall assessment, and whether you would approve.
-
-### Findings
-
-Rank all findings by impact (highest first). For each finding:
-
-```
-[SEVERITY] Category -- Short title
-Location: file_path:line_number
-Problem: What is wrong and why it matters.
-Suggestion: How to fix it, with code if helpful.
-Impact: LOW / MEDIUM / HIGH / CRITICAL
-Value: X/10 -- how much value fixing this brings
+```bash
+git diff main..HEAD
+git log --oneline main..HEAD
+git diff main..HEAD --stat
 ```
 
-### Verdict
+If there are no commits ahead of main, fall back to uncommitted changes:
+```bash
+git diff HEAD
+git diff --cached
+```
 
-State one of:
-- **Ship it** -- no blockers, findings are minor or optional
-- **Fix then ship** -- has issues that should be resolved before merging
-- **Needs rework** -- fundamental problems that require significant changes
+### Step 2: Review Each Changed File
 
-### What's Done Well
-Call out 2-3 things the code does particularly well.
+Analyze every changed file for:
 
-## 5. Act on Findings
+- **Bugs**: logic errors, off-by-one, null/nil handling, race conditions, error swallowing
+- **Security**: injection vulnerabilities, auth bypass, secrets in code, unsafe deserialization
+- **Performance**: N+1 patterns, unbounded operations, missing indexes, hot-path bloat
+- **Test coverage**: are new code paths tested? Edge cases? Are tests meaningful or just smoke?
+- **Consistency**: does new code follow existing patterns in the module? Naming, structure, error handling style?
+- **Missing changes**: if a schema changed, are migrations created? If an API changed, is the spec updated? Are docs stale?
+- **Code reuse**: does new code duplicate existing utilities or helpers in the codebase?
+- **Efficiency**: redundant computations, repeated file reads, duplicate API calls, missed concurrency
+- **Error handling**: are errors propagated correctly? Are failure modes tested? Silent failures?
+- **Simplicity**: is the solution more complex than necessary? Over-abstracted? Could be done in fewer lines?
 
-After presenting the report:
-- Automatically fix all findings with Value >= 3/10 without asking
-- For findings with Value < 3/10, ask the user whether to fix them
-- Fix issues one by one, running ShellCheck/tests after all fixes are applied
+### Step 3: Score Each Finding
+
+For each issue found, assign a **fix value score from 1-10**:
+
+| Score | Meaning | Action |
+|-------|---------|--------|
+| 1-2 | Cosmetic or stylistic nitpick, no real impact | Report only, do not fix |
+| 3-5 | Meaningful improvement: correctness, readability, or maintainability | **Auto-fix** |
+| 6-8 | Important: prevents bugs, security issues, or significant tech debt | **Auto-fix** |
+| 9-10 | Critical: data loss, security vulnerability, or broken functionality | **Auto-fix** |
+
+**Scoring criteria** -- higher scores for findings that:
+- Prevent a runtime failure or data corruption
+- Close a security hole
+- Remove code that will confuse the next reader
+- Eliminate a performance cliff (not a micro-optimization)
+- Fix incorrect behavior vs. just suboptimal behavior
+
+**Lower scores** for findings that:
+- Are purely stylistic (formatting, naming preferences)
+- Add comments or documentation
+- Refactor working code for marginal improvement
+- Are subjective ("I would have done it differently")
+
+### Step 4: Report Findings
+
+For each finding, report:
+
+```
+### [FILE:LINE] Title (score: N/10)
+
+**Category**: Bug / Security / Performance / Test / Consistency / Reuse / Efficiency / Error Handling / Simplicity
+**What**: Description of the issue
+**Why it matters**: Impact if left unfixed
+**Fix**: What to change (or "Auto-fixed" if score >= 3)
+```
+
+### Step 5: Auto-Fix All Findings Scored >= 3
+
+Fix each qualifying finding directly in the code. After all fixes:
+
+```bash
+# Verify nothing is broken
+git diff  # review your own fixes
+```
+
+If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
+
+### Step 6: Run CI Checks Locally
+
+Run the same checks the pipeline will run, scoped to modules that have changes (see CLAUDE.md for commands).
+Only run checks for modules with changed files. If any check fails, fix the issue and loop back to Step 5 before proceeding.
+
+### Step 7: Summary
+
+```
+## Review Summary
+
+**Files reviewed**: N
+**Findings**: N total (N critical, N important, N moderate, N low)
+**Auto-fixed**: N findings (scores >= 3)
+**Skipped**: N findings (scores 1-2, cosmetic only)
+**Assessment**: ready to push / needs human review / needs fixes
+
+### Remaining items (if any)
+- Items that need human decision or are too risky to auto-fix
+```
 
 ## Rules
 
-- Be honest and direct. Flag real problems, skip cosmetic noise.
-- Every finding must have a concrete suggestion -- no vague "consider improving this".
-- Do not invent problems. If the code is solid, say so.
-- Do not suggest adding docstrings, type hints, or comments to code you didn't change.
-- Respect the project's conventions (CLAUDE.md, AGENTS.md).
-- NEVER use emojis in any output
+- Be thorough but not pedantic. Don't flag things that are correct and clear.
+- Search the codebase for existing patterns before suggesting a new one.
+- If a finding requires understanding of business logic you don't have, flag it for human review rather than guessing.
+- Do NOT add comments, docstrings, or type annotations unless they fix a real issue (score >= 3).
+- Do NOT reformat code that wasn't changed in this branch.
+- NEVER use emojis in any output.

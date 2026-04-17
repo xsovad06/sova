@@ -68,13 +68,10 @@ Ensure:
 - Commits are in logical order
 - The total diff matches what it was before reorganization
 
-## Cross-References
-
-- **Before PR**: Run `/review` after rearranging, then `/pr`
-
-## Rules
+## Important
 
 - Each commit = ONE logical change
 - Earlier commits should not depend on later ones
 - Keep commits small -- easier to review and revert
+- Always include DCO sign-off (`-s` flag) if the project requires it
 - NEVER use emojis in any output

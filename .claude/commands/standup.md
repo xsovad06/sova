@@ -1,35 +1,41 @@
 ---
 name: standup
-description: Daily context summary -- git state, open PRs, assigned issues, suggested focus.
+description: Daily standup summary -- git state, open PRs, GitHub Issues, and suggested focus.
 user-invocable: true
 ---
 
 # Daily Standup
 
-Provide a quick summary of the current project state and suggest what to focus on.
+Generate a quick daily context dump.
 
 ## Instructions
 
-1. **Git state** (run in parallel):
-   - `git branch --show-current`
-   - `git status --short`
-   - `git log --oneline -5`
+1. **Git state**:
+   ```bash
+   git branch --show-current
+   git status --short
+   git log --oneline -5
+   ```
+   If on a feature branch: `git rev-list --count main..HEAD`
 
 2. **Open PRs**:
    ```bash
    gh pr list --author @me --state open --json number,title,url,reviewDecision,statusCheckRollup
    ```
+   For each: number, title, check status, review state.
+   Flag PRs with failing checks.
 
 3. **Assigned issues**:
    ```bash
    gh issue list --assignee @me --state open --json number,title,labels,milestone
    ```
+   Group by status: In Progress, Code Review, Backlog.
 
-4. **Report**:
-   - Current branch and uncommitted changes
-   - Open PRs with CI/review status
-   - Assigned issues grouped by priority
-   - Suggested focus (most impactful next action)
+4. **Present summary**:
+   - **Working on**: current branch + uncommitted changes
+   - **Open PRs**: list with CI/review status
+   - **Issue queue**: grouped by status
+   - **Suggested focus**: what to work on based on priority and blockers
 
 ## Rules
 
