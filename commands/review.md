@@ -65,6 +65,11 @@ Review across these dimensions, in priority order. Reference the project's guide
 - DRY -- duplicated logic that should be extracted?
 - Dead code, unused imports, debug artifacts?
 
+### Doc Freshness (Medium)
+- Do changes affect project structure, features, commands, or workflow?
+- If so, verify these docs are updated: README.md, CLAUDE.md, AGENTS.md, .claude/rules/*.md
+- Score stale docs as 4/10 minimum and auto-fix
+
 ## 4. Score Each Finding
 
 For each issue found, assign a **fix value score from 1-10**:

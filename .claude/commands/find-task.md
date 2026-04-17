@@ -1,28 +1,75 @@
 ---
 name: find-task
-description: Browse GitHub Issues backlog and help select the next task.
+description: Browse GitHub Issues backlog, prioritize sprint work, and suggest next tasks.
 user-invocable: true
 ---
 
-# Find Task
+# Find Next Task
 
-Browse the project's GitHub Issues and help select the next task to work on.
+Browse the GitHub Issues backlog, review sprint priorities, and suggest what to work on next.
+
+**Scope**: $ARGUMENTS
 
 ## Instructions
 
-1. **Fetch issues**:
-   ```bash
-   gh issue list --state open --json number,title,labels,milestone,assignees --limit 30
-   ```
+### 1. Fetch Open Issues
 
-2. **Categorize** by effort and priority:
-   - **Quick wins**: small scope, clear requirements
-   - **Medium effort**: well-defined but multi-file
-   - **Bigger work**: architectural, multi-component
+```bash
+# Assigned issues first
+gh issue list --assignee @me --state open --limit 50 --json number,title,labels,milestone,updatedAt,body
 
-3. **Present** a summary to the user with recommendations
+# If no assigned issues, broaden to all open
+gh issue list --state open --limit 30 --json number,title,labels,milestone,updatedAt
+```
 
-4. **On selection**: help set up the feature branch (run `/new-feature`)
+If `$ARGUMENTS` contains filters (label, milestone), incorporate them:
+```bash
+gh issue list --state open --label "<label>" --milestone "<milestone>" --limit 30
+```
+
+### 2. Categorize by Status
+
+- **Active work**: issues with in-progress labels or linked open PRs
+- **Queued**: assigned but not started (backlog, ready)
+- **Quick wins**: small, well-scoped tasks (look for size/effort labels)
+- **Medium effort**: refactors, feature work with clear scope
+- **Needs refinement**: issues with vague descriptions or missing acceptance criteria
+- **Blocked**: issues with blocker labels or dependency on other issues
+
+### 3. Analyze Each Issue
+
+For each issue, provide:
+- Issue number, title, current labels
+- Estimated effort: small / medium / large (based on title and description)
+- Dependencies: does it block or depend on other issues?
+- Suggested priority based on labels, dependencies, and effort
+
+### 4. Suggest a Plan
+
+- What to finish first (active work)
+- What to pick up next (from queued, prioritized by labels and dependencies)
+- Quick wins that can be done between larger tasks
+- What needs refinement before starting
+
+### 5. Present and Wait
+
+Present the summary and wait for the user to choose.
+
+### 6. When the User Selects an Issue
+
+- Assign it (if not already): `gh issue edit <NUMBER> --add-assignee @me`
+- Suggest creating a feature branch: `git checkout -b feat/<short-name> main`
+
+### 7. Re-prioritize (if requested)
+
+- Add/remove labels: `gh issue edit <NUMBER> --add-label "priority:high"`
+- Unassign to defer: `gh issue edit <NUMBER> --remove-assignee @me`
+
+## Cross-References
+
+- **After selecting a task**: Run `/develop-full <ISSUE_NUMBER>` to start working
+- **Want a deeper look at an issue?** Run `/issue <ISSUE_NUMBER>`
+- **Daily overview**: Run `/standup` for full context
 
 ## Rules
 

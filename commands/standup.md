@@ -44,7 +44,6 @@ Generate a quick daily context dump.
 ## Cross-References
 
 - **Want to pick up a new task?** Run `/find-task`
-- **Need to plan your sprint?** Run `/sprint-plan`
 - **Ready to work on something?** Run `/develop-full <ISSUE_NUMBER>`
 
 ## Rules

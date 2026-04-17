@@ -28,7 +28,7 @@ Fetch and analyze a GitHub Issue.
 
 - **Ready to implement?** Run `/develop-full <ISSUE_NUMBER>`
 - **Want to explain approaches?** Run `/develop-explain <description>`
-- **Planning your sprint?** Run `/sprint-plan`
+- **Planning your sprint?** Run `/find-task`
 
 ## Rules
 

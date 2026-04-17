@@ -33,7 +33,14 @@ Analyze every changed file for:
 - **Performance**: N+1 patterns, unbounded operations, missing indexes, hot-path bloat
 - **Test coverage**: are new code paths tested? Edge cases? Are tests meaningful or just smoke?
 - **Consistency**: does new code follow existing patterns in the module? Naming, structure, error handling style?
-- **Missing changes**: if a schema changed, are migrations created? If an API changed, is the spec updated? Are docs stale?
+- **Missing changes**: if a schema changed, are migrations created? If an API changed, is the spec updated?
+- **Doc freshness**: do the changes affect project structure, features, commands, or workflow? If so, verify these docs are updated:
+  - `README.md` -- project tree, feature list, usage examples
+  - `CLAUDE.md` -- run commands, knowledge tiers
+  - `AGENTS.md` -- conventions, testing instructions
+  - `.claude/rules/architecture.md` -- component overview, design decisions
+  - `docs/VISION.md` -- roadmap phases (if applicable)
+  Score stale docs as 4/10 minimum and auto-fix.
 - **Code reuse**: does new code duplicate existing utilities or helpers in the codebase?
 - **Efficiency**: redundant computations, repeated file reads, duplicate API calls, missed concurrency
 - **Error handling**: are errors propagated correctly? Are failure modes tested? Silent failures?
