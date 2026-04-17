@@ -388,7 +388,7 @@ async function installProject(updateOnly) {
     const res = await fetch('/api/setup/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_path: currentProjectPath, no_dashboard: true }),
+      body: JSON.stringify({ project_path: currentProjectPath, no_dashboard: true, update_only: updateOnly }),
     });
     const result = await res.json();
 

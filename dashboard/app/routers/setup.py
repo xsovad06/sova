@@ -43,6 +43,7 @@ class ScanRequest(BaseModel):
 class InstallRequest(BaseModel):
     project_path: str
     no_dashboard: bool = True
+    update_only: bool = False
 
 
 class BrowseRequest(BaseModel):
@@ -306,6 +307,8 @@ async def install_project(req: InstallRequest):
         return {"error": f"Install script not found: {INSTALL_SCRIPT}"}
 
     args = [str(INSTALL_SCRIPT)]
+    if req.update_only:
+        args.append("--update")
     if req.no_dashboard:
         args.append("--no-dashboard")
 
