@@ -3649,10 +3649,15 @@ elif [[ "${1:-}" == "--triage" ]]; then
     all_issues=$(gh issue list "${issue_args[@]}" 2>/dev/null) || { echo "Error querying issues."; exit 1; }
     echo "Triaging all open issues..."
     echo ""
+    # Collect into arrays first to avoid stdin conflicts with subprocesses
+    triage_nums=(); triage_jsons=()
     while IFS= read -r issue_json; do
-      issue_num=$(echo "$issue_json" | jq -r '.number')
-      triage_task "$issue_num" "$issue_json"
+      triage_nums+=("$(echo "$issue_json" | jq -r '.number')")
+      triage_jsons+=("$issue_json")
     done < <(echo "$all_issues" | jq -c '.[]')
+    for i in "${!triage_nums[@]}"; do
+      triage_task "${triage_nums[$i]}" "${triage_jsons[$i]}"
+    done
     echo ""
     echo "Legend: autonomous (agent can handle), guided (agent + checkpoints), human (needs human lead)"
   fi
@@ -3667,10 +3672,14 @@ elif [[ "${1:-}" == "--harden" ]]; then
     all_issues=$(gh issue list "${issue_args[@]}" 2>/dev/null) || { echo "Error querying issues."; exit 1; }
     echo "Hardening all open issues..."
     echo ""
-    while IFS= read -r issue_json; do
-      issue_num=$(echo "$issue_json" | jq -r '.number')
+    # Collect issue numbers first to avoid stdin conflicts (claude -p reads stdin)
+    harden_nums=()
+    while IFS= read -r num; do
+      harden_nums+=("$num")
+    done < <(echo "$all_issues" | jq -r '.[].number')
+    for issue_num in "${harden_nums[@]}"; do
       harden_task "$issue_num"
-    done < <(echo "$all_issues" | jq -c '.[]')
+    done
   fi
   exit 0
 elif [[ "${1:-}" == "--investigate" ]]; then
