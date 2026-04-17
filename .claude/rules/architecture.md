@@ -27,6 +27,11 @@ PAK has three main components:
 - Jinja2 templates + Tailwind CSS (via CDN)
 - Reads agent state from `.claude/` directory of target project
 - Tabs: overview, control, setup, settings, costs, logs, tasks, memory, queue
+- **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
+  - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
+  - Dashboard renders handoff action buttons on the control page
+  - Enables chaining: `ship-pr` -> `agent-resume` -> `approve-merge`
+- **Claude command execution**: dashboard can run Claude Code commands via `start_claude_command()`
 
 ## Config System
 - Template: `agent/gwym-agent.conf.default`
@@ -40,3 +45,5 @@ PAK has three main components:
 - **Adapter pattern for task sources**: swap GitHub/JIRA/Linear without touching orchestrator
 - **Markdown commands**: Claude Code loads them as slash commands, agent injects them as prompts
 - **Persona auto-detection**: detects project tech stack and loads relevant guidance
+- **Handoff protocol**: JSON-based inter-agent state passing enables autonomous multi-agent workflows
+- **Short-lived agent model**: agents run, write handoff, exit; dashboard provides the interactive bridge

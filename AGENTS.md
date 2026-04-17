@@ -125,14 +125,33 @@ Examples:
 - Never include "Generated with Claude Code" or similar AI branding in PR descriptions
 - Include a Test Plan section
 
-### What NOT to Do
-- **No AI Co-Author lines** in commits -- no Claude/AI references anywhere
-- **No "Generated with Claude Code"** in PR descriptions -- no AI branding
-- **No fix-on-fix commits** -- squash fixes into the commit they fix
-- **No separate doc commits** for changes in the same PR
-- **Never push without explicit user approval**
-- **Never commit**: `.env`, `.DS_Store`, `__pycache__/`, `*.pyc`, `dashboard/.venv/`
-- **No emojis** in code, documentation, or commit messages
+### Agent Autonomy Boundaries
+
+**Always do** (no approval needed):
+- Run `shellcheck` on changed bash scripts before committing
+- Run tests and linters before creating PRs
+- Fix lint/shellcheck warnings in code you wrote
+- Read any file in the repo to understand context
+- Create feature branches from main
+
+**Ask first** (requires explicit user approval):
+- Push to remote / create PRs
+- Modify database schemas or migration files
+- Add, remove, or upgrade dependencies
+- Delete files or branches
+- Modify CI/CD pipeline configuration
+- Change project configuration files (`gwym-agent.conf`, `.claude/settings.json`)
+- Run commands that affect external services (GitHub API writes, notifications)
+
+**Never do**:
+- Add AI co-author lines or AI branding in commits/PRs
+- Force-push to main/master
+- Commit secrets (`.env`, credentials, API keys)
+- Commit generated files (`.DS_Store`, `__pycache__/`, `*.pyc`, `dashboard/.venv/`)
+- Use fix-on-fix commits -- squash fixes into the commit they fix
+- Create separate doc commits for changes in the same PR
+- Use emojis in code, documentation, or commit messages
+- Skip pre-commit hooks (`--no-verify`)
 
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key
@@ -147,13 +166,19 @@ This repo has Claude Code commands in `.claude/commands/`:
 
 ### Core Development
 - `/develop` -- implement a feature or fix (TDD approach)
+- `/develop-full` -- full workflow: TDD, lint, test, self-review, commit organization
 - `/test` -- run linter and tests iteratively
-- `/review` -- pre-push code review with auto-fix
+- `/review` -- pre-push code review with scoring and auto-fix (>=3/10)
 - `/debug` -- systematic debugging workflow
 
 ### Pull Requests
-- `/pr` -- create PR with standard template
+- `/pr` -- create PR with standard template (supports AI feedback + incremental workflows)
 - `/rearrange-commits` -- reorganize branch commits into clean steps
+
+### Shipping Pipeline
+- `/ship-pr` -- rebase approved PR, push, write handoff for dashboard
+- `/approve-merge` -- merge PR (squash), delete branch, post-merge cleanup
+- `/agent-resume` -- smart router: assess PR state and decide next action
 
 ### Project Management
 - `/new-feature` -- set up a new feature branch
