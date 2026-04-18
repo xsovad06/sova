@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 import sova
+from sova.cli.commands.run import run_issue
 from sova.config.loader import load_config
 
 app = typer.Typer(
@@ -18,6 +19,7 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+app.command(name="run")(run_issue)
 console = Console(stderr=True)
 
 
