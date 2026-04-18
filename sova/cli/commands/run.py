@@ -25,7 +25,8 @@ async def _run_workflow(issue: str, *, project_dir: Path | None, force: bool) ->
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
-    from sova.core.workflow import WorkflowEngine, build_pipeline
+    from sova.core.steps import get_developer_steps
+    from sova.core.workflow import WorkflowEngine
     from sova.db.session import init_db
 
     resolved_dir = project_dir or Path.cwd()
@@ -46,7 +47,7 @@ async def _run_workflow(issue: str, *, project_dir: Path | None, force: bool) ->
 
     console.print(f"[bold]Starting developer workflow for issue #{issue}[/bold]")
 
-    steps = build_pipeline()
+    steps = get_developer_steps()
     engine = WorkflowEngine(steps=steps, ctx=ctx)
     result = await engine.run()
 
