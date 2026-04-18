@@ -34,7 +34,10 @@ class PushStep(BaseStep):
         if not result.success:
             return GateCheckResult(passed=False, reason="Failed to count commits ahead of base")
 
-        count = int(result.stdout.strip() or "0")
+        try:
+            count = int(result.stdout.strip() or "0")
+        except ValueError:
+            return GateCheckResult(passed=False, reason=f"Unexpected rev-list output: {result.stdout[:100]}")
         if count == 0:
             return GateCheckResult(passed=False, reason="No commits ahead of base branch")
         return GateCheckResult(passed=True)
