@@ -46,13 +46,21 @@ class DevelopStep(BaseStep):
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: development must produce actual code changes."""
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        has_changes = bool(
+            (diff_result.success and diff_result.stdout.strip())
+            or (staged.success and staged.stdout.strip())
+        )
+        # Also check commits ahead of base branch (Claude may have committed)
+        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
+        has_commits = bool(log_result.success and log_result.stdout.strip())
 
-        if not diff_result.success or not diff_result.stdout.strip():
-            return GateCheckResult(
-                passed=False,
-                reason="Development produced no code changes",
-            )
-        return GateCheckResult(passed=True)
+        if has_changes or has_commits:
+            return GateCheckResult(passed=True)
+        return GateCheckResult(
+            passed=False,
+            reason="Development produced no code changes",
+        )
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
         return False

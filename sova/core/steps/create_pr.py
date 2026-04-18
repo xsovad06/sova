@@ -19,7 +19,7 @@ class CreatePRStep(BaseStep):
 
         task_title = ctx.task.title if ctx.task else ctx.branch_name
         title = f"feat(#{ctx.issue_number}): {task_title}"
-        body = f"Closes #{ctx.issue_number}\n\nAutonomous development by SOVA agent."
+        body = f"Closes #{ctx.issue_number}"
 
         try:
             pr_info = await git_ops.create_pr(
