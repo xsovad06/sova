@@ -2842,6 +2842,18 @@ triage_task() {
     reasons="${reasons}- Vague/minimal description\n"
   fi
 
+  # File/module hints: agent knows where to look
+  if echo "$body" | grep -qiE 'files.*to.*change|modules.*to.*change|likely.*files|apps/|src/|lib/'; then
+    score=$((score + 2))
+    reasons="${reasons}+ File/module hints provided\n"
+  fi
+
+  # Anti-requirements: explicit constraints prevent scope creep
+  if echo "$body" | grep -qiE 'out of scope|do not (modify|change|add|remove)|constraints|anti.?require'; then
+    score=$((score + 1))
+    reasons="${reasons}+ Out-of-scope constraints defined\n"
+  fi
+
   # Complexity signals: UI/design, multiple components, external deps
   local was_set=false
   shopt -q nocasematch && was_set=true
@@ -2930,6 +2942,18 @@ $(head -200 "$f")
 "
     done
   done
+
+  # Load GitHub issue templates (define expected issue structure)
+  for f in "$REPO_ROOT"/.github/ISSUE_TEMPLATE/*.md "$REPO_ROOT"/.github/ISSUE_TEMPLATE/*.yml; do
+    [[ -f "$f" ]] || continue
+    local name
+    name=$(basename "$f")
+    docs="${docs}
+--- Issue Template: $name ---
+$(cat "$f")
+"
+  done
+
   echo "$docs"
 }
 
@@ -2967,7 +2991,7 @@ Labels: $labels
 Current body:
 $body
 
-Project vision and strategy documents:
+Project vision, strategy documents, and issue templates:
 ${project_docs:-No project vision/strategy documents found. Use your best judgment based on the issue context.}
 
 All open issues in this project (for dependency/ordering analysis):
@@ -2975,6 +2999,8 @@ $all_issues
 
 Your task:
 1. CONTEXT ENRICHMENT: Search the project vision/strategy docs for any details relevant to this issue.
+   Also use the GitHub issue templates to understand the expected structure — your enriched
+   acceptance criteria and scope sections should match the template format for this issue type.
    Extract specific requirements, design decisions, or constraints that should be reflected in the issue.
 
 2. ACCEPTANCE CRITERIA: Write clear, testable acceptance criteria as checkboxes.
