@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import StepExecution, TaskRun
+
+_TERMINAL_STATUSES = {"done", "failed", "rejected"}
 
 
 async def list_runs(
@@ -46,7 +50,7 @@ async def get_run_summary(session: AsyncSession) -> dict:
     failed = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status == "failed"))
 
     # "active" means any status that isn't terminal
-    terminal = {"done", "failed", "rejected"}
+    terminal = _TERMINAL_STATUSES
     active = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status.not_in(terminal)))
 
     return {
@@ -55,6 +59,22 @@ async def get_run_summary(session: AsyncSession) -> dict:
         "failed": failed or 0,
         "active": active or 0,
     }
+
+
+async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Manually abandoned") -> dict | None:
+    """Mark a non-terminal run as failed (e.g. stale paused runs)."""
+    run = await session.get(TaskRun, run_id)
+    if run is None:
+        return None
+    terminal = _TERMINAL_STATUSES
+    if run.status in terminal:
+        return {"error": f"Run is already {run.status}"}
+    run.status = "failed"
+    run.error_message = reason
+    if not run.ended_at:
+        run.ended_at = datetime.now(timezone.utc)
+    await session.flush()
+    return _run_to_dict(run)
 
 
 def _run_to_dict(run: TaskRun) -> dict:

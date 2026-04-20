@@ -21,7 +21,7 @@ from decimal import Decimal
 from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.db.models import FailureRecord, StepExecution, TaskRun
+from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
@@ -288,6 +288,18 @@ class WorkflowEngine:
                 record.output_summary = result.summary
                 record.error_message = result.error if not result.success else None
                 record.ended_at = datetime.now(timezone.utc)
+
+                # Create a CostRecord so per-phase/issue breakdowns stay accurate
+                if result.cost_usd > 0:
+                    cost_record = CostRecord(
+                        task_run_id=self._task_run_id,
+                        phase=record.step_name,
+                        issue=self._ctx.issue_number,
+                        model="claude",
+                        cost_usd=Decimal(str(result.cost_usd)),
+                        duration_ms=elapsed_ms,
+                    )
+                    session.add(cost_record)
 
     async def _update_step_execution_gate(self, step_exec_id: int, gate: GateCheckResult) -> None:
         """Record gate check result on the StepExecution."""
