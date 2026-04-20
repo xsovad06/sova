@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Tasks - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Tasks</h2>
+
+<!-- Active tasks -->
+<div class="mb-8">
+  <h3 class="text-sm font-medium text-gray-400 mb-3">Active Tasks</h3>
+  <div id="active-tasks" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Task history -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Task History</h3>
+  </div>
+  <div class="overflow-x-auto" id="task-history">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const statusColors = {
+  running: 'bg-accent-green',
+  pending: 'bg-accent-yellow',
+  in_progress: 'bg-accent/80',
+  done: 'bg-accent-green',
+  failed: 'bg-accent-red',
+  cancelled: 'bg-gray-500',
+};
+
+function statusBadge(status) {
+  var color = statusColors[status] || 'bg-gray-500';
+  return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ' + color + '/20 text-' + color.replace('bg-', '') + '">' +
+    '<span class="w-1.5 h-1.5 rounded-full ' + color + '"></span>' +
+    escapeHtml(status) + '</span>';
+}
+
+async function loadTasks() {
+  try {
+    var [activeData, historyData] = await Promise.all([
+      fetchAPI(apiUrl('/tasks/active')),
+      fetchAPI(apiUrl('/tasks/history')),
+    ]);
+
+    // Active task cards
+    var container = document.getElementById('active-tasks');
+    if (activeData.tasks.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-sm">No active tasks</p>';
+    } else {
+      container.innerHTML = activeData.tasks.map(function(t) {
+        var prLink = t.pr_number ? '<span class="text-xs text-accent">PR #' + t.pr_number + '</span>' : '';
+        return '<div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">' +
+          '<div class="flex items-center justify-between mb-2">' +
+            '<span class="text-sm font-medium">#' + escapeHtml(String(t.issue_number || t.id)) + '</span>' +
+            statusBadge(t.status) +
+          '</div>' +
+          '<div class="space-y-1 text-xs text-gray-400">' +
+            '<p>Role: <span class="text-gray-300">' + escapeHtml(t.role || 'unknown') + '</span></p>' +
+            '<p>Step: <span class="text-gray-300">' + escapeHtml(t.current_step || '--') + '</span></p>' +
+            (t.branch_name ? '<p>Branch: <span class="text-gray-300 font-mono">' + escapeHtml(t.branch_name) + '</span></p>' : '') +
+            (prLink ? '<p>' + prLink + '</p>' : '') +
+            '<p>Time: <span class="text-gray-300">' + escapeHtml(t.time_in_state || '--') + '</span></p>' +
+            '<p>Cost: <span class="text-accent-green">$' + (t.total_cost_usd || 0).toFixed(4) + '</span></p>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // History table
+    var histEl = document.getElementById('task-history');
+    if (historyData.tasks.length === 0) {
+      histEl.innerHTML = '<p class="text-gray-500 text-sm p-4">No completed tasks</p>';
+    } else {
+      var rows = historyData.tasks.map(function(t) {
+        var endedAt = t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--';
+        return '<tr class="border-b border-gray-700/30 hover:bg-surface-hover/50">' +
+          '<td class="px-4 py-2 text-sm">#' + escapeHtml(String(t.issue_number || t.id)) + '</td>' +
+          '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.role || '--') + '</td>' +
+          '<td class="px-4 py-2 text-sm">' + statusBadge(t.status) + '</td>' +
+          '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.current_step || '--') + '</td>' +
+          '<td class="px-4 py-2 text-sm text-accent-green">$' + (t.total_cost_usd || 0).toFixed(4) + '</td>' +
+          '<td class="px-4 py-2 text-sm text-gray-500">' + endedAt + '</td>' +
+        '</tr>';
+      }).join('');
+      histEl.innerHTML = '<table class="w-full text-left">' +
+        '<thead><tr class="border-b border-gray-700/50 text-xs text-gray-500 uppercase">' +
+          '<th class="px-4 py-2">Issue</th><th class="px-4 py-2">Role</th><th class="px-4 py-2">Status</th>' +
+          '<th class="px-4 py-2">Last Step</th><th class="px-4 py-2">Cost</th><th class="px-4 py-2">Ended</th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+  } catch (e) {
+    console.error('Failed to load tasks:', e);
+  }
+}
+
+loadTasks();
+setInterval(loadTasks, 15000);
+</script>
+{% endblock %}

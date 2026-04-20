@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Queue - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Priority Queue</h2>
+
+<div id="queue-content">
+  <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var priorityStyles = {
+  P0: { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
+  P1: { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
+  P2: { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
+  P3: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
+};
+
+var stateLabels = {
+  researched: 'Researched',
+  in_progress: 'In Progress',
+  triaged: 'Triaged',
+  backlog: 'Backlog',
+};
+
+async function loadQueue() {
+  try {
+    var data = await fetchAPI(apiUrl('/queue'));
+    var container = document.getElementById('queue-content');
+
+    if (data.queue.length === 0) {
+      container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
+        '<p class="text-gray-500">No actionable issues in queue</p>' +
+        '<p class="text-xs text-gray-600 mt-1">Issues appear here when they have agent-managed labels</p>' +
+      '</div>';
+      return;
+    }
+
+    container.innerHTML = '<div class="space-y-3">' + data.queue.map(function(item) {
+      var style = priorityStyles[item.priority_label] || priorityStyles.P3;
+      var stateText = stateLabels[item.state] || item.state;
+
+      var labelsHtml = (item.labels || []).map(function(l) {
+        return '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-700/50 text-gray-400">' + escapeHtml(l) + '</span>';
+      }).join(' ');
+
+      return '<div class="bg-surface-card rounded-lg border ' + style.border + ' p-4 flex items-center gap-4">' +
+        '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
+        '<div class="flex-1 min-w-0">' +
+          '<div class="flex items-center gap-2">' +
+            '<span class="text-sm font-medium">#' + escapeHtml(item.issue) + '</span>' +
+            '<span class="text-sm text-gray-300 truncate">' + escapeHtml(item.title) + '</span>' +
+          '</div>' +
+          '<div class="flex items-center gap-2 mt-1">' +
+            '<span class="text-xs text-gray-500">' + stateText + '</span>' +
+            (labelsHtml ? '<span class="text-gray-600">|</span>' + labelsHtml : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="flex items-center gap-2 shrink-0">' +
+          '<span class="text-xs text-gray-500">' + escapeHtml(item.action) + '</span>' +
+          '<button onclick="startFromQueue(\'' + escapeHtml(item.issue) + '\')" ' +
+            'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">' +
+            'Start' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') + '</div>';
+  } catch (e) {
+    console.error('Failed to load queue:', e);
+  }
+}
+
+async function startFromQueue(issue) {
+  var btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  btn.style.opacity = '0.5';
+
+  try {
+    await fetch(apiUrl('/queue/start/' + issue), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/control';
+  } catch (e) {
+    alert('Failed to start agent: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Start';
+    btn.style.opacity = '1';
+  }
+}
+
+loadQueue();
+setInterval(loadQueue, 15000);
+</script>
+{% endblock %}
