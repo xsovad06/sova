@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Logs - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Logs</h2>
+
+<!-- Filters -->
+<div class="flex items-center gap-3 mb-4 flex-wrap">
+  <div class="flex items-center gap-1">
+    <button onclick="setLevel('')" id="lvl-all" class="px-2.5 py-1 rounded text-xs bg-accent/20 text-accent">ALL</button>
+    <button onclick="setLevel('INFO')" id="lvl-info" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover">INFO</button>
+    <button onclick="setLevel('WARNING')" id="lvl-warn" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover">WARN</button>
+    <button onclick="setLevel('ERROR')" id="lvl-error" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover">ERROR</button>
+  </div>
+  <select id="component-filter" onchange="loadLogs()" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-2 py-1">
+    <option value="">All components</option>
+  </select>
+  <input type="text" id="search-filter" placeholder="Search logs..."
+         class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1 w-48"
+         oninput="debouncedLoad()">
+  <label class="flex items-center gap-1 text-xs text-gray-400 ml-auto">
+    <input type="checkbox" id="auto-refresh" checked onchange="toggleAutoRefresh()">
+    Auto-refresh (5s)
+  </label>
+</div>
+
+<!-- Log entries -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-2 border-b border-gray-700/50 flex items-center justify-between">
+    <span class="text-xs text-gray-500" id="log-count"></span>
+  </div>
+  <div class="p-2 max-h-[700px] overflow-y-auto font-mono text-xs" id="log-entries">
+    <p class="text-gray-500 p-2">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var currentLevel = '';
+var refreshTimer = null;
+var debounceTimer = null;
+
+var levelColors = {
+  DEBUG: 'text-gray-500',
+  INFO: 'text-accent-green',
+  WARNING: 'text-accent-yellow',
+  ERROR: 'text-accent-red',
+  CRITICAL: 'text-accent-red font-bold',
+};
+
+function setLevel(level) {
+  currentLevel = level;
+  // Update button styles
+  ['all', 'info', 'warn', 'error'].forEach(function(id) {
+    var btn = document.getElementById('lvl-' + id);
+    btn.className = 'px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover';
+  });
+  var activeId = level === '' ? 'all' : level === 'WARNING' ? 'warn' : level.toLowerCase();
+  var activeBtn = document.getElementById('lvl-' + activeId);
+  if (activeBtn) activeBtn.className = 'px-2.5 py-1 rounded text-xs bg-accent/20 text-accent';
+  loadLogs();
+}
+
+function debouncedLoad() {
+  clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(loadLogs, 300);
+}
+
+async function loadLogs() {
+  try {
+    var component = document.getElementById('component-filter').value;
+    var search = document.getElementById('search-filter').value;
+    var params = new URLSearchParams();
+    if (currentLevel) params.set('level', currentLevel);
+    if (component) params.set('component', component);
+    if (search) params.set('search', search);
+    params.set('limit', '500');
+
+    var data = await fetchAPI(apiUrl('/logs?' + params.toString()));
+    var container = document.getElementById('log-entries');
+    var countEl = document.getElementById('log-count');
+    countEl.textContent = data.total + ' entries' + (data.entries.length < data.total ? ' (showing ' + data.entries.length + ')' : '');
+
+    if (data.entries.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 p-2">No log entries found</p>';
+      return;
+    }
+
+    container.innerHTML = data.entries.map(function(e) {
+      var color = levelColors[e.level] || 'text-gray-400';
+      var ts = e.timestamp ? e.timestamp.substring(11, 19) : '';
+      var lvl = (e.level || 'INFO').padEnd(7);
+      var comp = e.component ? '[' + e.component + '] ' : '';
+      return '<div class="py-0.5 px-2 hover:bg-surface-hover/50 ' + color + '">' +
+        '<span class="text-gray-600">' + ts + '</span> ' +
+        '<span>' + lvl + '</span> ' +
+        '<span class="text-gray-500">' + escapeHtml(comp) + '</span>' +
+        escapeHtml(e.message || '') +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load logs:', e);
+  }
+}
+
+async function loadComponents() {
+  try {
+    var data = await fetchAPI(apiUrl('/logs/components'));
+    var select = document.getElementById('component-filter');
+    data.components.forEach(function(c) {
+      var opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      select.appendChild(opt);
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function toggleAutoRefresh() {
+  if (document.getElementById('auto-refresh').checked) {
+    refreshTimer = setInterval(loadLogs, 5000);
+  } else {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+loadComponents();
+loadLogs();
+refreshTimer = setInterval(loadLogs, 5000);
+</script>
+{% endblock %}
