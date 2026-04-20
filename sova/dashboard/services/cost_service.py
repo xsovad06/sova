@@ -1,4 +1,4 @@
-"""Cost tracking queries -- CostRecord from the database."""
+"""Cost tracking queries -- CostRecord + TaskRun from the database."""
 
 from __future__ import annotations
 
@@ -7,23 +7,33 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sova.db.models import CostRecord
+from sova.db.models import CostRecord, TaskRun
 
 
 async def get_summary(session: AsyncSession) -> dict:
-    """Aggregate cost summary."""
-    total = await session.scalar(select(func.sum(CostRecord.cost_usd))) or 0
-    count = await session.scalar(select(func.count(CostRecord.id))) or 0
+    """Aggregate cost summary.
+
+    Uses TaskRun.total_cost_usd for totals (always written, even for paused runs)
+    and TaskRun count for invocations.  CostRecord is used for per-model/phase breakdowns.
+    """
+    total = await session.scalar(select(func.sum(TaskRun.total_cost_usd))) or 0
+    count = await session.scalar(select(func.count(TaskRun.id))) or 0
 
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_total = (
-        await session.scalar(select(func.sum(CostRecord.cost_usd)).where(CostRecord.recorded_at >= today_start)) or 0
+        await session.scalar(
+            select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= today_start)
+        )
+        or 0
     )
 
     week_ago = now - timedelta(days=7)
     rolling_7d = (
-        await session.scalar(select(func.sum(CostRecord.cost_usd)).where(CostRecord.recorded_at >= week_ago)) or 0
+        await session.scalar(
+            select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= week_ago)
+        )
+        or 0
     )
 
     return {

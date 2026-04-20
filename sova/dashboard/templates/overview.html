@@ -30,7 +30,7 @@
 <div class="bg-surface-card rounded-lg border border-gray-700/50">
   <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
     <h3 class="text-sm font-medium text-gray-400">Recent Runs</h3>
-    <a href="/runs" class="text-xs text-accent hover:text-blue-300 transition-colors">View all</a>
+    <a href="{{ prefix|default('') }}/runs" class="text-xs text-accent hover:text-blue-300 transition-colors">View all</a>
   </div>
   <div class="overflow-x-auto" id="recent-runs">
     <p class="text-gray-500 text-sm p-4">Loading...</p>
@@ -43,8 +43,8 @@
 async function loadOverview() {
   try {
     const [overview, runs] = await Promise.all([
-      fetchAPI('/api/overview'),
-      fetchAPI('/api/runs?limit=10'),
+      fetchAPI(apiUrl('/overview')),
+      fetchAPI(apiUrl('/runs?limit=10')),
     ]);
 
     // Run counts
@@ -59,12 +59,11 @@ async function loadOverview() {
     document.getElementById('card-7d-cost').textContent = '$' + c.rolling_7d_usd.toFixed(2);
     document.getElementById('card-invocations').textContent = `${c.total_invocations} total invocations`;
 
-    // Completion rate
-    const total = r.done + r.failed;
-    const rate = total > 0 ? Math.round((r.done / total) * 100) : 0;
-    document.getElementById('card-completion').textContent = total > 0 ? rate + '%' : 'N/A';
+    // Completion rate (denominator includes all runs, not just terminal ones)
+    const rate = r.total > 0 ? Math.round((r.done / r.total) * 100) : 0;
+    document.getElementById('card-completion').textContent = r.total > 0 ? rate + '%' : 'N/A';
     document.getElementById('card-completion-detail').textContent =
-      `${r.done} done, ${r.failed} failed`;
+      `${r.done} done, ${r.failed} failed of ${r.total} total`;
 
     // Recent runs table
     renderRunsTable(runs.runs, 'recent-runs');
