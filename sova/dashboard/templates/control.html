@@ -162,7 +162,7 @@ const actionStyles = {
 
 async function pollStatus() {
   try {
-    const data = await fetchAPI('/api/control/status');
+    const data = await fetchAPI(apiUrl('/control/status'));
     const dot = document.getElementById('status-dot');
     const text = document.getElementById('status-text');
     const pid = document.getElementById('status-pid');
@@ -237,7 +237,7 @@ function dismissComplete() {
 
 async function pollOutput() {
   try {
-    const data = await fetchAPI('/api/control/output?since=' + outputCursor);
+    const data = await fetchAPI(apiUrl('/control/output?since=' + outputCursor));
     if (data.lines.length > 0) {
       const el = document.getElementById('agent-output');
       if (outputCursor === 0) el.innerHTML = '';
@@ -285,7 +285,7 @@ async function startAgent() {
       '<p class="text-gray-500 text-xs animate-pulse">Starting agent...</p>';
     document.getElementById('complete-panel').classList.add('hidden');
     hideAllHandoffPanels();
-    await fetch('/api/control/start', {
+    await fetch(apiUrl('/control/start'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({issue, role, force}),
@@ -298,7 +298,7 @@ async function startAgent() {
 
 async function stopAgent() {
   try {
-    await fetch('/api/control/stop', {method: 'POST'});
+    await fetch(apiUrl('/control/stop'), {method: 'POST'});
   } catch (e) {
     console.error('Failed to stop agent:', e);
   }
@@ -315,7 +315,7 @@ function clearOutput() {
 
 async function checkHandoff() {
   try {
-    const res = await fetch('/api/handoff');
+    const res = await fetch(apiUrl('/handoff'));
     if (!res.ok) return;
     const data = await res.json();
 
@@ -449,7 +449,7 @@ async function executeHandoffAction(actionId) {
   }
 
   try {
-    var res = await fetch('/api/handoff/execute', {
+    var res = await fetch(apiUrl('/handoff/execute'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action_id: actionId}),
@@ -474,7 +474,7 @@ async function executeHandoffAction(actionId) {
 }
 
 async function clearHandoff() {
-  await fetch('/api/handoff/clear', {method: 'POST'});
+  await fetch(apiUrl('/handoff/clear'), {method: 'POST'});
   hideAllHandoffPanels();
   currentHandoffId = null;
   document.getElementById('start-panel').classList.remove('hidden');

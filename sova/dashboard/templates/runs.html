@@ -26,7 +26,7 @@
 <script>
 async function loadRuns() {
   const status = document.getElementById('status-filter').value;
-  const url = '/api/runs?limit=50' + (status ? '&status=' + status : '');
+  const url = apiUrl('/runs?limit=50' + (status ? '&status=' + status : ''));
   try {
     const data = await fetchAPI(url);
     renderRunsTable(data.runs, 'runs-table');

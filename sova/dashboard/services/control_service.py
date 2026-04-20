@@ -1,6 +1,6 @@
 """Agent control -- process management for the dashboard.
 
-Manages a single agent process (start/stop/status/output).
+Manages agent processes per project (start/stop/status/output).
 Uses sova.ipc.control.AgentProcess under the hood.
 Creates TaskRun + CostRecord DB entries for persistence.
 """
@@ -10,39 +10,75 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from sova.dashboard.project_context import get_project_dir, get_project_slug
 from sova.ipc.control import AgentProcess
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
 
-_process: AgentProcess | None = None
-_output_lines: deque[str] = deque(maxlen=5000)
-_reader_task: asyncio.Task | None = None
-_project_dir: Path | None = None
-_current_run_id: int | None = None
-_last_result_cost: float | None = None
+# Default slug for single-project mode
+_DEFAULT_SLUG = "__default__"
+
+
+@dataclass
+class ProjectProcess:
+    """Per-project agent process state."""
+
+    process: AgentProcess | None = None
+    output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
+    reader_task: asyncio.Task | None = None
+    current_run_id: int | None = None
+    last_result_cost: float | None = None
+    project_dir: Path = field(default_factory=Path.cwd)
+
+
+# Per-project process state
+_projects: dict[str, ProjectProcess] = {}
+
+# Legacy single-project dir (for backward compat with set_project_dir)
+_default_project_dir: Path | None = None
+
+
+def _get_state(slug: str | None = None) -> ProjectProcess:
+    """Get or create process state for a project slug."""
+    if slug is None:
+        slug = get_project_slug() or _DEFAULT_SLUG
+
+    state = _projects.get(slug)
+    if state is None:
+        project_dir = get_project_dir()
+        if project_dir is None:
+            project_dir = _default_project_dir or Path.cwd()
+        state = _projects.setdefault(slug, ProjectProcess(project_dir=project_dir.resolve()))
+
+    return state
 
 
 def set_project_dir(path: Path) -> None:
-    """Set the project directory for agent processes."""
-    global _project_dir
-    _project_dir = path
+    """Set the default project directory (single-project mode)."""
+    global _default_project_dir
+    _default_project_dir = path
+    state = _get_state(_DEFAULT_SLUG)
+    state.project_dir = path.resolve()
 
 
-def get_status() -> dict:
+def get_status(slug: str | None = None) -> dict:
     """Get current agent status."""
-    if _process is None or not _process.is_running:
+    state = _get_state(slug)
+    if state.process is None or not state.process.is_running:
         return {"status": "idle", "running": False, "pid": None}
-    return {"status": "running", "running": True, "pid": _process.pid}
+    return {"status": "running", "running": True, "pid": state.process.pid}
 
 
-def get_output(since: int = 0) -> list[str]:
+def get_output(since: int = 0, slug: str | None = None) -> list[str]:
     """Get output lines since the given cursor."""
-    lines = list(_output_lines)
+    state = _get_state(slug)
+    lines = list(state.output_lines)
     return lines[since:]
 
 
@@ -51,15 +87,16 @@ async def start_agent(
     *,
     role: str | None = None,
     force: bool = False,
+    slug: str | None = None,
 ) -> dict:
     """Start an agent process for the given issue."""
-    global _process, _reader_task, _current_run_id, _last_result_cost
+    state = _get_state(slug)
 
-    if _process is not None and _process.is_running:
-        return {"error": "Agent already running", "pid": _process.pid}
+    if state.process is not None and state.process.is_running:
+        return {"error": "Agent already running", "pid": state.process.pid}
 
-    _output_lines.clear()
-    _last_result_cost = None
+    state.output_lines.clear()
+    state.last_result_cost = None
 
     prompt = f"sova run {issue}"
     if role:
@@ -67,43 +104,40 @@ async def start_agent(
     if force:
         prompt += " --force"
 
-    cwd = _project_dir or Path.cwd()
-    _process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
+    cwd = state.project_dir
+    state.process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
 
     # Create TaskRun DB record
-    _current_run_id = await _create_task_run(issue, role or "auto")
+    state.current_run_id = await _create_task_run(issue, role or "auto", state.project_dir)
 
-    _reader_task = asyncio.create_task(_read_output(_process))
-    # Also capture stderr so errors are visible in the dashboard
-    asyncio.create_task(_read_stderr(_process))
-    # Monitor process exit to finalize DB record
-    asyncio.create_task(_wait_and_finalize(_process))
+    state.reader_task = asyncio.create_task(_read_output(state))
+    asyncio.create_task(_read_stderr(state))
+    asyncio.create_task(_wait_and_finalize(state))
 
-    log.info("agent.started", issue=issue, pid=_process.pid, cwd=str(cwd))
-    return {"status": "started", "pid": _process.pid}
+    log.info("agent.started", issue=issue, pid=state.process.pid, cwd=str(cwd))
+    return {"status": "started", "pid": state.process.pid}
 
 
-async def stop_agent() -> dict:
+async def stop_agent(slug: str | None = None) -> dict:
     """Stop the running agent process."""
-    global _process, _reader_task, _current_run_id
+    state = _get_state(slug)
 
-    if _process is None or not _process.is_running:
-        _current_run_id = None
+    if state.process is None or not state.process.is_running:
+        state.current_run_id = None
         return {"status": "idle", "message": "No agent running"}
 
-    pid = _process.pid
-    await _process.stop()
+    pid = state.process.pid
+    await state.process.stop()
 
-    if _reader_task and not _reader_task.done():
-        _reader_task.cancel()
+    if state.reader_task and not state.reader_task.done():
+        state.reader_task.cancel()
         try:
-            await _reader_task
+            await state.reader_task
         except asyncio.CancelledError:
             pass
 
-    _process = None
-    _reader_task = None
-    # _current_run_id is cleared by _wait_and_finalize
+    state.process = None
+    state.reader_task = None
 
     log.info("agent.stopped", pid=pid)
     return {"status": "stopped", "pid": pid}
@@ -112,18 +146,19 @@ async def stop_agent() -> dict:
 async def start_command(
     command: str,
     args: dict | None = None,
+    slug: str | None = None,
 ) -> dict:
     """Start a Claude Code command (e.g. /agent-resume, /approve-merge).
 
     Used by handoff action execution to run Claude commands.
     """
-    global _process, _reader_task, _current_run_id, _last_result_cost
+    state = _get_state(slug)
 
-    if _process is not None and _process.is_running:
-        return {"error": "Agent already running", "pid": _process.pid}
+    if state.process is not None and state.process.is_running:
+        return {"error": "Agent already running", "pid": state.process.pid}
 
-    _output_lines.clear()
-    _last_result_cost = None
+    state.output_lines.clear()
+    state.last_result_cost = None
 
     # Build prompt: "Run the /<command>" with args serialized
     prompt = f"/{command}"
@@ -131,37 +166,39 @@ async def start_command(
         arg_parts = [f"{k}={v}" for k, v in args.items()]
         prompt += " " + " ".join(arg_parts)
 
-    cwd = _project_dir or Path.cwd()
-    _process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
+    cwd = state.project_dir
+    state.process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
 
     # Create TaskRun DB record for the command
     issue = (args or {}).get("issue", command)
-    _current_run_id = await _create_task_run(str(issue), f"command:{command}")
+    state.current_run_id = await _create_task_run(str(issue), f"command:{command}", state.project_dir)
 
-    _reader_task = asyncio.create_task(_read_output(_process))
-    asyncio.create_task(_read_stderr(_process))
-    asyncio.create_task(_wait_and_finalize(_process))
+    state.reader_task = asyncio.create_task(_read_output(state))
+    asyncio.create_task(_read_stderr(state))
+    asyncio.create_task(_wait_and_finalize(state))
 
-    log.info("command.started", command=command, pid=_process.pid, cwd=str(cwd))
-    return {"status": "started", "pid": _process.pid}
+    log.info("command.started", command=command, pid=state.process.pid, cwd=str(cwd))
+    return {"status": "started", "pid": state.process.pid}
 
 
-async def _read_output(process: AgentProcess) -> None:
+async def _read_output(state: ProjectProcess) -> None:
     """Background task to read stdout lines into the deque.
 
     Parses Claude CLI stream-json output to extract human-readable text.
     Stream-json emits JSONL where assistant messages have content blocks.
     """
     try:
-        async for line in process.stdout_lines():
-            text = _parse_stream_line(line)
+        if state.process is None:
+            return
+        async for line in state.process.stdout_lines():
+            text = _parse_stream_line(line, state)
             if text:
-                _output_lines.append(text)
+                state.output_lines.append(text)
     except asyncio.CancelledError:
         pass
 
 
-def _parse_stream_line(line: str) -> str:
+def _parse_stream_line(line: str, state: ProjectProcess) -> str:
     """Extract readable text from a Claude stream-json line.
 
     Returns the text content, or the raw line if it's not parseable JSON.
@@ -194,23 +231,23 @@ def _parse_stream_line(line: str) -> str:
             return delta.get("text", "")
 
     # Result summary at the end -- only emit cost marker, not the text
-    # (the text was already emitted via assistant messages)
     if msg_type == "result":
         cost = data.get("total_cost_usd")
         if cost:
-            global _last_result_cost
-            _last_result_cost = float(cost)
+            state.last_result_cost = float(cost)
             return f"\n--- Result [cost: ${cost}] ---"
 
     return ""
 
 
-async def _read_stderr(process: AgentProcess) -> None:
+async def _read_stderr(state: ProjectProcess) -> None:
     """Background task to capture stderr lines into the output deque."""
     try:
-        async for line in process.stderr_lines():
+        if state.process is None:
+            return
+        async for line in state.process.stderr_lines():
             if line.strip():
-                _output_lines.append(f"[stderr] {line}")
+                state.output_lines.append(f"[stderr] {line}")
     except asyncio.CancelledError:
         pass
 
@@ -218,13 +255,13 @@ async def _read_stderr(process: AgentProcess) -> None:
 # -- DB persistence ----------------------------------------------------------
 
 
-async def _create_task_run(issue: str, role: str) -> int | None:
+async def _create_task_run(issue: str, role: str, project_dir: Path) -> int | None:
     """Create a TaskRun record and return its ID."""
     try:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session()
+        session = await get_session(project_dir=project_dir)
         async with session.begin():
             task_run = TaskRun(
                 issue_number=issue,
@@ -243,16 +280,16 @@ async def _create_task_run(issue: str, role: str) -> int | None:
         return None
 
 
-async def _finalize_task_run(run_id: int, *, exit_code: int) -> None:
+async def _finalize_task_run(run_id: int, *, exit_code: int, state: ProjectProcess) -> None:
     """Update the TaskRun with final status and cost."""
     try:
         from sova.db.models import CostRecord, TaskRun
         from sova.db.session import get_session
 
         status = "done" if exit_code == 0 else "failed"
-        cost = Decimal(str(_last_result_cost)) if _last_result_cost else Decimal("0")
+        cost = Decimal(str(state.last_result_cost)) if state.last_result_cost else Decimal("0")
 
-        session = await get_session()
+        session = await get_session(project_dir=state.project_dir)
         async with session.begin():
             task_run = await session.get(TaskRun, run_id)
             if task_run is None:
@@ -264,7 +301,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int) -> None:
                 task_run.error_message = f"Process exited with code {exit_code}"
 
             # Also create a CostRecord if we captured cost
-            if _last_result_cost and _last_result_cost > 0:
+            if state.last_result_cost and state.last_result_cost > 0:
                 cost_record = CostRecord(
                     task_run_id=run_id,
                     phase="agent",
@@ -279,13 +316,13 @@ async def _finalize_task_run(run_id: int, *, exit_code: int) -> None:
         log.warning("task_run.finalize_failed", exc_info=True)
 
 
-async def _wait_and_finalize(process: AgentProcess) -> None:
+async def _wait_and_finalize(state: ProjectProcess) -> None:
     """Wait for the process to exit, then finalize the DB record."""
-    global _current_run_id
-
-    exit_code = await process.wait()
-    run_id = _current_run_id
-    _current_run_id = None
+    if state.process is None:
+        return
+    exit_code = await state.process.wait()
+    run_id = state.current_run_id
+    state.current_run_id = None
 
     if run_id is not None:
-        await _finalize_task_run(run_id, exit_code=exit_code)
+        await _finalize_task_run(run_id, exit_code=exit_code, state=state)

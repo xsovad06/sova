@@ -66,11 +66,11 @@
 <script>
 async function loadCosts() {
   const [summary, daily, byIssue, byPhase, byModel] = await Promise.all([
-    fetchAPI('/api/costs/summary'),
-    fetchAPI('/api/costs/daily'),
-    fetchAPI('/api/costs/by-issue'),
-    fetchAPI('/api/costs/by-phase'),
-    fetchAPI('/api/costs/by-model'),
+    fetchAPI(apiUrl('/costs/summary')),
+    fetchAPI(apiUrl('/costs/daily')),
+    fetchAPI(apiUrl('/costs/by-issue')),
+    fetchAPI(apiUrl('/costs/by-phase')),
+    fetchAPI(apiUrl('/costs/by-model')),
   ]);
 
   document.getElementById('cost-total').textContent = '$' + summary.total_cost_usd.toFixed(2);

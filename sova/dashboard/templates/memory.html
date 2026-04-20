@@ -35,7 +35,7 @@ function debounceSearch() {
 async function loadMemories() {
   const q = document.getElementById('memory-search').value.trim();
   const category = document.getElementById('category-filter').value;
-  let url = '/api/memory?limit=100';
+  let url = apiUrl('/memory?limit=100');
   if (q) url += '&q=' + encodeURIComponent(q);
   if (category) url += '&category=' + encodeURIComponent(category);
 

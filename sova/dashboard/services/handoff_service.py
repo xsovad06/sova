@@ -3,6 +3,8 @@
 Reads, archives, and clears the file-based handoff that agents write
 to `.claude/agent-control/handoff.json`. The dashboard polls this file
 to render action panels.
+
+Supports multi-project mode via project context or set_project_dir().
 """
 
 from __future__ import annotations
@@ -12,65 +14,76 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sova.dashboard.project_context import get_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.handoff")
 
-# Module-level state set by set_project_dir()
-_project_dir: Path | None = None
+# Default project dir for single-project mode
+_default_project_dir: Path | None = None
 
-# mtime-based cache to avoid re-reading unchanged files
-_handoff_cache: tuple[float, dict | None] = (0.0, None)
+# Per-project mtime-based cache: project_dir_str -> (mtime, data)
+_handoff_caches: dict[str, tuple[float, dict | None]] = {}
 
 
 def set_project_dir(path: Path) -> None:
-    """Set the project directory (called once during app startup)."""
-    global _project_dir
-    _project_dir = path
+    """Set the default project directory (called once during app startup)."""
+    global _default_project_dir
+    _default_project_dir = path
 
 
-def _handoff_file() -> Path:
-    assert _project_dir is not None, "handoff_service.set_project_dir() not called"
-    return _project_dir / ".claude" / "agent-control" / "handoff.json"
+def _resolve_project_dir() -> Path:
+    """Resolve the active project directory."""
+    ctx_dir = get_project_dir()
+    if ctx_dir is not None:
+        return ctx_dir
+    assert _default_project_dir is not None, "handoff_service: no project directory configured"
+    return _default_project_dir
 
 
-def _archive_dir() -> Path:
-    assert _project_dir is not None
-    return _project_dir / ".claude" / "agent-control" / "handoff-archive"
+def _handoff_file(project_dir: Path | None = None) -> Path:
+    d = project_dir or _resolve_project_dir()
+    return d / ".claude" / "agent-control" / "handoff.json"
 
 
-def get_handoff() -> dict | None:
+def _archive_dir(project_dir: Path | None = None) -> Path:
+    d = project_dir or _resolve_project_dir()
+    return d / ".claude" / "agent-control" / "handoff-archive"
+
+
+def get_handoff(project_dir: Path | None = None) -> dict | None:
     """Read the current handoff file with mtime-based caching."""
-    global _handoff_cache
+    hf = _handoff_file(project_dir)
+    cache_key = str(hf.parent.parent)
 
-    hf = _handoff_file()
     if not hf.exists():
-        _handoff_cache = (0.0, None)
+        _handoff_caches[cache_key] = (0.0, None)
         return None
 
     try:
         mtime = hf.stat().st_mtime
-        if mtime == _handoff_cache[0]:
-            return _handoff_cache[1]
+        cached = _handoff_caches.get(cache_key)
+        if cached and mtime == cached[0]:
+            return cached[1]
 
         data = json.loads(hf.read_text())
-        _handoff_cache = (mtime, data)
+        _handoff_caches[cache_key] = (mtime, data)
         return data
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def archive_handoff() -> dict | None:
+def archive_handoff(project_dir: Path | None = None) -> dict | None:
     """Move the current handoff to the archive directory. Returns the archived data."""
-    hf = _handoff_file()
+    hf = _handoff_file(project_dir)
     if not hf.exists():
         return None
 
-    handoff = get_handoff()
+    handoff = get_handoff(project_dir)
     if not handoff:
         return None
 
-    archive = _archive_dir()
+    archive = _archive_dir(project_dir)
     archive.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -86,14 +99,14 @@ def archive_handoff() -> dict | None:
     return handoff
 
 
-def clear_handoff() -> bool:
+def clear_handoff(project_dir: Path | None = None) -> bool:
     """Archive and remove the current handoff file."""
-    archive_handoff()
-    hf = _handoff_file()
+    archive_handoff(project_dir)
+    hf = _handoff_file(project_dir)
     if hf.exists():
         hf.unlink()
-        global _handoff_cache
-        _handoff_cache = (0.0, None)
+        cache_key = str(hf.parent.parent)
+        _handoff_caches[cache_key] = (0.0, None)
         return True
     return False
 
