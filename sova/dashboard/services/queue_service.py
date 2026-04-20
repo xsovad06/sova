@@ -39,7 +39,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     Uses the GitHub adapter via the project's sova.toml config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url.
     """
-    from sova.adapters.factory import create_adapter
+    from sova.adapters import create_adapter
     from sova.config.loader import load_config
 
     try:
@@ -48,12 +48,12 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
         log.debug("No config found for queue, returning empty")
         return []
 
-    repo = cfg.github.repo
+    repo = cfg.github_repo
     if not repo:
         return []
 
     try:
-        adapter = create_adapter(cfg)
+        adapter = create_adapter(cfg.task_source.type, repo)
         tasks = await adapter.list_tasks()
     except Exception as e:
         log.warning("Failed to fetch tasks for queue: %s", e)
