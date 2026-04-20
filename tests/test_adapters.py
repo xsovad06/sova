@@ -85,6 +85,7 @@ class TestTaskAdapterInterface:
             "add_label",
             "remove_label",
             "post_comment",
+            "edit_body",
             "get_state",
             "link_pr",
         ]
@@ -297,6 +298,20 @@ class TestGitHubAdapter:
         call_args = mock_run.call_args[0]
         assert "--remove-label" in call_args
         assert "agent:ready" in call_args
+
+    # -- edit_body --
+
+    async def test_edit_body(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        await self.adapter.edit_body("42", "Updated body content")
+
+        call_args = mock_run.call_args[0]
+        assert "issue" in call_args
+        assert "edit" in call_args
+        assert "42" in call_args
+        assert "--body" in call_args
+        assert "Updated body content" in call_args
 
     # -- post_comment --
 

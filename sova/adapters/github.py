@@ -149,6 +149,18 @@ class GitHubAdapter(TaskAdapter):
             body,
         )
 
+    async def edit_body(self, task_id: str, body: str) -> None:
+        await run(
+            "gh",
+            "issue",
+            "edit",
+            task_id,
+            "--repo",
+            self.repo,
+            "--body",
+            body,
+        )
+
     async def get_state(self, task_id: str) -> TaskState:
         result = await run(
             "gh",

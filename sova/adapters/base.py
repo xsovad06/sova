@@ -84,6 +84,10 @@ class TaskAdapter(ABC):
         """Post a comment on the task."""
 
     @abstractmethod
+    async def edit_body(self, task_id: str, body: str) -> None:
+        """Update the issue body/description on the tracker."""
+
+    @abstractmethod
     async def get_state(self, task_id: str) -> TaskState:
         """Read the current lifecycle state from the tracker."""
 
