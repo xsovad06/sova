@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import StepExecution, TaskRun
 
-_TERMINAL_STATUSES = {"done", "failed", "rejected"}
+_TERMINAL_STATUSES = {"done", "failed", "rejected", "interrupted"}
 
 
 async def list_runs(

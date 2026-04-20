@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sova.config.registry import has_projects, list_projects
 from sova.dashboard.routers import control, costs, handoff, logs, memory, overview, queue, runs, settings, setup, tasks
 from sova.dashboard.services import control_service, handoff_service
+from sova.dashboard.services.control_service import recover_stale_runs
 from sova.db.session import close_db, init_db, init_db_for_project
 
 BASE = Path(__file__).parent
@@ -54,8 +55,10 @@ def create_app(
                 p = Path(path_str)
                 if p.is_dir():
                     await init_db_for_project(p)
+                    await recover_stale_runs(p)
         else:
             await init_db(project_dir)
+            await recover_stale_runs(project_dir)
         yield
         await close_db()
 

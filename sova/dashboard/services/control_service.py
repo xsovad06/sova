@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -90,6 +91,9 @@ async def start_agent(
     slug: str | None = None,
 ) -> dict:
     """Start an agent process for the given issue."""
+    # Normalize: strip "#" prefix so "#67" and "67" are treated the same
+    issue = issue.lstrip("#").strip()
+
     state = _get_state(slug)
 
     if state.process is not None and state.process.is_running:
@@ -107,15 +111,20 @@ async def start_agent(
     cwd = state.project_dir
     state.process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
 
-    # Create TaskRun DB record
-    state.current_run_id = await _create_task_run(issue, role or "auto", state.project_dir)
+    pid = state.process.pid
+
+    # Create TaskRun DB record (with PID for recovery after dashboard crash)
+    state.current_run_id = await _create_task_run(issue, role or "auto", state.project_dir, pid=pid)
+
+    # Transition the issue to IN_PROGRESS on the tracker (non-blocking)
+    asyncio.create_task(_transition_to_in_progress(issue, state.project_dir))
 
     state.reader_task = asyncio.create_task(_read_output(state))
     asyncio.create_task(_read_stderr(state))
     asyncio.create_task(_wait_and_finalize(state))
 
-    log.info("agent.started", issue=issue, pid=state.process.pid, cwd=str(cwd))
-    return {"status": "started", "pid": state.process.pid}
+    log.info("agent.started", issue=issue, pid=pid, cwd=str(cwd))
+    return {"status": "started", "pid": pid}
 
 
 async def stop_agent(slug: str | None = None) -> dict:
@@ -171,7 +180,9 @@ async def start_command(
 
     # Create TaskRun DB record for the command
     issue = (args or {}).get("issue", command)
-    state.current_run_id = await _create_task_run(str(issue), f"command:{command}", state.project_dir)
+    state.current_run_id = await _create_task_run(
+        str(issue), f"command:{command}", state.project_dir, pid=state.process.pid
+    )
 
     state.reader_task = asyncio.create_task(_read_output(state))
     asyncio.create_task(_read_stderr(state))
@@ -252,10 +263,99 @@ async def _read_stderr(state: ProjectProcess) -> None:
         pass
 
 
+# -- Startup recovery --------------------------------------------------------
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
+    """Detect and mark stale 'running' TaskRuns on dashboard startup.
+
+    For each TaskRun still in 'running' status:
+    - If it has a PID and the process is still alive: leave it (still running)
+    - Otherwise: mark as 'interrupted' so the user can restart it
+
+    Returns a list of interrupted run summaries for logging.
+    """
+    try:
+        from sqlalchemy import select
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        session = await get_session(project_dir=project_dir)
+        interrupted = []
+
+        async with session.begin():
+            stmt = select(TaskRun).where(TaskRun.status == "running")
+            result = await session.execute(stmt)
+            stale_runs = result.scalars().all()
+
+            for run in stale_runs:
+                # If PID is known and process is alive, skip
+                if run.pid and _is_process_alive(run.pid):
+                    log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                    continue
+
+                run.status = "interrupted"
+                run.error_message = "Dashboard restarted while agent was running"
+                run.ended_at = datetime.now(timezone.utc)
+                interrupted.append({
+                    "run_id": run.id,
+                    "issue": run.issue_number,
+                    "role": run.role,
+                    "pid": run.pid,
+                })
+                log.warning(
+                    "recovery.interrupted",
+                    run_id=run.id,
+                    issue=run.issue_number,
+                    pid=run.pid,
+                )
+
+        await session.close()
+
+        if interrupted:
+            log.info("recovery.complete", interrupted_count=len(interrupted))
+        return interrupted
+    except Exception:
+        log.warning("recovery.failed", exc_info=True)
+        return []
+
+
+# -- Tracker state transitions -----------------------------------------------
+
+
+async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
+    """Move the issue to IN_PROGRESS on the configured tracker.
+
+    Uses the project's adapter (GitHub, Jira, MCP, etc.) to transition
+    the issue state. Failures are logged but do not block the agent start.
+    """
+    try:
+        from sova.adapters import create_adapter
+        from sova.adapters.base import TaskState
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        adapter = create_adapter(cfg.task_source.type, cfg.github_repo)
+        await adapter.transition_state(issue, TaskState.IN_PROGRESS)
+        log.info("issue.transitioned", issue=issue, state="in_progress")
+    except Exception:
+        log.warning("issue.transition_failed", issue=issue, exc_info=True)
+
+
 # -- DB persistence ----------------------------------------------------------
 
 
-async def _create_task_run(issue: str, role: str, project_dir: Path) -> int | None:
+async def _create_task_run(issue: str, role: str, project_dir: Path, *, pid: int | None = None) -> int | None:
     """Create a TaskRun record and return its ID."""
     try:
         from sova.db.models import TaskRun
@@ -268,6 +368,7 @@ async def _create_task_run(issue: str, role: str, project_dir: Path) -> int | No
                 role=role,
                 status="running",
                 current_step="agent",
+                pid=pid,
             )
             session.add(task_run)
             await session.flush()
