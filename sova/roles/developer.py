@@ -49,6 +49,9 @@ class DeveloperRole(AgentRole):
 
         log.info("developer.start", issue=ctx.issue_number)
 
+        # Claim the issue on the tracker immediately
+        await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_PROGRESS)
+
         steps = self.get_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
