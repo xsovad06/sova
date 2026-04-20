@@ -1,8 +1,8 @@
-# AI Agent Guidance for Project Automation Kit (PAK)
+# AI Agent Guidance for SOVA
 
 This file provides cross-cutting guidance for any AI agent (Claude Code, Cursor, CodeRabbit, etc.) working in this repository.
 
-PAK (Project Automation Kit) is a standalone application that any software project can install to gain autonomous AI-assisted development capabilities. It takes issues from your tracker, develops solutions using TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, and learns from mistakes. The agent is written in bash, the dashboard in Python/FastAPI.
+SOVA (Software Orchestration Via Agents) is a standalone application that any software project can install to gain autonomous AI-assisted development capabilities. It takes issues from your tracker, develops solutions using TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, and learns from mistakes. The system is written in Python (CLI, roles, scheduler, dashboard), with a legacy bash orchestrator still present during migration.
 
 ## Context Index
 
@@ -12,47 +12,50 @@ PAK (Project Automation Kit) is a standalone application that any software proje
 | `AGENTS.md` | Cross-cutting conventions for all AI tools (this file) |
 | `README.md` | Project overview, installation, usage |
 | `docs/VISION.md` | Product vision and roadmap |
+| `docs/REWRITE-PLAN.md` | SOVA rewrite plan with phase details |
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
+| `.claude/rules/workflow.md` | Development workflow and task finding |
 
 ## Project Structure
 
 ```
 project-automation-kit/
-  pak                              # CLI entry point (bash)
-  agent/
-    orchestrator.sh                # Main autonomous agent (~3500 lines bash)
-    install.sh                     # Per-project installer
-    setup-wizard.sh                # Interactive CLI setup wizard
-    detect-persona.sh              # Auto-detects project tech stack
-    pak-agent.conf.default         # Config template (shell-sourceable key=value)
-    adapters/                      # Task source adapters
-      interface.sh                 # Adapter interface + loader
-      github.sh                   # GitHub Issues adapter
-      jira.sh                     # JIRA adapter (skeleton)
-      linear.sh                   # Linear adapter (skeleton)
-      manual.sh                   # Manual task input
-  commands/                        # 19 standardized commands (markdown)
+  sova/                            # Python package (SOVA)
+    cli/                           # Typer CLI (sova run, sova triage, etc.)
+      app.py                       # Main app, subcommand registration
+      commands/                    # Command modules (run, triage, project, pr, admin, memory)
+    core/                          # Workflow engine, steps, state machine, context
+    roles/                         # Agent roles (triage, researcher, developer, reviewer, dispatcher)
+    adapters/                      # Task source plugins (github, jira, linear, manual)
+    llm/                           # Claude CLI wrapper, cost tracking
+    git/                           # Git operations, worktree management
+    ipc/                           # Inter-process: handoff protocol, process control, notifications
+    knowledge/                     # Memory CRUD, tier loading, personas, review patterns
+    scheduler/                     # Watch loop, parallel executor, server daemon
+    dashboard/                     # FastAPI web UI
+      app.py                       # App factory
+      routers/                     # API routes (overview, runs, costs, control, handoff, memory)
+      services/                    # Business logic (run, cost, memory, control, handoff)
+      templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
+      static/                      # JS + CSS + favicon + logo
+    commands/                      # Command distribution (catalog, templates, manifest, distribution)
+    config/                        # Pydantic Settings + TOML config
+    db/                            # SQLAlchemy ORM models + async session
+    utils/                         # Logging, shell, formatting
+  agent/                           # Legacy bash orchestrator (kept during migration)
+  commands/                        # 20 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system
-  templates/
-    CLAUDE.md                      # Starter Claude Code config for target projects
-    AGENTS.md                      # Cross-AI-tool guidance template
-    agent-memory/                  # Memory file templates
-  dashboard/
-    app/                           # FastAPI web UI
-      main.py
-      config.py
-      routers/                     # API routes
-      services/                    # Business logic
-      templates/                   # Jinja2 HTML templates
-      static/                     # JS + CSS
-    requirements.txt
+  templates/                       # Project scaffolding templates
+  deploy/                          # systemd + launchd service files
+  tests/                           # pytest suite (403+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
+    REWRITE-PLAN.md                # SOVA rewrite plan with phase details
   assets/
     agent-icon.png                 # Notification icon
 ```
@@ -62,8 +65,8 @@ project-automation-kit/
 This project uses **GitHub Issues** with a project board.
 
 - **GitHub account**: always `xsovad06` (email: `sovicka99@gmail.com`)
-- **Issue templates**: will be added in `.github/ISSUE_TEMPLATE/`
-- **Labels**: `type:` (feature/task/infra/bug), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs)
+- **Issue templates**: `.github/ISSUE_TEMPLATE/` (bug.md, feature.md, task.md)
+- **Labels**: `type:` (feature/task/infra/bug), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs), `agent:` (triaged/researched/ready/in-progress/in-review/needs-spec/needs-research/human-only)
 
 ### Ticket workflow
 1. Pick an open issue
@@ -84,7 +87,7 @@ This project uses **GitHub Issues** with a project board.
 - **ShellCheck**: all bash scripts must pass `shellcheck` with no warnings
 - **No bashisms in shebangs**: use `#!/usr/bin/env bash`
 
-### Code Patterns -- Python (dashboard)
+### Code Patterns -- Python (CLI, agent, dashboard)
 - **Type hints**: required on all function signatures
 - **f-strings**: preferred for string formatting
 - **No emojis**: not in code or documentation
@@ -100,7 +103,7 @@ This project uses **GitHub Issues** with a project board.
 ### Testing
 - **All checks**: `make check` (lint + test, CI-equivalent)
 - **Bash scripts**: `make lint-bash` (shellcheck) + `make test-bash` (invariant `--help`)
-- **Dashboard**: `make test-py` (pytest suite in `dashboard/tests/`)
+- **Python**: `make test-py` (pytest suite in `tests/`, 403+ tests covering all `sova/` modules)
 - **Invariants**: each invariant script should handle `--help` gracefully
 - **Commands**: validate markdown structure (frontmatter, sections)
 
@@ -117,7 +120,7 @@ This project uses **GitHub Issues** with a project board.
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-Scopes: `agent`, `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`.
+Scopes: `agent`, `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`.
 
 Examples:
 - `feat(agent): add Linear task source adapter`
@@ -146,7 +149,7 @@ Examples:
 - Add, remove, or upgrade dependencies
 - Delete files or branches
 - Modify CI/CD pipeline configuration
-- Change project configuration files (`pak-agent.conf`, `.claude/settings.json`)
+- Change project configuration files (`sova.toml`, `pak-agent.conf`, `.claude/settings.json`)
 - Run commands that affect external services (GitHub API writes, notifications)
 
 **Never do**:

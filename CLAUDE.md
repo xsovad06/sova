@@ -7,12 +7,19 @@ This file provides Claude Code-specific commands and behaviors. Architecture, co
 ## Running the Project
 
 ```bash
-# CLI entry point (bash)
-pak help                            # Show all commands (requires pak on PATH)
-pak install /path/to/project        # Install PAK into a project
-pak setup /path/to/project          # Run setup wizard
+# SOVA CLI (Python -- requires pip install -e . in venv)
+sova --help                         # Show all commands
+sova install /path/to/project       # Install SOVA into a project
+sova setup /path/to/project         # Run setup wizard
+sova run 42                         # Work on issue #42
+sova triage 42                      # Triage a single issue
+sova dashboard --project /path      # Start web UI at http://localhost:8111
+sova server start                   # Start dashboard + scheduler daemon
 
-# Dashboard
+# Legacy CLI (bash -- still works during migration)
+pak help                            # Show all commands (requires pak on PATH)
+
+# Dashboard (shortcut)
 make serve                          # Start web UI at http://localhost:8111
 
 # Development

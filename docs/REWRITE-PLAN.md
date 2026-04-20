@@ -439,9 +439,9 @@ project-automation-kit/
       manual.py                       # Manual/stdin
 
     llm/                              # LLM interaction
-      claude.py                       # Claude CLI async wrapper
-      prompt_builder.py               # Prompt assembly from templates
-      cost_tracker.py                 # Cost recording + budget enforcement
+      client.py                       # Claude CLI async wrapper (invoke, streaming, model routing)
+      models.py                       # LLMResult, StreamEvent data models
+      cost.py                         # Cost recording (record_cost -> CostRecord DB)
 
     knowledge/                        # Knowledge & learning
       memory.py                       # SQLite FTS5 memory store
@@ -454,15 +454,21 @@ project-automation-kit/
       operations.py                   # Push, rebase, branch management
       invariants.py                   # Pre-push checks (calls existing bash scripts)
 
+    commands/                         # Command distribution
+      catalog.py                      # Discover + classify commands by category
+      templates.py                    # Regex-based {{ var }} rendering from config
+      manifest.py                     # .sova-manifest.json with SHA-256 hashes
+      distribution.py                 # Install/update/diff/list with conflict detection
+
     config/                           # Configuration
       models.py                       # Pydantic config models (~50 settings)
       loader.py                       # TOML loading + legacy .conf compat
       registry.py                     # Project registry (~/.config/sova/)
 
     ipc/                              # Inter-process communication
-      control.py                      # Agent status, requests, responses
-      handoff.py                      # Handoff protocol
-      notifications.py                # Desktop + Slack notifications
+      control.py                      # AgentProcess (spawn/stop/stream), ProcessTracker, ExitClassification
+      handoff.py                      # AgentHandoff (DB) + DashboardHandoff (file) models and I/O
+      notifications.py                # Desktop (osascript/notify-send) + Slack (webhook) notifications
 
     scheduler/                        # 24/7 operation
       watch.py                        # Watch mode (priority scan loop)
@@ -647,7 +653,7 @@ During migration, `sova` is the new CLI entry point (installed via pip). The old
 - `pyproject.toml`, `sova/config/`, `sova/db/`, `sova/utils/`, `sova/cli/app.py`
 - 21 tests passing, `sova --version` works, config loads, DB initializes
 
-### Phase 1: Adapters + LLM + Git Layer
+### Phase 1: Adapters + LLM + Git Layer -- COMPLETE
 GitHub Issues: #36, #37, #38
 
 - Implement `sova/adapters/` -- port GitHub adapter (#38), add JIRA/Linear stubs
@@ -657,7 +663,7 @@ GitHub Issues: #36, #37, #38
 - Tests with mocked subprocess calls
 - **Deliverable**: adapters list/get tasks, Claude can be invoked, worktrees can be created
 
-### Phase 2: Core Workflow + Roles + IPC
+### Phase 2: Core Workflow + Roles + IPC -- COMPLETE
 GitHub Issues: #35, #39, #40, #41
 
 - Implement `sova/core/state.py` -- FSM with transitions library (#35)
@@ -670,7 +676,7 @@ GitHub Issues: #35, #39, #40, #41
 - Implement `sova/knowledge/` -- memory, tiers, personas, review patterns (#41)
 - **Deliverable**: `sova run 42` assesses task, selects role, executes full workflow with gate checks
 
-### Phase 3: CLI + Triage Command
+### Phase 3: CLI + Triage Command -- COMPLETE
 GitHub Issue: #43
 
 - Implement all Typer commands in `sova/cli/commands/`
@@ -678,7 +684,7 @@ GitHub Issue: #43
 - Port remaining commands: watch, parallel, install, setup, address-pr, etc.
 - **Deliverable**: feature parity with bash `pak` CLI + new triage command
 
-### Phase 4: Dashboard Migration + Observability
+### Phase 4: Dashboard Migration + Observability -- COMPLETE
 GitHub Issue: #42
 
 - Move dashboard into `sova/dashboard/` with app factory pattern
@@ -688,7 +694,7 @@ GitHub Issue: #42
 - Enhance Control page with role-aware controls and failure context
 - **Deliverable**: `sova dashboard` serves full UI with run observability
 
-### Phase 5: Scheduler + Server Mode
+### Phase 5: Scheduler + Server Mode -- COMPLETE
 GitHub Issue: #44
 
 - Implement `sova/scheduler/watch.py` -- async watch loop with role dispatch
