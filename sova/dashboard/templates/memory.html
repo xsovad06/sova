@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Memory - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Agent Memory</h2>
+
+<!-- Search -->
+<div class="flex items-center gap-3 mb-4">
+  <input type="text" id="memory-search" placeholder="Search memories..."
+         class="bg-surface-card text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-64"
+         oninput="debounceSearch()">
+  <select id="category-filter" onchange="loadMemories()" class="bg-surface-card text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5">
+    <option value="">All categories</option>
+    <option value="learning">Learning</option>
+    <option value="pattern">Pattern</option>
+    <option value="review_finding">Review finding</option>
+    <option value="debugging">Debugging</option>
+  </select>
+  <span class="text-xs text-gray-500" id="memory-count">-- entries</span>
+</div>
+
+<!-- Memory list -->
+<div class="space-y-3" id="memory-list">
+  <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let searchTimer = null;
+function debounceSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadMemories, 300);
+}
+
+async function loadMemories() {
+  const q = document.getElementById('memory-search').value.trim();
+  const category = document.getElementById('category-filter').value;
+  let url = '/api/memory?limit=100';
+  if (q) url += '&q=' + encodeURIComponent(q);
+  if (category) url += '&category=' + encodeURIComponent(category);
+
+  try {
+    const data = await fetchAPI(url);
+    document.getElementById('memory-count').textContent = data.total + ' entries';
+
+    const el = document.getElementById('memory-list');
+    if (data.memories.length === 0) {
+      el.innerHTML = '<p class="text-gray-500 text-sm">No memories found</p>';
+      return;
+    }
+
+    el.innerHTML = data.memories.map(m => `
+      <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple">${escapeHtml(m.category)}</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-accent/10 text-accent">${escapeHtml(m.tier)}</span>
+          <span class="text-xs text-gray-600 ml-auto">${m.updated_at ? new Date(m.updated_at).toLocaleDateString() : ''}</span>
+        </div>
+        <h4 class="text-sm font-medium text-gray-200 mb-1">${escapeHtml(m.title)}</h4>
+        <p class="text-xs text-gray-400 whitespace-pre-wrap">${escapeHtml(m.content)}</p>
+        ${m.tags ? `<div class="mt-2 flex gap-1 flex-wrap">${m.tags.split(',').map(t =>
+          `<span class="text-xs px-1.5 py-0.5 rounded bg-surface text-gray-500">${escapeHtml(t.trim())}</span>`
+        ).join('')}</div>` : ''}
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Failed to load memories:', e);
+  }
+}
+
+loadMemories();
+</script>
+{% endblock %}

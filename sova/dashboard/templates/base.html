@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SOVA Dashboard{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            sidebar: { DEFAULT: '#1e1e2e', hover: '#313244', active: '#45475a' },
+            surface: { DEFAULT: '#181825', card: '#1e1e2e', hover: '#313244' },
+            accent: { DEFAULT: '#89b4fa', green: '#a6e3a1', red: '#f38ba8', yellow: '#f9e2af', purple: '#cba6f7' },
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="bg-surface text-gray-200 min-h-screen flex">
+  <!-- Sidebar -->
+  <nav class="w-56 bg-sidebar flex flex-col fixed h-full border-r border-gray-700/50">
+    <div class="p-4 border-b border-gray-700/50">
+      <a href="/" class="text-lg font-semibold text-accent hover:text-blue-300 transition-colors">SOVA</a>
+      <p class="text-xs text-gray-500 mt-1">Dashboard</p>
+    </div>
+    <div class="flex-1 py-2">
+      {% set nav_items = [
+        ("overview", "/overview", "Overview", "#"),
+        ("runs", "/runs", "Runs", ">"),
+        ("costs", "/costs", "Costs", "$"),
+        ("control", "/control", "Control", "!"),
+        ("memory", "/memory", "Memory", "@"),
+      ] %}
+      {% for id, href, label, icon in nav_items %}
+      <a href="{{ href }}"
+         class="flex items-center px-4 py-2.5 text-sm transition-colors
+                {{ 'bg-sidebar-active text-white' if page == id else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
+        <span class="w-6 text-center mr-3 text-base">{{ icon }}</span>
+        {{ label }}
+      </a>
+      {% endfor %}
+    </div>
+    <div class="p-3 border-t border-gray-700/50 text-xs text-gray-600">
+      SOVA v0.1.0
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="ml-56 flex-1 p-6 min-h-screen">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    window.SOVA_API_PREFIX = "/api";
+  </script>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

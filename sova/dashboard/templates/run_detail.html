@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run_id }} - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center gap-3 mb-6">
+  <a href="/runs" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to runs</a>
+  <h2 class="text-2xl font-semibold">Run #{{ run_id }}</h2>
+</div>
+
+<!-- Run summary -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6" id="run-summary">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Issue</p>
+    <p class="text-xl font-bold text-accent" id="detail-issue">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Role</p>
+    <p class="text-xl font-bold" id="detail-role">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Status</p>
+    <p class="text-xl font-bold" id="detail-status">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Cost</p>
+    <p class="text-xl font-bold text-accent-green" id="detail-cost">--</p>
+  </div>
+</div>
+
+<!-- Step timeline -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Step Timeline</h3>
+  </div>
+  <div class="p-4" id="step-timeline">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Error details (if any) -->
+<div id="error-section" class="hidden bg-surface-card rounded-lg border border-accent-red/50 mb-6">
+  <div class="px-4 py-3 border-b border-accent-red/30">
+    <h3 class="text-sm font-medium text-accent-red">Error</h3>
+  </div>
+  <div class="p-4">
+    <pre class="text-sm text-gray-300 whitespace-pre-wrap" id="error-message"></pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadRunDetail() {
+  try {
+    const data = await fetchAPI('/api/runs/{{ run_id }}');
+    const run = data.run;
+    const steps = data.steps;
+
+    document.getElementById('detail-issue').textContent = '#' + run.issue_number;
+    document.getElementById('detail-role').textContent = run.role;
+    document.getElementById('detail-status').textContent = run.status;
+    document.getElementById('detail-status').className = 'text-xl font-bold ' + statusColor(run.status);
+    document.getElementById('detail-cost').textContent = '$' + run.total_cost_usd.toFixed(4);
+
+    // Error
+    if (run.error_message) {
+      document.getElementById('error-section').classList.remove('hidden');
+      document.getElementById('error-message').textContent = run.error_message;
+    }
+
+    // Steps
+    if (steps.length === 0) {
+      document.getElementById('step-timeline').innerHTML = '<p class="text-gray-500 text-sm">No steps recorded</p>';
+    } else {
+      document.getElementById('step-timeline').innerHTML = `
+        <div class="space-y-2">
+          ${steps.map(s => `
+            <div class="flex items-center gap-3 p-2 rounded ${s.status === 'done' ? 'bg-accent-green/5' : s.status === 'failed' ? 'bg-accent-red/5' : 'bg-surface-hover'}">
+              <span class="w-2 h-2 rounded-full flex-shrink-0 ${s.status === 'done' ? 'bg-accent-green' : s.status === 'failed' ? 'bg-accent-red' : 'bg-gray-500'}"></span>
+              <span class="text-sm font-medium w-32">${escapeHtml(s.step_name)}</span>
+              <span class="text-xs text-gray-500 w-20">${formatDuration(s.duration_ms)}</span>
+              <span class="text-xs text-accent-green w-20">$${s.cost_usd.toFixed(4)}</span>
+              <span class="text-xs ${s.status === 'done' ? 'text-accent-green' : s.status === 'failed' ? 'text-accent-red' : 'text-gray-400'}">${s.status}</span>
+              ${s.error_message ? `<span class="text-xs text-accent-red ml-auto truncate max-w-xs">${escapeHtml(s.error_message)}</span>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+  } catch (e) {
+    console.error('Failed to load run detail:', e);
+  }
+}
+
+loadRunDetail();
+</script>
+{% endblock %}

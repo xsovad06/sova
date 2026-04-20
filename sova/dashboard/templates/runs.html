@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Runs - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Run History</h2>
+
+<!-- Filters -->
+<div class="flex items-center gap-3 mb-4">
+  <select id="status-filter" onchange="loadRuns()" class="bg-surface-card text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5">
+    <option value="">All statuses</option>
+    <option value="done">Done</option>
+    <option value="failed">Failed</option>
+    <option value="developing">In progress</option>
+    <option value="pending">Pending</option>
+  </select>
+</div>
+
+<!-- Runs table -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="overflow-x-auto" id="runs-table">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadRuns() {
+  const status = document.getElementById('status-filter').value;
+  const url = '/api/runs?limit=50' + (status ? '&status=' + status : '');
+  try {
+    const data = await fetchAPI(url);
+    renderRunsTable(data.runs, 'runs-table');
+  } catch (e) {
+    console.error('Failed to load runs:', e);
+  }
+}
+
+loadRuns();
+</script>
+{% endblock %}

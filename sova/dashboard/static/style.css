@@ -1,0 +1,12 @@
+/* SOVA Dashboard -- minimal overrides, Tailwind handles most styling */
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #181825; }
+::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #585b70; }
+
+/* Prose overrides for rendered markdown */
+.prose-invert code { color: #89b4fa; background: #313244; padding: 0.1em 0.3em; border-radius: 0.25rem; font-size: 0.85em; }
+.prose-invert pre { background: #181825; border: 1px solid #45475a; border-radius: 0.5rem; }
+.prose-invert pre code { background: none; padding: 0; }

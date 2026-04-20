@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Overview - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Overview</h2>
+
+<!-- Summary cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8" id="summary-cards">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Active Runs</p>
+    <p class="text-3xl font-bold mt-1" id="card-active">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-active-detail"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Today's Cost</p>
+    <p class="text-3xl font-bold text-accent-green mt-1" id="card-today-cost">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">7-Day Cost</p>
+    <p class="text-3xl font-bold text-accent-yellow mt-1" id="card-7d-cost">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-invocations"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Completion Rate</p>
+    <p class="text-3xl font-bold text-accent-purple mt-1" id="card-completion">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-completion-detail"></p>
+  </div>
+</div>
+
+<!-- Recent runs -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+    <h3 class="text-sm font-medium text-gray-400">Recent Runs</h3>
+    <a href="/runs" class="text-xs text-accent hover:text-blue-300 transition-colors">View all</a>
+  </div>
+  <div class="overflow-x-auto" id="recent-runs">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadOverview() {
+  try {
+    const [overview, runs] = await Promise.all([
+      fetchAPI('/api/overview'),
+      fetchAPI('/api/runs?limit=10'),
+    ]);
+
+    // Run counts
+    const r = overview.runs;
+    document.getElementById('card-active').textContent = r.active;
+    document.getElementById('card-active-detail').textContent =
+      `${r.done} done, ${r.failed} failed of ${r.total} total`;
+
+    // Costs
+    const c = overview.costs;
+    document.getElementById('card-today-cost').textContent = '$' + c.today_cost_usd.toFixed(2);
+    document.getElementById('card-7d-cost').textContent = '$' + c.rolling_7d_usd.toFixed(2);
+    document.getElementById('card-invocations').textContent = `${c.total_invocations} total invocations`;
+
+    // Completion rate
+    const total = r.done + r.failed;
+    const rate = total > 0 ? Math.round((r.done / total) * 100) : 0;
+    document.getElementById('card-completion').textContent = total > 0 ? rate + '%' : 'N/A';
+    document.getElementById('card-completion-detail').textContent =
+      `${r.done} done, ${r.failed} failed`;
+
+    // Recent runs table
+    renderRunsTable(runs.runs, 'recent-runs');
+  } catch (e) {
+    console.error('Failed to load overview:', e);
+  }
+}
+
+loadOverview();
+setInterval(loadOverview, 10000);
+</script>
+{% endblock %}

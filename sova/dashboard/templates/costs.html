@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Costs - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Cost Tracking</h2>
+
+<!-- Summary row -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Total</p>
+    <p class="text-2xl font-bold text-accent-green" id="cost-total">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Today</p>
+    <p class="text-2xl font-bold" id="cost-today">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">7-Day</p>
+    <p class="text-2xl font-bold" id="cost-7d">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Invocations</p>
+    <p class="text-2xl font-bold" id="cost-invocations">--</p>
+  </div>
+</div>
+
+<!-- Daily chart -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Daily Costs (14 days)</h3>
+  </div>
+  <div class="p-4" id="daily-chart">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Three-column: by issue, by phase, by model -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <h3 class="text-sm font-medium text-gray-400">By Issue</h3>
+    </div>
+    <div class="p-4 overflow-x-auto" id="by-issue">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <h3 class="text-sm font-medium text-gray-400">By Phase</h3>
+    </div>
+    <div class="p-4 overflow-x-auto" id="by-phase">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <h3 class="text-sm font-medium text-gray-400">By Model</h3>
+    </div>
+    <div class="p-4 overflow-x-auto" id="by-model">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadCosts() {
+  const [summary, daily, byIssue, byPhase, byModel] = await Promise.all([
+    fetchAPI('/api/costs/summary'),
+    fetchAPI('/api/costs/daily'),
+    fetchAPI('/api/costs/by-issue'),
+    fetchAPI('/api/costs/by-phase'),
+    fetchAPI('/api/costs/by-model'),
+  ]);
+
+  document.getElementById('cost-total').textContent = '$' + summary.total_cost_usd.toFixed(2);
+  document.getElementById('cost-today').textContent = '$' + summary.today_cost_usd.toFixed(2);
+  document.getElementById('cost-7d').textContent = '$' + summary.rolling_7d_usd.toFixed(2);
+  document.getElementById('cost-invocations').textContent = summary.total_invocations;
+
+  // Daily chart (CSS bars)
+  const maxCost = Math.max(...daily.map(d => d.cost_usd), 0.01);
+  document.getElementById('daily-chart').innerHTML = daily.length === 0
+    ? '<p class="text-gray-500 text-sm">No cost data</p>'
+    : `<div class="flex items-end gap-1 h-32">
+        ${daily.map(d => {
+          const pct = (d.cost_usd / maxCost) * 100;
+          return `<div class="flex flex-col items-center flex-1 group">
+            <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${d.cost_usd.toFixed(2)}</span>
+            <div class="w-full bg-accent/70 rounded-t transition-all" style="height: ${Math.max(pct, 2)}%"></div>
+            <span class="text-xs text-gray-600 mt-1 rotate-45 origin-left">${d.date.substring(5)}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+
+  // By issue
+  document.getElementById('by-issue').innerHTML = byIssue.length === 0
+    ? '<p class="text-gray-500 text-sm">No data</p>'
+    : renderCostTable(byIssue, 'issue');
+
+  // By phase
+  document.getElementById('by-phase').innerHTML = byPhase.length === 0
+    ? '<p class="text-gray-500 text-sm">No data</p>'
+    : renderCostTable(byPhase, 'phase');
+
+  // By model
+  document.getElementById('by-model').innerHTML = byModel.length === 0
+    ? '<p class="text-gray-500 text-sm">No data</p>'
+    : renderCostTable(byModel, 'model');
+}
+
+function renderCostTable(data, keyField) {
+  return `<table class="w-full text-sm">
+    <thead><tr class="text-gray-500 text-xs uppercase">
+      <th class="text-left pb-2">${keyField}</th><th class="text-right pb-2">Cost</th>
+      <th class="text-right pb-2">Count</th>
+    </tr></thead>
+    <tbody>${data.map(row => `<tr class="border-t border-gray-700/30">
+      <td class="py-1.5 text-accent">${escapeHtml(row[keyField])}</td>
+      <td class="py-1.5 text-right text-accent-green">$${row.cost_usd.toFixed(2)}</td>
+      <td class="py-1.5 text-right text-gray-400">${row.count || row.invocations || 0}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+loadCosts();
+</script>
+{% endblock %}
