@@ -51,7 +51,7 @@ async function loadOverview() {
     const r = overview.runs;
     document.getElementById('card-active').textContent = r.active;
     document.getElementById('card-active-detail').textContent =
-      `${r.done} done, ${r.failed} failed of ${r.total} total`;
+      `${r.total} total: ${r.done} done, ${r.failed} failed`;
 
     // Costs
     const c = overview.costs;
@@ -59,11 +59,12 @@ async function loadOverview() {
     document.getElementById('card-7d-cost').textContent = '$' + c.rolling_7d_usd.toFixed(2);
     document.getElementById('card-invocations').textContent = `${c.total_invocations} total invocations`;
 
-    // Completion rate (denominator includes all runs, not just terminal ones)
-    const rate = r.total > 0 ? Math.round((r.done / r.total) * 100) : 0;
-    document.getElementById('card-completion').textContent = r.total > 0 ? rate + '%' : 'N/A';
+    // Completion rate: done / (done + failed) -- only count finished runs
+    const finished = r.done + r.failed;
+    const rate = finished > 0 ? Math.round((r.done / finished) * 100) : 0;
+    document.getElementById('card-completion').textContent = finished > 0 ? rate + '%' : 'N/A';
     document.getElementById('card-completion-detail').textContent =
-      `${r.done} done, ${r.failed} failed of ${r.total} total`;
+      `${r.done} done, ${r.failed} failed` + (r.active > 0 ? `, ${r.active} active` : '');
 
     // Recent runs table
     renderRunsTable(runs.runs, 'recent-runs');

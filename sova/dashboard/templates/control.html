@@ -108,6 +108,16 @@
   </div>
 </div>
 
+<!-- Interrupted runs banner (shown after dashboard restart) -->
+<div id="interrupted-banner" class="hidden bg-yellow-900/20 border border-yellow-600/30 rounded-lg mb-6 p-4">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-sm font-medium text-yellow-400">Interrupted Runs</h3>
+    <button onclick="dismissInterrupted()" class="text-[10px] text-gray-500 hover:text-gray-300">Dismiss</button>
+  </div>
+  <p class="text-xs text-gray-400 mb-3">These agent runs were interrupted when the dashboard was restarted.</p>
+  <div id="interrupted-list" class="space-y-2"></div>
+</div>
+
 <!-- Start form (hidden when handoff is active) -->
 <div id="start-panel" class="bg-surface-card rounded-lg border border-gray-700/50 mb-6 p-4">
   <h3 class="text-sm font-medium text-gray-400 mb-3">Start Agent Run</h3>
@@ -488,9 +498,58 @@ function toggleHandoffDetails() {
   btn.textContent = isHidden ? 'Hide details' : 'Show details';
 }
 
+/* --- Interrupted runs recovery --- */
+
+async function checkInterrupted() {
+  try {
+    const data = await fetchAPI(apiUrl('/control/interrupted'));
+    const runs = data.interrupted || [];
+    const banner = document.getElementById('interrupted-banner');
+    const list = document.getElementById('interrupted-list');
+
+    if (runs.length === 0) {
+      banner.classList.add('hidden');
+      return;
+    }
+
+    list.innerHTML = '';
+    runs.forEach(run => {
+      const started = run.started_at ? new Date(run.started_at).toLocaleString() : '';
+      const issue = run.issue_number || run.issue || '';
+      const role = run.role === 'auto' ? '' : ` (${run.role})`;
+      const safeIssue = String(issue).replace(/'/g, "\\'");
+      const safeRole = String(run.role || '').replace(/'/g, "\\'");
+      const div = document.createElement('div');
+      div.className = 'flex items-center justify-between bg-surface rounded px-3 py-2 border border-gray-700/30';
+      div.innerHTML = `
+        <span class="text-sm text-gray-300">#${issue}${role} <span class="text-xs text-gray-500">${started}</span></span>
+        <button onclick="restartRun('${safeIssue}', '${safeRole}')"
+                class="text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+          Restart
+        </button>
+      `;
+      list.appendChild(div);
+    });
+    banner.classList.remove('hidden');
+  } catch(e) { /* ignore */ }
+}
+
+async function restartRun(issue, role) {
+  document.getElementById('start-issue').value = issue;
+  if (role && role !== 'auto') {
+    document.getElementById('start-role').value = role;
+  }
+  await startAgent();
+}
+
+function dismissInterrupted() {
+  document.getElementById('interrupted-banner').classList.add('hidden');
+}
+
 /* --- Start polling loops --- */
 pollStatus();
 checkHandoff();
+checkInterrupted();
 setInterval(pollStatus, 2000);
 setInterval(pollOutput, 1000);
 setInterval(checkHandoff, 3000);
