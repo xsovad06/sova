@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -324,6 +325,155 @@ class TestAgentProcess:
 
         assert lines == ["line 1", "line 2"]
 
+    async def test_read_stderr_lines(self) -> None:
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.stderr.readline = AsyncMock(side_effect=[b"err 1\n", b"err 2\n", b""])
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        lines = []
+        async for line in ap.stderr_lines():
+            lines.append(line)
+
+        assert lines == ["err 1", "err 2"]
+
+    async def test_stderr_lines_none_stream(self) -> None:
+        from sova.ipc.control import AgentProcess
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = None
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        lines = []
+        async for line in ap.stderr_lines():
+            lines.append(line)
+
+        assert lines == []
+
+
+class TestExitClassification:
+    async def test_classify_success(self) -> None:
+        from sova.ipc.control import AgentProcess, ExitClassification
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        assert ap.classify_exit(0) == ExitClassification.SUCCESS
+
+    async def test_classify_error(self) -> None:
+        from sova.ipc.control import AgentProcess, ExitClassification
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        assert ap.classify_exit(1) == ExitClassification.ERROR
+        assert ap.classify_exit(127) == ExitClassification.ERROR
+
+    async def test_classify_crash(self) -> None:
+        from sova.ipc.control import AgentProcess, ExitClassification
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        assert ap.classify_exit(128) == ExitClassification.CRASH
+        assert ap.classify_exit(137) == ExitClassification.CRASH  # SIGKILL
+        assert ap.classify_exit(139) == ExitClassification.CRASH  # SIGSEGV
+
+    async def test_wait_classified(self) -> None:
+        from sova.ipc.control import AgentProcess, ExitClassification
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        mock_proc.returncode = 0
+        code, classification = await ap.wait_classified()
+        assert code == 0
+        assert classification == ExitClassification.SUCCESS
+
+    async def test_wait_classified_crash(self) -> None:
+        from sova.ipc.control import AgentProcess, ExitClassification
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+        mock_proc.wait = AsyncMock(return_value=137)
+
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+
+        mock_proc.returncode = 137
+        code, classification = await ap.wait_classified()
+        assert code == 137
+        assert classification == ExitClassification.CRASH
+
+
+class TestMarkCrashed:
+    async def test_mark_crashed_updates_task_run(self) -> None:
+        from sova.ipc.control import mark_crashed
+
+        session = await get_session()
+        async with session.begin():
+            tr = TaskRun(issue_number="99", role="developer", status="developing")
+            session.add(tr)
+            await session.flush()
+            run_id = tr.id
+
+        session = await get_session()
+        await mark_crashed(run_id, "Process killed by SIGKILL (exit 137)", session)
+
+        session = await get_session()
+        async with session.begin():
+            tr = await session.get(TaskRun, run_id)
+            assert tr.status == "failed"
+            assert tr.error_message == "Process killed by SIGKILL (exit 137)"
+            assert tr.ended_at is not None
+
+    async def test_mark_crashed_missing_run(self) -> None:
+        from sova.ipc.control import mark_crashed
+
+        session = await get_session()
+        # Should not raise
+        await mark_crashed(99999, "crash", session)
+
 
 class TestProcessTracker:
     async def test_track_and_get(self) -> None:
@@ -456,7 +606,9 @@ class TestNotify:
         config = NotificationConfig(desktop=True, slack_webhook_url="")
         with patch("sova.ipc.notifications.send_desktop_notification") as mock_desktop:
             mock_desktop.return_value = None
-            await notify(config, "Title", "Body")
+            notify(config, "Title", "Body")
+            # Let the background task run
+            await asyncio.sleep(0)
             mock_desktop.assert_awaited_once_with("Title", "Body")
 
     async def test_notify_sends_slack_when_configured(self) -> None:
@@ -465,7 +617,8 @@ class TestNotify:
         config = NotificationConfig(desktop=False, slack_webhook_url="https://hooks.slack.com/x")
         with patch("sova.ipc.notifications.send_slack_notification") as mock_slack:
             mock_slack.return_value = None
-            await notify(config, "Title", "Body")
+            notify(config, "Title", "Body")
+            await asyncio.sleep(0)
             mock_slack.assert_awaited_once()
 
     async def test_notify_skips_all_when_disabled(self) -> None:
@@ -476,7 +629,8 @@ class TestNotify:
             patch("sova.ipc.notifications.send_desktop_notification") as mock_desktop,
             patch("sova.ipc.notifications.send_slack_notification") as mock_slack,
         ):
-            await notify(config, "Title", "Body")
+            notify(config, "Title", "Body")
+            await asyncio.sleep(0)
             mock_desktop.assert_not_awaited()
             mock_slack.assert_not_awaited()
 
@@ -485,5 +639,26 @@ class TestNotify:
 
         config = NotificationConfig(desktop=True)
         with patch("sova.ipc.notifications.send_desktop_notification", side_effect=Exception("boom")):
-            # Should not raise
-            await notify(config, "Title", "Body")
+            # Should not raise -- fire-and-forget
+            notify(config, "Title", "Body")
+            await asyncio.sleep(0)
+
+    async def test_notify_is_fire_and_forget(self) -> None:
+        """Verify notify() returns immediately without awaiting delivery."""
+        from sova.ipc.notifications import notify
+
+        call_order: list[str] = []
+
+        async def slow_desktop(title: str, message: str) -> None:
+            await asyncio.sleep(0.05)
+            call_order.append("desktop_done")
+
+        config = NotificationConfig(desktop=True, slack_webhook_url="")
+        with patch("sova.ipc.notifications.send_desktop_notification", side_effect=slow_desktop):
+            notify(config, "Title", "Body")
+            call_order.append("notify_returned")
+            # notify returned before desktop finished
+            assert call_order == ["notify_returned"]
+            # Wait for background task to complete
+            await asyncio.sleep(0.1)
+            assert call_order == ["notify_returned", "desktop_done"]

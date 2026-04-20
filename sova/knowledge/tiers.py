@@ -1,17 +1,21 @@
 """Tier management for the 4-tier knowledge system.
 
 Tiers:
-- project: Project-specific learned patterns (DB-backed, Tier 2)
-- shared: Cross-project generalizable knowledge (DB-backed, Tier 0)
-
-Tier 1 (project rules in .claude/rules/) and Tier 3 (session memory) are
-file-based and managed outside this module.
+- Tier 0 (shared): Cross-project knowledge from shared_knowledge_path (file-based)
+- Tier 1 (rules): Project rules in .claude/rules/*.md (file-based)
+- Tier 2 (project): Project-specific learned patterns (DB-backed)
+- Tier 3 (session): Session memory (managed outside this module)
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.db.models import Memory
 from sova.knowledge.memory import search
+from sova.utils.logging import get_logger
+
+log = get_logger(component="knowledge.tiers")
 
 
 async def load_tier(tier: str) -> list[Memory]:
@@ -26,26 +30,68 @@ async def load_tier(tier: str) -> list[Memory]:
     return await search(tier=tier)
 
 
-async def load_context(
-    *,
-    tier: str,
-    category: str | None = None,
-    tags: list[str] | None = None,
-) -> list[Memory]:
-    """Load knowledge relevant to a specific context.
+def _load_md_files(directory: Path) -> str:
+    """Read all .md files from a directory and concatenate contents."""
+    if not directory.is_dir():
+        return ""
 
-    Combines tier filtering with optional category and tag filters.
-    Useful for loading targeted knowledge before a workflow step.
+    parts = []
+    for md_file in sorted(directory.glob("*.md")):
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            parts.append(f"## {md_file.stem}\n\n{content}")
+        except OSError:
+            log.warning("tiers.read_error", path=str(md_file))
+    return "\n\n".join(parts)
+
+
+async def load_context(
+    session: object,
+    project_dir: Path,
+    config: object,
+    tier: str | None = None,
+    category: str | None = None,
+) -> str:
+    """Load knowledge from file-based and DB tiers, formatted for prompts.
+
+    Combines:
+    - Tier 0: shared knowledge from config.shared_knowledge_path (if exists)
+    - Tier 1: project rules from project_dir/.claude/rules/*.md
+    - Tier 2: DB-backed memories (filtered by tier/category)
 
     Args:
-        tier: Knowledge tier to load from.
-        category: Optional category filter.
-        tags: Optional tag filter (any match).
+        session: Database session (reserved for future use).
+        project_dir: Root directory of the target project.
+        config: ProjectConfig instance (needs shared_knowledge_path).
+        tier: Optional DB tier filter (e.g., "project", "shared").
+        category: Optional category filter for DB memories.
 
     Returns:
-        List of matching Memory records.
+        Formatted string combining all tiers, suitable for prompt injection.
     """
-    return await search(tier=tier, category=category, tags=tags)
+    sections: list[str] = []
+
+    # Tier 0: shared knowledge
+    raw_shared = getattr(config, "shared_knowledge_path", None)
+    shared_path = Path(raw_shared) if raw_shared is not None else None
+    if shared_path is not None and shared_path.is_dir():
+        shared_content = _load_md_files(shared_path)
+        if shared_content:
+            sections.append(f"# Shared Knowledge (Tier 0)\n\n{shared_content}")
+
+    # Tier 1: project rules
+    rules_dir = project_dir / ".claude" / "rules"
+    rules_content = _load_md_files(rules_dir)
+    if rules_content:
+        sections.append(f"# Project Rules (Tier 1)\n\n{rules_content}")
+
+    # Tier 2: DB-backed memories (default to "project" tier when unfiltered)
+    db_memories = await search(tier=tier or "project", category=category)
+    formatted_db = format_for_prompt(db_memories)
+    if formatted_db:
+        sections.append(f"# Agent Memory (Tier 2)\n\n{formatted_db}")
+
+    return "\n\n---\n\n".join(sections)
 
 
 def format_for_prompt(memories: list[Memory]) -> str:

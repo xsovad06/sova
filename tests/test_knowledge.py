@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -288,8 +289,8 @@ async def test_load_tier_returns_memories_for_tier() -> None:
     assert all(m.tier == "project" for m in project_mems)
 
 
-async def test_load_context_returns_relevant_knowledge() -> None:
-    """load_context() combines tier + optional category/tag filtering."""
+async def test_load_context_returns_relevant_knowledge(tmp_path: Path) -> None:
+    """load_context() combines file-based tiers + DB tier filtering."""
     from sova.knowledge.memory import store
     from sova.knowledge.tiers import load_context
 
@@ -297,9 +298,13 @@ async def test_load_context_returns_relevant_knowledge() -> None:
     await store(category="review", title="R1", content="Review.", tags=["python"], tier="project")
     await store(category="learning", title="L2", content="Shared.", tags=["python"], tier="shared")
 
-    ctx = await load_context(tier="project", category="learning")
-    assert len(ctx) == 1
-    assert ctx[0].title == "L1"
+    # Create a minimal config-like object
+    class _Cfg:
+        shared_knowledge_path = tmp_path / "nonexistent"
+
+    ctx = await load_context(None, tmp_path, _Cfg(), tier="project", category="learning")
+    assert "L1" in ctx
+    assert "R1" not in ctx
 
 
 async def test_format_knowledge_for_prompt() -> None:
@@ -315,3 +320,211 @@ async def test_format_knowledge_for_prompt() -> None:
     assert "Pattern A" in formatted
     assert "Do X." in formatted
     assert "Pattern B" in formatted
+
+
+# ---------------------------------------------------------------------------
+# personas.py -- detect_persona
+# ---------------------------------------------------------------------------
+
+
+def test_detect_persona_django(tmp_path: Path) -> None:
+    """detect_persona() returns 'django' for manage.py + django in requirements."""
+    (tmp_path / "manage.py").write_text("#!/usr/bin/env python")
+    (tmp_path / "requirements.txt").write_text("django>=4.2\ncelery\n")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "django"
+
+
+def test_detect_persona_node(tmp_path: Path) -> None:
+    """detect_persona() returns 'node' for package.json."""
+    (tmp_path / "package.json").write_text('{"name": "test"}')
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "node"
+
+
+def test_detect_persona_go(tmp_path: Path) -> None:
+    """detect_persona() returns 'go' for go.mod."""
+    (tmp_path / "go.mod").write_text("module example.com/test")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "go"
+
+
+def test_detect_persona_rust(tmp_path: Path) -> None:
+    """detect_persona() returns 'rust' for Cargo.toml."""
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "test"')
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "rust"
+
+
+def test_detect_persona_python(tmp_path: Path) -> None:
+    """detect_persona() returns 'python' for pyproject.toml."""
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "python"
+
+
+def test_detect_persona_ruby(tmp_path: Path) -> None:
+    """detect_persona() returns 'ruby' for Gemfile."""
+    (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "ruby"
+
+
+def test_detect_persona_no_match(tmp_path: Path) -> None:
+    """detect_persona() returns None when no markers found."""
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# personas.py -- load_persona
+# ---------------------------------------------------------------------------
+
+
+def test_load_persona_found(tmp_path: Path) -> None:
+    """load_persona() reads persona markdown when file exists."""
+    (tmp_path / "django.md").write_text("# Django\nUse class-based views.")
+
+    from sova.knowledge.personas import load_persona
+
+    content = load_persona("django", personas_dir=tmp_path)
+    assert "class-based views" in content
+
+
+def test_load_persona_not_found(tmp_path: Path) -> None:
+    """load_persona() returns empty string when persona file missing."""
+    from sova.knowledge.personas import load_persona
+
+    assert load_persona("nonexistent", personas_dir=tmp_path) == ""
+
+
+# ---------------------------------------------------------------------------
+# review_patterns.py
+# ---------------------------------------------------------------------------
+
+
+async def test_record_review_finding() -> None:
+    """record_review_finding() stores a review_pattern memory."""
+    from sova.knowledge.review_patterns import record_review_finding
+
+    mem = await record_review_finding(None, category="style", pattern="Use f-strings over .format()", source_pr="#10")
+    assert mem.id is not None
+    assert mem.category == "review_pattern"
+    assert "style" in mem.tags
+    assert "#10" in mem.tags
+    assert mem.content == "Use f-strings over .format()"
+
+
+async def test_record_review_finding_no_pr() -> None:
+    """record_review_finding() works without source_pr."""
+    from sova.knowledge.review_patterns import record_review_finding
+
+    mem = await record_review_finding(None, category="bug", pattern="Check null before access")
+    assert "#" not in mem.tags
+
+
+async def test_get_common_patterns() -> None:
+    """get_common_patterns() returns review_pattern memories sorted by updated_at."""
+    from sova.knowledge.review_patterns import get_common_patterns, record_review_finding
+
+    await record_review_finding(None, category="style", pattern="Pattern A")
+    await record_review_finding(None, category="perf", pattern="Pattern B")
+
+    patterns = await get_common_patterns(None)
+    assert len(patterns) == 2
+    assert all(m.category == "review_pattern" for m in patterns)
+
+
+async def test_get_common_patterns_empty() -> None:
+    """get_common_patterns() returns empty list when no patterns exist."""
+    from sova.knowledge.review_patterns import get_common_patterns
+
+    assert await get_common_patterns(None) == []
+
+
+# ---------------------------------------------------------------------------
+# tiers.py -- load_context with file-based tiers
+# ---------------------------------------------------------------------------
+
+
+async def test_load_context_with_rules_files(tmp_path: Path) -> None:
+    """load_context() includes .claude/rules/*.md content."""
+    from sova.knowledge.tiers import load_context
+
+    rules_dir = tmp_path / ".claude" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "coding.md").write_text("Always use type hints.")
+
+    class _Cfg:
+        shared_knowledge_path = tmp_path / "nonexistent"
+
+    result = await load_context(None, tmp_path, _Cfg())
+    assert "Always use type hints." in result
+    assert "Project Rules (Tier 1)" in result
+
+
+async def test_load_context_with_shared_knowledge(tmp_path: Path) -> None:
+    """load_context() includes shared knowledge when path exists."""
+    from sova.knowledge.tiers import load_context
+
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "patterns.md").write_text("Avoid global state.")
+
+    class _Cfg:
+        shared_knowledge_path = shared_dir
+
+    result = await load_context(None, tmp_path, _Cfg())
+    assert "Avoid global state." in result
+    assert "Shared Knowledge (Tier 0)" in result
+
+
+async def test_load_context_combines_all_tiers(tmp_path: Path) -> None:
+    """load_context() combines file-based tiers with DB memories."""
+    from sova.knowledge.memory import store
+    from sova.knowledge.tiers import load_context
+
+    # Tier 0: shared knowledge
+    shared_dir = tmp_path / "shared"
+    shared_dir.mkdir()
+    (shared_dir / "global.md").write_text("Shared rule.")
+
+    # Tier 1: project rules
+    rules_dir = tmp_path / ".claude" / "rules"
+    rules_dir.mkdir(parents=True)
+    (rules_dir / "project.md").write_text("Project rule.")
+
+    # Tier 2: DB memories
+    await store(category="learning", title="DB Pattern", content="DB content.", tags=[], tier="project")
+
+    class _Cfg:
+        shared_knowledge_path = shared_dir
+
+    result = await load_context(None, tmp_path, _Cfg(), tier="project")
+    assert "Shared rule." in result
+    assert "Project rule." in result
+    assert "DB Pattern" in result
+
+
+async def test_load_context_empty_project(tmp_path: Path) -> None:
+    """load_context() returns empty string when no knowledge sources exist."""
+    from sova.knowledge.tiers import load_context
+
+    class _Cfg:
+        shared_knowledge_path = tmp_path / "nonexistent"
+
+    result = await load_context(None, tmp_path, _Cfg())
+    assert result == ""

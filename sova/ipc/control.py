@@ -7,13 +7,26 @@ streaming stdout for dashboard display, and crash detection.
 from __future__ import annotations
 
 import asyncio
+import enum
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from sova.db.models import TaskRun
 from sova.utils.logging import get_logger
 
 log = get_logger(component="ipc.control")
+
+
+class ExitClassification(enum.StrEnum):
+    """Classification of a process exit code."""
+
+    SUCCESS = "success"
+    ERROR = "error"
+    CRASH = "crash"
 
 
 class AgentProcess:
@@ -113,6 +126,31 @@ class AgentProcess:
                 break
             yield line.decode("utf-8", errors="replace").rstrip("\n")
 
+    async def stderr_lines(self) -> AsyncIterator[str]:
+        """Yield stderr lines as they arrive (for error capture)."""
+        if self._proc.stderr is None:
+            return
+
+        while True:
+            line = await self._proc.stderr.readline()
+            if not line:
+                break
+            yield line.decode("utf-8", errors="replace").rstrip("\n")
+
+    @staticmethod
+    def classify_exit(returncode: int) -> ExitClassification:
+        """Classify an exit code into SUCCESS, ERROR, or CRASH."""
+        if returncode == 0:
+            return ExitClassification.SUCCESS
+        if returncode < 128:
+            return ExitClassification.ERROR
+        return ExitClassification.CRASH
+
+    async def wait_classified(self) -> tuple[int, ExitClassification]:
+        """Wait for the process and return (exit_code, classification)."""
+        code = await self.wait()
+        return code, self.classify_exit(code)
+
 
 class ProcessTracker:
     """Tracks running agent processes by task_run_id.
@@ -139,3 +177,20 @@ class ProcessTracker:
     def list_active(self) -> list[tuple[int, AgentProcess]]:
         """List all currently running processes as (task_run_id, process) pairs."""
         return [(rid, proc) for rid, proc in self._processes.items() if proc.is_running]
+
+
+async def mark_crashed(task_run_id: int, error_message: str, session: AsyncSession) -> None:
+    """Mark a TaskRun as failed due to a process crash.
+
+    Called when AgentProcess exits with a crash classification
+    and no handoff was written.
+    """
+    async with session.begin():
+        tr = await session.get(TaskRun, task_run_id)
+        if tr is None:
+            log.warning("mark_crashed.not_found", run_id=task_run_id)
+            return
+        tr.status = "failed"
+        tr.error_message = error_message
+        tr.ended_at = datetime.now(timezone.utc)
+    log.info("mark_crashed", run_id=task_run_id, error=error_message)
