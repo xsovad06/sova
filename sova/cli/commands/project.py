@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -108,9 +109,10 @@ async def _setup(*, path: Path | None) -> None:
     if result.success:
         origin = result.stdout.strip()
         # Extract owner/repo from git URL
-        if "github.com" in origin:
-            parts = origin.rstrip(".git").split("github.com")[-1].lstrip(":/")
-            repo = parts
+        # Handles SSH aliases like github.com-personal
+        m = re.search(r"github\.com[^:/]*[:/](.+?)(?:\.git)?$", origin)
+        if m:
+            repo = m.group(1)
 
     console.print("[bold]SOVA Setup Wizard[/bold]\n")
     console.print(f"Project: {project_dir}")
