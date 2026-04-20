@@ -30,6 +30,7 @@ class TaskRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text)
     project_slug: Mapped[str] = mapped_column(String(100), default="")
     assessment_json: Mapped[dict | None] = mapped_column(JSON)
+    handoff_json: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

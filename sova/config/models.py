@@ -100,6 +100,15 @@ class TriageConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 
 
+class NotificationConfig(BaseSettings):
+    """Notification configuration for human-in-the-loop."""
+
+    desktop: bool = False
+    slack_webhook_url: str = ""
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_NOTIFICATION_")
+
+
 class RolesConfig(BaseSettings):
     """Agent roles configuration."""
 
@@ -150,6 +159,7 @@ class ProjectConfig(BaseSettings):
     commit: CommitConfig = Field(default_factory=CommitConfig)
     triage: TriageConfig = Field(default_factory=TriageConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
+    notification: NotificationConfig = Field(default_factory=NotificationConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 
