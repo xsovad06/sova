@@ -1,10 +1,10 @@
 ---
 name: develop
-description: Develop a feature or fix based on the provided description, then verify.
+description: Develop a feature or fix based on the provided description, then run tests to verify.
 user-invocable: true
 ---
 
-Develop the requested feature or fix, then verify it works.
+Develop the requested feature or fix, then verify with tests.
 
 ## Instructions
 
@@ -21,7 +21,8 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 2. **Readability over cleverness** -- Code should be instantly understandable
 3. **Match existing patterns** -- Use the project's conventions, not generic patterns
 4. **Consistency** -- Match existing codebase style exactly
-5. **Testability** -- Code should be verifiable
+5. **Testability** -- Code MUST be testable; non-negotiable
+6. **Proper logging** -- Add meaningful logs for debugging and monitoring
 
 ## Workflow
 
@@ -36,44 +37,46 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 3. Identify which module(s) this work touches and read relevant source code
 4. Understand the existing patterns before writing any code
 
-### Step 2: Plan the Implementation
+### Step 2: Write Tests First (TDD)
 
-- Identify which files need changes
-- Consider impact on other components (does changing orchestrator.sh affect install.sh?)
-- For bash: will ShellCheck pass? For Python: will Ruff pass?
+- Define expected behavior before implementation
+- Cover positive paths, negative paths, and edge cases
 
-### Step 3: Implement the Solution (TDD)
+### Step 3: Implement the Solution
 
-1. **Write tests first** -- define expected behavior before implementation
-2. **Implement the solution** -- follow existing codebase conventions:
-   - **Bash**: `set -euo pipefail`, quote variables, `local` in functions, logging helpers
-   - **Python**: type hints, f-strings, match existing patterns in dashboard/
-   - **Markdown**: YAML frontmatter for commands, ATX headings, no emojis
-   - Use existing utilities and helpers -- check before creating new ones
-3. **Run the project's linter** (see CLAUDE.md for commands)
-4. **Run the project's tests** (see CLAUDE.md for commands)
-5. If tests fail, fix and re-run (up to 3 attempts)
+Follow existing codebase conventions:
+- Use the project's established architecture layers (see AGENTS.md)
+- Match naming conventions, error handling style, and code structure
+- Keep business logic in the appropriate layer
+- Use existing utilities and helpers -- check before creating new ones
 
-### Step 4: Self-Review
+### Step 4: Verify
 
-1. Review your own diff: `git diff`
-2. Check for:
-   - Bugs, edge cases, off-by-one errors
-   - Missing test coverage
-   - Security concerns
-   - Code style consistency with the rest of the module
-   - Unnecessary changes or leftover debug code
-3. Auto-fix any findings scored >= 3/10.
-4. Re-run tests after fixes.
+Run the project's linter and test suite (see CLAUDE.md for commands):
+```bash
+# Run linter
+<project lint command from CLAUDE.md>
+
+# Run tests
+<project test command from CLAUDE.md>
+```
+
+If tests fail, fix and re-run (up to 3 attempts).
 
 ### Step 5: Self-Check
 
 Before declaring done:
-- [ ] ShellCheck passes on changed bash scripts
+- [ ] All tests pass
+- [ ] Linter is clean
 - [ ] No debug code or print statements left
 - [ ] No unnecessary changes outside the task scope
 - [ ] New code follows existing patterns exactly
-- [ ] Changed scripts are still executable (`chmod +x`)
+
+## Cross-References
+
+- **Testing issues?** Run `/test` to iterate on failures
+- **Ready to review?** Run `/review` for a self-review before pushing
+- **Full workflow?** Use `/develop-full` instead for end-to-end (develop + test + review + PR)
 
 ## Rules
 

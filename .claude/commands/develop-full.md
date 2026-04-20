@@ -13,30 +13,21 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 ### Phase 0: Understand the Task
 
 1. Get the task from `$ARGUMENTS` -- either a GitHub Issue number or a task description.
-2. If it's a GitHub Issue, fetch details:
+2. If it's an issue number, fetch details:
    ```bash
-   gh issue view <ISSUE_NUMBER>
+   gh issue view <ISSUE_NUMBER> --json number,title,body,labels,milestone
    ```
-3. **Claim the issue** (GitHub Issues only):
-   ```bash
-   # Assign to self
-   gh issue edit <ISSUE_NUMBER> --add-assignee xsovad06
-
-   # Move to "In Progress" on project board
-   ITEM_ID=$(gh api graphql -f query='query { user(login:"xsovad06") { projectV2(number:2) { items(first:50) { nodes { id content { ... on Issue { number } } } } } } }' --jq '.data.user.projectV2.items.nodes[] | select(.content.number == <ISSUE_NUMBER>) | .id')
-   if [ -n "$ITEM_ID" ]; then
-     gh api graphql -f query='mutation { updateProjectV2ItemFieldValue(input: { projectId: "PVT_kwHOArVFrc4BU8uF", itemId: "'"$ITEM_ID"'", fieldId: "PVTSSF_lAHOArVFrc4BU8uFzhMdaz8", value: { singleSelectOptionId: "47fc9ee4" } }) { projectV2Item { id } } }'
-   fi
-   ```
-4. Read the project's CLAUDE.md for conventions and patterns.
-5. Read agent memory files if they exist:
+3. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
+4. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/learnings.md`
    - `.claude/agent-memory/review-feedback.md`
    - `.claude/agent-memory/common-mistakes.md`
-6. Identify which module(s) this work touches and read relevant source code.
+5. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)
+
+Follow the `/develop` command workflow:
 
 1. **Write tests first** -- define expected behavior before implementation.
 2. **Implement the solution** -- follow existing codebase conventions.
@@ -45,6 +36,8 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 5. If tests fail, fix and re-run (up to 3 attempts).
 
 ### Phase 2: Self-Review
+
+Follow the `/review` command workflow:
 
 1. Review your own diff: `git diff`
 2. Check for:
@@ -58,12 +51,13 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 
 ### Phase 3: Organize Commits
 
+Follow the `/rearrange-commits` command approach:
+
 1. **Separate concerns** -- schema/model changes, core logic, tests, config in distinct commits.
 2. **Each commit should be self-contained** and reviewable on its own.
 3. **Commit message format**: `type(scope): description`
    - Types: feat, fix, refactor, test, docs, chore, perf
-   - Scopes: agent, dashboard, commands, personas, invariants, knowledge, cli, docs
-   - Example: `feat(agent): add handle-pr mode to orchestrator`
+   - Example: `feat(agent): add token refresh endpoint`
 4. **NEVER create a single monolithic commit** with all changes.
 5. Commit messages should explain the 'why', not just the 'what'.
 
@@ -77,7 +71,17 @@ Write a file at `.agent-summary.md` in the working directory with:
 - **Manual test instructions**: Exact commands, expected outputs, edge cases, what success/failure looks like.
 - **Files changed**: List with one-line descriptions.
 
+## Workflow Chain
+
+This command orchestrates:
+1. `/develop` -- implement with TDD
+2. `/test` -- verify linter + tests pass
+3. `/review` -- self-review and auto-fix
+4. `/rearrange-commits` -- organize into logical commits
+
+After this command completes, run `/pr` to create the pull request.
+
 ## Rules
 
-- Follow patterns from the project's existing code and CLAUDE.md
+- Follow patterns from the project's existing code and CLAUDE.md/AGENTS.md
 - NEVER use emojis in any output
