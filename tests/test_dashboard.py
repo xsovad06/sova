@@ -381,3 +381,118 @@ class TestMemoryAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Handoff API
+# ---------------------------------------------------------------------------
+
+
+class TestHandoffAPI:
+    async def test_get_handoff_none(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/handoff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is False
+
+    async def test_get_handoff_with_file(self, client: AsyncClient, tmp_path) -> None:
+        import json
+
+        from sova.dashboard.services import handoff_service
+
+        # Write a handoff file directly
+        handoff_service.set_project_dir(tmp_path)
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        handoff_data = {
+            "id": "test-123",
+            "source": "ship-pr",
+            "status": "awaiting_action",
+            "summary": "Test handoff",
+            "created_at": "2026-04-20T10:00:00Z",
+            "next_actions": [
+                {"id": "merge", "label": "Merge PR", "style": "approve", "mode": "claude-command", "command": "approve-merge"},
+            ],
+        }
+        (control_dir / "handoff.json").write_text(json.dumps(handoff_data))
+
+        resp = await client.get("/api/handoff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert data["handoff"]["source"] == "ship-pr"
+        assert len(data["handoff"]["next_actions"]) == 1
+
+    async def test_clear_handoff_no_file(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/handoff/clear")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cleared"] is False
+
+    async def test_clear_handoff_with_file(self, client: AsyncClient, tmp_path) -> None:
+        import json
+
+        from sova.dashboard.services import handoff_service
+
+        handoff_service.set_project_dir(tmp_path)
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text(json.dumps({
+            "id": "test-456",
+            "source": "test",
+            "status": "completed",
+            "summary": "Done",
+            "created_at": "2026-04-20T10:00:00Z",
+        }))
+
+        resp = await client.post("/api/handoff/clear")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cleared"] is True
+
+        # File should be gone
+        assert not (control_dir / "handoff.json").exists()
+        # Archive should exist
+        assert (control_dir / "handoff-archive").exists()
+
+    async def test_execute_no_handoff(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/handoff/execute",
+            json={"action_id": "merge"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["error"] == "No active handoff"
+
+    async def test_execute_action_not_found(self, client: AsyncClient, tmp_path) -> None:
+        import json
+
+        from sova.dashboard.services import handoff_service
+
+        handoff_service.set_project_dir(tmp_path)
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text(json.dumps({
+            "id": "test-789",
+            "source": "test",
+            "status": "awaiting_action",
+            "summary": "Test",
+            "created_at": "2026-04-20T10:00:00Z",
+            "next_actions": [{"id": "merge", "label": "Merge"}],
+        }))
+
+        resp = await client.post(
+            "/api/handoff/execute",
+            json={"action_id": "nonexistent"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "not found" in data["error"]
+
+    async def test_control_page_has_handoff_panel(self, client: AsyncClient) -> None:
+        resp = await client.get("/control")
+        assert resp.status_code == 200
+        assert "handoff-panel" in resp.text
+        assert "handoff-complete-panel" in resp.text
+        assert "handoff-failed-panel" in resp.text
+        assert "checkHandoff" in resp.text

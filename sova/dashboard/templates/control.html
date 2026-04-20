@@ -17,7 +17,79 @@
   </div>
 </div>
 
-<!-- Completion banner (shown when agent finishes) -->
+<!-- Handoff Action Panel (shown when status == awaiting_action) -->
+<div id="handoff-panel" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-accent/50 overflow-hidden">
+    <div class="px-4 py-3 border-b border-accent/30 bg-accent/5 flex items-center justify-between">
+      <div>
+        <h3 class="text-sm font-medium text-accent">Handoff -- Action Required</h3>
+        <p id="handoff-source" class="text-[10px] text-gray-500 mt-0.5"></p>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="handoff-issue" class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple"></span>
+        <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent/20 text-accent"></span>
+        <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss handoff">
+          Dismiss
+        </button>
+      </div>
+    </div>
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <p id="handoff-summary" class="text-sm text-gray-300"></p>
+      <div id="handoff-details-wrap" class="mt-2 hidden">
+        <button onclick="toggleHandoffDetails()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+          Show details
+        </button>
+        <div id="handoff-details" class="hidden mt-2 text-xs bg-surface rounded p-3 border border-gray-700/50 font-mono max-h-48 overflow-y-auto">
+        </div>
+      </div>
+    </div>
+    <div class="p-4">
+      <p class="text-[10px] text-gray-500 uppercase tracking-wide mb-3">Choose next action</p>
+      <div id="handoff-actions" class="flex flex-wrap gap-3"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Handoff Completion Banner (shown when status == completed) -->
+<div id="handoff-complete-panel" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-accent-green/50 overflow-hidden">
+    <div class="px-4 py-3 bg-accent-green/5 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-accent-green"></span>
+        <h3 class="text-sm font-medium text-accent-green">Workflow Complete</h3>
+      </div>
+      <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+        Dismiss
+      </button>
+    </div>
+    <div class="px-4 py-3">
+      <p id="handoff-complete-summary" class="text-sm text-gray-300"></p>
+      <div id="handoff-complete-actions" class="mt-3 flex flex-wrap gap-2"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Handoff Failed Banner (shown when status == failed) -->
+<div id="handoff-failed-panel" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-accent-red/50 overflow-hidden">
+    <div class="px-4 py-3 bg-accent-red/5 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-accent-red"></span>
+        <h3 class="text-sm font-medium text-accent-red">Workflow Failed</h3>
+      </div>
+      <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+        Dismiss
+      </button>
+    </div>
+    <div class="px-4 py-3">
+      <p id="handoff-failed-summary" class="text-sm text-gray-300"></p>
+      <p id="handoff-failed-error" class="text-xs text-accent-red mt-1 font-mono hidden"></p>
+      <div id="handoff-failed-actions" class="mt-3 flex flex-wrap gap-2"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Completion banner (shown when agent finishes without handoff) -->
 <div id="complete-panel" class="hidden mb-6">
   <div class="bg-surface-card rounded-lg border overflow-hidden" id="complete-panel-inner">
     <div class="px-4 py-3 flex items-center justify-between">
@@ -36,8 +108,8 @@
   </div>
 </div>
 
-<!-- Start form -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6 p-4">
+<!-- Start form (hidden when handoff is active) -->
+<div id="start-panel" class="bg-surface-card rounded-lg border border-gray-700/50 mb-6 p-4">
   <h3 class="text-sm font-medium text-gray-400 mb-3">Start Agent Run</h3>
   <div class="flex items-center gap-3">
     <input type="text" id="start-issue" placeholder="Issue number (e.g. 42)"
@@ -78,6 +150,15 @@
 <script>
 let outputCursor = 0;
 let wasRunning = false;
+let currentHandoffId = null;
+
+const actionStyles = {
+  approve: { btn: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30', dot: 'bg-accent-green' },
+  neutral: { btn: 'bg-accent/20 text-accent hover:bg-accent/30', dot: 'bg-accent' },
+  danger:  { btn: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30', dot: 'bg-accent-red' },
+};
+
+/* --- Status polling --- */
 
 async function pollStatus() {
   try {
@@ -116,8 +197,6 @@ function showCompletionBanner() {
   const el = document.getElementById('agent-output');
   const lines = el.querySelectorAll('.output-line');
   const lastLine = lines.length > 0 ? lines[lines.length - 1].textContent : '';
-
-  // Check if there was an error
   const hasError = el.querySelector('.output-stderr') !== null;
 
   const panel = document.getElementById('complete-panel');
@@ -139,7 +218,6 @@ function showCompletionBanner() {
     title.textContent = 'Agent Completed';
   }
 
-  // Extract cost from result line if present
   const resultLine = el.querySelector('.output-result');
   if (resultLine && resultLine.dataset.cost) {
     costEl.textContent = 'Cost: $' + parseFloat(resultLine.dataset.cost).toFixed(4);
@@ -155,6 +233,8 @@ function dismissComplete() {
   document.getElementById('complete-panel').classList.add('hidden');
 }
 
+/* --- Output polling --- */
+
 async function pollOutput() {
   try {
     const data = await fetchAPI('/api/control/output?since=' + outputCursor);
@@ -166,7 +246,6 @@ async function pollOutput() {
         const div = document.createElement('div');
 
         if (line.startsWith('\n--- Result')) {
-          // Result block -- extract cost, show as styled separator
           const costMatch = line.match(/\$([0-9.]+)/);
           div.className = 'output-line output-result mt-3 pt-3 border-t border-gray-700/50 text-xs text-gray-500';
           if (costMatch) {
@@ -176,11 +255,9 @@ async function pollOutput() {
             div.textContent = 'Completed';
           }
         } else if (line.startsWith('[stderr]')) {
-          // Error output
           div.className = 'output-line output-stderr text-accent-red text-xs font-mono py-0.5';
           div.textContent = line.replace('[stderr] ', '');
         } else {
-          // Normal agent text
           div.className = 'output-line text-gray-300 py-0.5 whitespace-pre-wrap';
           div.textContent = line;
         }
@@ -195,6 +272,8 @@ async function pollOutput() {
   } catch (e) { /* ignore */ }
 }
 
+/* --- Agent start/stop --- */
+
 async function startAgent() {
   const issue = document.getElementById('start-issue').value.trim();
   if (!issue) return;
@@ -205,6 +284,7 @@ async function startAgent() {
     document.getElementById('agent-output').innerHTML =
       '<p class="text-gray-500 text-xs animate-pulse">Starting agent...</p>';
     document.getElementById('complete-panel').classList.add('hidden');
+    hideAllHandoffPanels();
     await fetch('/api/control/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -231,8 +311,188 @@ function clearOutput() {
   document.getElementById('output-count').textContent = '';
 }
 
+/* --- Handoff handling --- */
+
+async function checkHandoff() {
+  try {
+    const res = await fetch('/api/handoff');
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (!data.has_handoff) {
+      if (currentHandoffId) {
+        hideAllHandoffPanels();
+        currentHandoffId = null;
+        document.getElementById('start-panel').classList.remove('hidden');
+      }
+      return;
+    }
+
+    handleHandoffData(data.handoff);
+  } catch (e) { /* ignore */ }
+}
+
+function handleHandoffData(handoff) {
+  if (handoff.id === currentHandoffId) return;
+  currentHandoffId = handoff.id;
+
+  if (handoff.status === 'awaiting_action') {
+    renderHandoffActions(handoff);
+  } else if (handoff.status === 'completed') {
+    renderHandoffComplete(handoff);
+  } else if (handoff.status === 'failed') {
+    renderHandoffFailed(handoff);
+  }
+}
+
+function hideAllHandoffPanels() {
+  document.getElementById('handoff-panel').classList.add('hidden');
+  document.getElementById('handoff-complete-panel').classList.add('hidden');
+  document.getElementById('handoff-failed-panel').classList.add('hidden');
+}
+
+function renderActionButtons(actions, targetEl, variant) {
+  if (!actions || !actions.length) { targetEl.innerHTML = ''; return; }
+  targetEl.innerHTML = actions.map(function(action) {
+    var style = actionStyles[action.style] || actionStyles.neutral;
+    if (variant === 'full') {
+      return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+        'class="flex flex-col items-start px-4 py-3 rounded-lg transition-colors ' + style.btn + ' min-w-[140px]" ' +
+        'title="' + escapeHtml(action.description) + '">' +
+        '<div class="flex items-center gap-2 mb-1">' +
+        '<span class="w-1.5 h-1.5 rounded-full ' + style.dot + '"></span>' +
+        '<span class="text-sm font-medium">' + escapeHtml(action.label) + '</span>' +
+        '</div>' +
+        '<span class="text-[10px] opacity-70 text-left">' + escapeHtml(action.description) + '</span>' +
+        '</button>';
+    }
+    return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+      'class="px-3 py-1.5 rounded text-xs transition-colors ' + style.btn + '" ' +
+      'title="' + escapeHtml(action.description) + '">' +
+      escapeHtml(action.label) + '</button>';
+  }).join('');
+}
+
+function renderHandoffActions(handoff) {
+  hideAllHandoffPanels();
+  var panel = document.getElementById('handoff-panel');
+  panel.classList.remove('hidden');
+
+  document.getElementById('handoff-source').textContent =
+    'From: ' + handoff.source + ' | ' + new Date(handoff.created_at).toLocaleTimeString();
+
+  var issueEl = document.getElementById('handoff-issue');
+  issueEl.textContent = handoff.issue || '';
+  issueEl.classList.toggle('hidden', !handoff.issue);
+
+  var prEl = document.getElementById('handoff-pr');
+  prEl.textContent = handoff.pr_number ? 'PR #' + handoff.pr_number : '';
+  prEl.classList.toggle('hidden', !handoff.pr_number);
+
+  document.getElementById('handoff-summary').textContent = handoff.summary;
+
+  var details = handoff.details || {};
+  var detailsWrap = document.getElementById('handoff-details-wrap');
+  if (details.actions_taken && details.actions_taken.length > 0) {
+    detailsWrap.classList.remove('hidden');
+    var detailsEl = document.getElementById('handoff-details');
+    var html = '<p class="text-gray-400 mb-1">Actions taken:</p>';
+    html += details.actions_taken.map(function(a) {
+      return '<div class="text-gray-300 pl-2">- ' + escapeHtml(a) + '</div>';
+    }).join('');
+    if (details.ci_status) {
+      var ciColor = details.ci_status === 'passed' ? 'text-accent-green' :
+                    details.ci_status === 'failed' ? 'text-accent-red' : 'text-accent-yellow';
+      html += '<p class="text-gray-400 mt-2">CI: <span class="' + ciColor + '">' + details.ci_status + '</span></p>';
+    }
+    if (details.error) {
+      html += '<p class="text-accent-red mt-2">Error: ' + escapeHtml(details.error) + '</p>';
+    }
+    detailsEl.innerHTML = html;
+  } else {
+    detailsWrap.classList.add('hidden');
+  }
+
+  renderActionButtons(handoff.next_actions || [], document.getElementById('handoff-actions'), 'full');
+
+  // Hide start panel when handoff is active
+  document.getElementById('start-panel').classList.add('hidden');
+}
+
+function renderHandoffComplete(handoff) {
+  hideAllHandoffPanels();
+  var panel = document.getElementById('handoff-complete-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('handoff-complete-summary').textContent = handoff.summary;
+  renderActionButtons(handoff.next_actions || [], document.getElementById('handoff-complete-actions'), 'compact');
+}
+
+function renderHandoffFailed(handoff) {
+  hideAllHandoffPanels();
+  var panel = document.getElementById('handoff-failed-panel');
+  panel.classList.remove('hidden');
+  document.getElementById('handoff-failed-summary').textContent = handoff.summary;
+
+  var error = (handoff.details || {}).error || '';
+  var errorEl = document.getElementById('handoff-failed-error');
+  errorEl.textContent = error;
+  errorEl.classList.toggle('hidden', !error);
+
+  renderActionButtons(handoff.next_actions || [], document.getElementById('handoff-failed-actions'), 'compact');
+}
+
+async function executeHandoffAction(actionId) {
+  var btn = event.target.closest('button');
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+  }
+
+  try {
+    var res = await fetch('/api/handoff/execute', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action_id: actionId}),
+    });
+    var data = await res.json();
+    if (data.error) {
+      alert(data.error);
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+      return;
+    }
+
+    hideAllHandoffPanels();
+    currentHandoffId = null;
+    outputCursor = 0;
+    document.getElementById('agent-output').innerHTML =
+      '<p class="text-gray-500 text-xs animate-pulse">Starting: ' + escapeHtml(data.action || actionId) + '...</p>';
+    document.getElementById('start-panel').classList.remove('hidden');
+  } catch (e) {
+    alert('Failed to execute action: ' + e.message);
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+  }
+}
+
+async function clearHandoff() {
+  await fetch('/api/handoff/clear', {method: 'POST'});
+  hideAllHandoffPanels();
+  currentHandoffId = null;
+  document.getElementById('start-panel').classList.remove('hidden');
+}
+
+function toggleHandoffDetails() {
+  var details = document.getElementById('handoff-details');
+  var btn = event.target;
+  var isHidden = details.classList.contains('hidden');
+  details.classList.toggle('hidden');
+  btn.textContent = isHidden ? 'Hide details' : 'Show details';
+}
+
+/* --- Start polling loops --- */
 pollStatus();
+checkHandoff();
 setInterval(pollStatus, 2000);
 setInterval(pollOutput, 1000);
+setInterval(checkHandoff, 3000);
 </script>
 {% endblock %}

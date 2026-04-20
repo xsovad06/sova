@@ -29,6 +29,123 @@ async def setup_db():
 # ---------------------------------------------------------------------------
 
 
+class TestHandoffAction:
+    def test_create_action(self) -> None:
+        from sova.ipc.handoff import HandoffAction
+
+        a = HandoffAction(
+            id="merge",
+            label="Merge PR",
+            description="Squash-merge into main",
+            style="approve",
+            mode="claude-command",
+            command="approve-merge",
+            args={"pr": 15},
+        )
+        assert a.id == "merge"
+        assert a.style == "approve"
+        assert a.mode == "claude-command"
+        assert a.args == {"pr": 15}
+
+    def test_defaults(self) -> None:
+        from sova.ipc.handoff import HandoffAction
+
+        a = HandoffAction(id="wait", label="Wait")
+        assert a.style == "neutral"
+        assert a.mode == "claude-command"
+        assert a.command == ""
+        assert a.args == {}
+
+    def test_serialize_roundtrip(self) -> None:
+        from sova.ipc.handoff import HandoffAction
+
+        a = HandoffAction(id="abort", label="Abort", style="danger", mode="shell", command="rm handoff.json")
+        data = a.model_dump()
+        restored = HandoffAction.model_validate(data)
+        assert restored == a
+
+
+class TestDashboardHandoff:
+    def test_create_minimal(self) -> None:
+        from sova.ipc.handoff import DashboardHandoff
+
+        h = DashboardHandoff(source="ship-pr", status="awaiting_action", summary="Rebased and pushed.")
+        assert h.source == "ship-pr"
+        assert h.status == "awaiting_action"
+        assert h.id  # auto-generated UUID
+        assert h.created_at  # auto-generated timestamp
+        assert h.next_actions == []
+
+    def test_create_with_actions(self) -> None:
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        h = DashboardHandoff(
+            source="ship-pr",
+            status="awaiting_action",
+            issue="#42",
+            pr_number=15,
+            branch="feat/my-feature",
+            summary="Rebased and pushed. CI pending.",
+            details={"actions_taken": ["Rebased onto main"], "ci_status": "pending"},
+            next_actions=[
+                HandoffAction(id="merge", label="Merge PR", style="approve", command="approve-merge"),
+                HandoffAction(id="abort", label="Abort", style="danger", mode="shell", command="rm handoff.json"),
+            ],
+        )
+        assert h.pr_number == 15
+        assert len(h.next_actions) == 2
+        assert h.next_actions[0].style == "approve"
+
+    def test_serialize_roundtrip(self) -> None:
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        h = DashboardHandoff(
+            source="test",
+            status="completed",
+            summary="All done",
+            next_actions=[HandoffAction(id="ok", label="OK")],
+        )
+        json_str = h.model_dump_json()
+        restored = DashboardHandoff.model_validate_json(json_str)
+        assert restored.source == h.source
+        assert len(restored.next_actions) == 1
+
+
+class TestHandoffFile:
+    def test_write_and_read(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        h = DashboardHandoff(source="test", status="awaiting_action", summary="Test handoff")
+        path = write_handoff_file(tmp_path, h)
+        assert path.exists()
+
+        restored = read_handoff_file(tmp_path)
+        assert restored is not None
+        assert restored.source == "test"
+        assert restored.summary == "Test handoff"
+
+    def test_read_missing_returns_none(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import read_handoff_file
+
+        assert read_handoff_file(tmp_path) is None
+
+    def test_read_invalid_json_returns_none(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import read_handoff_file
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text("not valid json{{{")
+
+        assert read_handoff_file(tmp_path) is None
+
+    def test_write_creates_directory(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        h = DashboardHandoff(source="test", status="completed", summary="Done")
+        path = write_handoff_file(tmp_path, h)
+        assert path.parent.exists()
+
+
 class TestAgentHandoff:
     def test_create_minimal(self) -> None:
         from sova.ipc.handoff import AgentHandoff
