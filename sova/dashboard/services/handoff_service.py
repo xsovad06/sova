@@ -32,28 +32,33 @@ def set_project_dir(path: Path) -> None:
     _default_project_dir = path
 
 
-def _resolve_project_dir() -> Path:
+def _resolve_project_dir() -> Path | None:
     """Resolve the active project directory."""
     ctx_dir = get_project_dir()
     if ctx_dir is not None:
         return ctx_dir
-    assert _default_project_dir is not None, "handoff_service: no project directory configured"
     return _default_project_dir
 
 
-def _handoff_file(project_dir: Path | None = None) -> Path:
+def _handoff_file(project_dir: Path | None = None) -> Path | None:
     d = project_dir or _resolve_project_dir()
+    if d is None:
+        return None
     return d / ".claude" / "agent-control" / "handoff.json"
 
 
-def _archive_dir(project_dir: Path | None = None) -> Path:
+def _archive_dir(project_dir: Path | None = None) -> Path | None:
     d = project_dir or _resolve_project_dir()
+    if d is None:
+        return None
     return d / ".claude" / "agent-control" / "handoff-archive"
 
 
 def get_handoff(project_dir: Path | None = None) -> dict | None:
     """Read the current handoff file with mtime-based caching."""
     hf = _handoff_file(project_dir)
+    if hf is None:
+        return None
     cache_key = str(hf.parent.parent)
 
     if not hf.exists():
@@ -76,7 +81,7 @@ def get_handoff(project_dir: Path | None = None) -> dict | None:
 def archive_handoff(project_dir: Path | None = None) -> dict | None:
     """Move the current handoff to the archive directory. Returns the archived data."""
     hf = _handoff_file(project_dir)
-    if not hf.exists():
+    if hf is None or not hf.exists():
         return None
 
     handoff = get_handoff(project_dir)
@@ -103,7 +108,7 @@ def clear_handoff(project_dir: Path | None = None) -> bool:
     """Archive and remove the current handoff file."""
     archive_handoff(project_dir)
     hf = _handoff_file(project_dir)
-    if hf.exists():
+    if hf is not None and hf.exists():
         hf.unlink()
         cache_key = str(hf.parent.parent)
         _handoff_caches[cache_key] = (0.0, None)

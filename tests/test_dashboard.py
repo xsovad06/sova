@@ -150,7 +150,7 @@ async def seed_data(session: AsyncSession):
 async def client():
     from sova.dashboard.app import create_app
 
-    app = create_app()
+    app = create_app(multi_project=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
