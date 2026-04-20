@@ -349,6 +349,117 @@ class TestControlAPI:
         data = resp.json()
         assert data["lines"] == []
 
+    async def test_interrupted_runs_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/control/interrupted")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["interrupted"] == []
+
+    async def test_interrupted_runs_returns_interrupted(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Interrupted TaskRuns should appear in the interrupted endpoint."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="67",
+                role="developer",
+                status="interrupted",
+                pid=99999,
+                error_message="Dashboard restarted while agent was running",
+            )
+            session.add(run)
+        resp = await client.get("/api/control/interrupted")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["interrupted"]) == 1
+        assert data["interrupted"][0]["issue_number"] == "67"
+
+    async def test_interrupted_runs_excludes_other_statuses(self, client: AsyncClient, session: AsyncSession) -> None:
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done"))
+            session.add(TaskRun(issue_number="2", role="dev", status="failed"))
+            session.add(TaskRun(issue_number="3", role="dev", status="running"))
+        resp = await client.get("/api/control/interrupted")
+        assert resp.status_code == 200
+        assert len(resp.json()["interrupted"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Control Service -- recovery and normalization
+# ---------------------------------------------------------------------------
+
+
+class TestControlServiceRecovery:
+    async def test_recover_stale_runs_marks_dead_processes(self) -> None:
+        """Runs with dead PIDs should be marked as interrupted."""
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        # Use get_session so data and recovery share the same connection
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="99",
+                role="developer",
+                status="running",
+                pid=999999,  # PID that doesn't exist
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+        assert interrupted[0]["issue"] == "99"
+        assert interrupted[0]["run_id"] == run_id
+
+        # Verify DB was updated (same session factory)
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+            assert updated.ended_at is not None
+
+    async def test_recover_stale_runs_no_stale(self) -> None:
+        """No running TaskRuns means nothing to recover."""
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done"))
+
+        interrupted = await recover_stale_runs()
+        assert interrupted == []
+
+    async def test_recover_stale_runs_no_pid(self) -> None:
+        """Runs without a PID (legacy) should also be marked interrupted."""
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="50", role="auto", status="running", pid=None)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_is_process_alive(self) -> None:
+        """Process liveness check should work for known PIDs."""
+        import os
+
+        from sova.dashboard.services.control_service import _is_process_alive
+
+        # Current process is alive
+        assert _is_process_alive(os.getpid()) is True
+        # Non-existent PID
+        assert _is_process_alive(999999) is False
+
 
 # ---------------------------------------------------------------------------
 # Memory API

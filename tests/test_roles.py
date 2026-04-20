@@ -296,6 +296,26 @@ class TestDeveloperRole:
 
         assert result.success
 
+    async def test_execute_transitions_to_in_progress(self) -> None:
+        """Developer must move issue to IN_PROGRESS on the tracker before running steps."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.RESEARCHED)
+        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter)
+        role = DeveloperRole()
+
+        mock_result = WorkflowResult(
+            success=True, final_status=TaskStatus.DONE, task_run_id=1
+        )
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
+
     def test_get_steps_returns_developer_pipeline(self) -> None:
         from sova.roles.developer import DeveloperRole
 
