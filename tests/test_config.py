@@ -140,3 +140,137 @@ def test_shared_knowledge_path_expansion() -> None:
     path = cfg.shared_knowledge_path
     assert "~" not in str(path)
     assert path.is_absolute()
+
+
+# -- Project Registry Tests --------------------------------------------------
+
+
+class TestProjectRegistry:
+    """Tests for sova.config.registry."""
+
+    def test_register_and_list(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "my-project"
+        project.mkdir()
+
+        slug = registry.register_project(project)
+        assert slug == "my-project"
+
+        projects = registry.list_projects()
+        assert "my-project" in projects
+        assert projects["my-project"] == str(project)
+
+    def test_get_project_path(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        registry.register_project(project, slug="test")
+
+        result = registry.get_project_path("test")
+        assert result == project
+
+        assert registry.get_project_path("nonexistent") is None
+
+    def test_unregister(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        registry.register_project(project, slug="test")
+
+        assert registry.unregister_project("test") is True
+        assert registry.unregister_project("test") is False
+        assert registry.list_projects() == {}
+
+    def test_slug_deduplication(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        p1 = tmp_path / "proj"
+        p1.mkdir()
+        p2 = tmp_path / "other" / "proj"
+        p2.mkdir(parents=True)
+
+        slug1 = registry.register_project(p1)
+        slug2 = registry.register_project(p2)
+
+        assert slug1 == "proj"
+        assert slug2 == "proj-2"
+
+    def test_custom_slug(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "my-project"
+        project.mkdir()
+
+        slug = registry.register_project(project, slug="custom")
+        assert slug == "custom"
+
+    def test_has_projects(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        assert registry.has_projects() is False
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        registry.register_project(project)
+        assert registry.has_projects() is True
+
+    def test_slugify(self) -> None:
+        from sova.config.registry import _slugify
+
+        assert _slugify("My Project") == "my-project"
+        assert _slugify("hello_world") == "hello-world"
+        assert _slugify("--test--") == "test"
+        assert _slugify("") == "project"
+
+    def test_register_nonexistent_raises(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        import pytest
+
+        with pytest.raises(ValueError, match="Not a directory"):
+            registry.register_project(tmp_path / "nonexistent")
+
+    def test_re_register_same_path(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        slug1 = registry.register_project(project)
+        slug2 = registry.register_project(project)
+        assert slug1 == slug2  # Same path re-registers under same slug

@@ -496,3 +496,328 @@ class TestHandoffAPI:
         assert "handoff-complete-panel" in resp.text
         assert "handoff-failed-panel" in resp.text
         assert "checkHandoff" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Multi-project mode
+# ---------------------------------------------------------------------------
+
+
+class TestMultiProject:
+    @pytest.fixture
+    async def multi_client(self, tmp_path):
+        """Create a multi-project dashboard with two registered projects."""
+        from sova.config import registry
+
+        # Use isolated registry
+        reg_file = tmp_path / "registry" / "projects.json"
+        import sova.config.registry as reg_mod
+
+        orig_file = reg_mod._REGISTRY_FILE
+        orig_dir = reg_mod._REGISTRY_DIR
+        reg_mod._REGISTRY_FILE = reg_file
+        reg_mod._REGISTRY_DIR = tmp_path / "registry"
+
+        # Create two project dirs
+        p1 = tmp_path / "project-alpha"
+        p1.mkdir()
+        (p1 / ".claude").mkdir()
+        p2 = tmp_path / "project-beta"
+        p2.mkdir()
+        (p2 / ".claude").mkdir()
+
+        registry.register_project(p1, slug="alpha")
+        registry.register_project(p2, slug="beta")
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=True)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+
+        reg_mod._REGISTRY_FILE = orig_file
+        reg_mod._REGISTRY_DIR = orig_dir
+
+    async def test_home_shows_project_list(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/")
+        assert resp.status_code == 200
+        assert "alpha" in resp.text
+        assert "beta" in resp.text
+
+    async def test_project_redirect(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/p/alpha/overview"
+
+    async def test_project_overview(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/overview")
+        assert resp.status_code == 200
+        assert "Overview" in resp.text
+
+    async def test_project_api(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/api/overview")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "runs" in data
+
+    async def test_projects_api_list(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/api/projects")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "alpha" in data["projects"]
+        assert "beta" in data["projects"]
+
+    async def test_fallback_api_still_works(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/api/overview")
+        assert resp.status_code == 200
+
+    async def test_setup_page_loads(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/setup")
+        assert resp.status_code == 200
+        assert "Project Setup" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Setup API
+# ---------------------------------------------------------------------------
+
+
+class TestTasksAPI:
+    """Tests for the tasks API endpoints."""
+
+    async def test_active_tasks_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/tasks/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+        assert isinstance(data["tasks"], list)
+
+    async def test_active_tasks_with_data(self, client: AsyncClient, seed_data) -> None:
+        resp = await client.get("/api/tasks/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        # run3 has status "developing" -- non-terminal, should appear
+        assert len(data["tasks"]) >= 1
+        active = data["tasks"][0]
+        assert active["issue_number"] == "44"
+        assert active["status"] == "developing"
+        assert "time_in_state" in active
+
+    async def test_task_history_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/tasks/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["tasks"] == []
+
+    async def test_task_history_with_data(self, client: AsyncClient, seed_data) -> None:
+        resp = await client.get("/api/tasks/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        # run1 (done) and run2 (failed) are terminal
+        assert len(data["tasks"]) == 2
+        statuses = {t["status"] for t in data["tasks"]}
+        assert statuses == {"done", "failed"}
+
+    async def test_task_history_limit(self, client: AsyncClient, seed_data) -> None:
+        resp = await client.get("/api/tasks/history?limit=1")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["tasks"]) == 1
+
+    async def test_tasks_page_renders(self, client: AsyncClient) -> None:
+        resp = await client.get("/tasks")
+        assert resp.status_code == 200
+        assert b"Tasks" in resp.content
+
+    async def test_queue_page_renders(self, client: AsyncClient) -> None:
+        resp = await client.get("/queue")
+        assert resp.status_code == 200
+        assert b"Priority Queue" in resp.content
+
+
+class TestLogsAPI:
+    """Tests for the logs API endpoints."""
+
+    async def test_logs_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/logs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["entries"] == []
+        assert data["total"] == 0
+
+    async def test_logs_with_data(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        import sova.dashboard.services.log_service as log_mod
+
+        # Write a test log file
+        log_dir = tmp_path / ".claude"
+        log_dir.mkdir()
+        log_file = log_dir / "sova.log"
+        import json
+        lines = [
+            json.dumps({"level": "INFO", "message": "Agent started", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
+            json.dumps({"level": "ERROR", "message": "Test failed", "component": "runner", "timestamp": "2026-01-01T10:01:00"}),
+            json.dumps({"level": "INFO", "message": "Agent completed", "component": "core", "timestamp": "2026-01-01T10:02:00"}),
+        ]
+        log_file.write_text("\n".join(lines) + "\n")
+
+        # Patch get_project_dir to return tmp_path
+        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
+
+        resp = await client.get("/api/logs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 3
+        assert len(data["entries"]) == 3
+        # Most recent first
+        assert data["entries"][0]["message"] == "Agent completed"
+
+    async def test_logs_filter_level(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        import json
+        import sova.dashboard.services.log_service as log_mod
+
+        log_dir = tmp_path / ".claude"
+        log_dir.mkdir()
+        log_file = log_dir / "sova.log"
+        lines = [
+            json.dumps({"level": "INFO", "message": "ok", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
+            json.dumps({"level": "ERROR", "message": "bad", "component": "core", "timestamp": "2026-01-01T10:01:00"}),
+        ]
+        log_file.write_text("\n".join(lines) + "\n")
+
+        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
+
+        resp = await client.get("/api/logs?level=ERROR")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["entries"][0]["message"] == "bad"
+
+    async def test_logs_components(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        import json
+
+        log_dir = tmp_path / ".claude"
+        log_dir.mkdir()
+        log_file = log_dir / "sova.log"
+        lines = [
+            json.dumps({"level": "INFO", "message": "x", "component": "core"}),
+            json.dumps({"level": "INFO", "message": "y", "component": "runner"}),
+        ]
+        log_file.write_text("\n".join(lines) + "\n")
+
+        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
+
+        resp = await client.get("/api/logs/components")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "core" in data["components"]
+        assert "runner" in data["components"]
+
+    async def test_logs_page_renders(self, client: AsyncClient) -> None:
+        resp = await client.get("/logs")
+        assert resp.status_code == 200
+        assert b"Logs" in resp.content
+
+
+class TestSettingsAPI:
+    """Tests for the settings API endpoints."""
+
+    async def test_get_config(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "config" in data
+
+    async def test_invariants_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/invariants")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data["invariants"], list)
+
+    async def test_invariants_with_files(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        inv_dir = tmp_path / "invariants"
+        inv_dir.mkdir()
+        (inv_dir / "check-types.sh").write_text("#!/bin/bash\necho ok")
+        (inv_dir / "check-types.sh").chmod(0o755)
+
+        monkeypatch.setattr("sova.dashboard.routers.settings.get_project_dir", lambda: tmp_path)
+
+        resp = await client.get("/api/settings/invariants")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["invariants"]) == 1
+        assert data["invariants"][0]["name"] == "check-types.sh"
+        assert data["invariants"][0]["executable"] is True
+
+    async def test_personas(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/personas")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "personas" in data
+        assert "detected" in data
+
+    async def test_settings_page_renders(self, client: AsyncClient) -> None:
+        resp = await client.get("/settings")
+        assert resp.status_code == 200
+        assert b"Settings" in resp.content
+
+
+class TestSetupAPI:
+    async def test_browse_home(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/setup/browse", json={"path": ""})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "current" in data
+        assert "entries" in data
+        assert isinstance(data["entries"], list)
+
+    async def test_browse_specific_dir(self, client: AsyncClient, tmp_path) -> None:
+        sub = tmp_path / "myproject"
+        sub.mkdir()
+        (sub / ".git").mkdir()
+        resp = await client.post("/api/setup/browse", json={"path": str(tmp_path)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current"] == str(tmp_path)
+        project_entry = next((e for e in data["entries"] if e["name"] == "myproject"), None)
+        assert project_entry is not None
+        assert project_entry["is_project"] is True
+
+    async def test_scan_project(self, client: AsyncClient, tmp_path) -> None:
+        # Create a minimal Python project
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+        (tmp_path / ".git").mkdir()
+        resp = await client.post("/api/setup/scan", json={"project_path": str(tmp_path)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["project_name"] == tmp_path.name
+        assert "python" in data["tech_stack"]
+        assert data["already_installed"] is False
+
+    async def test_configure_project(self, client: AsyncClient, tmp_path) -> None:
+        import sova.config.registry as reg_mod
+
+        orig_file = reg_mod._REGISTRY_FILE
+        orig_dir = reg_mod._REGISTRY_DIR
+        reg_file = tmp_path / "reg" / "projects.json"
+        reg_mod._REGISTRY_FILE = reg_file
+        reg_mod._REGISTRY_DIR = tmp_path / "reg"
+
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        resp = await client.post("/api/setup/configure", json={
+            "project_path": str(project),
+            "github_repo": "user/test",
+            "base_branch": "main",
+            "agent_model": "opus",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert (project / "sova.toml").exists()
+        toml_content = (project / "sova.toml").read_text()
+        assert 'github_repo = "user/test"' in toml_content
+
+        reg_mod._REGISTRY_FILE = orig_file
+        reg_mod._REGISTRY_DIR = orig_dir
