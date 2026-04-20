@@ -12,6 +12,7 @@ from rich.table import Table
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.commands import app as commands_app
+from sova.cli.commands.harden import harden
 from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_pr
 from sova.cli.commands.project import install, setup
@@ -34,6 +35,7 @@ app.command(name="parallel")(parallel)
 
 # Triage
 app.command(name="triage")(triage)
+app.command(name="harden")(harden)
 
 # Project
 app.command(name="install")(install)
