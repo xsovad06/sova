@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Settings - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Settings</h2>
+
+<!-- Configuration -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Configuration</h3>
+  </div>
+  <div class="overflow-x-auto" id="config-table">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+
+<!-- Two columns: Invariants + Personas -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Invariants -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <h3 class="text-sm font-medium text-gray-400">Invariants</h3>
+    </div>
+    <div class="p-4" id="invariants-list">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+
+  <!-- Personas -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50">
+    <div class="px-4 py-3 border-b border-gray-700/50">
+      <h3 class="text-sm font-medium text-gray-400">Personas</h3>
+    </div>
+    <div class="p-4" id="personas-list">
+      <p class="text-gray-500 text-sm">Loading...</p>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadConfig() {
+  try {
+    var data = await fetchAPI(apiUrl('/settings/config'));
+    var container = document.getElementById('config-table');
+    var config = data.config;
+    var keys = Object.keys(config).sort();
+
+    if (keys.length === 0 || config._error) {
+      container.innerHTML = '<p class="text-gray-500 text-sm p-4">' + escapeHtml(config._error || 'No configuration') + '</p>';
+      return;
+    }
+
+    var rows = keys.filter(function(k) { return k !== '_error'; }).map(function(key) {
+      var val = config[key];
+      var displayVal = val === null || val === undefined ? '' : String(val);
+      return '<tr class="border-b border-gray-700/30 hover:bg-surface-hover/50 group">' +
+        '<td class="px-4 py-2 text-xs font-mono text-gray-400">' + escapeHtml(key) + '</td>' +
+        '<td class="px-4 py-2 text-xs">' +
+          '<span class="config-val text-gray-300" data-key="' + escapeHtml(key) + '">' + escapeHtml(displayVal) + '</span>' +
+          '<button onclick="editConfig(\'' + escapeHtml(key) + '\', this)" class="ml-2 text-[10px] text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">edit</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    container.innerHTML = '<table class="w-full text-left">' +
+      '<thead><tr class="border-b border-gray-700/50 text-xs text-gray-500 uppercase">' +
+        '<th class="px-4 py-2 w-1/3">Key</th><th class="px-4 py-2">Value</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table>';
+  } catch (e) {
+    console.error('Failed to load config:', e);
+  }
+}
+
+function editConfig(key, btn) {
+  var row = btn.closest('tr');
+  var span = row.querySelector('.config-val');
+  var currentVal = span.textContent;
+
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = currentVal;
+  input.className = 'bg-surface text-xs text-gray-300 border border-accent/50 rounded px-2 py-0.5 w-full';
+  input.onkeydown = function(e) {
+    if (e.key === 'Enter') saveConfig(key, input.value, span, input);
+    if (e.key === 'Escape') cancelEdit(span, input, currentVal);
+  };
+  input.onblur = function() { cancelEdit(span, input, currentVal); };
+
+  span.style.display = 'none';
+  btn.style.display = 'none';
+  span.parentNode.insertBefore(input, span);
+  input.focus();
+}
+
+function cancelEdit(span, input, originalVal) {
+  span.textContent = originalVal;
+  span.style.display = '';
+  span.parentNode.querySelector('button').style.display = '';
+  input.remove();
+}
+
+async function saveConfig(key, value, span, input) {
+  try {
+    var res = await fetch(apiUrl('/settings/config'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: key, value: value}),
+    });
+    var data = await res.json();
+    if (data.error) {
+      alert(data.error);
+      cancelEdit(span, input, span.textContent);
+    } else {
+      span.textContent = value;
+      span.style.display = '';
+      span.parentNode.querySelector('button').style.display = '';
+      input.remove();
+    }
+  } catch (e) {
+    alert('Failed to save: ' + e.message);
+    cancelEdit(span, input, span.textContent);
+  }
+}
+
+async function loadInvariants() {
+  try {
+    var data = await fetchAPI(apiUrl('/settings/invariants'));
+    var container = document.getElementById('invariants-list');
+    if (data.invariants.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-xs">No invariants found</p>';
+      return;
+    }
+    container.innerHTML = data.invariants.map(function(inv) {
+      var dotColor = inv.executable ? 'bg-accent-green' : 'bg-gray-500';
+      return '<div class="flex items-center gap-2 py-1">' +
+        '<span class="w-2 h-2 rounded-full ' + dotColor + '"></span>' +
+        '<span class="text-xs font-mono text-gray-300">' + escapeHtml(inv.name) + '</span>' +
+        (inv.executable ? '' : '<span class="text-[10px] text-gray-600">(not executable)</span>') +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load invariants:', e);
+  }
+}
+
+async function loadPersonas() {
+  try {
+    var data = await fetchAPI(apiUrl('/settings/personas'));
+    var container = document.getElementById('personas-list');
+
+    var html = '';
+    if (data.detected) {
+      html += '<div class="mb-3 text-xs">' +
+        '<span class="text-gray-500">Detected:</span> ' +
+        '<span class="text-accent-green font-medium">' + escapeHtml(data.detected) + '</span>' +
+      '</div>';
+    }
+
+    if (data.personas.length === 0) {
+      html += '<p class="text-gray-500 text-xs">No persona files found</p>';
+    } else {
+      html += data.personas.map(function(p) {
+        var isActive = data.detected && p.name === data.detected;
+        return '<div class="flex items-center gap-2 py-1">' +
+          '<span class="w-2 h-2 rounded-full ' + (isActive ? 'bg-accent-green' : 'bg-gray-600') + '"></span>' +
+          '<span class="text-xs text-gray-300">' + escapeHtml(p.name) + '</span>' +
+          (isActive ? '<span class="text-[10px] text-accent-green">(active)</span>' : '') +
+        '</div>';
+      }).join('');
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('Failed to load personas:', e);
+  }
+}
+
+loadConfig();
+loadInvariants();
+loadPersonas();
+</script>
+{% endblock %}
