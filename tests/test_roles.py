@@ -546,7 +546,15 @@ class TestAssessTask:
         from sova.roles.triage import TriageRole
 
         role = TriageRole()
-        task = Task(id="1", title="Test", body="A description", state=TaskState.BACKLOG)
+        body = (
+            "Implement the foobar feature.\n\n"
+            "## Scope\n"
+            "Update `src/handler.py` to support the new endpoint.\n\n"
+            "## Acceptance Criteria\n"
+            "- [ ] Endpoint returns 200\n"
+            "- [ ] Tests pass\n"
+        )
+        task = Task(id="1", title="Test", body=body, state=TaskState.BACKLOG)
         assessment = await role.assess_task(task)
 
         assert assessment.suitability == "ready"
@@ -602,9 +610,15 @@ class TestTriageLabelApplication:
     async def test_applies_ready_label(self) -> None:
         from sova.roles.triage import TriageRole
 
+        body = (
+            "Implement feature X.\n\n"
+            "## Acceptance Criteria\n"
+            "- [ ] Update `src/main.py` to handle new case\n"
+            "- [ ] Tests pass\n"
+        )
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(
-            id="42", title="Test", body="Has a description", state=TaskState.BACKLOG,
+            id="42", title="Test", body=body, state=TaskState.BACKLOG,
         )
         ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()

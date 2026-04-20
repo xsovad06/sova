@@ -2,9 +2,13 @@
 
 Reads BACKLOG issues, evaluates them for agent suitability, applies
 labels, posts an assessment comment, and moves them to TRIAGED.
+
+Uses heuristic pre-checks and optional Claude-based deep assessment.
 """
 
 from __future__ import annotations
+
+import json
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
@@ -12,6 +16,40 @@ from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.triage")
+
+# Prompt template for Claude-based assessment
+_ASSESSMENT_PROMPT = """\
+Assess this GitHub issue for autonomous AI agent suitability.
+
+## Issue #{issue_id}: {title}
+
+{body}
+
+## Labels
+{labels}
+
+## Assessment Criteria
+
+Evaluate on these dimensions:
+1. Is the description specific enough? (acceptance criteria, steps, expected behavior)
+2. Does it reference specific files, functions, or components?
+3. Is the scope bounded? (single feature vs epic)
+4. Does it require domain knowledge the agent lacks?
+5. Are there external dependencies or environment requirements?
+
+## Output Format
+
+Respond with a JSON object (no markdown fencing):
+{{
+    "suitability": "ready" | "needs_spec" | "needs_research" | "human_only",
+    "confidence": 0.0-1.0,
+    "reasoning": "one paragraph explanation",
+    "missing_context": ["list", "of", "missing", "items"],
+    "estimated_complexity": "trivial" | "simple" | "moderate" | "complex" | "epic",
+    "suggested_role": "researcher" | "developer" | "triage",
+    "sub_tasks": ["optional", "breakdown"]
+}}
+"""
 
 
 class TriageRole(AgentRole):
@@ -29,6 +67,53 @@ class TriageRole(AgentRole):
     }
 
     async def assess_task(self, task: Task) -> TaskAssessment:
+        """Assess task suitability using heuristics.
+
+        Falls back to heuristic-only when LLM is not available.
+        Use assess_task_with_llm() for Claude-based deep assessment.
+        """
+        return self._heuristic_assess(task)
+
+    async def assess_task_with_llm(self, task: Task, ctx: ExecutionContext) -> TaskAssessment:
+        """Assess task using Claude for deeper analysis.
+
+        Falls back to heuristic assessment if LLM invocation fails.
+        """
+        # Quick heuristic pre-check: no body = definitely needs spec
+        if not task.body or not task.body.strip():
+            return self._heuristic_assess(task)
+
+        try:
+            from sova.llm.client import invoke, resolve_model
+
+            model = resolve_model("triage", ctx.config.roles)
+            prompt = _ASSESSMENT_PROMPT.format(
+                issue_id=task.id,
+                title=task.title,
+                body=task.body or "(no description)",
+                labels=", ".join(task.labels) if task.labels else "none",
+            )
+
+            result = await invoke(
+                prompt,
+                model=model,
+                cwd=ctx.project_dir,
+                max_budget_usd=ctx.config.agent.max_budget / 10,
+                timeout=120,
+            )
+
+            ctx.add_cost(result.cost_usd)
+            assessment = self._parse_llm_assessment(result.text)
+            if assessment:
+                return assessment
+
+        except Exception as exc:
+            log.warning("triage.llm_fallback", error=str(exc))
+
+        return self._heuristic_assess(task)
+
+    def _heuristic_assess(self, task: Task) -> TaskAssessment:
+        """Quick heuristic-based assessment without LLM."""
         has_body = bool(task.body and task.body.strip())
         if not has_body:
             return TaskAssessment(
@@ -39,6 +124,40 @@ class TriageRole(AgentRole):
                 estimated_complexity="moderate",
                 suggested_role="triage",
             )
+
+        body = task.body.strip().lower()
+
+        # Check for acceptance criteria indicators
+        has_criteria = any(
+            marker in body
+            for marker in ["- [ ]", "acceptance criteria", "expected behavior", "## scope", "## requirements"]
+        )
+
+        # Check for file/code references
+        has_code_refs = any(
+            marker in body
+            for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def "]
+        )
+
+        if not has_criteria and len(body) < 100:
+            return TaskAssessment(
+                suitability="needs_spec",
+                confidence=0.6,
+                reasoning="Issue has a short description without acceptance criteria.",
+                missing_context=["acceptance criteria", "expected behavior"],
+                estimated_complexity="moderate",
+                suggested_role="triage",
+            )
+
+        if has_criteria and has_code_refs:
+            return TaskAssessment(
+                suitability="ready",
+                confidence=0.85,
+                reasoning="Issue has acceptance criteria and code references; ready for research.",
+                estimated_complexity="moderate",
+                suggested_role="researcher",
+            )
+
         return TaskAssessment(
             suitability="ready",
             confidence=0.8,
@@ -46,6 +165,30 @@ class TriageRole(AgentRole):
             estimated_complexity="moderate",
             suggested_role="researcher",
         )
+
+    def _parse_llm_assessment(self, text: str) -> TaskAssessment | None:
+        """Parse Claude's JSON response into a TaskAssessment."""
+        try:
+            # Strip markdown fencing if present
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+            data = json.loads(cleaned)
+
+            return TaskAssessment(
+                suitability=data["suitability"],
+                confidence=float(data.get("confidence", 0.7)),
+                reasoning=data.get("reasoning", ""),
+                missing_context=data.get("missing_context", []),
+                estimated_complexity=data.get("estimated_complexity", "moderate"),
+                suggested_role=data.get("suggested_role", "researcher"),
+                sub_tasks=data.get("sub_tasks", []),
+            )
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            log.warning("triage.parse_failed", error=str(exc))
+            return None
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
         task = await ctx.adapter.get_task(ctx.issue_number)
@@ -60,7 +203,7 @@ class TriageRole(AgentRole):
 
         log.info("triage.start", issue=ctx.issue_number)
 
-        # Assess the task
+        # Assess the task (uses heuristics; CLI triage command may use LLM)
         assessment = await self.assess_task(task)
 
         # Apply suitability label
@@ -85,14 +228,27 @@ class TriageRole(AgentRole):
         """Build a triage assessment comment for the issue."""
         has_body = bool(task.body and task.body.strip())
         missing = ", ".join(assessment.missing_context) if assessment.missing_context else "none"
-        return (
-            f"## Triage Assessment\n\n"
-            f"**Title**: {task.title}\n"
-            f"**Has description**: {'yes' if has_body else 'no'}\n"
-            f"**Suitability**: {assessment.suitability}\n"
-            f"**Confidence**: {assessment.confidence:.0%}\n"
-            f"**Complexity**: {assessment.estimated_complexity}\n"
-            f"**Missing context**: {missing}\n"
-            f"**Labels**: {', '.join(task.labels) if task.labels else 'none'}\n\n"
-            f"{assessment.reasoning}"
-        )
+        parts = [
+            "## Triage Assessment\n",
+            f"**Title**: {task.title}",
+            f"**Has description**: {'yes' if has_body else 'no'}",
+            f"**Suitability**: {assessment.suitability}",
+            f"**Confidence**: {assessment.confidence:.0%}",
+            f"**Complexity**: {assessment.estimated_complexity}",
+            f"**Missing context**: {missing}",
+            f"**Labels**: {', '.join(task.labels) if task.labels else 'none'}",
+            "",
+            assessment.reasoning,
+        ]
+
+        if assessment.suitability == "needs_spec" and assessment.missing_context:
+            parts.append("\n### What's needed before this can be worked on:\n")
+            for item in assessment.missing_context:
+                parts.append(f"- {item}")
+
+        if assessment.sub_tasks:
+            parts.append("\n### Suggested sub-tasks:\n")
+            for sub in assessment.sub_tasks:
+                parts.append(f"- {sub}")
+
+        return "\n".join(parts)
