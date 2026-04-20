@@ -100,6 +100,17 @@ class TriageConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 
 
+class ServerConfig(BaseSettings):
+    """Server daemon configuration."""
+
+    host: str = "127.0.0.1"
+    port: int = 8111
+    pid_file: str = ""
+    scheduler_enabled: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_SERVER_")
+
+
 class NotificationConfig(BaseSettings):
     """Notification configuration for human-in-the-loop."""
 
@@ -160,6 +171,7 @@ class ProjectConfig(BaseSettings):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 
