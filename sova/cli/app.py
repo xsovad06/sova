@@ -10,7 +10,12 @@ from rich.console import Console
 from rich.table import Table
 
 import sova
-from sova.cli.commands.run import run_issue
+from sova.cli.commands.admin import cleanup, costs, status
+from sova.cli.commands.memory import app as memory_app
+from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_pr
+from sova.cli.commands.project import install, setup
+from sova.cli.commands.run import parallel, run_issue, watch
+from sova.cli.commands.triage import triage
 from sova.config.loader import load_config
 
 app = typer.Typer(
@@ -19,7 +24,33 @@ app = typer.Typer(
     no_args_is_help=True,
     rich_markup_mode="rich",
 )
+
+# Core workflow
 app.command(name="run")(run_issue)
+app.command(name="watch")(watch)
+app.command(name="parallel")(parallel)
+
+# Triage
+app.command(name="triage")(triage)
+
+# Project
+app.command(name="install")(install)
+app.command(name="setup")(setup)
+
+# PR
+app.command(name="address-pr")(address_pr)
+app.command(name="maintain-pr")(maintain_pr)
+app.command(name="review-pr")(review_pr)
+app.command(name="learn-from-pr")(learn_from_pr)
+
+# Admin
+app.command(name="status")(status)
+app.command(name="costs")(costs)
+app.command(name="cleanup")(cleanup)
+
+# Memory (subcommand group)
+app.add_typer(memory_app)
+
 console = Console(stderr=True)
 
 
