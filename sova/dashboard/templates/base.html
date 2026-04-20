@@ -27,23 +27,61 @@
 </head>
 <body class="bg-surface text-gray-200 min-h-screen flex">
   <!-- Sidebar -->
+  {% set prefix = prefix|default("") %}
   <nav class="w-56 bg-sidebar flex flex-col fixed h-full border-r border-gray-700/50">
-    <div class="p-4 border-b border-gray-700/50">
-      <a href="/" class="flex items-center gap-2 hover:opacity-90 transition-opacity">
-        <img src="/static/logo.png" alt="SOVA" class="h-12 w-12 rounded object-cover object-top">
+    <div class="p-4 border-b border-gray-700/50 relative">
+      <a href="{{ prefix or '/' }}" class="flex items-center gap-2 hover:opacity-90 transition-opacity">
+        <div class="relative">
+          <img src="/static/logo.png" alt="SOVA" class="h-12 w-12 rounded object-cover object-top">
+          <span id="activity-dot" class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-gray-500 border-2 border-sidebar"></span>
+        </div>
         <div>
           <span class="text-lg font-semibold text-accent">SOVA</span>
-          <p class="text-xs text-gray-500">Dashboard</p>
+          {% if project_name is defined and project_name %}
+            <p class="text-xs text-accent-green mt-0.5 truncate" title="{{ project_name }}">{{ project_name }}</p>
+          {% else %}
+            <p class="text-xs text-gray-500">Dashboard</p>
+          {% endif %}
         </div>
+      </a>
+      <!-- Notification bell -->
+      <button onclick="toggleNotifPanel()" class="absolute top-4 right-3 relative">
+        <svg class="w-4 h-4 text-gray-500 hover:text-gray-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+        </svg>
+        <span id="notif-badge" class="hidden absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-accent-red text-[8px] text-white flex items-center justify-center font-bold">0</span>
+      </button>
+      <!-- Notification dropdown -->
+      <div id="notif-panel" class="hidden absolute right-0 top-14 w-52 bg-surface-card border border-gray-700/50 rounded-lg shadow-lg z-50">
+        <div class="px-3 py-2 border-b border-gray-700/50 flex items-center justify-between">
+          <span class="text-[10px] text-gray-500 uppercase">Notifications</span>
+          <button onclick="clearNotifBadge()" class="text-[10px] text-gray-600 hover:text-gray-300">Clear</button>
+        </div>
+        <div id="notif-list" class="max-h-48 overflow-y-auto p-2">
+          <p class="text-[10px] text-gray-600 text-center py-2">No notifications</p>
+        </div>
+      </div>
+      {% if project_slug is defined and project_slug %}
+      <a href="/" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors mt-1 inline-block">&larr; Switch project</a>
+      {% endif %}
+    </div>
+    <!-- Checkpoint banner (shown when handoff awaits action) -->
+    <div id="checkpoint-banner" class="hidden px-3 py-2 bg-accent-yellow/10 border-b border-accent-yellow/30">
+      <a href="{{ prefix }}/control" class="flex items-center gap-2 text-xs text-accent-yellow hover:text-yellow-200 transition-colors">
+        <span class="w-2 h-2 rounded-full bg-accent-yellow animate-pulse"></span>
+        <span>Action required</span>
       </a>
     </div>
     <div class="flex-1 py-2">
       {% set nav_items = [
-        ("overview", "/overview", "Overview", "#"),
-        ("runs", "/runs", "Runs", ">"),
-        ("costs", "/costs", "Costs", "$"),
-        ("control", "/control", "Control", "!"),
-        ("memory", "/memory", "Memory", "@"),
+        ("overview", prefix + "/overview", "Overview", "#"),
+        ("control", prefix + "/control", "Control", "!"),
+        ("runs", prefix + "/runs", "Runs", ">"),
+        ("tasks", prefix + "/tasks", "Tasks", "="),
+        ("queue", prefix + "/queue", "Queue", "^"),
+        ("costs", prefix + "/costs", "Costs", "$"),
+        ("logs", prefix + "/logs", "Logs", "~"),
+        ("memory", prefix + "/memory", "Memory", "@"),
       ] %}
       {% for id, href, label, icon in nav_items %}
       <a href="{{ href }}"
@@ -53,6 +91,21 @@
         {{ label }}
       </a>
       {% endfor %}
+
+      <div class="border-t border-gray-700/30 my-2 mx-4"></div>
+
+      <a href="/setup"
+         class="flex items-center px-4 py-2.5 text-sm transition-colors
+                {{ 'bg-sidebar-active text-white' if page == 'setup' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
+        <span class="w-6 text-center mr-3 text-base">+</span>
+        Add Project
+      </a>
+      <a href="{{ prefix }}/settings"
+         class="flex items-center px-4 py-2.5 text-sm transition-colors
+                {{ 'bg-sidebar-active text-white' if page == 'settings' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
+        <span class="w-6 text-center mr-3 text-base">*</span>
+        Settings
+      </a>
     </div>
     <div class="p-3 border-t border-gray-700/50 text-xs text-gray-600">
       SOVA v0.1.0
@@ -65,7 +118,8 @@
   </main>
 
   <script>
-    window.SOVA_API_PREFIX = "/api";
+    window.SOVA_PROJECT_SLUG = "{{ project_slug if project_slug is defined else '' }}";
+    window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api" : "/api";
   </script>
   <script src="/static/app.js"></script>
   {% block scripts %}{% endblock %}
