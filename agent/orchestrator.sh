@@ -13,6 +13,8 @@ set -euo pipefail
 #   ./pak-agent.sh --triage 42            # Triage a single issue
 #   ./pak-agent.sh --harden              # Harden all open issues (enrich + re-triage)
 #   ./pak-agent.sh --harden 42           # Harden a single issue
+#   ./pak-agent.sh --harden --dry-run    # Preview hardening without posting to GitHub
+#   ./pak-agent.sh --harden 42 --dry-run # Preview hardening for a single issue
 #   ./pak-agent.sh --investigate 42       # Run investigation mode on an issue
 #   ./pak-agent.sh --investigate 42 --doc # Investigation + Google Doc creation
 #   ./pak-agent.sh --watch                # Continuous mode (loop with priority scanner)
@@ -1861,6 +1863,22 @@ run_step3() {
     log_msg INFO step3 "Agent artifacts excluded from git tracking"
   fi
 
+  # Ensure worktree uses the same Docker Compose project name as the main repo
+  # to prevent port collisions when running tests from worktrees
+  if [[ -f "$WORKTREE_DIR/docker-compose.yml" ]]; then
+    if ! grep -q '^name:' "$WORKTREE_DIR/docker-compose.yml" 2>/dev/null; then
+      local compose_project_name
+      compose_project_name=$(basename "$REPO_ROOT" | tr '-' '_' | tr '[:upper:]' '[:lower:]')
+      for envf in .env .env.local; do
+        if [[ -f "$WORKTREE_DIR/$envf" ]] && ! grep -q 'COMPOSE_PROJECT_NAME' "$WORKTREE_DIR/$envf"; then
+          echo "COMPOSE_PROJECT_NAME=$compose_project_name" >> "$WORKTREE_DIR/$envf"
+          log_msg INFO step3 "Injected COMPOSE_PROJECT_NAME=$compose_project_name into $envf"
+          break
+        fi
+      done
+    fi
+  fi
+
   # Ensure Docker DB is running
   docker compose -f "$REPO_ROOT/docker-compose.yml" up -d db 2>/dev/null || true
 
@@ -2854,6 +2872,18 @@ triage_task() {
     reasons="${reasons}+ Out-of-scope constraints defined\n"
   fi
 
+  # Positive: explicit model/schema definitions
+  if echo "$body" | grep -qiE 'model|schema|field.*type|endpoint.*url|api.*route'; then
+    score=$((score + 1))
+    reasons="${reasons}+ Model/schema details provided\n"
+  fi
+
+  # Positive: test plan or test cases mentioned
+  if echo "$body" | grep -qiE 'test.*plan|test.*case|test.*scenario|pytest|factory'; then
+    score=$((score + 1))
+    reasons="${reasons}+ Test plan included\n"
+  fi
+
   # Complexity signals: UI/design, multiple components, external deps
   local was_set=false
   shopt -q nocasematch && was_set=true
@@ -2861,6 +2891,10 @@ triage_task() {
   if [[ "$title $body" =~ (visualization|d3|canvas|animation|drag.?and.?drop|ui.?design|ux|mockup|figma|prototype) ]]; then
     score=$((score - 3))
     reasons="${reasons}- Complex UI/visualization work\n"
+  fi
+  if [[ "$title $body" =~ (logo|brand.*identity|visual.*design|illustration|graphic.*design|icon.*set.*design) ]]; then
+    score=$((score - 4))
+    reasons="${reasons}- Creative/design task (not code)\n"
   fi
   if [[ "$title $body" =~ (migration|schema.?change|breaking.?change|api.?redesign|architecture) ]]; then
     score=$((score - 2))
@@ -2871,6 +2905,12 @@ triage_task() {
     reasons="${reasons}- External dependency integration\n"
   fi
   $was_set || shopt -u nocasematch
+
+  # Negative: research/exploration tasks
+  if echo "$labels" | grep -qiE 'research|exploration|spike|investigate'; then
+    score=$((score - 3))
+    reasons="${reasons}- Research task (open-ended)\n"
+  fi
 
   # Priority: critical tasks should go faster (human oversight recommended)
   if echo "$labels" | grep -qiE 'priority[: ]*critical'; then
@@ -2938,7 +2978,7 @@ _load_project_docs() {
       name=$(basename "$f")
       docs="${docs}
 --- $name ---
-$(head -200 "$f")
+$(head -500 "$f")
 "
     done
   done
@@ -2957,9 +2997,11 @@ $(cat "$f")
   echo "$docs"
 }
 
-# Harden a single issue: enrich with context, assess priority, post as comment.
+# Harden a single issue: enrich with context, assess priority, update issue body.
+# Args: $1=issue_number, $2=dry_run (optional, "true" to preview without posting)
 harden_task() {
   local issue="$1"
+  local dry_run="${2:-false}"
 
   log_msg INFO harden "Hardening issue #$issue..."
 
@@ -2994,59 +3036,65 @@ $body
 Project vision, strategy documents, and issue templates:
 ${project_docs:-No project vision/strategy documents found. Use your best judgment based on the issue context.}
 
-All open issues in this project (for dependency/ordering analysis):
+All open issues in this project (for dependency/overlap analysis):
 $all_issues
 
-Your task:
+Your task: Produce an UPDATED issue body that an autonomous agent can pick up and implement
+without ambiguity. The output replaces the current issue body entirely.
+
+Follow these steps internally (do NOT include the step numbers in the output):
+
 1. CONTEXT ENRICHMENT: Search the project vision/strategy docs for any details relevant to this issue.
-   Also use the GitHub issue templates to understand the expected structure — your enriched
-   acceptance criteria and scope sections should match the template format for this issue type.
-   Extract specific requirements, design decisions, or constraints that should be reflected in the issue.
+   Also use the GitHub issue templates to understand the expected structure -- your output should match
+   the template format for this issue type. Extract specific requirements, design decisions, or
+   constraints that should be reflected in the issue.
 
-2. ACCEPTANCE CRITERIA: Write clear, testable acceptance criteria as checkboxes.
+2. TECHNICAL APPROACH: Describe the concrete architecture and data flow for this feature/fix.
+   What is the high-level design? How do the components interact? This eliminates ambiguity that
+   would cause an agent to make wrong design decisions.
+
+3. MODELS & SCHEMAS: If this issue involves new models, list concrete field names, types, and
+   relationships. If it involves new API endpoints, specify URL patterns, HTTP methods, and
+   request/response shapes. If it involves new services, specify function signatures.
+
+4. ACCEPTANCE CRITERIA: Write clear, testable acceptance criteria as checkboxes.
    Each criterion should be independently verifiable. Be specific, not generic.
-   If the issue already has acceptance criteria, improve them (make them more specific, add missing ones).
+   Include at least one security/scoping criterion (e.g., user data isolation).
+   If the issue already has good criteria, keep and improve them.
 
-3. SCOPE ANALYSIS: Identify which components/areas are affected. Estimate complexity (S/M/L/XL).
+5. SCOPE ANALYSIS: Identify which files/components are affected. Estimate complexity (S/M/L/XL).
+   List explicit dependencies on other issues.
 
-4. USER VALUE: Explain how the end user benefits from this feature/fix. What problem does it solve?
-   How could the implementation maximize user value?
+6. CONFLICT CHECK: Review the list of all open issues. Flag any that overlap in scope with this
+   issue (e.g., two issues that would create the same model or service). Note how to avoid
+   duplicate work.
 
-5. PRIORITY ASSESSMENT: Based on the project vision, dependencies, and user value:
-   - Is the current priority label correct? If not, what should it be and why?
-   - Are there dependency issues? Does another issue need to be completed first?
-   - Should this issue be done earlier or later than its current position suggests?
-
-6. IMPLEMENTATION HINTS: Brief technical guidance for the developer/agent.
+7. IMPLEMENTATION HINTS: Brief technical guidance for the developer/agent.
    Key files to look at, patterns to follow, gotchas to watch for.
 
-Output your analysis in this exact markdown format (nothing else):
+Output the COMPLETE updated issue body in markdown. Keep the original Summary/Description section
+(improved if needed), then add/update the following sections. Do NOT wrap the output in a code block.
 
-## Hardening Analysis for #$issue
+## Summary
+<!-- Improved version of the original summary -->
 
-### Context from Project Vision
-<!-- What the project docs say about this area -->
+## Technical Approach
+<!-- Architecture, data flow, key design decisions -->
 
-### Enriched Acceptance Criteria
+## Requirements
+<!-- Grouped sub-sections with checkbox items. Include model fields, endpoints, etc. -->
+
+## Acceptance Criteria
 - [ ] criterion 1
 - [ ] criterion 2
-...
 
-### Scope
+## Scope
 - **Components affected**: ...
 - **Complexity**: S / M / L / XL
 - **Dependencies**: #issue_numbers or 'none'
+- **Conflicts**: #issue_numbers or 'none'
 
-### User Value
-<!-- How the end user benefits -->
-
-### Priority Assessment
-- **Current priority**: ...
-- **Recommended priority**: ... (or 'correct as-is')
-- **Reasoning**: ...
-- **Ordering notes**: ... (any issues that should come before/after)
-
-### Implementation Hints
+## Implementation Hints
 <!-- Technical guidance for the developer/agent -->"
 
   # Run Claude analysis
@@ -3058,17 +3106,31 @@ Output your analysis in this exact markdown format (nothing else):
     return 1
   fi
 
-  # Post as comment on the issue
-  gh issue comment "$issue" --body "$analysis" 2>/dev/null || {
-    log_msg ERROR harden "Failed to post comment on #$issue"
+  # Dry-run mode: print analysis and exit without posting
+  if [[ "$dry_run" == "true" ]]; then
+    echo ""
+    echo "=== DRY RUN: Hardening analysis for #$issue ==="
+    echo ""
+    echo "$analysis"
+    echo ""
+    echo "=== END DRY RUN (not posted to GitHub) ==="
+    return 0
+  fi
+
+  # Update the issue body with the enriched content
+  gh issue edit "$issue" --body "$analysis" 2>/dev/null || {
+    log_msg ERROR harden "Failed to update issue body for #$issue"
     echo "$analysis"
     return 1
   }
-  log_msg INFO harden "Posted hardening analysis as comment on #$issue"
+  log_msg INFO harden "Updated issue #$issue body with hardened content"
 
-  # Re-run triage with enriched context (original body + analysis)
+  # Post a brief comment noting the hardening was applied
+  gh issue comment "$issue" --body "Issue hardened by PAK agent (body updated with enriched requirements, acceptance criteria, and technical approach)." 2>/dev/null || true
+
+  # Re-run triage with enriched context
   local enriched_json
-  enriched_json=$(echo "$issue_json" | jq --arg extra "$analysis" '.body = .body + "\n\n" + $extra')
+  enriched_json=$(echo "$issue_json" | jq --arg newbody "$analysis" '.body = $newbody')
   triage_task "$issue" "$enriched_json"
 
   log_msg INFO harden "Issue #$issue hardened and re-triaged (verdict: $TRIAGE_VERDICT)"
@@ -3689,14 +3751,27 @@ elif [[ "${1:-}" == "--triage" ]]; then
   fi
   exit 0
 elif [[ "${1:-}" == "--harden" ]]; then
-  # Harden one or all open issues (enrich, assess priority, post comment)
-  if [[ -n "${2:-}" && "${2:-}" =~ ^[0-9]+$ ]]; then
-    harden_task "$2"
+  # Harden one or all open issues (enrich, update body, re-triage)
+  # Parse --dry-run flag from any position
+  harden_dry_run="false"
+  harden_issue=""
+  shift
+  for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+      harden_dry_run="true"
+    elif [[ "$arg" =~ ^[0-9]+$ ]]; then
+      harden_issue="$arg"
+    fi
+  done
+
+  if [[ -n "$harden_issue" ]]; then
+    harden_task "$harden_issue" "$harden_dry_run"
   else
     issue_args=("--state" "open" "--json" "number,title,labels")
     [[ -n "$ISSUE_MILESTONE" ]] && issue_args+=("--milestone" "$ISSUE_MILESTONE")
     all_issues=$(gh issue list "${issue_args[@]}" 2>/dev/null) || { echo "Error querying issues."; exit 1; }
     echo "Hardening all open issues..."
+    [[ "$harden_dry_run" == "true" ]] && echo "(DRY RUN -- no changes will be posted to GitHub)"
     echo ""
     # Collect issue numbers first to avoid stdin conflicts (claude -p reads stdin)
     harden_nums=()
@@ -3704,7 +3779,7 @@ elif [[ "${1:-}" == "--harden" ]]; then
       harden_nums+=("$num")
     done < <(echo "$all_issues" | jq -r '.[].number')
     for issue_num in "${harden_nums[@]}"; do
-      harden_task "$issue_num"
+      harden_task "$issue_num" "$harden_dry_run"
     done
   fi
   exit 0

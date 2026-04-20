@@ -65,6 +65,8 @@ async def create_worktree(
     if copy_files:
         _copy_worktree_files(project_dir, worktree_path, copy_files)
 
+    _ensure_compose_project_name(project_dir, worktree_path)
+
     return WorktreeInfo(
         path=worktree_path,
         branch=branch,
@@ -127,6 +129,40 @@ async def cleanup_stale_worktrees(
             removed += 1
 
     return removed
+
+
+def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None:
+    """Ensure Docker Compose uses the same project name in worktrees.
+
+    If the project has a docker-compose.yml without an explicit ``name:``
+    directive, inject ``COMPOSE_PROJECT_NAME`` into the worktree's ``.env``
+    to prevent port collisions between the main repo and worktree containers.
+    """
+    compose_file = worktree_path / "docker-compose.yml"
+    if not compose_file.exists():
+        return
+
+    # Check if compose file already has an explicit name
+    content = compose_file.read_text()
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("name:") and not stripped.startswith("name:", 0):
+            return
+        if stripped.startswith("name:"):
+            return
+
+    # Derive project name from the main repo directory (matches Docker Compose default)
+    project_name = project_dir.name.lower().replace("-", "_")
+    env_file = worktree_path / ".env"
+
+    # Append or create .env with COMPOSE_PROJECT_NAME
+    existing = env_file.read_text() if env_file.exists() else ""
+    if "COMPOSE_PROJECT_NAME" not in existing:
+        separator = "\n" if existing and not existing.endswith("\n") else ""
+        env_file.write_text(
+            f"{existing}{separator}COMPOSE_PROJECT_NAME={project_name}\n"
+        )
+        log.info("worktree.compose_project_name", project_name=project_name)
 
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:

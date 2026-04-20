@@ -24,7 +24,13 @@ from sova.git.operations import (
     rebase,
     sync_branch,
 )
-from sova.git.worktree import WorktreeInfo, cleanup_worktree, create_worktree, list_worktrees
+from sova.git.worktree import (
+    WorktreeInfo,
+    _ensure_compose_project_name,
+    cleanup_worktree,
+    create_worktree,
+    list_worktrees,
+)
 from sova.utils.shell import ShellResult
 
 # ---------------------------------------------------------------------------
@@ -304,32 +310,34 @@ class TestCreateWorktree:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.worktree.Path.mkdir"):
                 with patch("sova.git.worktree._copy_worktree_files"):
-                    info = await create_worktree(
-                        issue_id="42",
-                        branch="feat/login",
-                        base_branch="main",
-                        project_dir=Path("/repo"),
-                    )
+                    with patch("sova.git.worktree._ensure_compose_project_name"):
+                        info = await create_worktree(
+                            issue_id="42",
+                            branch="feat/login",
+                            base_branch="main",
+                            project_dir=Path("/repo"),
+                        )
 
-                    assert isinstance(info, WorktreeInfo)
-                    assert info.issue_id == "42"
-                    assert info.branch == "feat/login"
-                    assert ".claude/worktrees" in str(info.path)
-                    mock_run.assert_called()
+                        assert isinstance(info, WorktreeInfo)
+                        assert info.issue_id == "42"
+                        assert info.branch == "feat/login"
+                        assert ".claude/worktrees" in str(info.path)
+                        mock_run.assert_called()
 
     async def test_worktree_path_includes_issue_id(self) -> None:
         with patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.worktree.Path.mkdir"):
                 with patch("sova.git.worktree._copy_worktree_files"):
-                    info = await create_worktree(
-                        issue_id="42",
-                        branch="feat/login",
-                        base_branch="main",
-                        project_dir=Path("/repo"),
-                    )
+                    with patch("sova.git.worktree._ensure_compose_project_name"):
+                        info = await create_worktree(
+                            issue_id="42",
+                            branch="feat/login",
+                            base_branch="main",
+                            project_dir=Path("/repo"),
+                        )
 
-                    assert "42" in str(info.path)
+                        assert "42" in str(info.path)
 
 
 class TestCleanupWorktree:
@@ -461,3 +469,76 @@ class TestWorktreeInfo:
         assert info.path == Path("/repo/.claude/worktrees/42")
         assert info.branch == "feat/login"
         assert info.issue_id == "42"
+
+
+class TestEnsureComposeProjectName:
+    """Test Docker Compose project name injection to prevent port collisions."""
+
+    def test_injects_into_env_when_compose_has_no_name(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+        (worktree / ".env").write_text("DEBUG=True\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        env_content = (worktree / ".env").read_text()
+        assert "COMPOSE_PROJECT_NAME=my_project" in env_content
+
+    def test_skips_when_compose_already_has_name(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("name: my_project\n\nservices:\n  db:\n    image: postgres\n")
+        (worktree / ".env").write_text("DEBUG=True\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        env_content = (worktree / ".env").read_text()
+        assert "COMPOSE_PROJECT_NAME" not in env_content
+
+    def test_skips_when_no_compose_file(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / ".env").write_text("DEBUG=True\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        env_content = (worktree / ".env").read_text()
+        assert "COMPOSE_PROJECT_NAME" not in env_content
+
+    def test_no_duplicate_injection(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "my_project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+        (worktree / ".env").write_text("COMPOSE_PROJECT_NAME=existing\n")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        env_content = (worktree / ".env").read_text()
+        assert env_content.count("COMPOSE_PROJECT_NAME") == 1
+
+    def test_normalizes_project_name(self, tmp_path: Path) -> None:
+        project_dir = tmp_path / "My-Project"
+        project_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (worktree / "docker-compose.yml").write_text("services:\n  db:\n    image: postgres\n")
+        (worktree / ".env").write_text("")
+
+        _ensure_compose_project_name(project_dir, worktree)
+
+        env_content = (worktree / ".env").read_text()
+        assert "COMPOSE_PROJECT_NAME=my_project" in env_content
