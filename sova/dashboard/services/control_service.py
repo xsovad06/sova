@@ -7,6 +7,7 @@ Uses sova.ipc.control.AgentProcess under the hood.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from pathlib import Path
 
@@ -18,6 +19,13 @@ log = get_logger(component="dashboard.control")
 _process: AgentProcess | None = None
 _output_lines: deque[str] = deque(maxlen=5000)
 _reader_task: asyncio.Task | None = None
+_project_dir: Path | None = None
+
+
+def set_project_dir(path: Path) -> None:
+    """Set the project directory for agent processes."""
+    global _project_dir
+    _project_dir = path
 
 
 def get_status() -> dict:
@@ -36,7 +44,6 @@ def get_output(since: int = 0) -> list[str]:
 async def start_agent(
     issue: str,
     *,
-    cwd: str | Path = ".",
     role: str | None = None,
     force: bool = False,
 ) -> dict:
@@ -54,10 +61,13 @@ async def start_agent(
     if force:
         prompt += " --force"
 
-    _process = await AgentProcess.spawn(prompt=prompt, cwd=Path(cwd))
+    cwd = _project_dir or Path.cwd()
+    _process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
     _reader_task = asyncio.create_task(_read_output(_process))
+    # Also capture stderr so errors are visible in the dashboard
+    asyncio.create_task(_read_stderr(_process))
 
-    log.info("agent.started", issue=issue, pid=_process.pid)
+    log.info("agent.started", issue=issue, pid=_process.pid, cwd=str(cwd))
     return {"status": "started", "pid": _process.pid}
 
 
@@ -86,9 +96,67 @@ async def stop_agent() -> dict:
 
 
 async def _read_output(process: AgentProcess) -> None:
-    """Background task to read stdout lines into the deque."""
+    """Background task to read stdout lines into the deque.
+
+    Parses Claude CLI stream-json output to extract human-readable text.
+    Stream-json emits JSONL where assistant messages have content blocks.
+    """
     try:
         async for line in process.stdout_lines():
-            _output_lines.append(line)
+            text = _parse_stream_line(line)
+            if text:
+                _output_lines.append(text)
+    except asyncio.CancelledError:
+        pass
+
+
+def _parse_stream_line(line: str) -> str:
+    """Extract readable text from a Claude stream-json line.
+
+    Returns the text content, or the raw line if it's not parseable JSON.
+    """
+    if not line.strip():
+        return ""
+
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return line
+
+    msg_type = data.get("type", "")
+
+    # Assistant text content
+    if msg_type == "assistant":
+        content = data.get("message", {}).get("content", [])
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+
+    # Content block delta (streaming chunks)
+    if msg_type == "content_block_delta":
+        delta = data.get("delta", {})
+        if delta.get("type") == "text_delta":
+            return delta.get("text", "")
+
+    # Result summary at the end -- only emit cost marker, not the text
+    # (the text was already emitted via assistant messages)
+    if msg_type == "result":
+        cost = data.get("total_cost_usd")
+        if cost:
+            return f"\n--- Result [cost: ${cost}] ---"
+
+    return ""
+
+
+async def _read_stderr(process: AgentProcess) -> None:
+    """Background task to capture stderr lines into the output deque."""
+    try:
+        async for line in process.stderr_lines():
+            if line.strip():
+                _output_lines.append(f"[stderr] {line}")
     except asyncio.CancelledError:
         pass

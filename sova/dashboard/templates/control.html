@@ -17,12 +17,32 @@
   </div>
 </div>
 
+<!-- Completion banner (shown when agent finishes) -->
+<div id="complete-panel" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border overflow-hidden" id="complete-panel-inner">
+    <div class="px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span id="complete-dot" class="w-2 h-2 rounded-full"></span>
+        <h3 id="complete-title" class="text-sm font-medium"></h3>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="complete-cost" class="text-xs text-gray-500"></span>
+        <button onclick="dismissComplete()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>
+      </div>
+    </div>
+    <div class="px-4 py-3 border-t border-gray-700/50">
+      <p id="complete-summary" class="text-sm text-gray-300 whitespace-pre-wrap"></p>
+    </div>
+  </div>
+</div>
+
 <!-- Start form -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6 p-4">
   <h3 class="text-sm font-medium text-gray-400 mb-3">Start Agent Run</h3>
   <div class="flex items-center gap-3">
     <input type="text" id="start-issue" placeholder="Issue number (e.g. 42)"
-           class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-48">
+           class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-48"
+           onkeydown="if(event.key==='Enter')startAgent()">
     <select id="start-role" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5">
       <option value="">Auto (dispatcher)</option>
       <option value="developer">Developer</option>
@@ -33,7 +53,7 @@
     <label class="flex items-center gap-1 text-xs text-gray-400">
       <input type="checkbox" id="start-force"> --force
     </label>
-    <button onclick="startAgent()" class="text-xs px-4 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+    <button id="start-btn" onclick="startAgent()" class="text-xs px-4 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
       Start
     </button>
   </div>
@@ -43,10 +63,13 @@
 <div class="bg-surface-card rounded-lg border border-gray-700/50">
   <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
     <h3 class="text-sm font-medium text-gray-400">Agent Output</h3>
-    <span class="text-xs text-gray-600" id="output-count">0 lines</span>
+    <div class="flex items-center gap-3">
+      <span class="text-xs text-gray-600" id="output-count"></span>
+      <button onclick="clearOutput()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">Clear</button>
+    </div>
   </div>
-  <div class="p-4 max-h-[500px] overflow-y-auto font-mono text-xs" id="agent-output">
-    <p class="text-gray-500">No output yet</p>
+  <div class="p-4 max-h-[600px] overflow-y-auto text-sm leading-relaxed" id="agent-output">
+    <p class="text-gray-500 text-xs">No output yet</p>
   </div>
 </div>
 {% endblock %}
@@ -54,6 +77,7 @@
 {% block scripts %}
 <script>
 let outputCursor = 0;
+let wasRunning = false;
 
 async function pollStatus() {
   try {
@@ -62,19 +86,73 @@ async function pollStatus() {
     const text = document.getElementById('status-text');
     const pid = document.getElementById('status-pid');
     const stopBtn = document.getElementById('stop-btn');
+    const startBtn = document.getElementById('start-btn');
 
     if (data.running) {
       dot.className = 'w-3 h-3 rounded-full bg-accent-green animate-pulse';
       text.textContent = 'Running';
       pid.textContent = 'PID: ' + data.pid;
       stopBtn.classList.remove('hidden');
+      startBtn.disabled = true;
+      startBtn.classList.add('opacity-50');
+      wasRunning = true;
     } else {
       dot.className = 'w-3 h-3 rounded-full bg-gray-500';
       text.textContent = 'Idle';
       pid.textContent = '';
       stopBtn.classList.add('hidden');
+      startBtn.disabled = false;
+      startBtn.classList.remove('opacity-50');
+
+      if (wasRunning) {
+        wasRunning = false;
+        showCompletionBanner();
+      }
     }
   } catch (e) { /* ignore */ }
+}
+
+function showCompletionBanner() {
+  const el = document.getElementById('agent-output');
+  const lines = el.querySelectorAll('.output-line');
+  const lastLine = lines.length > 0 ? lines[lines.length - 1].textContent : '';
+
+  // Check if there was an error
+  const hasError = el.querySelector('.output-stderr') !== null;
+
+  const panel = document.getElementById('complete-panel');
+  const inner = document.getElementById('complete-panel-inner');
+  const dotEl = document.getElementById('complete-dot');
+  const title = document.getElementById('complete-title');
+  const summary = document.getElementById('complete-summary');
+  const costEl = document.getElementById('complete-cost');
+
+  if (hasError) {
+    inner.className = 'bg-surface-card rounded-lg border border-accent-red/50 overflow-hidden';
+    dotEl.className = 'w-2 h-2 rounded-full bg-accent-red';
+    title.className = 'text-sm font-medium text-accent-red';
+    title.textContent = 'Agent Failed';
+  } else {
+    inner.className = 'bg-surface-card rounded-lg border border-accent-green/50 overflow-hidden';
+    dotEl.className = 'w-2 h-2 rounded-full bg-accent-green';
+    title.className = 'text-sm font-medium text-accent-green';
+    title.textContent = 'Agent Completed';
+  }
+
+  // Extract cost from result line if present
+  const resultLine = el.querySelector('.output-result');
+  if (resultLine && resultLine.dataset.cost) {
+    costEl.textContent = 'Cost: $' + parseFloat(resultLine.dataset.cost).toFixed(4);
+  } else {
+    costEl.textContent = '';
+  }
+
+  summary.textContent = lastLine || 'Agent process exited.';
+  panel.classList.remove('hidden');
+}
+
+function dismissComplete() {
+  document.getElementById('complete-panel').classList.add('hidden');
 }
 
 async function pollOutput() {
@@ -83,12 +161,33 @@ async function pollOutput() {
     if (data.lines.length > 0) {
       const el = document.getElementById('agent-output');
       if (outputCursor === 0) el.innerHTML = '';
+
       data.lines.forEach(line => {
         const div = document.createElement('div');
-        div.textContent = line;
-        div.className = 'text-gray-300 leading-5';
+
+        if (line.startsWith('\n--- Result')) {
+          // Result block -- extract cost, show as styled separator
+          const costMatch = line.match(/\$([0-9.]+)/);
+          div.className = 'output-line output-result mt-3 pt-3 border-t border-gray-700/50 text-xs text-gray-500';
+          if (costMatch) {
+            div.dataset.cost = costMatch[1];
+            div.textContent = 'Completed -- cost: $' + parseFloat(costMatch[1]).toFixed(4);
+          } else {
+            div.textContent = 'Completed';
+          }
+        } else if (line.startsWith('[stderr]')) {
+          // Error output
+          div.className = 'output-line output-stderr text-accent-red text-xs font-mono py-0.5';
+          div.textContent = line.replace('[stderr] ', '');
+        } else {
+          // Normal agent text
+          div.className = 'output-line text-gray-300 py-0.5 whitespace-pre-wrap';
+          div.textContent = line;
+        }
+
         el.appendChild(div);
       });
+
       outputCursor = data.total;
       el.scrollTop = el.scrollHeight;
       document.getElementById('output-count').textContent = outputCursor + ' lines';
@@ -103,14 +202,17 @@ async function startAgent() {
   const force = document.getElementById('start-force').checked;
   try {
     outputCursor = 0;
-    document.getElementById('agent-output').innerHTML = '<p class="text-gray-500">Starting...</p>';
+    document.getElementById('agent-output').innerHTML =
+      '<p class="text-gray-500 text-xs animate-pulse">Starting agent...</p>';
+    document.getElementById('complete-panel').classList.add('hidden');
     await fetch('/api/control/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({issue, role, force}),
     });
   } catch (e) {
-    console.error('Failed to start agent:', e);
+    document.getElementById('agent-output').innerHTML =
+      '<p class="text-accent-red text-xs">Failed to start agent: ' + escapeHtml(e.message) + '</p>';
   }
 }
 
@@ -122,8 +224,15 @@ async function stopAgent() {
   }
 }
 
+function clearOutput() {
+  outputCursor = 0;
+  document.getElementById('agent-output').innerHTML =
+    '<p class="text-gray-500 text-xs">No output yet</p>';
+  document.getElementById('output-count').textContent = '';
+}
+
 pollStatus();
-setInterval(pollStatus, 3000);
+setInterval(pollStatus, 2000);
 setInterval(pollOutput, 1000);
 </script>
 {% endblock %}

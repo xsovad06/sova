@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from sova.dashboard.routers import control, costs, memory, overview, runs
+from sova.dashboard.services import control_service
 from sova.db.session import close_db, init_db
 
 BASE = Path(__file__).parent
@@ -27,6 +28,10 @@ def create_app(*, project_dir: Path | None = None) -> FastAPI:
         await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
+
+    # Store project_dir so control service can spawn agents in the right directory
+    resolved_project_dir = (project_dir or Path.cwd()).resolve()
+    control_service.set_project_dir(resolved_project_dir)
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
     templates = Jinja2Templates(directory=BASE / "templates")

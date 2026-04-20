@@ -35,7 +35,7 @@ dev = [
 ]
 
 [project.scripts]
-sova = "sova.cli.app:main"
+sova = "sova.cli.app:app"
 
 [build-system]
 requires = ["setuptools>=75.0"]

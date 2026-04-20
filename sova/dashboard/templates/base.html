@@ -19,14 +19,23 @@
       }
     }
   </script>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="bg-surface text-gray-200 min-h-screen flex">
   <!-- Sidebar -->
   <nav class="w-56 bg-sidebar flex flex-col fixed h-full border-r border-gray-700/50">
     <div class="p-4 border-b border-gray-700/50">
-      <a href="/" class="text-lg font-semibold text-accent hover:text-blue-300 transition-colors">SOVA</a>
-      <p class="text-xs text-gray-500 mt-1">Dashboard</p>
+      <a href="/" class="flex items-center gap-2 hover:opacity-90 transition-opacity">
+        <img src="/static/logo.png" alt="SOVA" class="h-12 w-12 rounded object-cover object-top">
+        <div>
+          <span class="text-lg font-semibold text-accent">SOVA</span>
+          <p class="text-xs text-gray-500">Dashboard</p>
+        </div>
+      </a>
     </div>
     <div class="flex-1 py-2">
       {% set nav_items = [

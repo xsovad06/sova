@@ -61,6 +61,7 @@ class AgentProcess:
             prompt,
             "--output-format",
             "stream-json",
+            "--verbose",
         ]
 
         if model:
