@@ -2,6 +2,7 @@
 name: test
 description: Run tests and linter for the current project until all issues are fixed.
 user-invocable: true
+category: core
 ---
 
 # Test Runner

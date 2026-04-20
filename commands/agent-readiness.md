@@ -2,6 +2,7 @@
 name: agent-readiness
 description: Assess and improve a repository's readiness for AI-assisted development.
 user-invocable: true
+category: meta
 ---
 
 Assess the current repository's readiness for AI-assisted development, then offer to improve it step by step. $ARGUMENTS

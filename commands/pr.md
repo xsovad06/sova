@@ -2,6 +2,7 @@
 name: pr
 description: Create a pull request with the standard template, analyzing all commits and changes on the current branch.
 user-invocable: true
+category: core
 ---
 
 # Create Pull Request

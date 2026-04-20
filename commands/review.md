@@ -2,6 +2,7 @@
 name: review
 description: Review changed code as a senior engineer before pushing. Scores findings by fix value and auto-fixes high-value issues (>=3/10). Run before /pr to catch issues early.
 user-invocable: true
+category: core
 ---
 
 # Code Review

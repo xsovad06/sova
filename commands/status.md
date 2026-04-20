@@ -2,6 +2,7 @@
 name: status
 description: Project health check -- git state, services, tests, and progress overview.
 user-invocable: true
+category: meta
 ---
 
 # Project Status Check

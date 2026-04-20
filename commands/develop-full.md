@@ -2,6 +2,7 @@
 name: develop-full
 description: Full development workflow -- TDD, lint, test, self-review, commit organization. Provide a ticket ID or task description.
 user-invocable: true
+category: core
 ---
 
 # Full Development Workflow

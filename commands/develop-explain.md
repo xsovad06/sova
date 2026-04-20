@@ -2,6 +2,7 @@
 name: develop-explain
 description: Explain how to implement a feature with learning context, covering all approaches and technologies.
 user-invocable: true
+category: learning
 ---
 
 Explain how the requested feature/fix could be implemented, with deep learning context and technology explanations.

@@ -2,6 +2,7 @@
 name: ingest-review
 description: Ingest PR review feedback into agent memory for continuous learning. Provide PR number.
 user-invocable: true
+category: learning
 ---
 
 # Ingest PR Review Feedback

@@ -2,6 +2,7 @@
 name: new-feature
 description: Set up a new feature branch and prepare for development.
 user-invocable: true
+category: pr
 ---
 
 # Start New Feature

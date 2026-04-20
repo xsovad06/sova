@@ -2,6 +2,7 @@
 name: review-pr
 description: Review another person's pull request -- fetch, analyze, and post structured review on GitHub. Provide PR number.
 user-invocable: true
+category: pr
 ---
 
 # Review PR

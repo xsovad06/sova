@@ -2,6 +2,7 @@
 name: extract-knowledge
 description: Extract reusable knowledge from this session into the project's knowledge system.
 user-invocable: true
+category: learning
 ---
 
 # Extract Knowledge

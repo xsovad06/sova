@@ -2,6 +2,7 @@
 name: issue
 description: Fetch and analyze a GitHub Issue.
 user-invocable: true
+category: management
 ---
 
 # GitHub Issue

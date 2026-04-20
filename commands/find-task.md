@@ -2,6 +2,7 @@
 name: find-task
 description: Browse GitHub Issues backlog, prioritize sprint work, and suggest next tasks.
 user-invocable: true
+category: management
 ---
 
 # Find Next Task

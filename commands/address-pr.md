@@ -2,6 +2,7 @@
 name: address-pr
 description: Address PR review comments (human and bot) -- score, fix or decline, reply, resolve threads. Provide PR number.
 user-invocable: true
+category: pr
 ---
 
 # Address PR Review Comments

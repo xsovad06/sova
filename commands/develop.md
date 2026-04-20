@@ -2,6 +2,7 @@
 name: develop
 description: Develop a feature or fix based on the provided description, then run tests to verify.
 user-invocable: true
+category: core
 ---
 
 Develop the requested feature or fix, then verify with tests.
