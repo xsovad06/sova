@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, Numeric, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
 
 class Base(DeclarativeBase):
@@ -26,6 +26,7 @@ class TaskRun(Base):
     branch_name: Mapped[str] = mapped_column(String(200), default="")
     worktree_path: Mapped[str] = mapped_column(String(500), default="")
     pr_number: Mapped[int | None] = mapped_column(Integer)
+    pid: Mapped[int | None] = mapped_column(Integer)
     total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     error_message: Mapped[str | None] = mapped_column(Text)
     project_slug: Mapped[str] = mapped_column(String(100), default="")
@@ -33,6 +34,11 @@ class TaskRun(Base):
     handoff_json: Mapped[dict | None] = mapped_column(JSON)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @validates("issue_number")
+    def _normalize_issue_number(self, _key: str, value: str) -> str:
+        """Strip '#' prefix so '#67' and '67' are stored consistently."""
+        return value.lstrip("#").strip() if value else value
 
     __table_args__ = (
         Index("ix_task_runs_issue", "issue_number"),
