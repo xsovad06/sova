@@ -4,7 +4,7 @@ Provides the mandatory pipeline: Triage -> Research -> Develop,
 with each role enforcing state gates on the tracker.
 """
 
-from sova.roles.base import AgentRole, RoleResult
+from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.roles.developer import DeveloperRole
 from sova.roles.dispatcher import dispatch, get_role, list_roles, resolve_role_for_state
 from sova.roles.researcher import ResearcherRole
@@ -17,6 +17,7 @@ __all__ = [
     "ResearcherRole",
     "ReviewerRole",
     "RoleResult",
+    "TaskAssessment",
     "TriageRole",
     "dispatch",
     "get_role",

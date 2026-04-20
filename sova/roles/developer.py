@@ -6,12 +6,12 @@ Uses the full developer step pipeline via the WorkflowEngine.
 
 from __future__ import annotations
 
-from sova.adapters.base import TaskState
+from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps import get_developer_steps
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
-from sova.roles.base import AgentRole, RoleResult
+from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.developer")
@@ -22,6 +22,15 @@ class DeveloperRole(AgentRole):
     description = "Develop features and fixes using TDD workflow"
     allowed_input_states = frozenset({TaskState.RESEARCHED, TaskState.IN_PROGRESS})
     output_state = TaskState.DONE
+
+    async def assess_task(self, task: Task) -> TaskAssessment:
+        return TaskAssessment(
+            suitability="ready",
+            confidence=0.7,
+            reasoning="Task is ready for development.",
+            estimated_complexity="moderate",
+            suggested_role="developer",
+        )
 
     def get_steps(self) -> list[BaseStep]:
         return get_developer_steps()

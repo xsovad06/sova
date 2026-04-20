@@ -14,6 +14,7 @@ from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
 from sova.core.workflow import WorkflowEngine
 from sova.db.session import close_db, init_db
+from sova.roles.base import TaskAssessment
 
 
 @pytest.fixture(autouse=True)
@@ -460,3 +461,180 @@ class TestRoleDispatcher:
         role, result = await dispatch(ctx, role_name="triage")
 
         assert not result.success
+
+
+# ---------------------------------------------------------------------------
+# TaskAssessment model validation
+# ---------------------------------------------------------------------------
+
+
+class TestTaskAssessment:
+    def test_valid_assessment(self) -> None:
+        a = TaskAssessment(
+            suitability="ready",
+            confidence=0.85,
+            reasoning="Looks good",
+        )
+        assert a.suitability == "ready"
+        assert a.confidence == 0.85
+        assert a.missing_context == []
+        assert a.estimated_complexity == "moderate"
+        assert a.suggested_role == "developer"
+        assert a.sub_tasks == []
+
+    def test_all_suitability_values(self) -> None:
+        for val in ("ready", "needs_spec", "needs_research", "human_only"):
+            a = TaskAssessment(suitability=val, confidence=0.5, reasoning="test")
+            assert a.suitability == val
+
+    def test_invalid_suitability_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TaskAssessment(suitability="invalid", confidence=0.5, reasoning="test")
+
+    def test_confidence_bounds(self) -> None:
+        from pydantic import ValidationError
+
+        TaskAssessment(suitability="ready", confidence=0.0, reasoning="min")
+        TaskAssessment(suitability="ready", confidence=1.0, reasoning="max")
+
+        with pytest.raises(ValidationError):
+            TaskAssessment(suitability="ready", confidence=1.5, reasoning="too high")
+
+        with pytest.raises(ValidationError):
+            TaskAssessment(suitability="ready", confidence=-0.1, reasoning="negative")
+
+    def test_all_complexity_values(self) -> None:
+        for val in ("trivial", "simple", "moderate", "complex", "epic"):
+            a = TaskAssessment(
+                suitability="ready", confidence=0.5, reasoning="test",
+                estimated_complexity=val,
+            )
+            assert a.estimated_complexity == val
+
+    def test_invalid_complexity_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            TaskAssessment(
+                suitability="ready", confidence=0.5, reasoning="test",
+                estimated_complexity="impossible",
+            )
+
+    def test_with_all_fields(self) -> None:
+        a = TaskAssessment(
+            suitability="needs_research",
+            confidence=0.6,
+            reasoning="Needs investigation",
+            missing_context=["affected files", "root cause"],
+            estimated_complexity="complex",
+            suggested_role="researcher",
+            sub_tasks=["explore module A", "check module B"],
+        )
+        assert len(a.missing_context) == 2
+        assert len(a.sub_tasks) == 2
+
+
+# ---------------------------------------------------------------------------
+# assess_task() on each role
+# ---------------------------------------------------------------------------
+
+
+class TestAssessTask:
+    async def test_triage_assess_with_body(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="Test", body="A description", state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.confidence > 0
+
+    async def test_triage_assess_without_body(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="Test", body="", state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "needs_spec"
+        assert len(assessment.missing_context) > 0
+
+    async def test_researcher_assess(self) -> None:
+        from sova.roles.researcher import ResearcherRole
+
+        role = ResearcherRole()
+        task = Task(id="1", title="Test", state=TaskState.TRIAGED)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "needs_research"
+        assert assessment.suggested_role == "researcher"
+
+    async def test_developer_assess(self) -> None:
+        from sova.roles.developer import DeveloperRole
+
+        role = DeveloperRole()
+        task = Task(id="1", title="Test", state=TaskState.RESEARCHED)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.suggested_role == "developer"
+
+    async def test_reviewer_assess(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        role = ReviewerRole()
+        task = Task(id="1", title="Test", state=TaskState.IN_REVIEW)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.suggested_role == "reviewer"
+
+
+# ---------------------------------------------------------------------------
+# Triage label application
+# ---------------------------------------------------------------------------
+
+
+class TestTriageLabelApplication:
+    async def test_applies_ready_label(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="Has a description", state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        role = TriageRole()
+
+        await role.execute(ctx)
+
+        adapter.add_label.assert_awaited_once_with("42", "agent:ready")
+
+    async def test_applies_needs_spec_label(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="", state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
+        role = TriageRole()
+
+        await role.execute(ctx)
+
+        adapter.add_label.assert_awaited_once_with("42", "agent:needs-spec")
+
+    async def test_label_matches_suitability(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        expected = {
+            "ready": "agent:ready",
+            "needs_spec": "agent:needs-spec",
+            "needs_research": "agent:needs-research",
+            "human_only": "agent:human-only",
+        }
+        assert role.SUITABILITY_LABELS == expected

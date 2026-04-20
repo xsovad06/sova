@@ -9,10 +9,25 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep
+
+
+class TaskAssessment(BaseModel):
+    """Assessment of a task's suitability for agent processing."""
+
+    suitability: Literal["ready", "needs_spec", "needs_research", "human_only"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str
+    missing_context: list[str] = Field(default_factory=list)
+    estimated_complexity: Literal["trivial", "simple", "moderate", "complex", "epic"] = "moderate"
+    suggested_role: str = "developer"
+    sub_tasks: list[str] = Field(default_factory=list)
 
 
 @dataclass
@@ -43,6 +58,10 @@ class AgentRole(ABC):
     @abstractmethod
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
         """Run the role's workflow for the given context."""
+
+    @abstractmethod
+    async def assess_task(self, task: Task) -> TaskAssessment:
+        """Assess a task's suitability for this role."""
 
     def validate_preconditions(self, task: Task, force: bool = False) -> bool:
         """Check that the task is in an allowed state for this role.

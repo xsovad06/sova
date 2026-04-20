@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
-from sova.roles.base import AgentRole, RoleResult
+from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
 log = get_logger(component="role.reviewer")
@@ -20,6 +20,15 @@ class ReviewerRole(AgentRole):
     description = "Review PRs and provide feedback"
     allowed_input_states = frozenset({TaskState.IN_REVIEW})
     output_state = TaskState.IN_REVIEW
+
+    async def assess_task(self, task: Task) -> TaskAssessment:
+        return TaskAssessment(
+            suitability="ready",
+            confidence=0.7,
+            reasoning="Task has a linked PR ready for review.",
+            estimated_complexity="moderate",
+            suggested_role="reviewer",
+        )
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
         task = await ctx.adapter.get_task(ctx.issue_number)
