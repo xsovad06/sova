@@ -94,6 +94,14 @@ pak dashboard [port]          # Launch web dashboard (default: 8111)
 # Investigation
 pak investigate <issue>       # Research mode (no code changes)
 
+# Issue preparation
+pak triage                    # Triage all open issues for autonomous suitability
+pak triage <issue>            # Triage a single issue
+pak harden                    # Harden all open issues (enrich body + re-triage)
+pak harden <issue>            # Harden a single issue
+pak harden --dry-run          # Preview hardening without posting to GitHub
+pak harden <issue> --dry-run  # Preview hardening for a single issue
+
 # Knowledge & quality
 pak memory search <query>     # Search agent memory
 pak knowledge list             # List knowledge files
@@ -226,6 +234,63 @@ Pre-push constraint checks (bundled):
 - `user-scoping` -- QuerySet user filtering (warning only)
 
 Add custom invariants by placing `.sh` scripts in the invariants directory.
+
+## Issue Triage & Hardening
+
+Before the agent works on issues, two preparation commands improve success rates.
+
+### Triage (`pak triage`)
+
+Heuristic scoring (no LLM call) that classifies issues into three autonomy levels:
+
+| Verdict | Score | Meaning |
+|---------|-------|---------|
+| `autonomous` | >= 4 | Agent can handle without human intervention |
+| `guided` | 1-3 | Agent can develop but expects checkpoints |
+| `human` | < 1 | Needs human-led development |
+
+Scoring signals:
+
+| Signal | Score | Examples |
+|--------|-------|---------|
+| Bug/fix label | +3 | `type: bug`, `fix`, `patch` |
+| Refactor/chore label | +2 | `refactor`, `chore`, `tech-debt` |
+| Feature label | +1 | `type: feature`, `enhancement` |
+| Acceptance criteria (checkboxes) | +3 | `- [ ] criterion` in body |
+| File/module hints | +2 | `apps/`, `src/`, `lib/` in body |
+| Model/schema details | +1 | Field names, types, endpoints |
+| Test plan included | +1 | `test plan`, `pytest`, `factory` |
+| Out-of-scope constraints | +1 | `do not modify`, `out of scope` |
+| Detailed description (200+ chars) | +1 | Substantive body text |
+| Vague description (<50 chars) | -2 | Minimal body |
+| Creative/design task | -4 | Logo, brand identity, illustration |
+| Complex UI/visualization | -3 | D3, canvas, animation, mockup |
+| Research/spike label | -3 | `research`, `spike`, `investigate` |
+| Architectural/migration work | -2 | Schema change, API redesign |
+| External dependency | -1 | Third-party API, OAuth, webhook |
+| Critical priority | -1 | Human oversight recommended |
+
+Triage applies `agent:autonomous`, `agent:guided`, or `agent:human` labels automatically.
+
+### Hardening (`pak harden`)
+
+LLM-powered issue enrichment that transforms vague issues into agent-ready tickets. The hardening prompt asks Claude to produce a complete updated issue body with:
+
+- **Technical Approach** -- architecture, data flow, key design decisions
+- **Models & Schemas** -- concrete field names, types, endpoint signatures
+- **Acceptance Criteria** -- specific, testable checkboxes with security/scoping checks
+- **Scope** -- affected files/components, complexity estimate, dependencies
+- **Conflict Check** -- flags overlapping issues to avoid duplicate work
+- **Implementation Hints** -- key files, patterns, gotchas
+
+The hardened content **replaces the issue body** (not just a comment) so agents read it directly. After updating the body, hardening automatically re-runs triage with the enriched content.
+
+Use `--dry-run` to preview the analysis without posting:
+
+```bash
+pak harden 42 --dry-run     # Preview, then review before applying
+pak harden 42               # Apply to GitHub
+```
 
 ## Project Structure
 
