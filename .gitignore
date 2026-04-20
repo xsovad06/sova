@@ -35,3 +35,4 @@ pak-agent.conf
 .claude/agent-memory/
 .claude/worktrees/
 .claude/assets/
+.agent-summary.md
