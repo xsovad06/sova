@@ -106,3 +106,19 @@ def init_db_cmd(
 
     asyncio.run(init_db(project))
     console.print("[green]Database initialized successfully.[/green]")
+
+
+@app.command()
+def dashboard(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
+) -> None:
+    """Start the SOVA dashboard web UI."""
+    import uvicorn
+
+    from sova.dashboard.app import create_app
+
+    app = create_app(project_dir=project)
+    console.print(f"[cyan]Starting SOVA dashboard at http://{host}:{port}[/cyan]")
+    uvicorn.run(app, host=host, port=port, log_level="info")
