@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sova.server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Update this path to your sova binary location -->
+        <string>/usr/local/bin/sova</string>
+        <string>server</string>
+        <string>start</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8111</string>
+        <string>--project</string>
+        <!-- Update this to your project directory -->
+        <string>/path/to/your/project</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Uncomment for PostgreSQL team deployments -->
+        <!-- <key>SOVA_DATABASE_URL</key> -->
+        <!-- <string>postgresql://user:pass@localhost:5432/sova</string> -->
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/sova-server.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/sova-server.err</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

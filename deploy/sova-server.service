@@ -1,0 +1,27 @@
+[Unit]
+Description=SOVA Server (Dashboard + Scheduler)
+Documentation=https://github.com/xsovad06/project-automation-kit
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+# Set the project directory as an environment variable
+Environment=SOVA_PROJECT_DIR=/path/to/your/project
+# Uncomment for PostgreSQL team deployments:
+# Environment=SOVA_DATABASE_URL=postgresql://user:pass@localhost:5432/sova
+
+ExecStart=sova server start --host 0.0.0.0 --port 8111 --project ${SOVA_PROJECT_DIR}
+ExecStop=sova server stop --project ${SOVA_PROJECT_DIR}
+
+Restart=on-failure
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/sova %h/.claude
+
+[Install]
+WantedBy=multi-user.target
