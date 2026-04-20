@@ -11,8 +11,8 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from sova.dashboard.routers import control, costs, memory, overview, runs
-from sova.dashboard.services import control_service
+from sova.dashboard.routers import control, costs, handoff, memory, overview, runs
+from sova.dashboard.services import control_service, handoff_service
 from sova.db.session import close_db, init_db
 
 BASE = Path(__file__).parent
@@ -32,6 +32,7 @@ def create_app(*, project_dir: Path | None = None) -> FastAPI:
     # Store project_dir so control service can spawn agents in the right directory
     resolved_project_dir = (project_dir or Path.cwd()).resolve()
     control_service.set_project_dir(resolved_project_dir)
+    handoff_service.set_project_dir(resolved_project_dir)
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
     templates = Jinja2Templates(directory=BASE / "templates")
@@ -72,6 +73,7 @@ def create_app(*, project_dir: Path | None = None) -> FastAPI:
     app.include_router(runs.router, prefix="/api")
     app.include_router(costs.router, prefix="/api")
     app.include_router(control.router, prefix="/api")
+    app.include_router(handoff.router, prefix="/api")
     app.include_router(memory.router, prefix="/api")
 
     return app

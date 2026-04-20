@@ -95,6 +95,36 @@ async def stop_agent() -> dict:
     return {"status": "stopped", "pid": pid}
 
 
+async def start_command(
+    command: str,
+    args: dict | None = None,
+) -> dict:
+    """Start a Claude Code command (e.g. /agent-resume, /approve-merge).
+
+    Used by handoff action execution to run Claude commands.
+    """
+    global _process, _reader_task
+
+    if _process is not None and _process.is_running:
+        return {"error": "Agent already running", "pid": _process.pid}
+
+    _output_lines.clear()
+
+    # Build prompt: "Run the /<command>" with args serialized
+    prompt = f"/{command}"
+    if args:
+        arg_parts = [f"{k}={v}" for k, v in args.items()]
+        prompt += " " + " ".join(arg_parts)
+
+    cwd = _project_dir or Path.cwd()
+    _process = await AgentProcess.spawn(prompt=prompt, cwd=cwd)
+    _reader_task = asyncio.create_task(_read_output(_process))
+    asyncio.create_task(_read_stderr(_process))
+
+    log.info("command.started", command=command, pid=_process.pid, cwd=str(cwd))
+    return {"status": "started", "pid": _process.pid}
+
+
 async def _read_output(process: AgentProcess) -> None:
     """Background task to read stdout lines into the deque.
 
