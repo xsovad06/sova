@@ -1,0 +1,325 @@
+"""Tests for sova.dashboard.services.batch_service."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from sova.adapters.base import Task, TaskState
+from sova.config.models import ProjectConfig
+from sova.dashboard.services.batch_service import (
+    BatchJob,
+    _active_batches,
+    cancel_batch,
+    get_batch_status,
+    start_batch,
+    start_batch_run,
+)
+from sova.db.session import close_db, init_db
+
+
+@pytest.fixture(autouse=True)
+async def setup_db():
+    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+    await init_db()
+    yield
+    await close_db()
+    os.environ.pop("SOVA_DATABASE_URL", None)
+
+
+@pytest.fixture(autouse=True)
+def clear_batches():
+    _active_batches.clear()
+    yield
+    _active_batches.clear()
+
+
+def _mock_adapter(tasks: list[Task] | None = None) -> AsyncMock:
+    adapter = AsyncMock()
+    task_list = tasks or [
+        Task(id="1", title="First", body="Body", state=TaskState.BACKLOG),
+        Task(id="2", title="Second", body="Body", state=TaskState.BACKLOG),
+    ]
+    adapter.list_tasks.return_value = task_list
+    adapter.get_task.side_effect = lambda tid: next((t for t in task_list if t.id == tid), None)
+    return adapter
+
+
+def _mock_config() -> ProjectConfig:
+    return ProjectConfig(github_repo="test/repo", task_source={"type": "github"})
+
+
+class TestBatchJobModel:
+    def test_to_dict_structure(self) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult
+
+        job = BatchJob(
+            batch_id="abc123",
+            action="triage",
+            results=[
+                BatchItemResult(issue_id="1", status="done", detail="ok"),
+                BatchItemResult(issue_id="2", status="pending"),
+            ],
+        )
+        d = job.to_dict()
+        assert d["batch_id"] == "abc123"
+        assert d["total"] == 2
+        assert d["completed"] == 1
+        assert d["failed"] == 0
+        assert len(d["results"]) == 2
+
+    def test_completed_count(self) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult
+
+        job = BatchJob(
+            batch_id="x",
+            action="harden",
+            results=[
+                BatchItemResult(issue_id="1", status="done"),
+                BatchItemResult(issue_id="2", status="failed"),
+                BatchItemResult(issue_id="3", status="skipped"),
+                BatchItemResult(issue_id="4", status="running"),
+                BatchItemResult(issue_id="5", status="pending"),
+            ],
+        )
+        assert job.completed_count == 3
+        assert job.total == 5
+
+
+class TestGetBatchStatus:
+    def test_returns_none_for_unknown(self) -> None:
+        assert get_batch_status("nonexistent") is None
+
+    def test_returns_dict_for_known(self) -> None:
+        job = BatchJob(batch_id="test1", action="triage", results=[])
+        _active_batches["test1"] = job
+        result = get_batch_status("test1")
+        assert result is not None
+        assert result["batch_id"] == "test1"
+
+
+class TestCancelBatch:
+    def test_cancel_unknown_returns_false(self) -> None:
+        assert cancel_batch("nonexistent") is False
+
+    def test_cancel_running_returns_true(self) -> None:
+        job = BatchJob(batch_id="test2", action="triage", status="running", results=[])
+        _active_batches["test2"] = job
+        assert cancel_batch("test2") is True
+        assert job.cancelled is True
+
+    def test_cancel_done_returns_false(self) -> None:
+        job = BatchJob(batch_id="test3", action="triage", status="done", results=[])
+        _active_batches["test3"] = job
+        assert cancel_batch("test3") is False
+
+
+class TestStartBatch:
+    @patch("sova.dashboard.services.batch_service._run_batch_triage")
+    async def test_start_triage_returns_batch_id(self, mock_worker) -> None:
+        mock_worker.return_value = None
+        batch_id = await start_batch("triage", ["1", "2"], Path("/tmp"))
+        assert batch_id is not None
+        assert len(batch_id) == 12
+        assert batch_id in _active_batches
+        job = _active_batches[batch_id]
+        assert job.action == "triage"
+        assert job.total == 2
+
+    @patch("sova.dashboard.services.batch_service._run_batch_harden")
+    async def test_start_harden_returns_batch_id(self, mock_worker) -> None:
+        mock_worker.return_value = None
+        batch_id = await start_batch("harden", ["3"], Path("/tmp"), {"skip_triage": True})
+        assert batch_id in _active_batches
+        job = _active_batches[batch_id]
+        assert job.action == "harden"
+
+    async def test_unknown_action_marks_failed(self) -> None:
+        batch_id = await start_batch("unknown_action", ["1"], Path("/tmp"))
+        job = _active_batches[batch_id]
+        assert job.status == "done"
+        assert all(r.status == "failed" for r in job.results)
+
+
+class TestBatchTriage:
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_processes_all_issues(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        adapter = _mock_adapter()
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        mock_role = mock_role_cls.return_value
+        mock_assessment = AsyncMock()
+        mock_assessment.suitability = "ready"
+        mock_role.assess_task = AsyncMock(return_value=mock_assessment)
+        mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
+        mock_role._build_assessment_comment.return_value = "Assessment comment"
+
+        job = BatchJob(
+            batch_id="t1",
+            action="triage",
+            results=[
+                BatchItemResult(issue_id="1"),
+                BatchItemResult(issue_id="2"),
+            ],
+        )
+
+        await _run_batch_triage(job, Path("/tmp"))
+
+        assert job.status == "done"
+        assert all(r.status == "done" for r in job.results)
+        assert mock_role.assess_task.call_count == 2
+        assert adapter.add_label.call_count == 2
+        assert adapter.transition_state.call_count == 2
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_skips_non_backlog(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        tasks = [
+            Task(id="1", title="Triaged", body="Body", state=TaskState.TRIAGED),
+        ]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        job = BatchJob(
+            batch_id="t2",
+            action="triage",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_triage(job, Path("/tmp"))
+
+        assert job.results[0].status == "skipped"
+        mock_role_cls.return_value.assess_task.assert_not_called()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_cancel_skips_remaining(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        adapter = _mock_adapter()
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        mock_role = mock_role_cls.return_value
+        mock_assessment = AsyncMock()
+        mock_assessment.suitability = "ready"
+        mock_role.assess_task.return_value = mock_assessment
+        mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
+        mock_role._build_assessment_comment.return_value = "Assessment"
+
+        job = BatchJob(
+            batch_id="t3",
+            action="triage",
+            results=[
+                BatchItemResult(issue_id="1"),
+                BatchItemResult(issue_id="2"),
+            ],
+            cancelled=True,
+        )
+
+        await _run_batch_triage(job, Path("/tmp"))
+
+        assert job.status == "cancelled"
+        assert all(r.status == "skipped" for r in job.results)
+
+
+class TestBatchHarden:
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_processes_issues(self, mock_invoke, mock_create_adapter, mock_config, mock_init_db) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+        from sova.llm.models import LLMResult
+
+        tasks = [
+            Task(id="1", title="First", body="Body", state=TaskState.BACKLOG, labels=["type:feature"]),
+        ]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        mock_invoke.return_value = LLMResult(
+            text="## Objective\nEnriched content",
+            model="claude",
+        )
+
+        job = BatchJob(
+            batch_id="h1",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=True)
+
+        assert job.status == "done"
+        assert job.results[0].status == "done"
+        adapter.edit_body.assert_called_once()
+        adapter.post_comment.assert_called_once()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.llm.client.invoke", new_callable=AsyncMock)
+    async def test_harden_skips_ineligible_state(
+        self, mock_invoke, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_harden
+
+        tasks = [
+            Task(id="1", title="Done", body="Body", state=TaskState.DONE),
+        ]
+        adapter = _mock_adapter(tasks)
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        job = BatchJob(
+            batch_id="h2",
+            action="harden",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_harden(job, Path("/tmp"), skip_triage=False)
+
+        assert job.results[0].status == "skipped"
+        mock_invoke.assert_not_called()
+
+
+class TestStartBatchRun:
+    @patch("sova.dashboard.services.control_service.start_agent", new_callable=AsyncMock)
+    async def test_starts_first_issue(self, mock_start) -> None:
+        mock_start.return_value = {"status": "started", "pid": 1234}
+
+        result = await start_batch_run(["10", "20", "30"], Path("/tmp"))
+
+        assert result["started"] == "10"
+        assert result["remaining"] == ["20", "30"]
+        mock_start.assert_called_once_with(issue="10")
+
+    async def test_empty_issues_returns_error(self) -> None:
+        result = await start_batch_run([], Path("/tmp"))
+        assert "error" in result

@@ -1,0 +1,294 @@
+"""Batch operations -- triage/harden/run multiple issues from the dashboard."""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.batch")
+
+
+@dataclass
+class BatchItemResult:
+    issue_id: str
+    status: str = "pending"  # pending | running | done | failed | skipped
+    detail: str = ""
+
+
+@dataclass
+class BatchJob:
+    batch_id: str
+    action: str
+    status: str = "running"  # running | done | cancelled
+    results: list[BatchItemResult] = field(default_factory=list)
+    cancelled: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime | None = None
+    _task: asyncio.Task | None = field(default=None, repr=False)
+
+    @property
+    def total(self) -> int:
+        return len(self.results)
+
+    @property
+    def completed_count(self) -> int:
+        return sum(1 for r in self.results if r.status in ("done", "failed", "skipped"))
+
+    def to_dict(self) -> dict:
+        return {
+            "batch_id": self.batch_id,
+            "action": self.action,
+            "status": self.status,
+            "total": self.total,
+            "completed": self.completed_count,
+            "failed": sum(1 for r in self.results if r.status == "failed"),
+            "results": [{"issue_id": r.issue_id, "status": r.status, "detail": r.detail} for r in self.results],
+        }
+
+
+_active_batches: dict[str, BatchJob] = {}
+
+_MAX_COMPLETED_BATCHES = 50
+
+
+def _prune_completed() -> None:
+    """Remove oldest completed batches when over the limit."""
+    completed = [(bid, job) for bid, job in _active_batches.items() if job.status != "running"]
+    if len(completed) > _MAX_COMPLETED_BATCHES:
+        completed.sort(key=lambda x: x[1].completed_at or x[1].created_at)
+        for bid, _ in completed[: len(completed) - _MAX_COMPLETED_BATCHES]:
+            del _active_batches[bid]
+
+
+def get_batch_status(batch_id: str) -> dict | None:
+    job = _active_batches.get(batch_id)
+    if job is None:
+        return None
+    return job.to_dict()
+
+
+def cancel_batch(batch_id: str) -> bool:
+    job = _active_batches.get(batch_id)
+    if job is None or job.status != "running":
+        return False
+    job.cancelled = True
+    return True
+
+
+async def start_batch(
+    action: str,
+    issue_ids: list[str],
+    project_dir: Path,
+    options: dict | None = None,
+) -> str:
+    """Start a batch operation and return the batch_id."""
+    batch_id = uuid.uuid4().hex[:12]
+    job = BatchJob(
+        batch_id=batch_id,
+        action=action,
+        results=[BatchItemResult(issue_id=iid) for iid in issue_ids],
+    )
+    _active_batches[batch_id] = job
+
+    opts = options or {}
+
+    if action == "triage":
+        job._task = asyncio.create_task(_run_batch_triage(job, project_dir))
+    elif action == "harden":
+        skip_triage = opts.get("skip_triage", False)
+        job._task = asyncio.create_task(_run_batch_harden(job, project_dir, skip_triage=skip_triage))
+    else:
+        job.status = "done"
+        for r in job.results:
+            r.status = "failed"
+            r.detail = f"Unknown action: {action}"
+
+    log.info("batch.started", batch_id=batch_id, action=action, count=len(issue_ids))
+    return batch_id
+
+
+async def start_batch_run(
+    issue_ids: list[str],
+    project_dir: Path,
+) -> dict:
+    """Start an agent for the first issue. Returns status dict."""
+    from sova.dashboard.services.control_service import start_agent
+
+    if not issue_ids:
+        return {"error": "No issues provided"}
+
+    first = issue_ids[0]
+    result = await start_agent(issue=first)
+
+    return {
+        "started": first,
+        "remaining": issue_ids[1:],
+        "agent_result": result,
+    }
+
+
+async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
+    try:
+        from sova.adapters import create_adapter
+        from sova.adapters.base import TaskState
+        from sova.config.loader import load_config
+        from sova.db.session import init_db
+        from sova.roles.triage import TriageRole
+
+        await init_db(project_dir)
+        config = load_config(project_dir)
+        adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
+        role = TriageRole()
+
+        for item in job.results:
+            if job.cancelled:
+                item.status = "skipped"
+                item.detail = "Cancelled"
+                continue
+
+            item.status = "running"
+            try:
+                task = await adapter.get_task(item.issue_id)
+
+                if task.state not in VALID_STATES_FOR_ACTION["triage"]:
+                    item.status = "skipped"
+                    item.detail = f"State {task.state.value} not eligible for triage"
+                    continue
+
+                assessment = await role.assess_task(task)
+
+                label_name = role.SUITABILITY_LABELS[assessment.suitability]
+                await adapter.add_label(task.id, label_name)
+
+                comment = role._build_assessment_comment(task, assessment)
+                await adapter.post_comment(task.id, comment)
+
+                if task.state in role.allowed_input_states:
+                    await adapter.transition_state(task.id, TaskState.TRIAGED)
+
+                item.status = "done"
+                item.detail = f"Suitability: {assessment.suitability}"
+                log.info("batch.triage.done", issue=item.issue_id, suitability=assessment.suitability)
+
+            except Exception as exc:
+                item.status = "failed"
+                item.detail = str(exc)
+                log.warning("batch.triage.failed", issue=item.issue_id, error=str(exc))
+
+    except Exception as exc:
+        log.error("batch.triage.fatal", error=str(exc))
+        for item in job.results:
+            if item.status == "pending":
+                item.status = "failed"
+                item.detail = f"Batch setup failed: {exc}"
+    finally:
+        job.status = "cancelled" if job.cancelled else "done"
+        job.completed_at = datetime.now(timezone.utc)
+        _prune_completed()
+        log.info("batch.completed", batch_id=job.batch_id, status=job.status)
+
+
+async def _run_batch_harden(
+    job: BatchJob,
+    project_dir: Path,
+    *,
+    skip_triage: bool,
+) -> None:
+    try:
+        from dataclasses import replace
+
+        from sova.adapters import create_adapter
+        from sova.adapters.base import TaskFilters
+        from sova.cli.commands.harden import (
+            _build_harden_prompt,
+            _detect_issue_type,
+            _format_issues_summary,
+            _load_issue_template,
+            _load_project_docs,
+            _strip_code_fences,
+        )
+        from sova.config.loader import load_config
+        from sova.db.session import init_db
+        from sova.llm.client import invoke
+        from sova.roles.triage import TriageRole
+
+        await init_db(project_dir)
+        config = load_config(project_dir)
+        adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
+
+        all_open = await adapter.list_tasks(TaskFilters(state="open"))
+        project_docs = _load_project_docs(project_dir)
+        all_issues_summary = _format_issues_summary(all_open)
+
+        for item in job.results:
+            if job.cancelled:
+                item.status = "skipped"
+                item.detail = "Cancelled"
+                continue
+
+            item.status = "running"
+            try:
+                task = await adapter.get_task(item.issue_id)
+
+                if task.state not in VALID_STATES_FOR_ACTION["harden"]:
+                    item.status = "skipped"
+                    item.detail = f"State {task.state.value} not eligible for harden"
+                    continue
+
+                issue_type = _detect_issue_type(task.labels)
+                template_content = _load_issue_template(project_dir, issue_type)
+                prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
+
+                result = await invoke(prompt, cwd=project_dir, timeout=300)
+                enriched_body = _strip_code_fences(result.text)
+
+                if not enriched_body.strip():
+                    item.status = "failed"
+                    item.detail = "LLM returned empty result"
+                    continue
+
+                await adapter.edit_body(task.id, enriched_body)
+                await adapter.post_comment(
+                    task.id,
+                    "Issue hardened by SOVA (body updated with enriched requirements, "
+                    "acceptance criteria, and technical approach).",
+                )
+
+                triage_detail = ""
+                if not skip_triage:
+                    try:
+                        enriched_task = replace(task, body=enriched_body)
+                        role = TriageRole()
+                        assessment = await role.assess_task(enriched_task)
+                        label = role.SUITABILITY_LABELS[assessment.suitability]
+                        await adapter.add_label(task.id, label)
+                        triage_detail = f", re-triaged: {assessment.suitability}"
+                    except Exception:
+                        triage_detail = ", re-triage failed"
+
+                item.status = "done"
+                item.detail = f"Hardened{triage_detail}"
+                log.info("batch.harden.done", issue=item.issue_id)
+
+            except Exception as exc:
+                item.status = "failed"
+                item.detail = str(exc)
+                log.warning("batch.harden.failed", issue=item.issue_id, error=str(exc))
+
+    except Exception as exc:
+        log.error("batch.harden.fatal", error=str(exc))
+        for item in job.results:
+            if item.status == "pending":
+                item.status = "failed"
+                item.detail = f"Batch setup failed: {exc}"
+    finally:
+        job.status = "cancelled" if job.cancelled else "done"
+        job.completed_at = datetime.now(timezone.utc)
+        _prune_completed()
+        log.info("batch.completed", batch_id=job.batch_id, status=job.status)

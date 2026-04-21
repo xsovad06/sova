@@ -1,10 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Queue - SOVA{% endblock %}
 {% block content %}
-<h2 class="text-2xl font-semibold mb-6">Priority Queue</h2>
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Priority Queue</h2>
+  <label class="flex items-center gap-2 text-sm text-gray-400 cursor-pointer select-none" id="select-all-wrapper" style="display:none">
+    <input type="checkbox" id="select-all" onchange="toggleSelectAll()" class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">
+    <span>Select all</span>
+  </label>
+</div>
 
 <div id="queue-content">
   <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+
+<!-- Bulk action bar -->
+<div id="bulk-bar" class="hidden fixed bottom-0 left-56 right-0 bg-surface-card border-t border-gray-700/50 px-6 py-3 z-40 transition-all">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span id="bulk-count" class="text-sm text-gray-300 font-medium"></span>
+      <div class="w-px h-5 bg-gray-700"></div>
+      <button id="bulk-triage-btn" onclick="executeBulkAction('triage')"
+        class="px-3 py-1.5 rounded text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        disabled>Triage</button>
+      <button id="bulk-harden-btn" onclick="executeBulkAction('harden')"
+        class="px-3 py-1.5 rounded text-xs font-medium bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        disabled>Harden</button>
+      <button id="bulk-run-btn" onclick="executeBulkAction('run')"
+        class="px-3 py-1.5 rounded text-xs font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        disabled>Run</button>
+    </div>
+    <div class="flex items-center gap-3">
+      <div id="bulk-progress" class="hidden flex items-center gap-2">
+        <div class="w-40 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+          <div id="bulk-progress-bar" class="h-full bg-accent rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+        <span id="bulk-progress-text" class="text-xs text-gray-400 whitespace-nowrap"></span>
+      </div>
+      <button id="bulk-cancel-btn" onclick="cancelBatch()" class="hidden px-2 py-1 rounded text-xs text-accent-red hover:bg-accent-red/10 transition-colors">
+        Cancel
+      </button>
+      <button onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
+        Deselect
+      </button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
@@ -22,14 +61,159 @@ var stateLabels = {
   in_progress: 'In Progress',
   triaged: 'Triaged',
   backlog: 'Backlog',
+  needs_spec: 'Needs Spec',
 };
+
+var validStates = {
+  triage: ['backlog'],
+  harden: ['backlog', 'triaged', 'needs_spec'],
+  run: ['researched', 'in_progress'],
+};
+
+var selectedItems = {};
+var currentBatchId = null;
+var batchPollInterval = null;
+var queueData = [];
+
+function renderRunStatusBadge(item) {
+  if (!item.last_run) return '';
+  var run = item.last_run;
+  if (run.status === 'running' || run.status === 'developing' || run.status === 'pending') {
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    return '<a href="' + prefix + '/agents" class="flex items-center gap-1 px-2 py-1 rounded text-[10px] bg-accent-green/15 text-accent-green">' +
+      '<span class="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"></span>Running</a>';
+  }
+  if (run.status === 'done') {
+    var ago = run.ended_at ? timeAgo(run.ended_at) : '';
+    return '<span class="px-2 py-1 rounded text-[10px] bg-accent-green/10 text-accent-green/70">Done ' + ago + '</span>';
+  }
+  if (run.status === 'failed') {
+    var ago = run.ended_at ? timeAgo(run.ended_at) : '';
+    return '<span class="px-2 py-1 rounded text-[10px] bg-accent-red/10 text-accent-red/70">Failed ' + ago + '</span>';
+  }
+  if (run.status === 'interrupted') {
+    return '<span class="px-2 py-1 rounded text-[10px] bg-accent-yellow/10 text-accent-yellow/70">Interrupted</span>';
+  }
+  return '';
+}
+
+function renderStartButton(item) {
+  var isRunning = item.last_run && (item.last_run.status === 'running' || item.last_run.status === 'developing' || item.last_run.status === 'pending');
+  if (isRunning) {
+    return '<button disabled class="px-3 py-1.5 rounded text-xs bg-gray-700/30 text-gray-600 cursor-not-allowed">Running</button>';
+  }
+  var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
+  return '<button onclick="startFromQueue(\'' + escapeHtml(item.issue) + '\', event)" ' +
+    'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">' +
+    label + '</button>';
+}
+
+function timeAgo(isoStr) {
+  if (!isoStr) return '';
+  var d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  var now = new Date();
+  var diff = Math.floor((now - d) / 1000);
+  if (diff < 0) return '';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function toggleSelection(issueId, state) {
+  if (selectedItems[issueId]) {
+    delete selectedItems[issueId];
+  } else {
+    selectedItems[issueId] = { state: state };
+  }
+  updateSelectionUI();
+}
+
+function toggleSelectAll() {
+  var allBox = document.getElementById('select-all');
+  if (allBox.checked) {
+    queueData.forEach(function(item) {
+      selectedItems[item.issue] = { state: item.state };
+    });
+  } else {
+    selectedItems = {};
+  }
+  updateSelectionUI();
+}
+
+function deselectAll() {
+  selectedItems = {};
+  var allBox = document.getElementById('select-all');
+  if (allBox) allBox.checked = false;
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  var count = Object.keys(selectedItems).length;
+  var bar = document.getElementById('bulk-bar');
+  var countEl = document.getElementById('bulk-count');
+
+  // Update checkboxes and card highlights
+  queueData.forEach(function(item) {
+    var selected = !!selectedItems[item.issue];
+    var cb = document.getElementById('cb-' + item.issue);
+    if (cb) cb.checked = selected;
+    var card = document.getElementById('card-' + item.issue);
+    if (card) {
+      if (selected) {
+        card.classList.add('ring-1', 'ring-accent/40', 'bg-accent/5');
+      } else {
+        card.classList.remove('ring-1', 'ring-accent/40', 'bg-accent/5');
+      }
+    }
+  });
+
+  // Update select-all checkbox
+  var allBox = document.getElementById('select-all');
+  if (allBox && queueData.length > 0) {
+    allBox.checked = count === queueData.length;
+    allBox.indeterminate = count > 0 && count < queueData.length;
+  }
+
+  if (count === 0) {
+    bar.classList.add('hidden');
+    return;
+  }
+
+  bar.classList.remove('hidden');
+  countEl.textContent = count + ' selected';
+
+  // Compute action eligibility
+  var states = Object.values(selectedItems).map(function(v) { return v.state; });
+
+  var triageCount = states.filter(function(s) { return validStates.triage.indexOf(s) !== -1; }).length;
+  var hardenCount = states.filter(function(s) { return validStates.harden.indexOf(s) !== -1; }).length;
+  var runCount = states.filter(function(s) { return validStates.run.indexOf(s) !== -1; }).length;
+
+  var triageBtn = document.getElementById('bulk-triage-btn');
+  var hardenBtn = document.getElementById('bulk-harden-btn');
+  var runBtn = document.getElementById('bulk-run-btn');
+
+  triageBtn.disabled = triageCount === 0 || currentBatchId;
+  triageBtn.textContent = triageCount > 0 ? 'Triage (' + triageCount + ')' : 'Triage';
+
+  hardenBtn.disabled = hardenCount === 0 || currentBatchId;
+  hardenBtn.textContent = hardenCount > 0 ? 'Harden (' + hardenCount + ')' : 'Harden';
+
+  runBtn.disabled = runCount === 0 || currentBatchId;
+  runBtn.textContent = runCount > 0 ? 'Run (' + runCount + ')' : 'Run';
+}
 
 async function loadQueue() {
   try {
     var data = await fetchAPI(apiUrl('/queue'));
+    queueData = data.queue;
     var container = document.getElementById('queue-content');
+    var selectAllWrapper = document.getElementById('select-all-wrapper');
 
     if (data.queue.length === 0) {
+      selectAllWrapper.style.display = 'none';
       container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
         '<p class="text-gray-500">No actionable issues in queue</p>' +
         '<p class="text-xs text-gray-600 mt-1">Issues appear here when they have agent-managed labels</p>' +
@@ -37,15 +221,23 @@ async function loadQueue() {
       return;
     }
 
+    selectAllWrapper.style.display = 'flex';
+
     container.innerHTML = '<div class="space-y-3">' + data.queue.map(function(item) {
       var style = priorityStyles[item.priority_label] || priorityStyles.P3;
       var stateText = stateLabels[item.state] || item.state;
+      var isSelected = !!selectedItems[item.issue];
 
       var labelsHtml = (item.labels || []).map(function(l) {
         return '<span class="px-1.5 py-0.5 rounded text-[10px] bg-gray-700/50 text-gray-400">' + escapeHtml(l) + '</span>';
       }).join(' ');
 
-      return '<div class="bg-surface-card rounded-lg border ' + style.border + ' p-4 flex items-center gap-4">' +
+      var selectedClasses = isSelected ? ' ring-1 ring-accent/40 bg-accent/5' : '';
+
+      return '<div id="card-' + escapeHtml(item.issue) + '" class="bg-surface-card rounded-lg border ' + style.border + ' p-4 flex items-center gap-4 transition-all' + selectedClasses + '">' +
+        '<input type="checkbox" id="cb-' + escapeHtml(item.issue) + '" ' + (isSelected ? 'checked ' : '') +
+          'onchange="toggleSelection(\'' + escapeHtml(item.issue) + '\', \'' + escapeHtml(item.state) + '\')" ' +
+          'class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50 cursor-pointer shrink-0">' +
         '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
         '<div class="flex-1 min-w-0">' +
           '<div class="flex items-center gap-2">' +
@@ -58,21 +250,22 @@ async function loadQueue() {
           '</div>' +
         '</div>' +
         '<div class="flex items-center gap-2 shrink-0">' +
+          renderRunStatusBadge(item) +
           '<span class="text-xs text-gray-500">' + escapeHtml(item.action) + '</span>' +
-          '<button onclick="startFromQueue(\'' + escapeHtml(item.issue) + '\')" ' +
-            'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">' +
-            'Start' +
-          '</button>' +
+          renderStartButton(item) +
         '</div>' +
       '</div>';
     }).join('') + '</div>';
+
+    // Re-apply selection UI after render
+    updateSelectionUI();
   } catch (e) {
     console.error('Failed to load queue:', e);
   }
 }
 
-async function startFromQueue(issue) {
-  var btn = event.target;
+async function startFromQueue(issue, e) {
+  var btn = e.target;
   btn.disabled = true;
   btn.textContent = 'Starting...';
   btn.style.opacity = '0.5';
@@ -83,13 +276,156 @@ async function startFromQueue(issue) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({}),
     });
-    window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/control';
+    window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
   } catch (e) {
     alert('Failed to start agent: ' + e.message);
     btn.disabled = false;
     btn.textContent = 'Start';
     btn.style.opacity = '1';
   }
+}
+
+async function executeBulkAction(action) {
+  var eligible = validStates[action];
+  var issues = Object.keys(selectedItems).filter(function(id) {
+    return eligible.indexOf(selectedItems[id].state) !== -1;
+  });
+
+  if (issues.length === 0) return;
+
+  if (action === 'run') {
+    try {
+      var resp = await fetch(apiUrl('/queue/batch'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ issues: issues, action: 'run', options: {} }),
+      });
+      var data = await resp.json();
+      if (data.started) {
+        window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
+      } else if (data.error) {
+        alert(data.error);
+      }
+    } catch (e) {
+      alert('Failed to start agent: ' + e.message);
+    }
+    return;
+  }
+
+  // Triage or harden -- background batch with progress
+  try {
+    var resp = await fetch(apiUrl('/queue/batch'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ issues: issues, action: action, options: {} }),
+    });
+    var data = await resp.json();
+
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+
+    currentBatchId = data.batch_id;
+    showBatchProgress(action, issues.length);
+    batchPollInterval = setInterval(pollBatchProgress, 2000);
+  } catch (e) {
+    alert('Failed to start batch: ' + e.message);
+  }
+}
+
+function showBatchProgress(action, total) {
+  var progressEl = document.getElementById('bulk-progress');
+  var cancelBtn = document.getElementById('bulk-cancel-btn');
+  var progressText = document.getElementById('bulk-progress-text');
+  var progressBar = document.getElementById('bulk-progress-bar');
+
+  progressEl.classList.remove('hidden');
+  cancelBtn.classList.remove('hidden');
+  progressBar.style.width = '0%';
+  progressText.textContent = 'Starting ' + action + '...';
+
+  // Disable action buttons during batch
+  updateSelectionUI();
+}
+
+async function pollBatchProgress() {
+  if (!currentBatchId) return;
+
+  try {
+    var data = await fetchAPI(apiUrl('/queue/batch/' + currentBatchId + '/status'));
+
+    if (data.error) {
+      clearBatchProgress();
+      return;
+    }
+
+    var pct = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
+    var progressBar = document.getElementById('bulk-progress-bar');
+    var progressText = document.getElementById('bulk-progress-text');
+
+    progressBar.style.width = pct + '%';
+
+    if (data.status === 'running') {
+      var running = data.results.filter(function(r) { return r.status === 'running'; });
+      var runningIssue = running.length > 0 ? ' #' + running[0].issue_id : '';
+      progressText.textContent = data.completed + '/' + data.total + runningIssue;
+    } else {
+      // Done or cancelled
+      var failed = data.failed || 0;
+      var done = data.completed - failed;
+      var summary = done + ' done';
+      if (failed > 0) summary += ', ' + failed + ' failed';
+      if (data.status === 'cancelled') summary += ' (cancelled)';
+      progressText.textContent = summary;
+
+      progressBar.style.width = '100%';
+      if (failed > 0) {
+        progressBar.classList.remove('bg-accent');
+        progressBar.classList.add('bg-accent-yellow');
+      } else {
+        progressBar.classList.remove('bg-accent');
+        progressBar.classList.add('bg-accent-green');
+      }
+
+      setTimeout(function() {
+        clearBatchProgress();
+        deselectAll();
+        loadQueue();
+      }, 2500);
+    }
+  } catch (e) {
+    console.error('Failed to poll batch:', e);
+  }
+}
+
+async function cancelBatch() {
+  if (!currentBatchId) return;
+  try {
+    await fetch(apiUrl('/queue/batch/' + currentBatchId + '/cancel'), { method: 'POST' });
+  } catch (e) {
+    console.error('Failed to cancel batch:', e);
+  }
+}
+
+function clearBatchProgress() {
+  if (batchPollInterval) {
+    clearInterval(batchPollInterval);
+    batchPollInterval = null;
+  }
+  currentBatchId = null;
+
+  var progressEl = document.getElementById('bulk-progress');
+  var cancelBtn = document.getElementById('bulk-cancel-btn');
+  var progressBar = document.getElementById('bulk-progress-bar');
+
+  progressEl.classList.add('hidden');
+  cancelBtn.classList.add('hidden');
+  progressBar.style.width = '0%';
+  progressBar.classList.remove('bg-accent-green', 'bg-accent-yellow');
+  progressBar.classList.add('bg-accent');
+
+  updateSelectionUI();
 }
 
 loadQueue();

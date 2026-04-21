@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from sova.dashboard.project_context import get_project_dir
+from sova.dashboard.services import batch_service
 from sova.dashboard.services.control_service import start_agent
 from sova.dashboard.services.queue_service import get_priority_queue
 
@@ -15,6 +16,12 @@ router = APIRouter(tags=["queue"])
 class StartFromQueueRequest(BaseModel):
     role: str | None = None
     force: bool = False
+
+
+class BatchRequest(BaseModel):
+    issues: list[str]
+    action: str
+    options: dict = {}
 
 
 @router.get("/queue")
@@ -30,3 +37,39 @@ async def start_from_queue(issue: str, req: StartFromQueueRequest):
     """Start an agent run for an issue from the queue."""
     result = await start_agent(issue=issue, role=req.role, force=req.force)
     return result
+
+
+@router.post("/queue/batch")
+async def start_batch(req: BatchRequest):
+    """Start a batch action on selected issues."""
+    project_dir = get_project_dir()
+
+    if req.action == "run":
+        return await batch_service.start_batch_run(req.issues, project_dir)
+
+    if req.action not in ("triage", "harden"):
+        return {"error": f"Unknown action: {req.action}"}
+
+    batch_id = await batch_service.start_batch(
+        action=req.action,
+        issue_ids=req.issues,
+        project_dir=project_dir,
+        options=req.options,
+    )
+    return {"batch_id": batch_id, "status": "started", "count": len(req.issues)}
+
+
+@router.get("/queue/batch/{batch_id}/status")
+async def batch_status(batch_id: str):
+    """Get progress of a batch operation."""
+    status = batch_service.get_batch_status(batch_id)
+    if status is None:
+        return {"error": "Batch not found"}
+    return status
+
+
+@router.post("/queue/batch/{batch_id}/cancel")
+async def cancel_batch(batch_id: str):
+    """Cancel a running batch operation."""
+    cancelled = batch_service.cancel_batch(batch_id)
+    return {"cancelled": cancelled}
