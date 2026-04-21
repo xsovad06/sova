@@ -16,12 +16,9 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
 
-      - name: Run ShellCheck on all bash scripts
+      - name: Run ShellCheck on invariant scripts
         run: |
           shellcheck --severity=warning \
-            pak \
-            agent/*.sh \
-            agent/adapters/*.sh \
             invariants/*.sh
 
   python-lint:
@@ -38,13 +35,13 @@ jobs:
         run: pip install ruff
 
       - name: Ruff check
-        run: ruff check dashboard/
+        run: ruff check sova/ tests/
 
       - name: Ruff format check
-        run: ruff format --check dashboard/
+        run: ruff format --check sova/ tests/
 
-  dashboard:
-    name: Dashboard Import Test
+  python-test:
+    name: Python Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,16 +49,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: dashboard/requirements.txt
 
-      - name: Install dependencies
-        run: pip install -r dashboard/requirements.txt
+      - name: Install package
+        run: pip install -e ".[dev]"
 
-      - name: Verify app imports and starts
-        working-directory: dashboard
-        run: |
-          python -c "from app.main import app; print(f'OK: {len(app.routes)} routes loaded')"
+      - name: Run tests
+        run: pytest tests/ -v
 
   validate-commands:
     name: Validate Commands
@@ -105,7 +98,7 @@ jobs:
       - name: Check executable permissions
         run: |
           errors=0
-          for f in pak agent/*.sh agent/adapters/*.sh invariants/*.sh; do
+          for f in invariants/*.sh; do
             if [ ! -x "$f" ]; then
               echo "ERROR: $f is not executable"
               errors=$((errors + 1))

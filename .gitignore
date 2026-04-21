@@ -25,11 +25,6 @@ dashboard/.venv/
 *.pid
 *.log
 
-# Project-specific
-pak-agent.conf
-*.conf
-!*.conf.default
-
 # Claude Code (keep settings.json and commands/rules tracked)
 .claude/settings.local.json
 .claude/agent-memory/
