@@ -113,7 +113,7 @@ sova cleanup                     # Remove stale worktrees
 
 ```bash
 make check                       # Run linter + tests (CI-equivalent)
-make test                        # Run all tests (bash + python, 403+ tests)
+make test                        # Run all tests (bash + python)
 make lint                        # ShellCheck + Ruff
 make format                      # Auto-format Python code
 ```
@@ -191,7 +191,7 @@ min_confidence = 0.7
 default = "developer"
 ```
 
-Legacy `pak-agent.conf` (shell-sourceable) is also supported as a fallback.
+Legacy `pak-agent.conf` files can be migrated via `sova migrate config <path>`.
 
 ## Task Sources
 
@@ -241,11 +241,10 @@ project-automation-kit/
     commands/                      # Command distribution
     config/                        # Pydantic Settings + TOML
     db/                            # SQLAlchemy ORM + async session
-  agent/                           # Legacy bash orchestrator
   commands/                        # 20 standardized commands (markdown)
   invariants/                      # Pre-push constraint scripts (bash)
   personas/                        # Tech-stack guidance (markdown)
-  tests/                           # pytest suite (403+ tests)
+  tests/                           # pytest suite
   deploy/                          # systemd + launchd service files
   docs/                            # Vision, rewrite plan
 ```

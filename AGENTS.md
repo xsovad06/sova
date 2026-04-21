@@ -2,7 +2,7 @@
 
 This file provides cross-cutting guidance for any AI agent (Claude Code, Cursor, CodeRabbit, etc.) working in this repository.
 
-SOVA (Software Orchestration Via Agents) is a standalone application that any software project can install to gain autonomous AI-assisted development capabilities. It takes issues from your tracker, develops solutions using TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, and learns from mistakes. The system is written in Python (CLI, roles, scheduler, dashboard), with a legacy bash orchestrator still present during migration.
+SOVA (Software Orchestration Via Agents) is a standalone application that any software project can install to gain autonomous AI-assisted development capabilities. It takes issues from your tracker, develops solutions using TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, and learns from mistakes. The system is written in Python (CLI, roles, scheduler, dashboard).
 
 ## Context Index
 
@@ -24,7 +24,7 @@ project-automation-kit/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, project, pr, admin, memory)
+      commands/                    # Command modules (run, triage, project, pr, admin, memory, migrate)
     core/                          # Workflow engine, steps, state machine, context
     roles/                         # Agent roles (triage, researcher, developer, reviewer, dispatcher)
     adapters/                      # Task source plugins (github, jira, linear, manual)
@@ -43,7 +43,6 @@ project-automation-kit/
     config/                        # Pydantic Settings + TOML config
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
-  agent/                           # Legacy bash orchestrator (kept during migration)
   commands/                        # 20 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
@@ -77,12 +76,10 @@ This project uses **GitHub Issues** with a project board.
 
 ## Key Conventions
 
-### Code Patterns -- Bash (agent, invariants, CLI)
+### Code Patterns -- Bash (invariants)
 - **set -euo pipefail** at the top of every script
 - **Quoting**: always double-quote variables (`"$var"`, `"${arr[@]}"`)
 - **Functions**: use `snake_case`, declare `local` variables
-- **Logging**: use helper functions (e.g., `log_info`, `log_error`) -- not raw `echo`
-- **Config**: shell-sourceable key=value files (`. "$CONFIG_FILE"`)
 - **Exit codes**: 0 = success, 1 = error, 2 = usage error
 - **ShellCheck**: all bash scripts must pass `shellcheck` with no warnings
 - **No bashisms in shebangs**: use `#!/usr/bin/env bash`
@@ -102,8 +99,8 @@ This project uses **GitHub Issues** with a project board.
 
 ### Testing
 - **All checks**: `make check` (lint + test, CI-equivalent)
-- **Bash scripts**: `make lint-bash` (shellcheck) + `make test-bash` (invariant `--help`)
-- **Python**: `make test-py` (pytest suite in `tests/`, 403+ tests covering all `sova/` modules)
+- **Bash scripts**: `make lint-bash` (shellcheck on invariants) + `make test-bash` (invariant `--help`)
+- **Python**: `make test-py` (pytest suite in `tests/` covering all `sova/` modules)
 - **Invariants**: each invariant script should handle `--help` gracefully
 - **Commands**: validate markdown structure (frontmatter, sections)
 
@@ -120,12 +117,12 @@ This project uses **GitHub Issues** with a project board.
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-Scopes: `agent`, `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`.
+Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`, `migrate`.
 
 Examples:
-- `feat(agent): add Linear task source adapter`
+- `feat(adapters): add Linear task source adapter`
 - `fix(dashboard): correct cost tracking calculation`
-- `refactor(cli): simplify pak argument parsing`
+- `refactor(cli): simplify argument parsing`
 - `docs(readme): update installation instructions`
 
 ### Pull Requests
@@ -149,7 +146,7 @@ Examples:
 - Add, remove, or upgrade dependencies
 - Delete files or branches
 - Modify CI/CD pipeline configuration
-- Change project configuration files (`sova.toml`, `pak-agent.conf`, `.claude/settings.json`)
+- Change project configuration files (`sova.toml`, `.claude/settings.json`)
 - Run commands that affect external services (GitHub API writes, notifications)
 
 **Never do**:

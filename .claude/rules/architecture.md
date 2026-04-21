@@ -2,11 +2,11 @@
 
 ## Component Overview
 
-SOVA has four main components, plus a legacy bash agent during migration:
+SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `triage`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`
+- Subcommands: `run`, `triage`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `migrate`, `status`, `costs`, `cleanup`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -38,12 +38,6 @@ SOVA has four main components, plus a legacy bash agent during migration:
 - Deploy: `deploy/sova-server.service` (systemd) + `deploy/com.sova.server.plist` (launchd)
 - CLI: `sova server start/stop/status`
 
-### 5. Legacy Agent (`agent/`)
-- `orchestrator.sh` -- the original bash autonomous agent (~3500 lines)
-- `install.sh`, `setup-wizard.sh`, `detect-persona.sh`
-- `adapters/` -- bash task source adapters (github, jira, linear, manual)
-- Kept during migration; will be removed in Phase 6 (cutover, issue #45)
-
 ## Supporting Modules
 
 - **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels), factory
@@ -52,34 +46,32 @@ SOVA has four main components, plus a legacy bash agent during migration:
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)
 - **`sova/knowledge/`** -- Memory CRUD + search + promote, tier loading, persona detection, review patterns
 - **`sova/commands/`** -- command distribution: catalog (discover + classify), templates (regex rendering), manifest (SHA-256 tracking), distribution (install/update/diff with conflict detection)
-- **`sova/config/`** -- Pydantic Settings v2, TOML loader with legacy `.conf` fallback, project registry
+- **`sova/config/`** -- Pydantic Settings v2, TOML loader, project registry
 - **`sova/db/`** -- SQLAlchemy 2.0 async ORM models (TaskRun, StepExecution, FailureRecord, CostRecord, Memory, TaskAssessmentRecord), session factory (SQLite default, PostgreSQL optional)
 
 ## Config System
 - **SOVA config**: `sova.toml` per project (Pydantic Settings, env var overrides via `SOVA_` prefix)
-- **Legacy config**: `agent/pak-agent.conf.default` template, per-project `.claude/scripts/pak-agent.conf` (shell-sourceable)
+- **Migration**: `sova migrate config` converts legacy `pak-agent.conf` to `sova.toml`
 - **DB URL**: `SOVA_DATABASE_URL` env var for PostgreSQL; defaults to `.claude/sova.db` (SQLite)
 
 ## Naming Convention
 
-The project's full name is **SOVA** (Software Orchestration Via Agents). Previously known as Project Automation Kit (PAK).
+The project's full name is **SOVA** (Software Orchestration Via Agents).
 
 - **CLI command**: `sova`
 - **PyPI package**: `sova`
 - **Config files**: `sova.toml`, `sova.db`
-- **Legacy**: `pak` CLI and `pak-agent.conf` still work during migration
 
 ## Development Workflow
 - `Makefile` at repo root provides all development targets
 - `make serve` -- start dashboard
 - `make check` -- lint + test (CI-equivalent)
-- `make test` -- bash (shellcheck + invariant --help) + python (pytest, 403+ tests)
+- `make test` -- bash (shellcheck + invariant --help) + python (pytest)
 - `make lint` -- shellcheck + ruff
 - `make format` -- ruff auto-format
 
 ## Key Design Decisions
 - **Python for SOVA**: unified stack for CLI, agent, dashboard. Zero-config SQLite for single dev.
-- **Bash for legacy agent**: zero runtime deps, kept during migration
 - **Role-based agents**: triage, researcher, developer, reviewer with dispatcher routing
 - **Gate checks between steps**: every step validates output before the next starts
 - **Ephemeral agents**: spawn, work, write handoff, die. No persistent sessions.

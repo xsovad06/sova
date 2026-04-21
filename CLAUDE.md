@@ -16,9 +16,6 @@ sova triage 42                      # Triage a single issue
 sova dashboard --project /path      # Start web UI at http://localhost:8111
 sova server start                   # Start dashboard + scheduler daemon
 
-# Legacy CLI (bash -- still works during migration)
-pak help                            # Show all commands (requires pak on PATH)
-
 # Dashboard (shortcut)
 make serve                          # Start web UI at http://localhost:8111
 

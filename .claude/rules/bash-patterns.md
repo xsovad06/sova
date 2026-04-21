@@ -46,7 +46,7 @@ main "$@"
 - **Boolean short-circuit**: `some_command && echo "ok"` returns exit 1 if command fails and `set -e` is active. Use `if some_command; then ...` instead.
 - **Word splitting**: unquoted `$var` splits on spaces. Always quote.
 - **Subshell scope**: `var=x | while ...` -- the while runs in a subshell, var changes are lost. Use process substitution: `while ... done < <(command)`.
-- **readlink -f**: not available on macOS by default. Use fallback pattern (see `pak` script).
+- **readlink -f**: not available on macOS by default. Use `cd "$(dirname "$0")" && pwd` pattern instead.
 - **Arrays**: `"${arr[@]+"${arr[@]}"}"` for safe expansion of potentially empty arrays.
 
 ## ShellCheck
