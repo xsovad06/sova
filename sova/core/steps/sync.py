@@ -25,6 +25,3 @@ class SyncStep(BaseStep):
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         return GateCheckResult(passed=True)
-
-    async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return self.name in ctx.completed_steps

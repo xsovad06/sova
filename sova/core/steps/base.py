@@ -46,6 +46,10 @@ class BaseStep(ABC):
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Validate that the step produced acceptable output."""
 
-    @abstractmethod
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        """Whether this step can be skipped for the given context."""
+        """Whether this step can be skipped for the given context.
+
+        Default: skip if this step already passed in a prior run (resume).
+        Override in subclasses for additional skip logic.
+        """
+        return self.name in ctx.completed_steps

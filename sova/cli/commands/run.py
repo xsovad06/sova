@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -67,7 +68,7 @@ async def _run_workflow(
         branch_name=checkpoint.get("branch_name", ""),
         worktree_dir=checkpoint.get("worktree_dir"),
         pr_number=checkpoint.get("pr_number"),
-        cost_usd=checkpoint.get("cost_usd", __import__("decimal").Decimal("0")),
+        cost_usd=checkpoint.get("cost_usd", Decimal("0")),
     )
 
     if resume_run_id:
@@ -86,9 +87,6 @@ async def _run_workflow(
 
 async def _load_checkpoint(run_id: int, issue: str) -> dict:
     """Load checkpoint data from a previous TaskRun for resume."""
-    from decimal import Decimal
-    from pathlib import Path
-
     from sqlalchemy import select
 
     from sova.db.models import StepExecution, TaskRun

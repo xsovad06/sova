@@ -60,6 +60,3 @@ class DevelopStep(BaseStep):
             passed=False,
             reason="Development produced no code changes",
         )
-
-    async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return self.name in ctx.completed_steps

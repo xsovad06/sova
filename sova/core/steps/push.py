@@ -41,6 +41,3 @@ class PushStep(BaseStep):
         if count == 0:
             return GateCheckResult(passed=False, reason="No commits ahead of base branch")
         return GateCheckResult(passed=True)
-
-    async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return self.name in ctx.completed_steps
