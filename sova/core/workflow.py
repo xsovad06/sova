@@ -223,6 +223,7 @@ class WorkflowEngine:
                 role=self._ctx.role,
                 status=TaskStatus.PENDING.value,
                 branch_name=self._ctx.branch_name,
+                resumed_from_id=self._ctx.resume_run_id,
             )
             session.add(task_run)
             await session.flush()

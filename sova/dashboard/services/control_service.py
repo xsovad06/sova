@@ -225,6 +225,7 @@ async def start_agent(
     role: str | None = None,
     force: bool = False,
     slug: str | None = None,
+    resume_run_id: int | None = None,
 ) -> dict:
     """Start an agent process for the given issue."""
     issue = issue.lstrip("#").strip()
@@ -238,6 +239,8 @@ async def start_agent(
             }
 
         prompt = f"sova run {issue}"
+        if resume_run_id:
+            prompt += f" --resume {resume_run_id}"
         if role:
             prompt += f" --role {role}"
         if force:

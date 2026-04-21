@@ -23,5 +23,4 @@ class AddressReviewStep(BaseStep):
         return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        # Skip if review is disabled or no PR exists
-        return not ctx.config.review.enabled or ctx.pr_number is None
+        return self.name in ctx.completed_steps or not ctx.config.review.enabled or ctx.pr_number is None

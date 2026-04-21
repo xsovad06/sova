@@ -64,8 +64,11 @@
   </div>
 </div>
 
+<!-- Resume chain -->
+<div id="resume-chain" class="hidden mt-6 mb-2"></div>
+
 <!-- Actions -->
-<div id="actions-section" class="mt-6 flex items-center gap-3">
+<div id="actions-section" class="mt-2 flex items-center gap-3">
   <button id="btn-resume" onclick="resumeRun()" class="hidden px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
     Resume
   </button>
@@ -118,6 +121,17 @@ async function loadRunDetail() {
     // Pipeline bar
     document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false);
 
+    // Resume chain
+    var chainEl = document.getElementById('resume-chain');
+    if (run.resumed_from_id) {
+      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+      chainEl.classList.remove('hidden');
+      chainEl.innerHTML = '<div class="text-xs text-gray-500 flex items-center gap-2">' +
+        '<span class="text-accent-purple">Resumed from</span>' +
+        '<a href="' + prefix + '/work/' + run.resumed_from_id + '" class="text-accent hover:underline">Run #' + run.resumed_from_id + '</a>' +
+      '</div>';
+    }
+
     // Show appropriate action buttons
     var restartable = ['done', 'failed', 'rejected', 'interrupted', 'paused'];
     var nonTerminal = ['running', 'developing', 'pending'];
@@ -127,6 +141,7 @@ async function loadRunDetail() {
       resumeBtn.classList.remove('hidden');
       resumeBtn.dataset.issue = run.issue_number;
       resumeBtn.dataset.role = run.role;
+      resumeBtn.dataset.runId = run.id;
     }
     if (nonTerminal.indexOf(run.status) !== -1 || restartable.indexOf(run.status) !== -1) {
       if (run.status !== 'done') {
@@ -184,6 +199,7 @@ async function resumeRun() {
   var btn = document.getElementById('btn-resume');
   var issue = btn.dataset.issue;
   var role = btn.dataset.role;
+  var runId = parseInt(btn.dataset.runId, 10);
   btn.disabled = true;
   btn.textContent = 'Resuming...';
 
@@ -192,7 +208,7 @@ async function resumeRun() {
     var result = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issue: issue, role: cleanRole, force: true }),
+      body: JSON.stringify({ issue: issue, role: cleanRole, force: true, resume_run_id: runId }),
     }).then(function(r) { return r.json(); });
 
     if (result.error) {

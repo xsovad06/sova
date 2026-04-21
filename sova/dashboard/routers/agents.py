@@ -16,6 +16,7 @@ class StartAgentRequest(BaseModel):
     issue: str
     role: str | None = None
     force: bool = False
+    resume_run_id: int | None = None
 
 
 @router.get("/agents/active")
@@ -57,7 +58,12 @@ async def get_agent_output(run_id: int, since: int = 0):
 @router.post("/agents/start")
 async def start_agent(req: StartAgentRequest):
     """Start a new agent process."""
-    return await control_service.start_agent(req.issue, role=req.role, force=req.force)
+    return await control_service.start_agent(
+        req.issue,
+        role=req.role,
+        force=req.force,
+        resume_run_id=req.resume_run_id,
+    )
 
 
 @router.post("/agents/{run_id}/stop")

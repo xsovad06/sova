@@ -27,4 +27,4 @@ class SyncStep(BaseStep):
         return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return False
+        return self.name in ctx.completed_steps

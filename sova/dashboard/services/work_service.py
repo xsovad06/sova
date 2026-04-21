@@ -156,6 +156,7 @@ def _run_to_dict(run: TaskRun) -> dict:
         "total_cost_usd": float(run.total_cost_usd or 0),
         "error_message": run.error_message,
         "project_slug": run.project_slug,
+        "resumed_from_id": run.resumed_from_id,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "ended_at": run.ended_at.isoformat() if run.ended_at else None,
     }

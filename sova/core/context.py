@@ -36,6 +36,10 @@ class ExecutionContext:
     force: bool = False
     task_run_id: int | None = None
 
+    # Resume checkpoint (populated when --resume is used)
+    resume_run_id: int | None = None
+    completed_steps: frozenset[str] = field(default_factory=frozenset)
+
     # Accumulated during the run
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)

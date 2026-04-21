@@ -201,7 +201,15 @@ class DummyStep(BaseStep):
     name = "dummy"
     max_retries = 1
 
-    def __init__(self, *, should_pass: bool = True, gate_pass: bool = True, skip: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        should_pass: bool = True,
+        gate_pass: bool = True,
+        skip: bool = False,
+        name: str = "dummy",
+    ) -> None:
+        self.name = name
         self._should_pass = should_pass
         self._gate_pass = gate_pass
         self._skip = skip
@@ -217,7 +225,7 @@ class DummyStep(BaseStep):
         return GateCheckResult(passed=False, reason="Gate failed")
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return self._skip
+        return self.name in ctx.completed_steps or self._skip
 
 
 class TestStepResult:
@@ -698,3 +706,82 @@ class TestWorkflowDB:
         await engine.run()
 
         assert ctx.task_run_id is not None
+
+    async def test_resumed_from_id_stored(self) -> None:
+        ctx = _make_ctx(resume_run_id=99)
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.resumed_from_id == 99
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint / Resume
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointResume:
+    async def test_completed_steps_skips_steps(self) -> None:
+        """Steps in completed_steps are skipped via can_skip()."""
+        ctx = _make_ctx(completed_steps=frozenset({"step_a"}))
+
+        step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
+        step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
+
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_skipped == 1
+        assert result.steps_completed == 1
+
+    async def test_failed_step_not_skipped(self) -> None:
+        """Steps NOT in completed_steps execute normally."""
+        ctx = _make_ctx(completed_steps=frozenset({"step_a"}))
+
+        step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
+        step_b = DummyStep(should_pass=False, gate_pass=True, name="step_b")
+
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert result.steps_skipped == 1
+        assert result.steps_failed == 1
+
+    async def test_empty_completed_steps_runs_all(self) -> None:
+        """With no completed_steps, all steps execute."""
+        ctx = _make_ctx(completed_steps=frozenset())
+
+        step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
+        step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
+
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_skipped == 0
+        assert result.steps_completed == 2
+
+    async def test_resume_preserves_cost_from_context(self) -> None:
+        """Resumed run's budget check uses pre-loaded cost."""
+        ctx = _make_ctx(
+            completed_steps=frozenset({"step_a"}),
+            cost_usd=Decimal("100"),
+        )
+        ctx.config.agent.max_budget = Decimal("50")
+
+        step_a = DummyStep(should_pass=True, gate_pass=True, name="step_a")
+        step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
+
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.PAUSED
+        assert "Budget exceeded" in (result.error or "")

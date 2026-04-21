@@ -40,4 +40,4 @@ class AssessStep(BaseStep):
         return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return ctx.force
+        return self.name in ctx.completed_steps or ctx.force

@@ -46,4 +46,4 @@ class SimplifyStep(BaseStep):
         return GateCheckResult(passed=False, reason="All changes were reverted during simplification")
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return False
+        return self.name in ctx.completed_steps

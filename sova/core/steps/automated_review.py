@@ -35,4 +35,4 @@ class AutomatedReviewStep(BaseStep):
         return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
-        return not ctx.config.review.enabled
+        return self.name in ctx.completed_steps or not ctx.config.review.enabled
