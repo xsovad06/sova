@@ -71,58 +71,20 @@ reviewer = "Koda"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
 
 
-def test_load_from_legacy_conf(tmp_path: Path) -> None:
-    """Load config from a legacy shell-sourceable .conf file."""
+def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
+    """Legacy .conf files are no longer loaded; defaults are returned instead.
+
+    Users should migrate via `sova migrate config`.
+    """
     conf_dir = tmp_path / ".claude" / "scripts"
     conf_dir.mkdir(parents=True)
     conf_file = conf_dir / "pak-agent.conf"
-    conf_file.write_text("""
-# Project config
-GITHUB_REPO="owner/myproject"
-GITHUB_USER="myuser"
-BASE_BRANCH="main"
-TASK_SOURCE="github"
-AGENT_MODEL="sonnet"
-MAX_BUDGET="15.00"
-REVIEW_ENABLED="false"
-REVIEW_MAX_ROUNDS=1
-CI_POLL_INTERVAL=30
-WORKTREE_COPY_FILES=".env,.secrets"
-NO_AI_COAUTHOR="true"
-COMMIT_FORMAT="freeform"
-WATCH_AUTO_SELECT_ISSUES="false"
-""")
+    conf_file.write_text('GITHUB_REPO="owner/myproject"\n')
 
     cfg = load_config(tmp_path)
-    assert cfg.github_repo == "owner/myproject"
-    assert cfg.github_user == "myuser"
-    assert cfg.agent.model == "sonnet"
-    assert cfg.agent.max_budget == Decimal("15")
-    assert cfg.review.enabled is False
-    assert cfg.review.max_rounds == 1
-    assert cfg.ci.poll_interval == 30
-    assert cfg.worktree.copy_files == [".env", ".secrets"]
-    assert cfg.commit.no_ai_coauthor is True
-    assert cfg.commit.format == "freeform"
-    assert cfg.watch.auto_select_issues is False
-
-
-def test_toml_takes_precedence_over_legacy(tmp_path: Path) -> None:
-    """TOML file takes precedence over legacy .conf."""
-    # Create both files
-    toml_file = tmp_path / "sova.toml"
-    toml_file.write_text("""
-[project]
-github_repo = "from-toml"
-""")
-
-    conf_dir = tmp_path / ".claude" / "scripts"
-    conf_dir.mkdir(parents=True)
-    conf_file = conf_dir / "pak-agent.conf"
-    conf_file.write_text('GITHUB_REPO="from-legacy"\n')
-
-    cfg = load_config(tmp_path)
-    assert cfg.github_repo == "from-toml"
+    # Should NOT load legacy config -- returns defaults
+    assert cfg.github_repo == ""
+    assert cfg.base_branch == "main"
 
 
 def test_load_nonexistent_dir_returns_defaults(tmp_path: Path) -> None:

@@ -34,14 +34,10 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
-    scripts_dir = claude_dir / "scripts"
-    scripts_dir.mkdir(exist_ok=True)
-
     # Create default config if it doesn't exist
-    config_file = scripts_dir / "pak-agent.conf"
     toml_file = project_dir / "sova.toml"
 
-    if not toml_file.exists() and not config_file.exists():
+    if not toml_file.exists():
         toml_file.write_text(_default_toml())
         console.print(f"[green]Created {toml_file}[/green]")
 

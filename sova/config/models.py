@@ -135,7 +135,6 @@ class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
     Loaded from sova.toml, with env var overrides (SOVA_ prefix).
-    Falls back to legacy pak-agent.conf if sova.toml is absent.
     """
 
     # Project settings

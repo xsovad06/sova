@@ -2,8 +2,9 @@
 
 Supports:
 - sova.toml (primary, TOML format)
-- pak-agent.conf (legacy, shell key=value format)
 - Environment variable overrides (SOVA_ prefix)
+
+Legacy pak-agent.conf support is available via `sova migrate config`.
 """
 
 from __future__ import annotations
@@ -23,12 +24,11 @@ except ImportError:
 
 
 def load_config(project_dir: Path | None = None) -> ProjectConfig:
-    """Load project configuration from TOML or legacy .conf file.
+    """Load project configuration from TOML file.
 
     Search order:
     1. sova.toml in project_dir
-    2. .claude/scripts/pak-agent.conf in project_dir (legacy)
-    3. Default values
+    2. Default values
     """
     if project_dir is None:
         project_dir = Path.cwd()
@@ -39,11 +39,6 @@ def load_config(project_dir: Path | None = None) -> ProjectConfig:
     toml_path = project_dir / "sova.toml"
     if toml_path.exists():
         return _load_from_toml(toml_path)
-
-    # Try legacy shell config
-    legacy_path = project_dir / ".claude" / "scripts" / "pak-agent.conf"
-    if legacy_path.exists():
-        return _load_from_legacy(legacy_path)
 
     # Default config
     return ProjectConfig()
@@ -83,6 +78,8 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
 
     return result
 
+
+# -- Legacy config support (used by `sova migrate config`) ---------------------
 
 # Legacy shell config key mapping: BASH_KEY -> (config_path, python_key)
 _LEGACY_KEY_MAP: dict[str, tuple[str, str]] = {
@@ -141,38 +138,6 @@ _BOOL_KEYS = {
     "PR_AUTO_LINK_ISSUES",
     "SCANNER_GITHUB_CHECK",
 }
-
-
-def _load_from_legacy(path: Path) -> ProjectConfig:
-    """Load configuration from a legacy shell-sourceable .conf file."""
-    raw = _parse_shell_config(path)
-    nested: dict[str, Any] = {}
-    sections: dict[str, dict[str, Any]] = {}
-
-    for bash_key, raw_value in raw.items():
-        mapping = _LEGACY_KEY_MAP.get(bash_key)
-        if mapping is None:
-            continue
-
-        section, python_key = mapping
-        value: Any = raw_value
-
-        if bash_key in _BOOL_KEYS:
-            value = raw_value.lower() in ("true", "1", "yes")
-        elif bash_key in _LIST_KEYS:
-            value = [v.strip() for v in raw_value.split(",") if v.strip()]
-        elif raw_value.isdigit():
-            value = int(raw_value)
-
-        if section:
-            sections.setdefault(section, {})[python_key] = value
-        else:
-            nested[python_key] = value
-
-    for section, fields in sections.items():
-        nested[section] = fields
-
-    return ProjectConfig(**nested)
 
 
 def _parse_shell_config(path: Path) -> dict[str, str]:
