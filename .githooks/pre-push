@@ -13,8 +13,8 @@ errors=0
 RUFF=""
 if command -v ruff &>/dev/null; then
   RUFF="ruff"
-elif [[ -x "dashboard/.venv/bin/ruff" ]]; then
-  RUFF="dashboard/.venv/bin/ruff"
+elif [[ -x ".venv/bin/ruff" ]]; then
+  RUFF=".venv/bin/ruff"
 fi
 
 run_ruff() {
@@ -37,9 +37,6 @@ echo ""
 echo "[1/5] ShellCheck..."
 if command -v shellcheck &>/dev/null; then
   if shellcheck --severity=warning \
-    pak \
-    agent/*.sh \
-    agent/adapters/*.sh \
     invariants/*.sh 2>&1; then
     echo "  PASS"
   else
@@ -53,12 +50,12 @@ fi
 # 2. Ruff lint
 echo ""
 echo "[2/5] Ruff check..."
-run_ruff check dashboard/
+run_ruff check sova/ tests/
 
 # 3. Ruff format
 echo ""
 echo "[3/5] Ruff format..."
-run_ruff format --check dashboard/
+run_ruff format --check sova/ tests/
 
 # 4. Validate command frontmatter
 echo ""
@@ -101,7 +98,7 @@ fi
 echo ""
 echo "[5/5] File permissions..."
 perm_errors=0
-for f in pak agent/*.sh agent/adapters/*.sh invariants/*.sh; do
+for f in invariants/*.sh; do
   if [ ! -x "$f" ]; then
     echo "  ERROR: $f is not executable"
     perm_errors=$((perm_errors + 1))
