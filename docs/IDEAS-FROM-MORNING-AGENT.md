@@ -20,7 +20,7 @@ genuinely hard failures. The cost tracking infrastructure already captures per-p
 adding model-level routing would significantly reduce costs while maintaining quality where it
 matters.
 
-**PAK status**: `AGENT_MODEL` in `pak-agent.conf` is static. No routing logic exists.
+**Status**: Model routing is not yet implemented. `sova.toml` uses a static model setting.
 
 ### 2. Agent Self-Improvement / Self-Assessment
 

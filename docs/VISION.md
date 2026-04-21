@@ -1,4 +1,4 @@
-# Project Automation Kit -- Vision Document
+# SOVA -- Vision Document
 
 > **Status**: Vision / Pre-implementation
 > **Author**: Damian Sova
@@ -6,7 +6,7 @@
 
 ## What This Becomes
 
-The original agent and Project-instructions repositories merged into a single **Project Automation Kit** -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
+The original agent and Project-instructions repositories merged into a single **SOVA** (Software Orchestration Via Agents) -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
 
 It is not just a script collection. It is a **product** with a UI, setup wizard, and runtime dashboard.
 
@@ -23,32 +23,24 @@ A unified repository that ships:
 
 ```
 project-automation-kit/
-  agent/
-    orchestrator.sh            # Main autonomous agent (installed as pak-agent.sh)
-    install.sh                 # Per-project installer
-  commands/
-    develop.md                 # 19 standardized commands
-    develop-full.md            # End-to-end workflow (develop + test + review + PR)
-    test.md
-    review.md
-    pr.md
+  sova/                          # Python package
+    cli/                         # Typer CLI (sova run, sova triage, etc.)
+    core/                        # Workflow engine, steps, state machine
+    roles/                       # Agent roles (triage, researcher, developer, reviewer)
+    adapters/                    # Task source plugins (github, jira, linear, manual)
+    dashboard/                   # FastAPI web UI
+    scheduler/                   # Watch loop, parallel executor, server daemon
     ...
-  invariants/                  # Pluggable pre-push constraint checks
-  personas/                    # Framework-specific guidance (Django, FastAPI, Odoo)
+  commands/                      # 20 standardized commands (markdown)
+  invariants/                    # Pluggable pre-push constraint checks
+  personas/                      # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
-    KNOWLEDGE.md               # Standardized 4-tier knowledge management system
+    KNOWLEDGE.md                 # Standardized 4-tier knowledge management system
   templates/
-    CLAUDE.md                  # Starter config for Claude Code
-    AGENTS.md                  # Cross-AI-tool guidance
-    agent-memory/              # Memory file templates
-  dashboard/
-    app/                       # FastAPI web UI
-      setup-wizard/            # Project onboarding flow
-      monitoring/              # Agent status, costs, tasks
-      settings/                # Runtime configuration
+    CLAUDE.md                    # Starter config for Claude Code
+    AGENTS.md                    # Cross-AI-tool guidance
   docs/
-    VISION.md                  # This file
-    PORTING.md                 # Integration guide
+    VISION.md                    # This file
 ```
 
 ## The Two Modes
@@ -58,8 +50,8 @@ project-automation-kit/
 Install the kit into any project and the agent works immediately using default, general-purpose instructions:
 
 ```bash
-pak install /path/to/project    # "pak" = project automation kit
-pak run 42                      # Work on issue #42
+sova install /path/to/project
+sova run 42                      # Work on issue #42
 ```
 
 The default commands are written generically enough (referencing CLAUDE.md/AGENTS.md for project specifics) that the agent can develop, test, and review code on any Python, JS, Go, or similar project.
@@ -69,9 +61,9 @@ The default commands are written generically enough (referencing CLAUDE.md/AGENT
 Run the setup wizard (CLI or Dashboard UI) to generate tailored configuration:
 
 ```bash
-pak setup /path/to/project      # Interactive setup wizard
+sova setup /path/to/project      # Interactive setup wizard
 # -- or --
-pak dashboard                   # Open web UI, go to Setup tab
+sova dashboard                   # Open web UI, go to Setup tab
 ```
 
 The setup wizard:
@@ -144,10 +136,10 @@ Extends the existing FastAPI dashboard with:
 
 The agent currently hardcodes GitHub Issues. This must become pluggable:
 
-```bash
-# In pak-agent.conf:
-TASK_SOURCE="github"          # github | jira | odoo | linear | manual
-TASK_SOURCE_CONFIG="..."      # Source-specific config (project ID, board, etc.)
+```toml
+# In sova.toml:
+[task_source]
+type = "github"          # github | jira | odoo | linear | manual
 ```
 
 Adapter interface:
@@ -162,7 +154,7 @@ GitHub adapter exists. JIRA, Odoo (via MCP), and Linear adapters to be built.
 
 **Status: DONE** (completed 2026-04-16)
 
-The Project-instructions command library and PAK agent commands have been unified:
+The Project-instructions command library and agent commands have been unified:
 - **19 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
@@ -190,27 +182,15 @@ Users can also create custom personas or override detection.
 
 ## Installation
 
-### Global Install (Recommended)
+### Install
 ```bash
-git clone <repo> ~/.claude/project-automation-kit
-cd ~/.claude/project-automation-kit && ./install.sh --global
+pip install -e .
 
 # Now available system-wide:
-pak install /path/to/project
-pak run 42
-pak dashboard
-pak status
-```
-
-### Per-Project Install
-```bash
-cd /path/to/project
-~/.claude/project-automation-kit/install.sh .
-
-# Creates:
-# .claude/scripts/pak-agent.sh (copy or symlink)
-# .claude/scripts/pak-agent.conf (generated from wizard or defaults)
-# .claude/commands/*.md (from command library)
+sova install /path/to/project
+sova run 42
+sova dashboard
+sova status
 ```
 
 ## Migration Path
@@ -222,7 +202,7 @@ cd /path/to/project
 - [DONE] Standardize AGENTS.md + CLAUDE.md cooperation model
 - [DONE] Define 4-tier knowledge management system (KNOWLEDGE.md)
 - [DONE] First integration: Income Processor project (AGENTS.md, slimmed CLAUDE.md, all commands tracked)
-- [DONE] Rename internal references from gwym-agent to pak-agent
+- [DONE] Rename internal references from gwym-agent to sova
 - [DONE] Copy KNOWLEDGE.md into the kit (`knowledge/KNOWLEDGE.md`)
 - [DONE] Copy PORTING.md into the kit (`docs/PORTING.md`)
 - [DONE] Merge Project-instructions repo: all commands, templates, knowledge docs
@@ -251,12 +231,12 @@ cd /path/to/project
 
 ## Multi-Project Workflow
 
-PAK manages agents across multiple projects from a single dashboard instance.
+SOVA manages agents across multiple projects from a single dashboard instance.
 
 ### Developer Experience
 
 ```
-pak dashboard                    # One instance, one port (8111)
+sova dashboard                   # One instance, one port (8111)
 # Open browser tabs:
 #   localhost:8111/               → project list (command center)
 #   localhost:8111/p/income-processor/  → agent for Income Processor
@@ -268,11 +248,10 @@ Each browser tab is a fully independent workspace — its own agent status, cost
 
 ### Architecture
 
-- **Project registry**: `~/.config/pak/projects.json` — maps slugs to project paths
+- **Project registry**: `~/.config/sova/projects.json` -- maps slugs to project paths
 - **URL routing**: `/p/{slug}/` prefixes all project-scoped pages and APIs
 - **Per-request config**: middleware reads slug from URL, sets `contextvars.ContextVar` with the project's `.claude/` data directory; all service calls resolve paths dynamically
-- **Registration**: automatic on `pak install` or dashboard Setup; manual via `POST /api/projects/register`
-- **Legacy compat**: un-prefixed routes (`/costs`, `/api/overview`) use the default project (from `AGENT_DATA_DIR` env var)
+- **Registration**: automatic on `sova install` or dashboard Setup; manual via `POST /api/projects/register`
 
 ### What's Next
 
@@ -286,12 +265,12 @@ The current implementation handles the routing and config isolation. Key areas t
 
 4. **Quick actions from home** — start/stop agents, see checkpoint alerts, jump to control page — all from the project list without navigating first.
 
-5. **Auto-discovery** — optionally scan common directories (`~/projects/`, `~/Documents/`) for PAK-installed projects and suggest registration.
+5. **Auto-discovery** -- optionally scan common directories (`~/projects/`, `~/Documents/`) for SOVA-installed projects and suggest registration.
 
 ### Phase 6: Intelligence and Autonomy
 - Intelligent model routing -- dynamically select Opus/Sonnet/Haiku based on task complexity and phase
 - Agent self-assessment -- periodic analysis of approval rates, time-to-merge, cost patterns; auto-tune config
-- Team knowledge sharing -- sync generalizable learnings (review feedback, codebase patterns) across PAK installations
+- Team knowledge sharing -- sync generalizable learnings (review feedback, codebase patterns) across SOVA installations
 - VM deployment / always-on mode -- systemd service, notification abstraction (email/webhook), hybrid laptop+VM operation
 - Task complexity dispatcher -- classify tickets by complexity, route simple tasks to lightweight agent configs
 

@@ -90,7 +90,7 @@ This replaces the need for long-running agents that pause for approval. Instead,
 
 | Mode | Runs | Description |
 |------|------|-------------|
-| `agent` | `pak-agent.sh --<mode> <args>` | Delegates to the PAK agent orchestrator |
+| `agent` | `sova run --<mode> <args>` | Delegates to the SOVA workflow engine |
 | `claude-command` | `claude -p "<command contents>"` | Runs a Claude Code command file directly |
 | `shell` | Raw shell command | For simple operations (e.g., `gh pr merge`) |
 
