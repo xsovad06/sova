@@ -89,6 +89,37 @@ jobs:
           fi
           echo "All $(find commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
 
+  integration:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Verify CLI entrypoint
+        run: sova --help
+
+      - name: Install into a test repo
+        run: |
+          tmp=$(mktemp -d)
+          git init "$tmp/test-project"
+          sova install "$tmp/test-project"
+
+          # Verify install artifacts
+          test -f "$tmp/test-project/sova.toml"
+          test -d "$tmp/test-project/.claude"
+          test -d "$tmp/test-project/.claude/commands"
+          test -d "$tmp/test-project/.claude/agent-memory"
+          test -f "$tmp/test-project/.claude/sova.db"
+
+          echo "Integration test passed"
+
   permissions:
     name: File Permissions
     runs-on: ubuntu-latest

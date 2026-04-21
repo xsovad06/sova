@@ -1,5 +1,7 @@
 # SOVA -- Software Orchestration Via Agents
 
+[![CI](https://github.com/xsovad06/project-automation-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/xsovad06/project-automation-kit/actions/workflows/ci.yml)
+
 A standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box. Takes issues from your tracker, triages them, develops solutions using TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, and learns from mistakes -- all autonomously.
 
 ## Features
