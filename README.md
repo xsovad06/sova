@@ -248,3 +248,7 @@ project-automation-kit/
   deploy/                          # systemd + launchd service files
   docs/                            # Vision, rewrite plan
 ```
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).

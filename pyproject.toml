@@ -3,7 +3,7 @@ name = "sova"
 version = "0.1.0"
 description = "SOVA -- Software Orchestration Via Agents"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [
     { name = "Damian Sova", email = "sovicka99@gmail.com" },
