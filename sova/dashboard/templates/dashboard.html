@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - SOVA{% endblock %}
+{% block content %}
+<h2 class="text-2xl font-semibold mb-6">Dashboard</h2>
+
+<!-- Live Agent Strip -->
+<div id="agent-strip" class="hidden mb-6">
+  <div class="flex items-center justify-between mb-2">
+    <h3 class="text-xs text-gray-500 uppercase tracking-wide">Running Agents</h3>
+    <a href="{{ prefix|default('') }}/agents" class="text-xs text-accent hover:text-blue-300 transition-colors">Manage</a>
+  </div>
+  <div id="agent-strip-cards" class="flex gap-3 overflow-x-auto pb-2"></div>
+</div>
+
+<!-- Summary cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8" id="summary-cards">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Active Agents</p>
+    <p class="text-3xl font-bold mt-1" id="card-active">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-active-detail"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Today's Cost</p>
+    <p class="text-3xl font-bold text-accent-green mt-1" id="card-today-cost">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">7-Day Cost</p>
+    <p class="text-3xl font-bold text-accent-yellow mt-1" id="card-7d-cost">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-invocations"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Completion Rate</p>
+    <p class="text-3xl font-bold text-accent-purple mt-1" id="card-completion">--</p>
+    <p class="text-xs text-gray-500 mt-1" id="card-completion-detail"></p>
+  </div>
+</div>
+
+<!-- Recent runs -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+    <h3 class="text-sm font-medium text-gray-400">Recent Runs</h3>
+    <a href="{{ prefix|default('') }}/work" class="text-xs text-accent hover:text-blue-300 transition-colors">View all</a>
+  </div>
+  <div class="overflow-x-auto" id="recent-runs">
+    <p class="text-gray-500 text-sm p-4">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadDashboard() {
+  try {
+    var results = await Promise.all([
+      fetchAPI(apiUrl('/overview')),
+      fetchAPI(apiUrl('/runs?limit=10')),
+      fetchAPI(apiUrl('/agents/active')),
+    ]);
+
+    var overview = results[0];
+    var runs = results[1];
+    var agents = results[2];
+
+    // Agent strip
+    var strip = document.getElementById('agent-strip');
+    var stripCards = document.getElementById('agent-strip-cards');
+    if (agents.agents && agents.agents.length > 0) {
+      strip.classList.remove('hidden');
+      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+      stripCards.innerHTML = agents.agents.map(function(a) {
+        var colors = roleColor(a.role);
+        var pipeline = renderStepPipeline(a.current_step, a.role, true);
+        return '<a href="' + prefix + '/agents" class="bg-surface-card rounded-lg border ' + colors.border + ' p-3 min-w-[200px] hover:bg-surface-hover transition-colors">' +
+          '<div class="flex items-center gap-2 mb-2">' +
+            '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
+            '<span class="text-sm font-medium">#' + escapeHtml(a.issue) + '</span>' +
+            '<span class="px-1 py-0.5 rounded text-[9px] ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(a.role) + '</span>' +
+          '</div>' +
+          '<div class="mb-1">' + pipeline + '</div>' +
+          '<div class="flex justify-between text-xs text-gray-500">' +
+            '<span class="text-accent-green">$' + (a.cost_usd || 0).toFixed(2) + '</span>' +
+            '<span>' + formatElapsed(a.elapsed_seconds) + '</span>' +
+          '</div>' +
+        '</a>';
+      }).join('');
+    } else {
+      strip.classList.add('hidden');
+    }
+
+    // Run counts
+    var r = overview.runs;
+    document.getElementById('card-active').textContent = agents.agents ? agents.agents.length : r.active;
+    document.getElementById('card-active-detail').textContent =
+      r.total + ' total: ' + r.done + ' done, ' + r.failed + ' failed';
+
+    // Costs
+    var c = overview.costs;
+    document.getElementById('card-today-cost').textContent = '$' + c.today_cost_usd.toFixed(2);
+    document.getElementById('card-7d-cost').textContent = '$' + c.rolling_7d_usd.toFixed(2);
+    document.getElementById('card-invocations').textContent = c.total_invocations + ' total invocations';
+
+    // Completion rate
+    var finished = r.done + r.failed;
+    var rate = finished > 0 ? Math.round((r.done / finished) * 100) : 0;
+    document.getElementById('card-completion').textContent = finished > 0 ? rate + '%' : 'N/A';
+    document.getElementById('card-completion-detail').textContent =
+      r.done + ' done, ' + r.failed + ' failed' + (r.active > 0 ? ', ' + r.active + ' active' : '');
+
+    // Recent runs table
+    renderRunsTable(runs.runs, 'recent-runs');
+  } catch (e) {
+    console.error('Failed to load dashboard:', e);
+  }
+}
+
+loadDashboard();
+setInterval(loadDashboard, 10000);
+</script>
+{% endblock %}

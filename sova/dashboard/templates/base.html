@@ -67,17 +67,16 @@
     </div>
     <!-- Checkpoint banner (shown when handoff awaits action) -->
     <div id="checkpoint-banner" class="hidden px-3 py-2 bg-accent-yellow/10 border-b border-accent-yellow/30">
-      <a href="{{ prefix }}/control" class="flex items-center gap-2 text-xs text-accent-yellow hover:text-yellow-200 transition-colors">
+      <a href="{{ prefix }}/agents" class="flex items-center gap-2 text-xs text-accent-yellow hover:text-yellow-200 transition-colors">
         <span class="w-2 h-2 rounded-full bg-accent-yellow animate-pulse"></span>
         <span>Action required</span>
       </a>
     </div>
     <div class="flex-1 py-2">
       {% set nav_items = [
-        ("overview", prefix + "/overview", "Overview", "#"),
-        ("control", prefix + "/control", "Control", "!"),
-        ("runs", prefix + "/runs", "Runs", ">"),
-        ("tasks", prefix + "/tasks", "Tasks", "="),
+        ("dashboard", prefix + "/dashboard", "Dashboard", "#"),
+        ("agents", prefix + "/agents", "Agents", "!"),
+        ("work", prefix + "/work", "Work", ">"),
         ("queue", prefix + "/queue", "Queue", "^"),
         ("costs", prefix + "/costs", "Costs", "$"),
         ("logs", prefix + "/logs", "Logs", "~"),

@@ -2,7 +2,7 @@
 {% block title %}Run #{{ run_id }} - SOVA{% endblock %}
 {% block content %}
 <div class="flex items-center gap-3 mb-6">
-  <a href="{{ prefix|default('') }}/runs" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to runs</a>
+  <a href="{{ prefix|default('') }}/work" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Work</a>
   <h2 class="text-2xl font-semibold">Run #{{ run_id }}</h2>
 </div>
 
@@ -26,57 +26,117 @@
   </div>
 </div>
 
-<!-- Step timeline -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
-  <div class="px-4 py-3 border-b border-gray-700/50">
-    <h3 class="text-sm font-medium text-gray-400">Step Timeline</h3>
+<!-- Step pipeline visualization -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-6">
+  <div id="pipeline-bar">
+    <p class="text-gray-500 text-sm">Loading pipeline...</p>
   </div>
+</div>
+
+<!-- Tab bar -->
+<div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
+  <button onclick="switchDetailTab('steps')" id="dtab-steps"
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white">Steps</button>
+  <button onclick="switchDetailTab('output')" id="dtab-output"
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300">Output</button>
+  <button onclick="switchDetailTab('error')" id="dtab-error"
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300 hidden">Error</button>
+</div>
+
+<!-- Steps tab -->
+<div id="dpanel-steps" class="bg-surface-card rounded-lg border border-gray-700/50">
   <div class="p-4" id="step-timeline">
     <p class="text-gray-500 text-sm">Loading...</p>
   </div>
 </div>
 
-<!-- Actions (for non-terminal runs) -->
-<div id="actions-section" class="hidden mb-6">
-  <button id="btn-mark-failed" onclick="markFailed()" class="px-4 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors">
-    Mark as Failed
-  </button>
+<!-- Output tab -->
+<div id="dpanel-output" class="hidden bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="p-4 font-mono text-xs text-gray-300 max-h-[600px] overflow-y-auto whitespace-pre-wrap" id="output-content">
+    <p class="text-gray-500">No output available for this run.</p>
+  </div>
 </div>
 
-<!-- Error details (if any) -->
-<div id="error-section" class="hidden bg-surface-card rounded-lg border border-accent-red/50 mb-6">
-  <div class="px-4 py-3 border-b border-accent-red/30">
-    <h3 class="text-sm font-medium text-accent-red">Error</h3>
-  </div>
+<!-- Error tab -->
+<div id="dpanel-error" class="hidden bg-surface-card rounded-lg border border-accent-red/50">
   <div class="p-4">
     <pre class="text-sm text-gray-300 whitespace-pre-wrap" id="error-message"></pre>
   </div>
+</div>
+
+<!-- Actions -->
+<div id="actions-section" class="mt-6 flex items-center gap-3">
+  <button id="btn-resume" onclick="resumeRun()" class="hidden px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
+    Resume
+  </button>
+  <button id="btn-mark-failed" onclick="markFailed()" class="hidden px-4 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors">
+    Mark as Failed
+  </button>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+var currentDetailTab = 'steps';
+
+function switchDetailTab(tab) {
+  currentDetailTab = tab;
+  ['steps', 'output', 'error'].forEach(function(t) {
+    var panel = document.getElementById('dpanel-' + t);
+    var btn = document.getElementById('dtab-' + t);
+    if (!panel || !btn) return;
+    if (t === tab) {
+      panel.classList.remove('hidden');
+      btn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white';
+    } else {
+      panel.classList.add('hidden');
+      btn.className = btn.className.replace('border-accent text-white', 'border-transparent text-gray-500 hover:text-gray-300');
+      btn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300' + (btn.classList.contains('hidden') ? ' hidden' : '');
+    }
+  });
+}
+
 async function loadRunDetail() {
   try {
-    const data = await fetchAPI(apiUrl('/runs/{{ run_id }}'));
-    const run = data.run;
-    const steps = data.steps;
+    var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
+    var run = data.run;
+    var steps = data.steps;
+    var pipeline = data.pipeline;
 
     document.getElementById('detail-issue').textContent = '#' + run.issue_number;
-    document.getElementById('detail-role').textContent = run.role;
-    document.getElementById('detail-status').textContent = run.status;
-    document.getElementById('detail-status').className = 'text-xl font-bold ' + statusColor(run.status);
+
+    var colors = roleColor(run.role);
+    var roleEl = document.getElementById('detail-role');
+    roleEl.innerHTML = '<span class="px-2 py-1 rounded text-base ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(run.role) + '</span>';
+
+    var statusEl = document.getElementById('detail-status');
+    statusEl.textContent = run.status;
+    statusEl.className = 'text-xl font-bold ' + statusColor(run.status);
+
     document.getElementById('detail-cost').textContent = '$' + run.total_cost_usd.toFixed(4);
 
-    // Show actions for non-terminal runs
-    const terminal = ['done', 'failed', 'rejected'];
-    if (!terminal.includes(run.status)) {
-      document.getElementById('actions-section').classList.remove('hidden');
+    // Pipeline bar
+    document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false);
+
+    // Show appropriate action buttons
+    var restartable = ['done', 'failed', 'rejected', 'interrupted', 'paused'];
+    var nonTerminal = ['running', 'developing', 'pending'];
+    document.getElementById('actions-section').classList.remove('hidden');
+    if (restartable.indexOf(run.status) !== -1) {
+      var resumeBtn = document.getElementById('btn-resume');
+      resumeBtn.classList.remove('hidden');
+      resumeBtn.dataset.issue = run.issue_number;
+      resumeBtn.dataset.role = run.role;
+    }
+    if (nonTerminal.indexOf(run.status) !== -1 || restartable.indexOf(run.status) !== -1) {
+      if (run.status !== 'done') {
+        document.getElementById('btn-mark-failed').classList.remove('hidden');
+      }
     }
 
-    // Error
+    // Error tab
     if (run.error_message) {
-      document.getElementById('error-section').classList.remove('hidden');
+      document.getElementById('dtab-error').classList.remove('hidden');
       document.getElementById('error-message').textContent = run.error_message;
     }
 
@@ -84,36 +144,83 @@ async function loadRunDetail() {
     if (steps.length === 0) {
       document.getElementById('step-timeline').innerHTML = '<p class="text-gray-500 text-sm">No steps recorded</p>';
     } else {
-      document.getElementById('step-timeline').innerHTML = `
-        <div class="space-y-2">
-          ${steps.map(s => `
-            <div class="flex items-center gap-3 p-2 rounded ${s.status === 'done' ? 'bg-accent-green/5' : s.status === 'failed' ? 'bg-accent-red/5' : 'bg-surface-hover'}">
-              <span class="w-2 h-2 rounded-full flex-shrink-0 ${s.status === 'done' ? 'bg-accent-green' : s.status === 'failed' ? 'bg-accent-red' : 'bg-gray-500'}"></span>
-              <span class="text-sm font-medium w-32">${escapeHtml(s.step_name)}</span>
-              <span class="text-xs text-gray-500 w-20">${formatDuration(s.duration_ms)}</span>
-              <span class="text-xs text-accent-green w-20">$${s.cost_usd.toFixed(4)}</span>
-              <span class="text-xs ${s.status === 'done' ? 'text-accent-green' : s.status === 'failed' ? 'text-accent-red' : 'text-gray-400'}">${s.status}</span>
-              ${s.error_message ? `<span class="text-xs text-accent-red ml-auto truncate max-w-xs">${escapeHtml(s.error_message)}</span>` : ''}
-            </div>
-          `).join('')}
-        </div>
-      `;
+      document.getElementById('step-timeline').innerHTML = '<div class="space-y-2">' +
+        steps.map(function(s) {
+          var stepColors = s.status === 'done' ? { bg: 'bg-accent-green/5', dot: 'bg-accent-green', text: 'text-accent-green' } :
+                           s.status === 'failed' ? { bg: 'bg-accent-red/5', dot: 'bg-accent-red', text: 'text-accent-red' } :
+                           { bg: 'bg-surface-hover', dot: 'bg-gray-500', text: 'text-gray-400' };
+
+          return '<div class="flex items-center gap-3 p-3 rounded ' + stepColors.bg + '">' +
+            '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + stepColors.dot + '"></span>' +
+            '<span class="text-sm font-medium w-36">' + escapeHtml(STEP_LABELS[s.step_name] || s.step_name) + '</span>' +
+            '<span class="text-xs text-gray-500 w-20">' + (s.duration_formatted || formatDuration(s.duration_ms)) + '</span>' +
+            '<span class="text-xs text-accent-green w-20">$' + s.cost_usd.toFixed(4) + '</span>' +
+            '<span class="text-xs ' + stepColors.text + '">' + s.status + '</span>' +
+            (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-xs">' + escapeHtml(s.error_message) + '</span>' : '') +
+          '</div>';
+        }).join('') +
+      '</div>';
     }
+
+    // Output tab: try to load from agent output if still running
+    tryLoadOutput(run);
   } catch (e) {
     console.error('Failed to load run detail:', e);
+  }
+}
+
+async function tryLoadOutput(run) {
+  try {
+    var data = await fetchAPI(apiUrl('/agents/' + run.id + '/output?since=0'));
+    if (data.lines && data.lines.length > 0) {
+      document.getElementById('output-content').textContent = data.lines.join('\n');
+    }
+  } catch (e) {
+    // Agent output not available (completed/old run)
+  }
+}
+
+async function resumeRun() {
+  var btn = document.getElementById('btn-resume');
+  var issue = btn.dataset.issue;
+  var role = btn.dataset.role;
+  btn.disabled = true;
+  btn.textContent = 'Resuming...';
+
+  try {
+    var cleanRole = role.startsWith('command:') ? null : role;
+    var result = await fetch(apiUrl('/agents/start'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue: issue, role: cleanRole, force: true }),
+    }).then(function(r) { return r.json(); });
+
+    if (result.error) {
+      alert(result.error);
+      btn.disabled = false;
+      btn.textContent = 'Resume';
+      return;
+    }
+
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    window.location.href = prefix + '/agents';
+  } catch (e) {
+    alert('Failed to resume: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = 'Resume';
   }
 }
 
 async function markFailed() {
   if (!confirm('Mark this run as failed?')) return;
   try {
-    const res = await fetch(apiUrl('/runs/{{ run_id }}/mark-failed'), {
+    var res = await fetch(apiUrl('/work/{{ run_id }}/mark-failed'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({reason: 'Manually abandoned via dashboard'}),
     });
     if (!res.ok) {
-      const err = await res.json();
+      var err = await res.json();
       alert('Error: ' + (err.detail || res.status));
       return;
     }

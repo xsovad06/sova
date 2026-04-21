@@ -94,6 +94,8 @@ function editConfig(key, btn) {
 }
 
 function cancelEdit(span, input, originalVal) {
+  if (!input.parentNode) return;
+  input.onblur = null;
   span.textContent = originalVal;
   span.style.display = '';
   span.parentNode.querySelector('button').style.display = '';
@@ -112,6 +114,7 @@ async function saveConfig(key, value, span, input) {
       alert(data.error);
       cancelEdit(span, input, span.textContent);
     } else {
+      input.onblur = null;
       span.textContent = value;
       span.style.display = '';
       span.parentNode.querySelector('button').style.display = '';

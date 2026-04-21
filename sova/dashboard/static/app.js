@@ -58,18 +58,18 @@ function startSidebarPolling() {
 
 async function _pollActivity() {
   try {
-    var data = await fetchAPI(apiUrl('/control/status'));
+    var data = await fetchAPI(apiUrl('/agents/active'));
     var dot = document.getElementById('activity-dot');
     if (!dot) return;
 
-    if (data.running) {
+    var running = data.agents && data.agents.length > 0;
+    if (running) {
       dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-accent border-2 border-sidebar animate-pulse';
       if (_lastActivityState !== 'running') {
         _lastActivityState = 'running';
       }
     } else {
       if (_lastActivityState === 'running') {
-        // Agent just finished -- add notification
         _addNotification('Agent completed', 'info');
       }
       dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-accent-green border-2 border-sidebar';
@@ -161,6 +161,74 @@ function clearNotifBadge() {
 // Auto-start sidebar polling on page load
 if (document.getElementById('activity-dot')) {
   startSidebarPolling();
+}
+
+/* --- Role colors --- */
+
+var ROLE_COLORS = {
+  developer:  { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        hex: '#89b4fa' },
+  triage:     { bg: 'bg-accent-yellow/20',  text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', hex: '#f9e2af' },
+  researcher: { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', hex: '#cba6f7' },
+  reviewer:   { bg: 'bg-accent-green/20',   text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  hex: '#a6e3a1' },
+  auto:       { bg: 'bg-gray-500/20',       text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         hex: '#585b70' },
+};
+
+function roleColor(role) {
+  if (!role) return ROLE_COLORS.auto;
+  var key = role.split(':')[0];
+  return ROLE_COLORS[key] || ROLE_COLORS.auto;
+}
+
+/* --- Step pipeline bar --- */
+
+var PIPELINE_STEPS = [
+  'sync', 'assess', 'create_worktree', 'develop', 'simplify',
+  'self_review', 'push', 'create_pr', 'monitor_ci',
+  'automated_review', 'address_review', 'complete'
+];
+
+var STEP_LABELS = {
+  sync: 'Sync', assess: 'Assess', create_worktree: 'Worktree',
+  develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
+  push: 'Push', create_pr: 'PR', monitor_ci: 'CI',
+  automated_review: 'Auto Review', address_review: 'Address', complete: 'Done'
+};
+
+function renderStepPipeline(currentStep, role, compact) {
+  var colors = roleColor(role);
+  var idx = currentStep ? PIPELINE_STEPS.indexOf(currentStep) : -1;
+  var segments = PIPELINE_STEPS.map(function(step, i) {
+    var w = compact ? 'flex-1 h-1.5' : 'flex-1 h-2.5';
+    var rounded = '';
+    if (i === 0) rounded = ' rounded-l';
+    if (i === PIPELINE_STEPS.length - 1) rounded = ' rounded-r';
+
+    if (idx >= 0 && i < idx) {
+      return '<div class="' + w + rounded + '" style="background:' + colors.hex + '" title="' + (STEP_LABELS[step] || step) + '"></div>';
+    } else if (i === idx) {
+      return '<div class="' + w + rounded + ' animate-pulse" style="background:' + colors.hex + ';opacity:0.7" title="' + (STEP_LABELS[step] || step) + ' (current)"></div>';
+    } else {
+      return '<div class="' + w + ' bg-gray-700' + rounded + '" title="' + (STEP_LABELS[step] || step) + '"></div>';
+    }
+  });
+
+  var label = '';
+  if (!compact && idx >= 0) {
+    label = '<div class="text-xs text-gray-400 mt-1">' + (STEP_LABELS[currentStep] || currentStep) + ' (' + (idx + 1) + '/' + PIPELINE_STEPS.length + ')</div>';
+  } else if (!compact) {
+    label = '<div class="text-xs text-gray-500 mt-1">Initializing...</div>';
+  }
+
+  return '<div class="flex gap-0.5">' + segments.join('') + '</div>' + label;
+}
+
+function formatElapsed(seconds) {
+  if (!seconds || seconds <= 0) return '0s';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  var h = Math.floor(seconds / 3600);
+  var m = Math.floor((seconds % 3600) / 60);
+  return h + 'h ' + m + 'm';
 }
 
 /* --- Runs table (shared) --- */

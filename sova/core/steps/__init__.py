@@ -36,3 +36,8 @@ def get_developer_steps() -> list[BaseStep]:
         AddressReviewStep(),
         CompleteStep(),
     ]
+
+
+def get_developer_step_names() -> list[str]:
+    """Return the ordered step name list for the Developer pipeline."""
+    return [s.name for s in get_developer_steps()]

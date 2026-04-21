@@ -20,16 +20,18 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
-- 6 pages: overview, runs, run_detail, costs, control, memory
-- 6 API routers under `/api`: overview, runs, costs, control, handoff, memory
-- 5 services: run_service, cost_service, memory_service, control_service, handoff_service
-- **Control service**: spawns Claude CLI processes, streams output, creates TaskRun + CostRecord DB entries
+- 11 pages: dashboard, agents, work, run_detail, costs, queue, logs, settings, memory, setup, home
+- 13 API routers under `/api`: overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work
+- 12 services: run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup
+- Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
+- **Multi-agent control**: manages concurrent agent processes per project with slot limits
+- **Batch operations**: triage/harden multiple issues from the queue with progress tracking
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
-  - Dashboard renders handoff action buttons on the control page (awaiting_action/completed/failed)
+  - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed)
   - Enables chaining: `ship-pr` -> `agent-resume` -> `approve-merge`
 - **Claude command execution**: `control_service.start_command()` runs Claude Code commands from handoff actions
-- Tests: `tests/test_dashboard.py` (pytest + httpx ASGITransport), run via `make test-py`
+- Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport), run via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
 - `watch.py` -- WatchLoop: async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown
@@ -40,7 +42,7 @@ SOVA has four main components:
 
 ## Supporting Modules
 
-- **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels), factory
+- **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels), factory, per-project `gh` auth via `sova/utils/gh.py`
 - **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing
 - **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`)
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)

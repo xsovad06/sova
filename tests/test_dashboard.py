@@ -162,30 +162,50 @@ async def client():
 
 
 class TestDashboardHealth:
-    async def test_root_redirects_to_overview(self, client: AsyncClient) -> None:
+    async def test_root_redirects_to_dashboard(self, client: AsyncClient) -> None:
         resp = await client.get("/", follow_redirects=False)
         assert resp.status_code == 307
-        assert resp.headers["location"] == "/overview"
+        assert resp.headers["location"] == "/dashboard"
 
-    async def test_overview_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/overview")
+    async def test_dashboard_page_loads(self, client: AsyncClient) -> None:
+        resp = await client.get("/dashboard")
         assert resp.status_code == 200
-        assert "Overview" in resp.text
+        assert "Dashboard" in resp.text
 
-    async def test_runs_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/runs")
+    async def test_agents_page_loads(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
         assert resp.status_code == 200
-        assert "Runs" in resp.text
+        assert "Agents" in resp.text
+
+    async def test_work_page_loads(self, client: AsyncClient) -> None:
+        resp = await client.get("/work")
+        assert resp.status_code == 200
+        assert "Work" in resp.text
 
     async def test_costs_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/costs")
         assert resp.status_code == 200
         assert "Cost" in resp.text
 
-    async def test_control_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/control")
-        assert resp.status_code == 200
-        assert "Control" in resp.text
+    async def test_overview_redirects_to_dashboard(self, client: AsyncClient) -> None:
+        resp = await client.get("/overview", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/dashboard"
+
+    async def test_control_redirects_to_agents(self, client: AsyncClient) -> None:
+        resp = await client.get("/control", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/agents"
+
+    async def test_runs_redirects_to_work(self, client: AsyncClient) -> None:
+        resp = await client.get("/runs", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/work"
+
+    async def test_tasks_redirects_to_work(self, client: AsyncClient) -> None:
+        resp = await client.get("/tasks", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/work"
 
     async def test_memory_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/memory")
@@ -614,13 +634,11 @@ class TestHandoffAPI:
         data = resp.json()
         assert "not found" in data["error"]
 
-    async def test_control_page_has_handoff_panel(self, client: AsyncClient) -> None:
-        resp = await client.get("/control")
+    async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
         assert resp.status_code == 200
-        assert "handoff-panel" in resp.text
-        assert "handoff-complete-panel" in resp.text
-        assert "handoff-failed-panel" in resp.text
-        assert "checkHandoff" in resp.text
+        assert "checkHandoffForAgents" in resp.text
+        assert "executeHandoffAction" in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -673,12 +691,12 @@ class TestMultiProject:
     async def test_project_redirect(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha", follow_redirects=False)
         assert resp.status_code == 307
-        assert resp.headers["location"] == "/p/alpha/overview"
+        assert resp.headers["location"] == "/p/alpha/dashboard"
 
-    async def test_project_overview(self, multi_client: AsyncClient) -> None:
-        resp = await multi_client.get("/p/alpha/overview")
+    async def test_project_dashboard(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/dashboard")
         assert resp.status_code == 200
-        assert "Overview" in resp.text
+        assert "Dashboard" in resp.text
 
     async def test_project_api(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/api/overview")
@@ -750,15 +768,125 @@ class TestTasksAPI:
         data = resp.json()
         assert len(data["tasks"]) == 1
 
-    async def test_tasks_page_renders(self, client: AsyncClient) -> None:
-        resp = await client.get("/tasks")
-        assert resp.status_code == 200
-        assert b"Tasks" in resp.content
+    async def test_tasks_redirects_to_work(self, client: AsyncClient) -> None:
+        resp = await client.get("/tasks", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/work"
 
     async def test_queue_page_renders(self, client: AsyncClient) -> None:
         resp = await client.get("/queue")
         assert resp.status_code == 200
         assert b"Priority Queue" in resp.content
+
+    async def test_queue_page_has_bulk_bar(self, client: AsyncClient) -> None:
+        resp = await client.get("/queue")
+        assert resp.status_code == 200
+        assert b"bulk-bar" in resp.content
+        assert b"select-all" in resp.content
+
+
+class TestBatchAPI:
+    """Tests for the batch queue API endpoints."""
+
+    async def test_batch_status_not_found(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/queue/batch/nonexistent/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+
+    async def test_start_batch_invalid_action(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/queue/batch",
+            json={"issues": ["1"], "action": "invalid_action"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+
+    async def test_cancel_nonexistent_batch(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/queue/batch/nonexistent/cancel")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["cancelled"] is False
+
+
+class TestAgentsAPI:
+    """Tests for the new agents API endpoints."""
+
+    async def test_agents_active_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "agents" in data
+        assert "completed" in data
+        assert "max_concurrent" in data
+        assert "slots_available" in data
+        assert isinstance(data["agents"], list)
+        assert data["agents"] == []
+
+    async def test_agents_interrupted_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/interrupted")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "interrupted" in data
+
+    async def test_agents_pipeline(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/pipeline")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "steps" in data
+        assert "sync" in data["steps"]
+        assert "complete" in data["steps"]
+
+    async def test_agents_output_not_found(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/999/output?since=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["lines"] == []
+
+
+class TestWorkAPI:
+    """Tests for the new work API endpoints."""
+
+    async def test_work_active_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+        assert isinstance(data["tasks"], list)
+
+    async def test_work_history_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+
+    async def test_work_history_with_filters(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/history?status=done&role=developer&limit=10")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+
+    async def test_work_summary(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total" in data
+        assert "done" in data
+        assert "failed" in data
+        assert "active" in data
+
+    async def test_work_detail_not_found(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/999")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+
+    async def test_work_mark_failed_not_found(self, client: AsyncClient) -> None:
+        resp = await client.post("/api/work/999/mark-failed")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
 
 
 class TestLogsAPI:
