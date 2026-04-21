@@ -34,7 +34,7 @@ async def _run_workflow(issue: str, *, project_dir: Path | None, role_name: str 
 
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
 
     ctx = ExecutionContext(
         project_dir=resolved_dir,
@@ -77,7 +77,7 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
 
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
     interval = config.watch.interval_active
 
     console.print(f"[bold]Watch mode started (polling every {interval}s)[/bold]")
@@ -140,7 +140,7 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
 
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
     max_concurrent = config.max_parallel_agents
 
     console.print(f"[bold]Processing {len(issues)} issues (max {max_concurrent} concurrent)[/bold]")

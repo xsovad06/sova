@@ -110,10 +110,21 @@ async def _setup(*, path: Path | None) -> None:
         if m:
             repo = m.group(1)
 
+    # Detect github_user from repo owner
+    github_user = ""
+    if repo and "/" in repo:
+        candidate = repo.split("/")[0]
+        # Verify the user is authenticated in gh
+        check = await run("gh", "auth", "token", "--user", candidate)
+        if check.success and check.stdout.strip():
+            github_user = candidate
+
     console.print("[bold]SOVA Setup Wizard[/bold]\n")
     console.print(f"Project: {project_dir}")
     if repo:
         console.print(f"Detected repo: {repo}")
+    if github_user:
+        console.print(f"Detected GitHub user: {github_user}")
 
     # Detect test command
     test_cmd = "make test"
@@ -125,7 +136,7 @@ async def _setup(*, path: Path | None) -> None:
         test_cmd = "go test ./..."
 
     toml_file = project_dir / "sova.toml"
-    toml_content = _default_toml(repo=repo, test_cmd=test_cmd)
+    toml_content = _default_toml(repo=repo, test_cmd=test_cmd, github_user=github_user)
     toml_file.write_text(toml_content)
     console.print(f"\n[green]Configuration written to {toml_file}[/green]")
 
@@ -133,10 +144,10 @@ async def _setup(*, path: Path | None) -> None:
     await _install(path=project_dir, no_dashboard=False, update=False)
 
 
-def _default_toml(repo: str = "", test_cmd: str = "make test") -> str:
+def _default_toml(repo: str = "", test_cmd: str = "make test", github_user: str = "") -> str:
     return f"""# SOVA configuration
 github_repo = "{repo}"
-github_user = ""
+github_user = "{github_user}"
 base_branch = "main"
 test_cmd = "{test_cmd}"
 lint_cmd = "make lint"

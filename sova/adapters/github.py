@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 
 from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
+from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="adapter.github")
 
@@ -27,11 +28,15 @@ _LABEL_TO_STATE: dict[str, TaskState] = {v: k for k, v in _STATE_LABELS.items()}
 class GitHubAdapter(TaskAdapter):
     """Task adapter backed by GitHub Issues and the ``gh`` CLI."""
 
+    async def _gh(self, *args: str, **kwargs: object) -> ShellResult:
+        """Run a ``gh`` CLI command with per-project auth."""
+        env = await resolve_gh_env(self.github_user)
+        return await run("gh", *args, env=env, **kwargs)
+
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:
         filters = filters or TaskFilters()
 
         args = [
-            "gh",
             "issue",
             "list",
             "--repo",
@@ -49,7 +54,7 @@ class GitHubAdapter(TaskAdapter):
         if filters.labels:
             args.extend(["--label", ",".join(filters.labels)])
 
-        result = await run(*args)
+        result = await self._gh(*args)
         if not result.success:
             log.warning("list_tasks.failed", stderr=result.stderr[:200])
             return []
@@ -63,8 +68,7 @@ class GitHubAdapter(TaskAdapter):
         return [_parse_issue(issue) for issue in issues]
 
     async def get_task(self, task_id: str) -> Task:
-        result = await run(
-            "gh",
+        result = await self._gh(
             "issue",
             "view",
             task_id,
@@ -81,15 +85,14 @@ class GitHubAdapter(TaskAdapter):
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         if new_state == TaskState.DONE:
-            await run("gh", "issue", "close", task_id, "--repo", self.repo)
+            await self._gh("issue", "close", task_id, "--repo", self.repo)
             return
 
         label = _STATE_LABELS.get(new_state)
         if label:
             # Remove any existing agent state labels first, then add the new one.
             await self._clear_state_labels(task_id)
-            await run(
-                "gh",
+            await self._gh(
                 "issue",
                 "edit",
                 task_id,
@@ -102,8 +105,7 @@ class GitHubAdapter(TaskAdapter):
     async def assign(self, task_id: str, agent_role: str) -> None:
         # GitHub assignees are users, not roles. We use the configured
         # github_user from ProjectConfig. For now, add the role as a label.
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "edit",
             task_id,
@@ -114,8 +116,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def add_label(self, task_id: str, label: str) -> None:
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "edit",
             task_id,
@@ -126,8 +127,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def remove_label(self, task_id: str, label: str) -> None:
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "edit",
             task_id,
@@ -138,8 +138,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def post_comment(self, task_id: str, body: str) -> None:
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "comment",
             task_id,
@@ -150,8 +149,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def edit_body(self, task_id: str, body: str) -> None:
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "edit",
             task_id,
@@ -162,8 +160,7 @@ class GitHubAdapter(TaskAdapter):
         )
 
     async def get_state(self, task_id: str) -> TaskState:
-        result = await run(
-            "gh",
+        result = await self._gh(
             "issue",
             "view",
             task_id,
@@ -190,8 +187,7 @@ class GitHubAdapter(TaskAdapter):
     async def link_pr(self, task_id: str, pr_url: str) -> None:
         # GitHub auto-links via "Closes #N" in PR body. Post a comment
         # as a secondary reference for visibility.
-        await run(
-            "gh",
+        await self._gh(
             "issue",
             "comment",
             task_id,
@@ -203,8 +199,7 @@ class GitHubAdapter(TaskAdapter):
 
     async def _clear_state_labels(self, task_id: str) -> None:
         """Remove all agent state labels from an issue."""
-        result = await run(
-            "gh",
+        result = await self._gh(
             "issue",
             "view",
             task_id,
@@ -224,8 +219,7 @@ class GitHubAdapter(TaskAdapter):
 
         for label in current_labels:
             if label in _LABEL_TO_STATE:
-                await run(
-                    "gh",
+                await self._gh(
                     "issue",
                     "edit",
                     task_id,

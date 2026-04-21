@@ -29,6 +29,7 @@ async def run(
     cwd: Path | str | None = None,
     timeout: float | None = 300,
     capture: bool = True,
+    env: dict[str, str] | None = None,
 ) -> ShellResult:
     """Run a command asynchronously and return the result.
 
@@ -37,6 +38,7 @@ async def run(
         cwd: Working directory.
         timeout: Timeout in seconds (default 5 minutes).
         capture: Whether to capture stdout/stderr.
+        env: Environment variables. None inherits parent env.
     """
     log.debug("shell.run", cmd=args, cwd=str(cwd) if cwd else None)
 
@@ -48,6 +50,7 @@ async def run(
         stdout=stdout_pipe,
         stderr=stderr_pipe,
         cwd=cwd,
+        env=env,
     )
 
     try:
@@ -66,9 +69,14 @@ async def run(
     return ShellResult(returncode=proc.returncode or 0, stdout=stdout, stderr=stderr)
 
 
-async def run_checked(*args: str, cwd: Path | str | None = None, timeout: float | None = 300) -> ShellResult:
+async def run_checked(
+    *args: str,
+    cwd: Path | str | None = None,
+    timeout: float | None = 300,
+    env: dict[str, str] | None = None,
+) -> ShellResult:
     """Run a command and raise on failure."""
-    result = await run(*args, cwd=cwd, timeout=timeout)
+    result = await run(*args, cwd=cwd, timeout=timeout, env=env)
     if not result.success:
         raise subprocess_error(args, result)
     return result

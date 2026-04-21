@@ -52,8 +52,9 @@ class TaskAdapter(ABC):
     on the tracker -- every state transition is visible to humans.
     """
 
-    def __init__(self, repo: str) -> None:
+    def __init__(self, repo: str, github_user: str = "") -> None:
         self.repo = repo
+        self.github_user = github_user
 
     @abstractmethod
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:

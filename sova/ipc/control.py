@@ -43,6 +43,7 @@ class AgentProcess:
         cwd: Path | str,
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
+        env: dict[str, str] | None = None,
     ) -> AgentProcess:
         """Spawn a Claude CLI process with the given prompt.
 
@@ -51,6 +52,7 @@ class AgentProcess:
             cwd: Working directory for the process.
             model: Optional model override.
             max_budget_usd: Optional budget cap.
+            env: Environment variables. None inherits parent env.
 
         Returns:
             An AgentProcess wrapping the subprocess.
@@ -77,6 +79,7 @@ class AgentProcess:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=env,
         )
 
         return cls(proc)

@@ -49,14 +49,18 @@ def maintain_pr(
 
 
 async def _maintain_pr(*, pr: int, project_dir: Path | None) -> None:
+    from sova.config.loader import load_config
+    from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
 
     resolved_dir = project_dir or Path.cwd()
+    config = load_config(resolved_dir)
 
     console.print(f"[bold]Maintaining PR #{pr}...[/bold]")
 
     # Fetch PR branch
-    result = await run("gh", "pr", "checkout", str(pr), cwd=resolved_dir)
+    env = await resolve_gh_env(config.github_user)
+    result = await run("gh", "pr", "checkout", str(pr), cwd=resolved_dir, env=env)
     if not result.success:
         console.print(f"[red]Failed to checkout PR: {result.stderr}[/red]")
         raise typer.Exit(code=1)
@@ -100,7 +104,7 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
     config = load_config(resolved_dir)
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
 
     console.print(f"[bold]Reviewing PR #{pr}...[/bold]")
 
@@ -135,6 +139,7 @@ async def _learn_from_pr(*, pr: int, project_dir: Path | None) -> None:
     from sova.config.loader import load_config
     from sova.db.session import init_db
     from sova.knowledge.review_patterns import record_review_finding
+    from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
 
     resolved_dir = project_dir or Path.cwd()
@@ -144,6 +149,7 @@ async def _learn_from_pr(*, pr: int, project_dir: Path | None) -> None:
     console.print(f"[bold]Learning from PR #{pr}...[/bold]")
 
     # Fetch PR reviews
+    env = await resolve_gh_env(config.github_user)
     result = await run(
         "gh",
         "api",
@@ -151,6 +157,7 @@ async def _learn_from_pr(*, pr: int, project_dir: Path | None) -> None:
         "--jq",
         ".[].body",
         cwd=resolved_dir,
+        env=env,
     )
 
     if not result.success:

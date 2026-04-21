@@ -115,6 +115,7 @@ class SOVAServer:
         adapter = create_adapter(
             self._config.task_source.type,
             self._config.github_repo,
+            self._config.github_user,
         )
         executor = ParallelExecutor(
             config=self._config,

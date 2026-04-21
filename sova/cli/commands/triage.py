@@ -41,7 +41,7 @@ async def _triage(
     config = load_config(resolved_dir)
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
     role = TriageRole()
 
     if issue:

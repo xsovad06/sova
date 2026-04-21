@@ -23,6 +23,7 @@ dependencies = [
     "structlog>=24.0",
     "python-multipart>=0.0.9",
     "markdown>=3.5",
+    "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]

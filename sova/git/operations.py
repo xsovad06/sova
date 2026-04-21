@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run, run_checked
 
@@ -170,10 +171,12 @@ async def create_pr(
     base: str,
     head: str,
     repo: str,
+    github_user: str = "",
 ) -> PRInfo:
     """Create a pull request via gh CLI and return its info."""
     log.info("git.create_pr", title=title[:80], base=base, head=head)
 
+    env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
         "pr",
@@ -188,6 +191,7 @@ async def create_pr(
         base,
         "--head",
         head,
+        env=env,
     )
 
     if not result.success:
@@ -203,8 +207,9 @@ async def create_pr(
     return PRInfo(number=pr_number, url=pr_url)
 
 
-async def get_pr_status(pr_number: int, *, repo: str) -> PRStatus:
+async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:
     """Get the current status of a pull request."""
+    env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
         "pr",
@@ -214,6 +219,7 @@ async def get_pr_status(pr_number: int, *, repo: str) -> PRStatus:
         repo,
         "--json",
         "number,state,mergeable,reviewDecision,url,title",
+        env=env,
     )
 
     if not result.success:
@@ -234,8 +240,9 @@ async def get_pr_status(pr_number: int, *, repo: str) -> PRStatus:
     )
 
 
-async def get_ci_checks(pr_number: int, *, repo: str) -> list[CICheck]:
+async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> list[CICheck]:
     """Get CI check results for a pull request."""
+    env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
         "pr",
@@ -245,6 +252,7 @@ async def get_ci_checks(pr_number: int, *, repo: str) -> list[CICheck]:
         repo,
         "--json",
         "name,status,conclusion,detailsUrl",
+        env=env,
     )
 
     if not result.success:

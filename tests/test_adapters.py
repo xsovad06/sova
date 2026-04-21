@@ -164,7 +164,10 @@ class TestGitHubAdapter:
 
     @pytest.fixture
     def mock_run(self):
-        with patch("sova.adapters.github.run", new_callable=AsyncMock) as mock:
+        with (
+            patch("sova.adapters.github.run", new_callable=AsyncMock) as mock,
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
             yield mock
 
     # -- list_tasks --
@@ -365,6 +368,44 @@ class TestGitHubAdapter:
 
 
 # ---------------------------------------------------------------------------
+# GitHub auth threading
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubAdapterAuth:
+    @pytest.mark.asyncio
+    async def test_gh_passes_env_from_resolve(self) -> None:
+        """Verify _gh() calls resolve_gh_env and passes the result to run()."""
+        adapter = GitHubAdapter(repo="user/repo", github_user="xsovad06")
+        fake_env = {"GH_TOKEN": "test_token", "PATH": "/usr/bin"}
+
+        with (
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=fake_env) as mock_resolve,
+            patch("sova.adapters.github.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = _shell_result(stdout="[]")
+            await adapter._gh("issue", "list")
+
+            mock_resolve.assert_called_once_with("xsovad06")
+            mock_run.assert_called_once_with("gh", "issue", "list", env=fake_env)
+
+    @pytest.mark.asyncio
+    async def test_gh_no_user_passes_none_env(self) -> None:
+        """When github_user is empty, resolve_gh_env returns None."""
+        adapter = GitHubAdapter(repo="user/repo")
+
+        with (
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None) as mock_resolve,
+            patch("sova.adapters.github.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.return_value = _shell_result(stdout="[]")
+            await adapter._gh("issue", "list")
+
+            mock_resolve.assert_called_once_with("")
+            mock_run.assert_called_once_with("gh", "issue", "list", env=None)
+
+
+# ---------------------------------------------------------------------------
 # Adapter factory
 # ---------------------------------------------------------------------------
 
@@ -375,6 +416,13 @@ class TestAdapterFactory:
 
         adapter = create_adapter(adapter_type="github", repo="user/repo")
         assert isinstance(adapter, GitHubAdapter)
+
+    def test_create_github_adapter_with_user(self) -> None:
+        from sova.adapters import create_adapter
+
+        adapter = create_adapter(adapter_type="github", repo="user/repo", github_user="xsovad06")
+        assert isinstance(adapter, GitHubAdapter)
+        assert adapter.github_user == "xsovad06"
 
     def test_create_unknown_adapter_raises(self) -> None:
         from sova.adapters import create_adapter

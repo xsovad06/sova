@@ -46,7 +46,7 @@ async def _harden(
     config = load_config(resolved_dir)
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo)
+    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
 
     # Fetch all open issues once (used for both target selection and conflict analysis).
     all_open = await adapter.list_tasks(TaskFilters(state="open"))
