@@ -97,11 +97,13 @@ def list_invariants(project_dir: Path | None = None) -> list[dict]:
     result = []
     for f in sorted(inv_dir.iterdir()):
         if f.is_file() and not f.name.startswith("."):
-            result.append({
-                "name": f.name,
-                "path": str(f),
-                "executable": f.stat().st_mode & 0o111 != 0,
-            })
+            result.append(
+                {
+                    "name": f.name,
+                    "path": str(f),
+                    "executable": f.stat().st_mode & 0o111 != 0,
+                }
+            )
     return result
 
 
@@ -117,10 +119,12 @@ def list_personas(project_dir: Path | None = None) -> list[dict]:
     result = []
     for f in sorted(personas_dir.iterdir()):
         if f.suffix == ".md" and not f.name.startswith("."):
-            result.append({
-                "name": f.stem,
-                "path": str(f),
-            })
+            result.append(
+                {
+                    "name": f.stem,
+                    "path": str(f),
+                }
+            )
     return result
 
 
@@ -131,6 +135,7 @@ def get_detected_persona(project_dir: Path | None = None) -> str | None:
 
     try:
         from sova.knowledge.personas import detect_persona
+
         return detect_persona(project_dir)
     except Exception:
         return None

@@ -31,9 +31,7 @@ async def _status(*, project_dir: Path | None) -> None:
 
     session = await get_session()
     async with session.begin():
-        result = await session.execute(
-            select(TaskRun).order_by(TaskRun.started_at.desc()).limit(10)
-        )
+        result = await session.execute(select(TaskRun).order_by(TaskRun.started_at.desc()).limit(10))
         runs = list(result.scalars().all())
 
     if not runs:
@@ -97,9 +95,7 @@ async def _costs(*, project_dir: Path | None) -> None:
         by_model = list(model_result.all())
 
         # Recent costs
-        recent_result = await session.execute(
-            select(CostRecord).order_by(CostRecord.recorded_at.desc()).limit(10)
-        )
+        recent_result = await session.execute(select(CostRecord).order_by(CostRecord.recorded_at.desc()).limit(10))
         recent = list(recent_result.scalars().all())
 
     console.print(f"\n[bold]Total cost: ${total_cost:.4f}[/bold]\n")

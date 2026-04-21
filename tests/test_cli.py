@@ -29,7 +29,10 @@ def _mock_adapter(state: TaskState = TaskState.BACKLOG) -> AsyncMock:
     adapter = AsyncMock()
     adapter.get_state.return_value = state
     adapter.get_task.return_value = Task(
-        id="42", title="Test issue", body="Some description", state=state,
+        id="42",
+        title="Test issue",
+        body="Some description",
+        state=state,
     )
     adapter.list_tasks.return_value = [
         Task(id="1", title="First issue", body="Body 1", state=TaskState.BACKLOG),

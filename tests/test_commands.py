@@ -34,14 +34,7 @@ def canonical_dir(tmp_path: Path) -> Path:
 
     # An autonomous-only command
     (cmd_dir / "ship-pr.md").write_text(
-        "---\n"
-        "name: ship-pr\n"
-        "description: Ship a PR.\n"
-        "user-invocable: true\n"
-        "category: autonomous\n"
-        "---\n"
-        "\n"
-        "Ship it.\n"
+        "---\nname: ship-pr\ndescription: Ship a PR.\nuser-invocable: true\ncategory: autonomous\n---\n\nShip it.\n"
     )
 
     # A project management command (no template vars)

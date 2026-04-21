@@ -30,12 +30,14 @@ _STATE_PRIORITY: dict[TaskState, int] = {
     TaskState.BACKLOG: 3,
 }
 
-_ACTIONABLE_STATES = frozenset({
-    TaskState.BACKLOG,
-    TaskState.TRIAGED,
-    TaskState.RESEARCHED,
-    TaskState.IN_PROGRESS,
-})
+_ACTIONABLE_STATES = frozenset(
+    {
+        TaskState.BACKLOG,
+        TaskState.TRIAGED,
+        TaskState.RESEARCHED,
+        TaskState.IN_PROGRESS,
+    }
+)
 
 
 class WatchLoop:

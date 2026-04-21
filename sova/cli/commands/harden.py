@@ -149,11 +149,18 @@ def _load_project_docs(project_dir: Path) -> str:
     docs: list[str] = []
 
     doc_patterns = [
-        "docs/vision*.md", "docs/VISION*.md",
-        "docs/strategy*.md", "docs/STRATEGY*.md",
-        "docs/roadmap*.md", "docs/ROADMAP*.md",
-        "docs/plan*.md", "docs/PLAN*.md",
-        "VISION.md", "ROADMAP.md", "PLAN.md", "STRATEGY.md",
+        "docs/vision*.md",
+        "docs/VISION*.md",
+        "docs/strategy*.md",
+        "docs/STRATEGY*.md",
+        "docs/roadmap*.md",
+        "docs/ROADMAP*.md",
+        "docs/plan*.md",
+        "docs/PLAN*.md",
+        "VISION.md",
+        "ROADMAP.md",
+        "PLAN.md",
+        "STRATEGY.md",
         "docs/architecture*.md",
     ]
 

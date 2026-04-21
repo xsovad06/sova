@@ -134,7 +134,7 @@ async def invoke_streaming(
                         full_text += block.get("text", "")
 
                 if full_text and full_text != previous_text:
-                    delta = full_text[len(previous_text):]
+                    delta = full_text[len(previous_text) :]
                     previous_text = full_text
                     yield StreamEvent(type="content", text=delta)
     finally:

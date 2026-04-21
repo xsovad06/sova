@@ -89,11 +89,13 @@ class ParallelExecutor:
         task_results: list[TaskResult] = []
         for i, result in enumerate(results):
             if isinstance(result, BaseException):
-                task_results.append(TaskResult(
-                    task_id=tasks[i].id,
-                    success=False,
-                    error=str(result),
-                ))
+                task_results.append(
+                    TaskResult(
+                        task_id=tasks[i].id,
+                        success=False,
+                        error=str(result),
+                    )
+                )
             else:
                 task_results.append(result)
 

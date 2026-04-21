@@ -63,9 +63,4 @@ class ReviewerRole(AgentRole):
 
     def _build_review_comment(self, task: Task, pr_number: int) -> str:
         """Build a review comment for the issue."""
-        return (
-            f"## Code Review\n\n"
-            f"**PR**: #{pr_number}\n"
-            f"**Issue**: {task.title}\n\n"
-            f"Review completed."
-        )
+        return f"## Code Review\n\n**PR**: #{pr_number}\n**Issue**: {task.title}\n\nReview completed."

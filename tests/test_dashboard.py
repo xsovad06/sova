@@ -522,7 +522,13 @@ class TestHandoffAPI:
             "summary": "Test handoff",
             "created_at": "2026-04-20T10:00:00Z",
             "next_actions": [
-                {"id": "merge", "label": "Merge PR", "style": "approve", "mode": "claude-command", "command": "approve-merge"},
+                {
+                    "id": "merge",
+                    "label": "Merge PR",
+                    "style": "approve",
+                    "mode": "claude-command",
+                    "command": "approve-merge",
+                },
             ],
         }
         (control_dir / "handoff.json").write_text(json.dumps(handoff_data))
@@ -548,13 +554,17 @@ class TestHandoffAPI:
         handoff_service.set_project_dir(tmp_path)
         control_dir = tmp_path / ".claude" / "agent-control"
         control_dir.mkdir(parents=True)
-        (control_dir / "handoff.json").write_text(json.dumps({
-            "id": "test-456",
-            "source": "test",
-            "status": "completed",
-            "summary": "Done",
-            "created_at": "2026-04-20T10:00:00Z",
-        }))
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    "id": "test-456",
+                    "source": "test",
+                    "status": "completed",
+                    "summary": "Done",
+                    "created_at": "2026-04-20T10:00:00Z",
+                }
+            )
+        )
 
         resp = await client.post("/api/handoff/clear")
         assert resp.status_code == 200
@@ -583,14 +593,18 @@ class TestHandoffAPI:
         handoff_service.set_project_dir(tmp_path)
         control_dir = tmp_path / ".claude" / "agent-control"
         control_dir.mkdir(parents=True)
-        (control_dir / "handoff.json").write_text(json.dumps({
-            "id": "test-789",
-            "source": "test",
-            "status": "awaiting_action",
-            "summary": "Test",
-            "created_at": "2026-04-20T10:00:00Z",
-            "next_actions": [{"id": "merge", "label": "Merge"}],
-        }))
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    "id": "test-789",
+                    "source": "test",
+                    "status": "awaiting_action",
+                    "summary": "Test",
+                    "created_at": "2026-04-20T10:00:00Z",
+                    "next_actions": [{"id": "merge", "label": "Merge"}],
+                }
+            )
+        )
 
         resp = await client.post(
             "/api/handoff/execute",
@@ -758,17 +772,38 @@ class TestLogsAPI:
         assert data["total"] == 0
 
     async def test_logs_with_data(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-        import sova.dashboard.services.log_service as log_mod
 
         # Write a test log file
         log_dir = tmp_path / ".claude"
         log_dir.mkdir()
         log_file = log_dir / "sova.log"
         import json
+
         lines = [
-            json.dumps({"level": "INFO", "message": "Agent started", "component": "core", "timestamp": "2026-01-01T10:00:00"}),
-            json.dumps({"level": "ERROR", "message": "Test failed", "component": "runner", "timestamp": "2026-01-01T10:01:00"}),
-            json.dumps({"level": "INFO", "message": "Agent completed", "component": "core", "timestamp": "2026-01-01T10:02:00"}),
+            json.dumps(
+                {
+                    "level": "INFO",
+                    "message": "Agent started",
+                    "component": "core",
+                    "timestamp": "2026-01-01T10:00:00",
+                }
+            ),
+            json.dumps(
+                {
+                    "level": "ERROR",
+                    "message": "Test failed",
+                    "component": "runner",
+                    "timestamp": "2026-01-01T10:01:00",
+                }
+            ),
+            json.dumps(
+                {
+                    "level": "INFO",
+                    "message": "Agent completed",
+                    "component": "core",
+                    "timestamp": "2026-01-01T10:02:00",
+                }
+            ),
         ]
         log_file.write_text("\n".join(lines) + "\n")
 
@@ -785,7 +820,6 @@ class TestLogsAPI:
 
     async def test_logs_filter_level(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
         import json
-        import sova.dashboard.services.log_service as log_mod
 
         log_dir = tmp_path / ".claude"
         log_dir.mkdir()
@@ -917,12 +951,15 @@ class TestSetupAPI:
         project = tmp_path / "proj"
         project.mkdir()
 
-        resp = await client.post("/api/setup/configure", json={
-            "project_path": str(project),
-            "github_repo": "user/test",
-            "base_branch": "main",
-            "agent_model": "opus",
-        })
+        resp = await client.post(
+            "/api/setup/configure",
+            json={
+                "project_path": str(project),
+                "github_repo": "user/test",
+                "base_branch": "main",
+                "agent_model": "opus",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"

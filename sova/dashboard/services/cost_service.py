@@ -22,18 +22,12 @@ async def get_summary(session: AsyncSession) -> dict:
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_total = (
-        await session.scalar(
-            select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= today_start)
-        )
-        or 0
+        await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= today_start)) or 0
     )
 
     week_ago = now - timedelta(days=7)
     rolling_7d = (
-        await session.scalar(
-            select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= week_ago)
-        )
-        or 0
+        await session.scalar(select(func.sum(TaskRun.total_cost_usd)).where(TaskRun.started_at >= week_ago)) or 0
     )
 
     return {

@@ -135,8 +135,7 @@ class TriageRole(AgentRole):
 
         # Check for file/code references
         has_code_refs = any(
-            marker in body
-            for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def "]
+            marker in body for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def "]
         )
 
         if not has_criteria and len(body) < 100:

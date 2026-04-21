@@ -40,12 +40,14 @@ def _parse_log_file(log_path: Path) -> list[dict]:
                 entries.append(entry)
             except json.JSONDecodeError:
                 # Plain text line -- wrap it
-                entries.append({
-                    "level": "INFO",
-                    "message": line,
-                    "component": "unknown",
-                    "timestamp": "",
-                })
+                entries.append(
+                    {
+                        "level": "INFO",
+                        "message": line,
+                        "component": "unknown",
+                        "timestamp": "",
+                    }
+                )
 
     _log_cache[path_str] = (mtime, entries)
     return entries

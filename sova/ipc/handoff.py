@@ -63,9 +63,7 @@ class DashboardHandoff(BaseModel):
     pr_number: int | None = None
     branch: str = ""
     summary: str
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     details: dict = Field(default_factory=dict)
     next_actions: list[HandoffAction] = Field(default_factory=list)
 

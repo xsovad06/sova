@@ -30,9 +30,7 @@ async def setup_db():
 def _mock_adapter(state: TaskState = TaskState.BACKLOG) -> AsyncMock:
     adapter = AsyncMock()
     adapter.get_state.return_value = state
-    adapter.get_task.return_value = Task(
-        id="42", title="Test issue", body="Some description", state=state
-    )
+    adapter.get_task.return_value = Task(id="42", title="Test issue", body="Some description", state=state)
     return adapter
 
 
@@ -288,9 +286,7 @@ class TestDeveloperRole:
         ctx = _make_ctx(role="developer", state=TaskState.BACKLOG, adapter=adapter, force=True)
         role = DeveloperRole()
 
-        mock_result = WorkflowResult(
-            success=True, final_status=TaskStatus.DONE, task_run_id=1
-        )
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
         with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
             result = await role.execute(ctx)
 
@@ -307,9 +303,7 @@ class TestDeveloperRole:
         ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter)
         role = DeveloperRole()
 
-        mock_result = WorkflowResult(
-            success=True, final_status=TaskStatus.DONE, task_run_id=1
-        )
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
         with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
             result = await role.execute(ctx)
 
@@ -346,9 +340,7 @@ class TestReviewerRole:
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
-        ctx = _make_ctx(
-            role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99
-        )
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
         result = await role.execute(ctx)
@@ -528,7 +520,9 @@ class TestTaskAssessment:
     def test_all_complexity_values(self) -> None:
         for val in ("trivial", "simple", "moderate", "complex", "epic"):
             a = TaskAssessment(
-                suitability="ready", confidence=0.5, reasoning="test",
+                suitability="ready",
+                confidence=0.5,
+                reasoning="test",
                 estimated_complexity=val,
             )
             assert a.estimated_complexity == val
@@ -538,7 +532,9 @@ class TestTaskAssessment:
 
         with pytest.raises(ValidationError):
             TaskAssessment(
-                suitability="ready", confidence=0.5, reasoning="test",
+                suitability="ready",
+                confidence=0.5,
+                reasoning="test",
                 estimated_complexity="impossible",
             )
 
@@ -638,7 +634,10 @@ class TestTriageLabelApplication:
         )
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(
-            id="42", title="Test", body=body, state=TaskState.BACKLOG,
+            id="42",
+            title="Test",
+            body=body,
+            state=TaskState.BACKLOG,
         )
         ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()
@@ -652,7 +651,10 @@ class TestTriageLabelApplication:
 
         adapter = _mock_adapter(TaskState.BACKLOG)
         adapter.get_task.return_value = Task(
-            id="42", title="Test", body="", state=TaskState.BACKLOG,
+            id="42",
+            title="Test",
+            body="",
+            state=TaskState.BACKLOG,
         )
         ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter)
         role = TriageRole()

@@ -159,9 +159,7 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
     existing = env_file.read_text() if env_file.exists() else ""
     if "COMPOSE_PROJECT_NAME" not in existing:
         separator = "\n" if existing and not existing.endswith("\n") else ""
-        env_file.write_text(
-            f"{existing}{separator}COMPOSE_PROJECT_NAME={project_name}\n"
-        )
+        env_file.write_text(f"{existing}{separator}COMPOSE_PROJECT_NAME={project_name}\n")
         log.info("worktree.compose_project_name", project_name=project_name)
 
 

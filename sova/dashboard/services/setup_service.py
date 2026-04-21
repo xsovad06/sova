@@ -25,10 +25,21 @@ _PROJECT_MARKERS = (
     "requirements.txt",
 )
 
-_SKIP_DIRS = frozenset({
-    "node_modules", "__pycache__", ".venv", "venv", "dist", "build",
-    ".tox", ".mypy_cache", ".ruff_cache", ".pytest_cache", "target",
-})
+_SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".tox",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+        "target",
+    }
+)
 
 
 def browse_directory(path: str) -> dict:
@@ -56,12 +67,14 @@ def browse_directory(path: str) -> dict:
             is_project = any((child / marker).exists() for marker in _PROJECT_MARKERS)
             has_sova = (child / "sova.toml").exists() or (child / ".claude" / "sova.db").exists()
 
-            entries.append({
-                "name": name,
-                "path": str(child),
-                "is_project": is_project,
-                "has_sova": has_sova,
-            })
+            entries.append(
+                {
+                    "name": name,
+                    "path": str(child),
+                    "is_project": is_project,
+                    "has_sova": has_sova,
+                }
+            )
     except PermissionError:
         pass
 
@@ -214,7 +227,10 @@ def _detect_github_repo(project: Path) -> str:
     try:
         r = subprocess.run(
             ["git", "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=5, cwd=str(project),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(project),
         )
         if r.returncode == 0:
             m = re.search(r"github\.com[^:/]*[:/]([^/]+/[^/.]+)", r.stdout.strip())
@@ -230,7 +246,9 @@ def _detect_base_branch(project: Path) -> str:
         try:
             r = subprocess.run(
                 ["git", "rev-parse", "--verify", branch],
-                capture_output=True, cwd=str(project), timeout=5,
+                capture_output=True,
+                cwd=str(project),
+                timeout=5,
             )
             if r.returncode == 0:
                 return branch

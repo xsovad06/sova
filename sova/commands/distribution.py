@@ -126,9 +126,7 @@ def update_commands(
 
     if manifest is None:
         # No manifest = first install
-        install_result = install_commands(
-            canonical_dir, target_dir, cfg, include_autonomous=include_autonomous
-        )
+        install_result = install_commands(canonical_dir, target_dir, cfg, include_autonomous=include_autonomous)
         result.updated = install_result.installed
         return result
 

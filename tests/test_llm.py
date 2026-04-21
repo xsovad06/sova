@@ -84,51 +84,55 @@ def _make_cli_json(
     model_id: str = "claude-sonnet-4-5@20250929",
 ) -> str:
     """Build a realistic Claude CLI JSON output."""
-    return json.dumps({
-        "type": "result",
-        "subtype": "success",
-        "is_error": False,
-        "duration_ms": duration_ms,
-        "result": result_text,
-        "stop_reason": "end_turn",
-        "session_id": "test-session-id",
-        "total_cost_usd": cost,
-        "usage": {
-            "input_tokens": input_tokens,
-            "cache_creation_input_tokens": cache_creation,
-            "cache_read_input_tokens": cache_read,
-            "output_tokens": output_tokens,
-        },
-        "modelUsage": {
-            model_id: {
-                "inputTokens": input_tokens,
-                "outputTokens": output_tokens,
-                "cacheReadInputTokens": cache_read,
-                "cacheCreationInputTokens": cache_creation,
-                "costUSD": cost,
-            }
-        },
-    })
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "duration_ms": duration_ms,
+            "result": result_text,
+            "stop_reason": "end_turn",
+            "session_id": "test-session-id",
+            "total_cost_usd": cost,
+            "usage": {
+                "input_tokens": input_tokens,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+                "output_tokens": output_tokens,
+            },
+            "modelUsage": {
+                model_id: {
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "cacheReadInputTokens": cache_read,
+                    "cacheCreationInputTokens": cache_creation,
+                    "costUSD": cost,
+                }
+            },
+        }
+    )
 
 
 def _make_error_json() -> str:
-    return json.dumps({
-        "type": "result",
-        "subtype": "error_max_turns",
-        "is_error": True,
-        "duration_ms": 1000,
-        "result": "Max turns reached",
-        "stop_reason": "error",
-        "session_id": "err-session",
-        "total_cost_usd": 0.01,
-        "usage": {
-            "input_tokens": 10,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
-            "output_tokens": 5,
-        },
-        "modelUsage": {},
-    })
+    return json.dumps(
+        {
+            "type": "result",
+            "subtype": "error_max_turns",
+            "is_error": True,
+            "duration_ms": 1000,
+            "result": "Max turns reached",
+            "stop_reason": "error",
+            "session_id": "err-session",
+            "total_cost_usd": 0.01,
+            "usage": {
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 5,
+            },
+            "modelUsage": {},
+        }
+    )
 
 
 class TestInvoke:
@@ -326,15 +330,17 @@ class TestParseResult:
     def test_parse_success(self) -> None:
         from sova.llm.client import _parse_result
 
-        raw = json.loads(_make_cli_json(
-            result_text="Parsed output",
-            cost=0.123,
-            input_tokens=500,
-            output_tokens=200,
-            cache_read=100,
-            cache_creation=300,
-            duration_ms=8000,
-        ))
+        raw = json.loads(
+            _make_cli_json(
+                result_text="Parsed output",
+                cost=0.123,
+                input_tokens=500,
+                output_tokens=200,
+                cache_read=100,
+                cache_creation=300,
+                duration_ms=8000,
+            )
+        )
         result = _parse_result(raw)
 
         assert result.text == "Parsed output"
@@ -449,23 +455,25 @@ class TestInvokeStreaming:
         stream_lines = [
             json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Hello "}]}}),
             json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Hello world"}]}}),
-            json.dumps({
-                "type": "result",
-                "subtype": "success",
-                "is_error": False,
-                "duration_ms": 3000,
-                "result": "Hello world",
-                "stop_reason": "end_turn",
-                "session_id": "stream-session",
-                "total_cost_usd": 0.03,
-                "usage": {
-                    "input_tokens": 50,
-                    "output_tokens": 20,
-                    "cache_creation_input_tokens": 0,
-                    "cache_read_input_tokens": 0,
-                },
-                "modelUsage": {"claude-sonnet-4-5@20250929": {"costUSD": 0.03}},
-            }),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "duration_ms": 3000,
+                    "result": "Hello world",
+                    "stop_reason": "end_turn",
+                    "session_id": "stream-session",
+                    "total_cost_usd": 0.03,
+                    "usage": {
+                        "input_tokens": 50,
+                        "output_tokens": 20,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
+                    "modelUsage": {"claude-sonnet-4-5@20250929": {"costUSD": 0.03}},
+                }
+            ),
         ]
 
         async def mock_readline():

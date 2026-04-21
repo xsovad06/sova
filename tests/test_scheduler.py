@@ -48,7 +48,10 @@ def _mock_adapter(
     adapter.get_state.return_value = default_state
     adapter.list_tasks.return_value = tasks or []
     adapter.get_task.side_effect = lambda tid: Task(
-        id=tid, title=f"Issue #{tid}", body="Body", state=default_state,
+        id=tid,
+        title=f"Issue #{tid}",
+        body="Body",
+        state=default_state,
     )
     return adapter
 
@@ -234,6 +237,7 @@ class TestParallelExecutor:
 
         with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
             from sova.roles.base import RoleResult
+
             mock_dispatch.return_value = (MagicMock(), RoleResult(success=True, summary="OK"))
 
             results = await executor.execute_tasks(tasks, adapter=adapter)
@@ -258,6 +262,7 @@ class TestParallelExecutor:
             await asyncio.sleep(0.01)
             concurrent_count -= 1
             from sova.roles.base import RoleResult
+
             return MagicMock(), RoleResult(success=True, summary="OK")
 
         tasks = [
@@ -284,6 +289,7 @@ class TestParallelExecutor:
             nonlocal call_count
             call_count += 1
             from sova.roles.base import RoleResult
+
             if call_count % 2 == 0:
                 return MagicMock(), RoleResult(success=False, summary="", error="Failed")
             return MagicMock(), RoleResult(success=True, summary="OK")
@@ -364,9 +370,7 @@ class TestSOVAServer:
         server = SOVAServer(config=config)
         app = server.create_app()
 
-        async with httpx.AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/scheduler/status")
             assert resp.status_code == 200
             data = resp.json()

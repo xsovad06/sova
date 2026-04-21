@@ -17,12 +17,14 @@ _STATE_PRIORITY: dict[TaskState, int] = {
     TaskState.BACKLOG: 3,
 }
 
-_ACTIONABLE_STATES = frozenset({
-    TaskState.BACKLOG,
-    TaskState.TRIAGED,
-    TaskState.RESEARCHED,
-    TaskState.IN_PROGRESS,
-})
+_ACTIONABLE_STATES = frozenset(
+    {
+        TaskState.BACKLOG,
+        TaskState.TRIAGED,
+        TaskState.RESEARCHED,
+        TaskState.IN_PROGRESS,
+    }
+)
 
 # Recommended action per state
 _RECOMMENDED_ACTION: dict[TaskState, str] = {
@@ -65,15 +67,17 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     queue = []
     for t in actionable:
         priority = _STATE_PRIORITY.get(t.state, 99)
-        queue.append({
-            "issue": t.id,
-            "title": t.title,
-            "state": t.state.value,
-            "priority": priority,
-            "priority_label": f"P{priority}",
-            "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
-            "labels": t.labels,
-            "url": t.url,
-        })
+        queue.append(
+            {
+                "issue": t.id,
+                "title": t.title,
+                "state": t.state.value,
+                "priority": priority,
+                "priority_label": f"P{priority}",
+                "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
+                "labels": t.labels,
+                "url": t.url,
+            }
+        )
 
     return queue

@@ -307,12 +307,14 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                 run.status = "interrupted"
                 run.error_message = "Dashboard restarted while agent was running"
                 run.ended_at = datetime.now(timezone.utc)
-                interrupted.append({
-                    "run_id": run.id,
-                    "issue": run.issue_number,
-                    "role": run.role,
-                    "pid": run.pid,
-                })
+                interrupted.append(
+                    {
+                        "run_id": run.id,
+                        "issue": run.issue_number,
+                        "role": run.role,
+                        "pid": run.pid,
+                    }
+                )
                 log.warning(
                     "recovery.interrupted",
                     run_id=run.id,

@@ -145,8 +145,11 @@ async def _learn_from_pr(*, pr: int, project_dir: Path | None) -> None:
 
     # Fetch PR reviews
     result = await run(
-        "gh", "api", f"repos/{config.github_repo}/pulls/{pr}/reviews",
-        "--jq", ".[].body",
+        "gh",
+        "api",
+        f"repos/{config.github_repo}/pulls/{pr}/reviews",
+        "--jq",
+        ".[].body",
         cwd=resolved_dir,
     )
 

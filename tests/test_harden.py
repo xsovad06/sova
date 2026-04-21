@@ -45,12 +45,18 @@ def _mock_adapter() -> AsyncMock:
     )
     adapter.list_tasks.return_value = [
         Task(
-            id="42", title="Add dark mode", body="We need dark mode",
-            state=TaskState.BACKLOG, labels=["type: feature"],
+            id="42",
+            title="Add dark mode",
+            body="We need dark mode",
+            state=TaskState.BACKLOG,
+            labels=["type: feature"],
         ),
         Task(
-            id="43", title="Fix login bug", body="Login crashes",
-            state=TaskState.BACKLOG, labels=["type: bug"],
+            id="43",
+            title="Fix login bug",
+            body="Login crashes",
+            state=TaskState.BACKLOG,
+            labels=["type: bug"],
         ),
     ]
     return adapter

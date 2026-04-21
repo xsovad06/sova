@@ -22,9 +22,7 @@ def run_issue(
     asyncio.run(_run_workflow(issue, project_dir=project, role_name=role, force=force))
 
 
-async def _run_workflow(
-    issue: str, *, project_dir: Path | None, role_name: str | None, force: bool
-) -> None:
+async def _run_workflow(issue: str, *, project_dir: Path | None, role_name: str | None, force: bool) -> None:
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
@@ -87,10 +85,7 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
     while True:
         try:
             tasks = await adapter.list_tasks(TaskFilters(state="open"))
-            actionable = [
-                t for t in tasks
-                if t.state in (TaskState.BACKLOG, TaskState.TRIAGED, TaskState.RESEARCHED)
-            ]
+            actionable = [t for t in tasks if t.state in (TaskState.BACKLOG, TaskState.TRIAGED, TaskState.RESEARCHED)]
 
             if actionable:
                 task = actionable[0]

@@ -15,11 +15,7 @@ _TERMINAL = frozenset({"done", "failed", "rejected"})
 
 async def get_active_tasks(session: AsyncSession) -> list[dict]:
     """Get non-terminal task runs as active task cards."""
-    stmt = (
-        select(TaskRun)
-        .where(TaskRun.status.notin_(_TERMINAL))
-        .order_by(TaskRun.started_at.desc())
-    )
+    stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL)).order_by(TaskRun.started_at.desc())
     result = await session.execute(stmt)
     runs = result.scalars().all()
 
@@ -31,29 +27,26 @@ async def get_active_tasks(session: AsyncSession) -> list[dict]:
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         time_in_state = _format_duration(now - started)
-        tasks.append({
-            "id": r.id,
-            "issue_number": r.issue_number,
-            "role": r.role,
-            "status": r.status,
-            "current_step": r.current_step,
-            "branch_name": r.branch_name,
-            "pr_number": r.pr_number,
-            "time_in_state": time_in_state,
-            "started_at": started.isoformat() if r.started_at else None,
-            "total_cost_usd": float(r.total_cost_usd or 0),
-        })
+        tasks.append(
+            {
+                "id": r.id,
+                "issue_number": r.issue_number,
+                "role": r.role,
+                "status": r.status,
+                "current_step": r.current_step,
+                "branch_name": r.branch_name,
+                "pr_number": r.pr_number,
+                "time_in_state": time_in_state,
+                "started_at": started.isoformat() if r.started_at else None,
+                "total_cost_usd": float(r.total_cost_usd or 0),
+            }
+        )
     return tasks
 
 
 async def get_task_history(session: AsyncSession, limit: int = 50) -> list[dict]:
     """Get completed/failed task runs."""
-    stmt = (
-        select(TaskRun)
-        .where(TaskRun.status.in_(_TERMINAL))
-        .order_by(TaskRun.ended_at.desc())
-        .limit(limit)
-    )
+    stmt = select(TaskRun).where(TaskRun.status.in_(_TERMINAL)).order_by(TaskRun.ended_at.desc()).limit(limit)
     result = await session.execute(stmt)
     runs = result.scalars().all()
 
