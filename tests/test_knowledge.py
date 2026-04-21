@@ -14,7 +14,7 @@ from sova.db.session import close_db, init_db
 async def setup_db():
     """Initialize a fresh in-memory DB for each test."""
     os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db()
+    await init_db(run_migrations=False)
     yield
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)

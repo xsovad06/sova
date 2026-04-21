@@ -19,7 +19,7 @@ runner = CliRunner()
 async def setup_db():
     """Initialize an in-memory DB for CLI tests."""
     os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
-    await init_db()
+    await init_db(run_migrations=False)
     yield
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)

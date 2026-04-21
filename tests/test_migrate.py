@@ -225,7 +225,7 @@ class TestImportCosts:
         from sova.db.models import CostRecord
         from sova.db.session import get_session, init_db
 
-        await init_db(tmp_path)
+        await init_db(tmp_path, run_migrations=False)
 
         records = [
             {
