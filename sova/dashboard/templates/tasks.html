@@ -35,7 +35,7 @@ const statusColors = {
 
 function statusBadge(status) {
   var color = statusColors[status] || 'bg-gray-500';
-  return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ' + color + '/20 text-' + color.replace('bg-', '') + '">' +
+  return '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ' + color + '/20 text-' + color.replace('bg-', '') + '">' +
     '<span class="w-1.5 h-1.5 rounded-full ' + color + '"></span>' +
     escapeHtml(status) + '</span>';
 }

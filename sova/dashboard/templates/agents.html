@@ -100,7 +100,7 @@ function renderAgentCard(agent, completed) {
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
         '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
-        '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
+        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +
@@ -130,7 +130,7 @@ function renderCompletedCard(agent) {
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + statusDotClass + '"></span>' +
         '<span class="text-sm font-medium text-gray-300">#' + escapeHtml(agent.issue) + '</span>' +
-        '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
+        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
         '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + agent.status + '</span>' +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +

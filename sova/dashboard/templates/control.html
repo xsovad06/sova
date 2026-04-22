@@ -23,12 +23,12 @@
     <div class="px-4 py-3 border-b border-accent/30 bg-accent/5 flex items-center justify-between">
       <div>
         <h3 class="text-sm font-medium text-accent">Handoff -- Action Required</h3>
-        <p id="handoff-source" class="text-[10px] text-gray-500 mt-0.5"></p>
+        <p id="handoff-source" class="text-xs text-gray-500 mt-0.5"></p>
       </div>
       <div class="flex items-center gap-2">
         <span id="handoff-issue" class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple"></span>
         <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent/20 text-accent"></span>
-        <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss handoff">
+        <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss handoff">
           Dismiss
         </button>
       </div>
@@ -36,7 +36,7 @@
     <div class="px-4 py-3 border-b border-gray-700/50">
       <p id="handoff-summary" class="text-sm text-gray-300"></p>
       <div id="handoff-details-wrap" class="mt-2 hidden">
-        <button onclick="toggleHandoffDetails()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+        <button onclick="toggleHandoffDetails()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
           Show details
         </button>
         <div id="handoff-details" class="hidden mt-2 text-xs bg-surface rounded p-3 border border-gray-700/50 font-mono max-h-48 overflow-y-auto">
@@ -44,7 +44,7 @@
       </div>
     </div>
     <div class="p-4">
-      <p class="text-[10px] text-gray-500 uppercase tracking-wide mb-3">Choose next action</p>
+      <p class="text-xs text-gray-500 uppercase tracking-wide mb-3">Choose next action</p>
       <div id="handoff-actions" class="flex flex-wrap gap-3"></div>
     </div>
   </div>
@@ -58,7 +58,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-green"></span>
         <h3 class="text-sm font-medium text-accent-green">Workflow Complete</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
         Dismiss
       </button>
     </div>
@@ -77,7 +77,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-red"></span>
         <h3 class="text-sm font-medium text-accent-red">Workflow Failed</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">
+      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
         Dismiss
       </button>
     </div>
@@ -99,7 +99,7 @@
       </div>
       <div class="flex items-center gap-3">
         <span id="complete-cost" class="text-xs text-gray-500"></span>
-        <button onclick="dismissComplete()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>
+        <button onclick="dismissComplete()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>
       </div>
     </div>
     <div class="px-4 py-3 border-t border-gray-700/50">
@@ -112,7 +112,7 @@
 <div id="interrupted-banner" class="hidden bg-yellow-900/20 border border-yellow-600/30 rounded-lg mb-6 p-4">
   <div class="flex items-center justify-between mb-2">
     <h3 class="text-sm font-medium text-yellow-400">Interrupted Runs</h3>
-    <button onclick="dismissInterrupted()" class="text-[10px] text-gray-500 hover:text-gray-300">Dismiss</button>
+    <button onclick="dismissInterrupted()" class="text-xs text-gray-500 hover:text-gray-300">Dismiss</button>
   </div>
   <p class="text-xs text-gray-400 mb-3">These agent runs were interrupted when the dashboard was restarted.</p>
   <div id="interrupted-list" class="space-y-2"></div>
@@ -147,7 +147,7 @@
     <h3 class="text-sm font-medium text-gray-400">Agent Output</h3>
     <div class="flex items-center gap-3">
       <span class="text-xs text-gray-600" id="output-count"></span>
-      <button onclick="clearOutput()" class="text-[10px] text-gray-500 hover:text-gray-300 transition-colors">Clear</button>
+      <button onclick="clearOutput()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Clear</button>
     </div>
   </div>
   <div class="p-4 max-h-[600px] overflow-y-auto text-sm leading-relaxed" id="agent-output">
@@ -373,7 +373,7 @@ function renderActionButtons(actions, targetEl, variant) {
         '<span class="w-1.5 h-1.5 rounded-full ' + style.dot + '"></span>' +
         '<span class="text-sm font-medium">' + escapeHtml(action.label) + '</span>' +
         '</div>' +
-        '<span class="text-[10px] opacity-70 text-left">' + escapeHtml(action.description) + '</span>' +
+        '<span class="text-xs opacity-70 text-left">' + escapeHtml(action.description) + '</span>' +
         '</button>';
     }
     return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +

@@ -58,7 +58,7 @@ async function loadConfig() {
         '<td class="px-4 py-2 text-xs font-mono text-gray-400">' + escapeHtml(key) + '</td>' +
         '<td class="px-4 py-2 text-xs">' +
           '<span class="config-val text-gray-300" data-key="' + escapeHtml(key) + '">' + escapeHtml(displayVal) + '</span>' +
-          '<button onclick="editConfig(\'' + escapeHtml(key) + '\', this)" class="ml-2 text-[10px] text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">edit</button>' +
+          '<button onclick="editConfig(\'' + escapeHtml(key) + '\', this)" class="ml-2 text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">edit</button>' +
         '</td>' +
       '</tr>';
     }).join('');
@@ -139,7 +139,7 @@ async function loadInvariants() {
       return '<div class="flex items-center gap-2 py-1">' +
         '<span class="w-2 h-2 rounded-full ' + dotColor + '"></span>' +
         '<span class="text-xs font-mono text-gray-300">' + escapeHtml(inv.name) + '</span>' +
-        (inv.executable ? '' : '<span class="text-[10px] text-gray-600">(not executable)</span>') +
+        (inv.executable ? '' : '<span class="text-xs text-gray-600">(not executable)</span>') +
       '</div>';
     }).join('');
   } catch (e) {
@@ -168,7 +168,7 @@ async function loadPersonas() {
         return '<div class="flex items-center gap-2 py-1">' +
           '<span class="w-2 h-2 rounded-full ' + (isActive ? 'bg-accent-green' : 'bg-gray-600') + '"></span>' +
           '<span class="text-xs text-gray-300">' + escapeHtml(p.name) + '</span>' +
-          (isActive ? '<span class="text-[10px] text-accent-green">(active)</span>' : '') +
+          (isActive ? '<span class="text-xs text-accent-green">(active)</span>' : '') +
         '</div>';
       }).join('');
     }

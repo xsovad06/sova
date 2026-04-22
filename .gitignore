@@ -24,6 +24,7 @@ dashboard/.venv/
 # Runtime data
 *.pid
 *.log
+*.db.bak
 
 # Claude Code (keep settings.json and commands/rules tracked)
 .claude/settings.local.json
