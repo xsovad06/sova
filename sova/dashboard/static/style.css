@@ -10,34 +10,34 @@
    ============================================================ */
 
 :root {
-  /* --- Catppuccin Mocha: RGB channels (for Tailwind <alpha-value>) --- */
-  --ctp-base-rgb:      30, 30, 46;
-  --ctp-mantle-rgb:    24, 24, 37;
-  --ctp-crust-rgb:     17, 17, 27;
-  --ctp-surface0-rgb:  49, 50, 68;
-  --ctp-surface1-rgb:  69, 71, 90;
-  --ctp-surface2-rgb:  88, 91, 112;
-  --ctp-overlay0-rgb:  108, 112, 134;
-  --ctp-overlay1-rgb:  127, 132, 156;
-  --ctp-overlay2-rgb:  147, 153, 178;
-  --ctp-subtext0-rgb:  166, 173, 200;
-  --ctp-subtext1-rgb:  186, 194, 222;
-  --ctp-text-rgb:      205, 214, 244;
+  /* --- Catppuccin Mocha: RGB channels (space-separated for Tailwind alpha) --- */
+  --ctp-base-rgb:      30 30 46;
+  --ctp-mantle-rgb:    24 24 37;
+  --ctp-crust-rgb:     17 17 27;
+  --ctp-surface0-rgb:  49 50 68;
+  --ctp-surface1-rgb:  69 71 90;
+  --ctp-surface2-rgb:  88 91 112;
+  --ctp-overlay0-rgb:  108 112 134;
+  --ctp-overlay1-rgb:  127 132 156;
+  --ctp-overlay2-rgb:  147 153 178;
+  --ctp-subtext0-rgb:  166 173 200;
+  --ctp-subtext1-rgb:  186 194 222;
+  --ctp-text-rgb:      205 214 244;
 
-  --ctp-blue-rgb:      137, 180, 250;
-  --ctp-green-rgb:     166, 227, 161;
-  --ctp-red-rgb:       243, 139, 168;
-  --ctp-yellow-rgb:    249, 226, 175;
-  --ctp-mauve-rgb:     203, 166, 247;
-  --ctp-teal-rgb:      148, 226, 213;
-  --ctp-peach-rgb:     250, 179, 135;
-  --ctp-sky-rgb:       137, 220, 254;
-  --ctp-lavender-rgb:  180, 190, 254;
-  --ctp-flamingo-rgb:  242, 205, 205;
-  --ctp-pink-rgb:      245, 194, 231;
-  --ctp-rosewater-rgb: 245, 224, 220;
-  --ctp-sapphire-rgb:  116, 199, 236;
-  --ctp-maroon-rgb:    235, 160, 172;
+  --ctp-blue-rgb:      137 180 250;
+  --ctp-green-rgb:     166 227 161;
+  --ctp-red-rgb:       243 139 168;
+  --ctp-yellow-rgb:    249 226 175;
+  --ctp-mauve-rgb:     203 166 247;
+  --ctp-teal-rgb:      148 226 213;
+  --ctp-peach-rgb:     250 179 135;
+  --ctp-sky-rgb:       137 220 254;
+  --ctp-lavender-rgb:  180 190 254;
+  --ctp-flamingo-rgb:  242 205 205;
+  --ctp-pink-rgb:      245 194 231;
+  --ctp-rosewater-rgb: 245 224 220;
+  --ctp-sapphire-rgb:  116 199 236;
+  --ctp-maroon-rgb:    235 160 172;
 
   /* --- Catppuccin Mocha: Hex values (for JS / manual CSS) --- */
   --ctp-base:      #1e1e2e;
