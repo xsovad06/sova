@@ -1,0 +1,20 @@
+{#- Reusable UI component macros for SOVA Dashboard -#}
+
+{%- macro stat_card(label, value_id, value_class="", detail_id="") -%}
+<div class="sova-stat">
+  <p class="sova-stat-label">{{ label }}</p>
+  <p class="sova-stat-value {{ value_class }}" id="{{ value_id }}">--</p>
+  {%- if detail_id %}
+  <p class="sova-stat-detail" id="{{ detail_id }}"></p>
+  {%- endif %}
+</div>
+{%- endmacro -%}
+
+{%- macro card_header(title, action_text="", action_href="#", title_id="") -%}
+<div class="sova-card-header">
+  <h3 class="text-sm font-medium text-gray-400"{% if title_id %} id="{{ title_id }}"{% endif %}>{{ title }}</h3>
+  {%- if action_text %}
+  <a href="{{ action_href }}" class="text-xs text-accent hover:text-blue-300 transition-colors">{{ action_text }}</a>
+  {%- endif %}
+</div>
+{%- endmacro -%}

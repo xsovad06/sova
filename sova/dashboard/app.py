@@ -213,6 +213,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_memory(request: Request, slug: str):
         return _project_page(request, templates, slug, "memory.html", "memory")
 
+    @app.get("/p/{slug}/style-guide")
+    async def project_style_guide(request: Request, slug: str):
+        return _project_page(request, templates, slug, "style_guide.html", "style-guide")
+
     # -- Project-scoped API --
     _register_api_routers(app, prefix="/p/{slug}/api")
 
@@ -303,6 +307,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/memory")
     async def memory_page(request: Request):
         return templates.TemplateResponse(request, "memory.html", {"page": "memory"})
+
+    @app.get("/style-guide")
+    async def style_guide_page(request: Request):
+        return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
 
 
 def _register_api_routers(app: FastAPI, *, prefix: str) -> None:

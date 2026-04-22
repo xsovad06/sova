@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% block title %}Style Guide - SOVA{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+{% from "_components.html" import stat_card, card_header %}
+
+<h2 class="text-2xl font-semibold mb-8">Style Guide</h2>
+
+<!-- 1. Color Palette -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Color Palette</h3>
+
+  <h4 class="text-sm font-medium text-gray-400 mb-3">Base & Surface</h4>
+  <div class="flex flex-wrap gap-3 mb-6" id="base-swatches"></div>
+
+  <h4 class="text-sm font-medium text-gray-400 mb-3">Accent Colors</h4>
+  <div class="flex flex-wrap gap-3 mb-6" id="accent-swatches"></div>
+
+  <h4 class="text-sm font-medium text-gray-400 mb-3">Semantic Aliases</h4>
+  <div class="flex flex-wrap gap-3" id="semantic-swatches"></div>
+</section>
+
+<!-- 2. Typography -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Typography Scale</h3>
+  <div class="sova-card">
+    <div class="sova-card-body space-y-4">
+      <div>
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Page Heading</span>
+        <p class="text-2xl font-semibold mt-1">Dashboard Overview</p>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Section Heading</span>
+        <p class="text-lg font-semibold mt-1">Recent Activity</p>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Label</span>
+        <p class="text-sm font-medium mt-1">Active Agents</p>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Body</span>
+        <p class="text-sm mt-1">The developer agent completed issue #42 in 3 minutes with $0.12 cost.</p>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Caption</span>
+        <p class="text-xs text-gray-500 mt-1">Last updated 2 minutes ago</p>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide">Data / Monospace</span>
+        <p class="font-mono font-semibold text-accent-green mt-1">$12.4500</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. Buttons -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Buttons</h3>
+  <div class="sova-card">
+    <div class="sova-card-body">
+      <div class="flex flex-wrap gap-3 items-center mb-4">
+        <button class="sova-btn sova-btn-primary">Primary Action</button>
+        <button class="sova-btn sova-btn-success">Success</button>
+        <button class="sova-btn sova-btn-danger">Danger</button>
+        <button class="sova-btn sova-btn-warning">Warning</button>
+        <button class="sova-btn sova-btn-primary" disabled>Disabled</button>
+      </div>
+      <p class="text-xs text-gray-500">Classes: <code class="text-accent bg-surface px-1 py-0.5 rounded text-xs">.sova-btn .sova-btn-{primary|success|danger|warning}</code></p>
+    </div>
+  </div>
+</section>
+
+<!-- 4. Cards -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Cards</h3>
+
+  <h4 class="text-sm font-medium text-gray-400 mb-3">Stat Cards (macro)</h4>
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div class="sova-stat">
+      <p class="sova-stat-label">Active Agents</p>
+      <p class="sova-stat-value">3</p>
+      <p class="sova-stat-detail">12 total runs</p>
+    </div>
+    <div class="sova-stat">
+      <p class="sova-stat-label">Today's Cost</p>
+      <p class="sova-stat-value text-accent-green">$1.24</p>
+    </div>
+    <div class="sova-stat">
+      <p class="sova-stat-label">7-Day Cost</p>
+      <p class="sova-stat-value text-accent-yellow">$8.50</p>
+      <p class="sova-stat-detail">42 invocations</p>
+    </div>
+    <div class="sova-stat">
+      <p class="sova-stat-label">Completion Rate</p>
+      <p class="sova-stat-value text-accent-purple">87%</p>
+      <p class="sova-stat-detail">13 done, 2 failed</p>
+    </div>
+  </div>
+
+  <h4 class="text-sm font-medium text-gray-400 mb-3">Content Card with Header</h4>
+  <div class="sova-card">
+    {{ card_header("Recent Runs", action_text="View all", action_href="#") }}
+    <div class="sova-card-body">
+      <p class="text-sm text-gray-400">Card body content goes here.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 5. Badges -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Badges</h3>
+  <div class="sova-card">
+    <div class="sova-card-body space-y-4">
+      <div>
+        <span class="text-xs text-gray-500 uppercase tracking-wide block mb-2">Role Badges</span>
+        <div class="flex flex-wrap gap-2">
+          <span class="sova-badge bg-accent/20 text-accent">developer</span>
+          <span class="sova-badge bg-accent-yellow/20 text-accent-yellow">triage</span>
+          <span class="sova-badge bg-accent-purple/20 text-accent-purple">researcher</span>
+          <span class="sova-badge bg-accent-green/20 text-accent-green">reviewer</span>
+          <span class="sova-badge bg-gray-500/20 text-gray-400">auto</span>
+        </div>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide block mb-2">Status Badges</span>
+        <div class="flex flex-wrap gap-2">
+          <span class="sova-badge bg-accent-green/20 text-accent-green">done</span>
+          <span class="sova-badge bg-accent-red/20 text-accent-red">failed</span>
+          <span class="sova-badge bg-accent-yellow/20 text-accent-yellow">running</span>
+          <span class="sova-badge bg-gray-500/20 text-gray-400">pending</span>
+        </div>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide block mb-2">Priority Badges</span>
+        <div class="flex flex-wrap gap-2">
+          <span class="sova-badge bg-accent-red/20 text-accent-red font-bold">P0</span>
+          <span class="sova-badge bg-accent-yellow/20 text-accent-yellow font-bold">P1</span>
+          <span class="sova-badge bg-accent/20 text-accent font-bold">P2</span>
+          <span class="sova-badge bg-gray-500/20 text-gray-400 font-bold">P3</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 6. Status Indicators -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Status Indicators</h3>
+  <div class="sova-card">
+    <div class="sova-card-body">
+      <div class="flex flex-wrap gap-6">
+        <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-accent-green"></span><span class="text-sm">Done / Success</span></span>
+        <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-accent-red"></span><span class="text-sm">Failed / Error</span></span>
+        <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span><span class="text-sm">Running / Warning</span></span>
+        <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-accent animate-pulse"></span><span class="text-sm">Active / Info</span></span>
+        <span class="flex items-center gap-2"><span class="w-2.5 h-2.5 rounded-full bg-gray-500"></span><span class="text-sm">Idle / Pending</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Form Inputs -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Form Inputs</h3>
+  <div class="sova-card">
+    <div class="sova-card-body">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+        <div>
+          <label class="text-sm font-medium text-gray-400 block mb-1">Text Input</label>
+          <input type="text" class="sova-input" placeholder="Enter value..." value="">
+        </div>
+        <div>
+          <label class="text-sm font-medium text-gray-400 block mb-1">Select</label>
+          <select class="sova-input">
+            <option>Option 1</option>
+            <option>Option 2</option>
+            <option>Option 3</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 8. Table -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Table</h3>
+  <div class="sova-card overflow-hidden">
+    <table class="sova-table">
+      <thead>
+        <tr>
+          <th>Issue</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th class="text-right">Cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="text-accent">#42</td>
+          <td>developer</td>
+          <td><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-accent-green"></span>done</span></td>
+          <td class="text-right text-accent-green font-mono">$0.1200</td>
+        </tr>
+        <tr>
+          <td class="text-accent">#38</td>
+          <td>triage</td>
+          <td><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-accent-yellow animate-pulse"></span>running</span></td>
+          <td class="text-right text-accent-green font-mono">$0.0340</td>
+        </tr>
+        <tr>
+          <td class="text-accent">#35</td>
+          <td>reviewer</td>
+          <td><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-accent-red"></span>failed</span></td>
+          <td class="text-right text-accent-green font-mono">$0.0890</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 9. Toast Notifications -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Toast Notifications</h3>
+  <div class="sova-card">
+    <div class="sova-card-body">
+      <div class="flex flex-wrap gap-3">
+        <button class="sova-btn sova-btn-primary" onclick="showToast('Agent completed issue #42', 'info')">Info Toast</button>
+        <button class="sova-btn sova-btn-warning" onclick="showToast('Handoff: action required', 'warning')">Warning Toast</button>
+        <button class="sova-btn sova-btn-danger" onclick="showToast('Agent failed on issue #35', 'error')">Error Toast</button>
+        <button class="sova-btn sova-btn-success" onclick="showToast('PR #12 merged successfully', 'success')">Success Toast</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 10. Icons -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Icons</h3>
+  <div class="sova-card">
+    <div class="sova-card-body">
+      <div class="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-4">
+        {% set icon_names = ["dashboard", "agents", "work", "queue", "costs", "logs", "memory", "plus-circle", "settings", "bell", "check", "warning", "error", "info"] %}
+        {% for name in icon_names %}
+        <div class="flex flex-col items-center gap-2 p-3 rounded-lg bg-surface-hover/30">
+          {{ icon(name, "w-6 h-6 text-gray-300") }}
+          <span class="text-xs text-gray-500">{{ name }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 11. Pipeline Bar -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Pipeline Bar</h3>
+  <div class="sova-card">
+    <div class="sova-card-body space-y-6" id="pipeline-demos"></div>
+  </div>
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Color palette swatches
+(function() {
+  var baseColors = [
+    { name: 'Crust',    var: '--ctp-crust' },
+    { name: 'Mantle',   var: '--ctp-mantle' },
+    { name: 'Base',     var: '--ctp-base' },
+    { name: 'Surface0', var: '--ctp-surface0' },
+    { name: 'Surface1', var: '--ctp-surface1' },
+    { name: 'Surface2', var: '--ctp-surface2' },
+    { name: 'Overlay0', var: '--ctp-overlay0' },
+    { name: 'Overlay1', var: '--ctp-overlay1' },
+    { name: 'Text',     var: '--ctp-text' },
+  ];
+
+  var accentColors = [
+    { name: 'Blue',      var: '--ctp-blue' },
+    { name: 'Green',     var: '--ctp-green' },
+    { name: 'Red',       var: '--ctp-red' },
+    { name: 'Yellow',    var: '--ctp-yellow' },
+    { name: 'Mauve',     var: '--ctp-mauve' },
+    { name: 'Teal',      var: '--ctp-teal' },
+    { name: 'Peach',     var: '--ctp-peach' },
+    { name: 'Sky',       var: '--ctp-sky' },
+    { name: 'Lavender',  var: '--ctp-lavender' },
+    { name: 'Flamingo',  var: '--ctp-flamingo' },
+    { name: 'Pink',      var: '--ctp-pink' },
+    { name: 'Rosewater', var: '--ctp-rosewater' },
+    { name: 'Sapphire',  var: '--ctp-sapphire' },
+    { name: 'Maroon',    var: '--ctp-maroon' },
+  ];
+
+  var semanticColors = [
+    { name: 'Accent',        var: '--color-accent' },
+    { name: 'Accent Green',  var: '--color-accent-green' },
+    { name: 'Accent Red',    var: '--color-accent-red' },
+    { name: 'Accent Yellow', var: '--color-accent-yellow' },
+    { name: 'Accent Purple', var: '--color-accent-purple' },
+    { name: 'Surface',       var: '--color-surface' },
+    { name: 'Surface Card',  var: '--color-surface-card' },
+    { name: 'Border',        var: '--color-border' },
+    { name: 'Text',          var: '--color-text' },
+    { name: 'Text Muted',    var: '--color-text-muted' },
+    { name: 'Text Faint',    var: '--color-text-faint' },
+  ];
+
+  function renderSwatches(colors, targetId) {
+    var el = document.getElementById(targetId);
+    el.innerHTML = colors.map(function(c) {
+      var hex = getCSSVar(c.var);
+      return '<div class="flex flex-col items-center gap-1">' +
+        '<div class="w-14 h-14 rounded-lg border border-gray-700/30" style="background:' + hex + '"></div>' +
+        '<span class="text-xs text-gray-400">' + c.name + '</span>' +
+        '<span class="text-xs text-gray-600 font-mono">' + hex + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
+  renderSwatches(baseColors, 'base-swatches');
+  renderSwatches(accentColors, 'accent-swatches');
+  renderSwatches(semanticColors, 'semantic-swatches');
+
+  // Pipeline demos
+  var roles = ['developer', 'triage', 'researcher', 'reviewer'];
+  var demo = document.getElementById('pipeline-demos');
+  demo.innerHTML = roles.map(function(role) {
+    return '<div>' +
+      '<span class="text-xs text-gray-500 uppercase tracking-wide block mb-2">' + role + '</span>' +
+      renderStepPipeline('develop', role, false) +
+    '</div>';
+  }).join('');
+})();
+</script>
+{% endblock %}
