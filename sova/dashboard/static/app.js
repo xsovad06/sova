@@ -1,11 +1,37 @@
 /* SOVA Dashboard -- shared JS utilities */
 
+/* ============================================================
+   1. CSS VARIABLE COLOR SYSTEM
+   ============================================================ */
+
+function getCSSVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+window.SOVA_COLORS = {};
+
+function initColors() {
+  window.SOVA_COLORS = {
+    accent:  getCSSVar('--ctp-blue'),
+    green:   getCSSVar('--ctp-green'),
+    red:     getCSSVar('--ctp-red'),
+    yellow:  getCSSVar('--ctp-yellow'),
+    purple:  getCSSVar('--ctp-mauve'),
+    surface: getCSSVar('--ctp-surface0'),
+    muted:   getCSSVar('--ctp-overlay1'),
+  };
+}
+
+/* ============================================================
+   2. SHARED UTILITIES
+   ============================================================ */
+
 function apiUrl(path) {
   return (window.SOVA_API_PREFIX || '/api') + path;
 }
 
 async function fetchAPI(url) {
-  const res = await fetch(url);
+  var res = await fetch(url);
   if (!res.ok) throw new Error('API error: ' + res.status);
   return res.json();
 }
@@ -43,11 +69,118 @@ function statusDot(status) {
   }
 }
 
-/* --- Sidebar: activity dot, checkpoint banner, notifications --- */
+/* ============================================================
+   3. BROWSER NOTIFICATION API
+   ============================================================ */
+
+var _browserNotifPermission = 'default';
+
+function initBrowserNotifications() {
+  if (!('Notification' in window)) return;
+  _browserNotifPermission = Notification.permission;
+
+  if (_browserNotifPermission === 'default' && !localStorage.getItem('sova-notif-dismissed')) {
+    var banner = document.getElementById('notif-permission-banner');
+    if (banner) {
+      banner.classList.remove('hidden');
+      banner.classList.add('flex');
+    }
+  }
+}
+
+function requestNotificationPermission() {
+  if (!('Notification' in window)) return;
+  Notification.requestPermission().then(function(result) {
+    _browserNotifPermission = result;
+    var banner = document.getElementById('notif-permission-banner');
+    if (banner) banner.classList.add('hidden');
+  });
+}
+
+function dismissPermissionBanner() {
+  localStorage.setItem('sova-notif-dismissed', '1');
+  var banner = document.getElementById('notif-permission-banner');
+  if (banner) banner.classList.add('hidden');
+}
+
+function sendBrowserNotification(title, body) {
+  if (_browserNotifPermission !== 'granted') return;
+  if (document.hasFocus()) return;
+  try {
+    var notif = new Notification(title, {
+      body: body,
+      icon: '/static/favicon-32x32.png',
+      tag: 'sova-' + Date.now(),
+    });
+    notif.onclick = function() {
+      window.focus();
+      notif.close();
+    };
+  } catch (e) { /* ignore */ }
+}
+
+/* ============================================================
+   4. TOAST NOTIFICATIONS
+   ============================================================ */
+
+var _toastContainer = null;
+var MAX_TOASTS = 3;
+
+function _ensureToastContainer() {
+  if (_toastContainer) return;
+  _toastContainer = document.createElement('div');
+  _toastContainer.id = 'toast-container';
+  document.body.appendChild(_toastContainer);
+}
+
+function showToast(message, type, duration) {
+  _ensureToastContainer();
+
+  while (_toastContainer.children.length >= MAX_TOASTS) {
+    _toastContainer.removeChild(_toastContainer.firstChild);
+  }
+
+  var typeClass = type === 'warning' ? 'sova-toast-warning' :
+                  type === 'error'   ? 'sova-toast-error' :
+                  type === 'success' ? 'sova-toast-success' :
+                                       'sova-toast-info';
+
+  var toast = document.createElement('div');
+  toast.className = 'sova-toast ' + typeClass;
+  toast.innerHTML =
+    '<div style="flex:1;min-width:0">' +
+      '<p class="text-sm text-gray-200">' + escapeHtml(message) + '</p>' +
+      '<p class="text-xs text-gray-500 mt-0.5">' + new Date().toLocaleTimeString() + '</p>' +
+    '</div>' +
+    '<button onclick="this.parentElement.remove()" class="text-gray-500 hover:text-gray-300 text-sm shrink-0 ml-2" aria-label="Dismiss">&times;</button>';
+
+  _toastContainer.appendChild(toast);
+
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      toast.classList.add('sova-toast-visible');
+    });
+  });
+
+  setTimeout(function() {
+    toast.classList.remove('sova-toast-visible');
+    setTimeout(function() {
+      if (toast.parentElement) toast.remove();
+    }, 300);
+  }, duration || 6000);
+}
+
+/* ============================================================
+   5. SIDEBAR POLLING & NOTIFICATIONS
+   ============================================================ */
 
 var _notifItems = [];
 var _lastActivityState = null;
 var _lastHandoffState = null;
+
+function _dotClass(color, animate) {
+  return 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ' + color + ' border-2 border-sidebar' + (animate ? ' animate-pulse' : '');
+}
 
 function startSidebarPolling() {
   _pollActivity();
@@ -64,7 +197,7 @@ async function _pollActivity() {
 
     var running = data.agents && data.agents.length > 0;
     if (running) {
-      dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-accent border-2 border-sidebar animate-pulse';
+      dot.className = _dotClass('bg-accent', true);
       if (_lastActivityState !== 'running') {
         _lastActivityState = 'running';
       }
@@ -72,12 +205,12 @@ async function _pollActivity() {
       if (_lastActivityState === 'running') {
         _addNotification('Agent completed', 'info');
       }
-      dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-accent-green border-2 border-sidebar';
+      dot.className = _dotClass('bg-accent-green', false);
       _lastActivityState = 'idle';
     }
   } catch (e) {
     var dot = document.getElementById('activity-dot');
-    if (dot) dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-gray-500 border-2 border-sidebar';
+    if (dot) dot.className = _dotClass('bg-gray-500', false);
   }
 }
 
@@ -94,9 +227,8 @@ async function _pollHandoff() {
       if (_lastHandoffState !== 'awaiting') {
         _lastHandoffState = 'awaiting';
         _addNotification('Handoff: action required', 'warning');
-        // Update activity dot to yellow
         var dot = document.getElementById('activity-dot');
-        if (dot) dot.className = 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-accent-yellow border-2 border-sidebar animate-pulse';
+        if (dot) dot.className = _dotClass('bg-accent-yellow', true);
       }
     } else {
       banner.classList.add('hidden');
@@ -114,6 +246,12 @@ function _addNotification(message, type) {
   if (_notifItems.length > 20) _notifItems.pop();
   _updateNotifBadge();
   _renderNotifList();
+  showToast(message, type);
+  if (type === 'warning') {
+    sendBrowserNotification('SOVA -- Action Required', message);
+  } else {
+    sendBrowserNotification('SOVA', message);
+  }
 }
 
 function _updateNotifBadge() {
@@ -134,15 +272,17 @@ function _renderNotifList() {
   var list = document.getElementById('notif-list');
   if (!list) return;
   if (_notifItems.length === 0) {
-    list.innerHTML = '<p class="text-[10px] text-gray-600 text-center py-2">No notifications</p>';
+    list.innerHTML = '<p class="text-xs text-gray-500 text-center py-6">No notifications</p>';
     return;
   }
   list.innerHTML = _notifItems.map(function(n) {
-    var color = n.type === 'warning' ? 'text-accent-yellow' : n.type === 'error' ? 'text-accent-red' : 'text-gray-300';
+    var borderColor = n.type === 'warning' ? 'border-l-accent-yellow' :
+                      n.type === 'error'   ? 'border-l-accent-red' :
+                                              'border-l-accent';
     var timeStr = n.time.toLocaleTimeString();
-    return '<div class="py-1.5 px-1 border-b border-gray-700/30 last:border-0">' +
-      '<p class="text-[10px] ' + color + '">' + escapeHtml(n.message) + '</p>' +
-      '<p class="text-[8px] text-gray-600">' + timeStr + '</p>' +
+    return '<div class="px-4 py-3 border-b border-gray-700/30 last:border-0 border-l-2 ' + borderColor + ' hover:bg-surface-hover/50 transition-colors">' +
+      '<p class="text-sm text-gray-200">' + escapeHtml(n.message) + '</p>' +
+      '<p class="text-xs text-gray-500 mt-1">' + timeStr + '</p>' +
     '</div>';
   }).join('');
 }
@@ -158,19 +298,44 @@ function clearNotifBadge() {
   _renderNotifList();
 }
 
-// Auto-start sidebar polling on page load
+// Click-outside to close notification panel
+document.addEventListener('click', function(e) {
+  var panel = document.getElementById('notif-panel');
+  var bell = document.getElementById('notif-bell');
+  if (panel && !panel.classList.contains('hidden') && !panel.contains(e.target) && bell && !bell.contains(e.target)) {
+    panel.classList.add('hidden');
+  }
+});
+
+/* ============================================================
+   6. INITIALIZATION
+   ============================================================ */
+
+initColors();
 if (document.getElementById('activity-dot')) {
+  initBrowserNotifications();
   startSidebarPolling();
 }
 
-/* --- Role colors --- */
+/* ============================================================
+   7. ROLE COLORS
+   ============================================================ */
+
+function _roleHex(key) {
+  var map = { developer: 'accent', triage: 'yellow', researcher: 'purple', reviewer: 'green', auto: 'muted' };
+  return (window.SOVA_COLORS && window.SOVA_COLORS[map[key]]) || _ROLE_HEX_FALLBACK[key];
+}
+
+var _ROLE_HEX_FALLBACK = {
+  developer: '#89b4fa', triage: '#f9e2af', researcher: '#cba6f7', reviewer: '#a6e3a1', auto: '#585b70',
+};
 
 var ROLE_COLORS = {
-  developer:  { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        hex: '#89b4fa' },
-  triage:     { bg: 'bg-accent-yellow/20',  text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', hex: '#f9e2af' },
-  researcher: { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', hex: '#cba6f7' },
-  reviewer:   { bg: 'bg-accent-green/20',   text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  hex: '#a6e3a1' },
-  auto:       { bg: 'bg-gray-500/20',       text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         hex: '#585b70' },
+  developer:  { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        get hex() { return _roleHex('developer'); } },
+  triage:     { bg: 'bg-accent-yellow/20',  text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', get hex() { return _roleHex('triage'); } },
+  researcher: { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', get hex() { return _roleHex('researcher'); } },
+  reviewer:   { bg: 'bg-accent-green/20',   text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  get hex() { return _roleHex('reviewer'); } },
+  auto:       { bg: 'bg-gray-500/20',       text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         get hex() { return _roleHex('auto'); } },
 };
 
 function roleColor(role) {
@@ -179,7 +344,9 @@ function roleColor(role) {
   return ROLE_COLORS[key] || ROLE_COLORS.auto;
 }
 
-/* --- Step pipeline bar --- */
+/* ============================================================
+   8. STEP PIPELINE BAR
+   ============================================================ */
 
 var PIPELINE_STEPS = [
   'sync', 'assess', 'create_worktree', 'develop', 'simplify',
@@ -231,7 +398,9 @@ function formatElapsed(seconds) {
   return h + 'h ' + m + 'm';
 }
 
-/* --- Runs table (shared) --- */
+/* ============================================================
+   9. RUNS TABLE (shared)
+   ============================================================ */
 
 function renderRunsTable(runs, targetId) {
   var el = document.getElementById(targetId);
