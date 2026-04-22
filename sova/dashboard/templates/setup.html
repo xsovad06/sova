@@ -4,23 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Setup - SOVA Dashboard</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            sidebar: { DEFAULT: '#1e1e2e', hover: '#313244', active: '#45475a' },
-            surface: { DEFAULT: '#181825', card: '#1e1e2e', hover: '#313244' },
-            accent: { DEFAULT: '#89b4fa', green: '#a6e3a1', red: '#f38ba8', yellow: '#f9e2af', purple: '#cba6f7' },
-          }
-        }
-      }
-    }
-  </script>
-  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-  <link rel="stylesheet" href="/static/style.css">
+  {% include "_head.html" %}
 </head>
 <body class="bg-surface text-gray-200 min-h-screen">
   <div class="max-w-3xl mx-auto py-8 px-6">
@@ -261,8 +245,8 @@ function renderBrowser(data) {
   listing.innerHTML = data.entries.map(e => {
     const isParent = e.name === '..';
     const badges = [];
-    if (e.is_project) badges.push('<span class="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded">project</span>');
-    if (e.has_sova) badges.push('<span class="text-[10px] bg-accent-green/15 text-accent-green px-1.5 py-0.5 rounded">SOVA</span>');
+    if (e.is_project) badges.push('<span class="text-xs bg-accent/15 text-accent px-1.5 py-0.5 rounded">project</span>');
+    if (e.has_sova) badges.push('<span class="text-xs bg-accent-green/15 text-accent-green px-1.5 py-0.5 rounded">SOVA</span>');
 
     return `
       <div class="flex items-center px-4 py-2 hover:bg-surface-hover cursor-pointer border-b border-gray-700/20 group"

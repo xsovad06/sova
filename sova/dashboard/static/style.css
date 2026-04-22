@@ -1,12 +1,287 @@
-/* SOVA Dashboard -- minimal overrides, Tailwind handles most styling */
+/* SOVA Dashboard -- Design System Foundation
+ *
+ * Color system: Catppuccin Mocha palette exposed as CSS custom properties.
+ * RGB channel vars power Tailwind alpha modifiers (bg-accent/20).
+ * Hex vars are read by JS (window.SOVA_COLORS) for inline styles.
+ */
 
-/* Scrollbar styling */
+/* ============================================================
+   1. COLOR TOKENS
+   ============================================================ */
+
+:root {
+  /* --- Catppuccin Mocha: RGB channels (for Tailwind <alpha-value>) --- */
+  --ctp-base-rgb:      30, 30, 46;
+  --ctp-mantle-rgb:    24, 24, 37;
+  --ctp-crust-rgb:     17, 17, 27;
+  --ctp-surface0-rgb:  49, 50, 68;
+  --ctp-surface1-rgb:  69, 71, 90;
+  --ctp-surface2-rgb:  88, 91, 112;
+  --ctp-overlay0-rgb:  108, 112, 134;
+  --ctp-overlay1-rgb:  127, 132, 156;
+  --ctp-overlay2-rgb:  147, 153, 178;
+  --ctp-subtext0-rgb:  166, 173, 200;
+  --ctp-subtext1-rgb:  186, 194, 222;
+  --ctp-text-rgb:      205, 214, 244;
+
+  --ctp-blue-rgb:      137, 180, 250;
+  --ctp-green-rgb:     166, 227, 161;
+  --ctp-red-rgb:       243, 139, 168;
+  --ctp-yellow-rgb:    249, 226, 175;
+  --ctp-mauve-rgb:     203, 166, 247;
+  --ctp-teal-rgb:      148, 226, 213;
+  --ctp-peach-rgb:     250, 179, 135;
+  --ctp-sky-rgb:       137, 220, 254;
+  --ctp-lavender-rgb:  180, 190, 254;
+  --ctp-flamingo-rgb:  242, 205, 205;
+  --ctp-pink-rgb:      245, 194, 231;
+  --ctp-rosewater-rgb: 245, 224, 220;
+  --ctp-sapphire-rgb:  116, 199, 236;
+  --ctp-maroon-rgb:    235, 160, 172;
+
+  /* --- Catppuccin Mocha: Hex values (for JS / manual CSS) --- */
+  --ctp-base:      #1e1e2e;
+  --ctp-mantle:    #181825;
+  --ctp-crust:     #11111b;
+  --ctp-surface0:  #313244;
+  --ctp-surface1:  #45475a;
+  --ctp-surface2:  #585b70;
+  --ctp-overlay0:  #6c7086;
+  --ctp-overlay1:  #7f849c;
+  --ctp-overlay2:  #9399b2;
+  --ctp-subtext0:  #a6adc8;
+  --ctp-subtext1:  #bac2de;
+  --ctp-text:      #cdd6f4;
+
+  --ctp-blue:      #89b4fa;
+  --ctp-green:     #a6e3a1;
+  --ctp-red:       #f38ba8;
+  --ctp-yellow:    #f9e2af;
+  --ctp-mauve:     #cba6f7;
+  --ctp-teal:      #94e2d5;
+  --ctp-peach:     #fab387;
+  --ctp-sky:       #89dcfe;
+  --ctp-lavender:  #b4befe;
+  --ctp-flamingo:  #f2cdcd;
+  --ctp-pink:      #f5c2e7;
+  --ctp-rosewater: #f5e0dc;
+  --ctp-sapphire:  #74c7ec;
+  --ctp-maroon:    #eba0ac;
+
+  /* --- Semantic aliases --- */
+  --color-sidebar:        var(--ctp-base);
+  --color-sidebar-hover:  var(--ctp-surface0);
+  --color-sidebar-active: var(--ctp-surface1);
+
+  --color-surface:        var(--ctp-mantle);
+  --color-surface-card:   var(--ctp-base);
+  --color-surface-hover:  var(--ctp-surface0);
+
+  --color-accent:         var(--ctp-blue);
+  --color-accent-green:   var(--ctp-green);
+  --color-accent-red:     var(--ctp-red);
+  --color-accent-yellow:  var(--ctp-yellow);
+  --color-accent-purple:  var(--ctp-mauve);
+
+  --color-border:         var(--ctp-surface1);
+
+  --color-text:           var(--ctp-text);
+  --color-text-muted:     var(--ctp-overlay1);
+  --color-text-faint:     var(--ctp-overlay0);
+
+  /* --- Layout tokens --- */
+  --sidebar-width: 256px;
+}
+
+/* ============================================================
+   2. BASE OVERRIDES
+   ============================================================ */
+
+/* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: #181825; }
-::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #585b70; }
+::-webkit-scrollbar-track { background: var(--ctp-mantle); }
+::-webkit-scrollbar-thumb { background: var(--ctp-surface1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ctp-surface2); }
 
 /* Prose overrides for rendered markdown */
-.prose-invert code { color: #89b4fa; background: #313244; padding: 0.1em 0.3em; border-radius: 0.25rem; font-size: 0.85em; }
-.prose-invert pre { background: #181825; border: 1px solid #45475a; border-radius: 0.5rem; }
+.prose-invert code {
+  color: var(--ctp-blue);
+  background: var(--ctp-surface0);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+.prose-invert pre {
+  background: var(--ctp-mantle);
+  border: 1px solid var(--ctp-surface1);
+  border-radius: 0.5rem;
+}
 .prose-invert pre code { background: none; padding: 0; }
+
+/* ============================================================
+   3. TOAST NOTIFICATIONS
+   ============================================================ */
+
+#toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.sova-toast {
+  pointer-events: auto;
+  background: var(--ctp-base);
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.2);
+  padding: 0.75rem 1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 280px;
+  max-width: 400px;
+  border-left-width: 3px;
+  transform: translateX(calc(100% + 1rem));
+  opacity: 0;
+  transition: transform 300ms ease, opacity 300ms ease;
+}
+
+.sova-toast.sova-toast-visible {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.sova-toast-info    { border-left-color: var(--ctp-blue); }
+.sova-toast-warning { border-left-color: var(--ctp-yellow); }
+.sova-toast-error   { border-left-color: var(--ctp-red); }
+.sova-toast-success { border-left-color: var(--ctp-green); }
+
+/* ============================================================
+   4. REUSABLE COMPONENT CLASSES
+   ============================================================ */
+
+/* Cards */
+.sova-card {
+  background: var(--color-surface-card);
+  border-radius: 0.5rem;
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+}
+
+.sova-card-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sova-card-body { padding: 1rem; }
+
+/* Stat cards */
+.sova-stat {
+  background: var(--color-surface-card);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+}
+
+.sova-stat-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ctp-overlay0);
+}
+
+.sova-stat-value {
+  font-size: 1.875rem;
+  font-weight: 700;
+  margin-top: 0.25rem;
+}
+
+.sova-stat-detail {
+  font-size: 0.75rem;
+  color: var(--ctp-overlay0);
+  margin-top: 0.25rem;
+}
+
+/* Buttons */
+.sova-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  transition: background-color 150ms ease, color 150ms ease;
+  cursor: pointer;
+  border: none;
+}
+
+.sova-btn-primary {
+  background: rgb(var(--ctp-blue-rgb) / 0.2);
+  color: var(--ctp-blue);
+}
+.sova-btn-primary:hover { background: rgb(var(--ctp-blue-rgb) / 0.3); }
+
+.sova-btn-success {
+  background: rgb(var(--ctp-green-rgb) / 0.2);
+  color: var(--ctp-green);
+}
+.sova-btn-success:hover { background: rgb(var(--ctp-green-rgb) / 0.3); }
+
+.sova-btn-danger {
+  background: rgb(var(--ctp-red-rgb) / 0.2);
+  color: var(--ctp-red);
+}
+.sova-btn-danger:hover { background: rgb(var(--ctp-red-rgb) / 0.3); }
+
+.sova-btn-warning {
+  background: rgb(var(--ctp-yellow-rgb) / 0.2);
+  color: var(--ctp-yellow);
+}
+.sova-btn-warning:hover { background: rgb(var(--ctp-yellow-rgb) / 0.3); }
+
+.sova-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Badges */
+.sova-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+}
+
+/* Form inputs */
+.sova-input {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-text);
+  transition: border-color 150ms;
+  width: 100%;
+}
+.sova-input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+/* Tables */
+.sova-table { width: 100%; font-size: 0.875rem; }
+.sova-table thead { color: var(--ctp-overlay0); font-size: 0.75rem; text-transform: uppercase; }
+.sova-table th,
+.sova-table td { padding: 0.75rem; text-align: left; }
+.sova-table tbody tr { border-top: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3); }
+.sova-table tbody tr:hover { background: var(--color-surface-hover); }
