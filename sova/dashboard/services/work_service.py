@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.dashboard.services.control_service import DEVELOPER_PIPELINE, get_step_progress
 from sova.db.models import StepExecution, TaskRun
+from sova.utils.formatting import iso_utc
 
 _TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})
 
@@ -46,7 +47,7 @@ async def get_active_work(session: AsyncSession) -> list[dict]:
                 "pr_number": r.pr_number,
                 "elapsed_seconds": int(elapsed.total_seconds()),
                 "elapsed_formatted": _format_duration(elapsed),
-                "started_at": started.isoformat(),
+                "started_at": iso_utc(started),
                 "total_cost_usd": float(r.total_cost_usd or 0),
             }
         )
@@ -108,8 +109,8 @@ async def get_work_history(
                 "duration_ms": duration_ms,
                 "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
                 "error_message": r.error_message,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "ended_at": r.ended_at.isoformat() if r.ended_at else None,
+                "started_at": iso_utc(r.started_at),
+                "ended_at": iso_utc(r.ended_at),
             }
         )
     return items
@@ -157,8 +158,8 @@ def _run_to_dict(run: TaskRun) -> dict:
         "error_message": run.error_message,
         "project_slug": run.project_slug,
         "resumed_from_id": run.resumed_from_id,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "ended_at": run.ended_at.isoformat() if run.ended_at else None,
+        "started_at": iso_utc(run.started_at),
+        "ended_at": iso_utc(run.ended_at),
     }
 
 
@@ -173,8 +174,8 @@ def _step_to_dict(step: StepExecution) -> dict:
         "output_summary": step.output_summary,
         "gate_check_result": step.gate_check_result,
         "error_message": step.error_message,
-        "started_at": step.started_at.isoformat() if step.started_at else None,
-        "ended_at": step.ended_at.isoformat() if step.ended_at else None,
+        "started_at": iso_utc(step.started_at),
+        "ended_at": iso_utc(step.ended_at),
     }
 
 

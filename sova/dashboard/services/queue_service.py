@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sova.adapters.base import TaskState
+from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.queue")
@@ -116,8 +117,8 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
                 "id": r.id,
                 "status": r.status,
                 "role": r.role,
-                "ended_at": r.ended_at.isoformat() if r.ended_at else None,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "ended_at": iso_utc(r.ended_at),
+                "started_at": iso_utc(r.started_at),
             }
             for r in runs
         }

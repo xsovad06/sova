@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import StepExecution, TaskRun
+from sova.utils.formatting import iso_utc
 
 _TERMINAL_STATUSES = {"done", "failed", "rejected", "interrupted"}
 
@@ -89,8 +90,8 @@ def _run_to_dict(run: TaskRun) -> dict:
         "total_cost_usd": float(run.total_cost_usd),
         "error_message": run.error_message,
         "project_slug": run.project_slug,
-        "started_at": run.started_at.isoformat() if run.started_at else None,
-        "ended_at": run.ended_at.isoformat() if run.ended_at else None,
+        "started_at": iso_utc(run.started_at),
+        "ended_at": iso_utc(run.ended_at),
     }
 
 
@@ -104,6 +105,6 @@ def _step_to_dict(step: StepExecution) -> dict:
         "output_summary": step.output_summary,
         "gate_check_result": step.gate_check_result,
         "error_message": step.error_message,
-        "started_at": step.started_at.isoformat() if step.started_at else None,
-        "ended_at": step.ended_at.isoformat() if step.ended_at else None,
+        "started_at": iso_utc(step.started_at),
+        "ended_at": iso_utc(step.ended_at),
     }

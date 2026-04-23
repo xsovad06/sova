@@ -6,6 +6,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import Memory
+from sova.utils.formatting import iso_utc
 
 
 async def list_memories(
@@ -49,8 +50,8 @@ async def list_memories(
             "tags": m.tags,
             "repo": m.repo,
             "tier": m.tier,
-            "created_at": m.created_at.isoformat() if m.created_at else None,
-            "updated_at": m.updated_at.isoformat() if m.updated_at else None,
+            "created_at": iso_utc(m.created_at),
+            "updated_at": iso_utc(m.updated_at),
         }
         for m in result.scalars().all()
     ]

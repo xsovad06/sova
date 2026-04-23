@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import TaskRun
+from sova.utils.formatting import iso_utc
 
 # Terminal statuses -- must match sova/core/state.py and run_service.py
 _TERMINAL = frozenset({"done", "failed", "rejected"})
@@ -37,7 +38,7 @@ async def get_active_tasks(session: AsyncSession) -> list[dict]:
                 "branch_name": r.branch_name,
                 "pr_number": r.pr_number,
                 "time_in_state": time_in_state,
-                "started_at": started.isoformat() if r.started_at else None,
+                "started_at": iso_utc(started) if r.started_at else None,
                 "total_cost_usd": float(r.total_cost_usd or 0),
             }
         )
@@ -59,8 +60,8 @@ async def get_task_history(session: AsyncSession, limit: int = 50) -> list[dict]
             "current_step": r.current_step,
             "total_cost_usd": float(r.total_cost_usd or 0),
             "error_message": r.error_message,
-            "started_at": r.started_at.isoformat() if r.started_at else None,
-            "ended_at": r.ended_at.isoformat() if r.ended_at else None,
+            "started_at": iso_utc(r.started_at),
+            "ended_at": iso_utc(r.ended_at),
         }
         for r in runs
     ]

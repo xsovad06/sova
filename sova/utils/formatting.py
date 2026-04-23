@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import datetime, timezone
 
 
 def slugify(text: str, max_length: int = 50) -> str:
@@ -38,3 +39,16 @@ def truncate(text: str, max_length: int = 200) -> str:
     if len(text) <= max_length:
         return text
     return text[: max_length - 3] + "..."
+
+
+def iso_utc(dt: datetime | None) -> str | None:
+    """Format a datetime as ISO 8601 with explicit UTC timezone.
+
+    SQLite returns naive datetimes even when stored with timezone=True.
+    Without the +00:00 suffix, browsers interpret ISO strings as local time.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
