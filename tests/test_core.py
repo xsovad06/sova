@@ -785,3 +785,134 @@ class TestCheckpointResume:
         assert not result.success
         assert result.final_status == TaskStatus.PAUSED
         assert "Budget exceeded" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# Context persistence on non-success paths
+# ---------------------------------------------------------------------------
+
+
+class TestContextPersistence:
+    """Verify worktree_path/branch_name are saved to TaskRun on every exit path."""
+
+    async def test_context_persisted_after_successful_step(self) -> None:
+        """worktree_path and branch_name are saved after each successful step."""
+        ctx = _make_ctx(
+            branch_name="feat/issue-42",
+            worktree_dir=Path("/tmp/wt/42"),
+        )
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.branch_name == "feat/issue-42"
+            assert task_run.worktree_path == "/tmp/wt/42"
+
+    async def test_context_persisted_on_gate_failure(self) -> None:
+        """worktree_path and branch_name survive a gate_failed pause."""
+        ctx = _make_ctx(
+            branch_name="feat/issue-73",
+            worktree_dir=Path("/tmp/wt/73"),
+        )
+        step = DummyStep(should_pass=True, gate_pass=False)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.PAUSED
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.branch_name == "feat/issue-73"
+            assert task_run.worktree_path == "/tmp/wt/73"
+
+    async def test_context_persisted_on_step_failure(self) -> None:
+        """worktree_path and branch_name survive a step execution failure."""
+        ctx = _make_ctx(
+            branch_name="fix/broken",
+            worktree_dir=Path("/tmp/wt/99"),
+        )
+        step = DummyStep(should_pass=False)
+        step.max_retries = 0
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.FAILED
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.branch_name == "fix/broken"
+            assert task_run.worktree_path == "/tmp/wt/99"
+
+    async def test_context_persisted_on_budget_exceeded(self) -> None:
+        """worktree_path and branch_name survive a budget pause."""
+        config = ProjectConfig(agent={"max_budget": Decimal("0.01")})
+        ctx = _make_ctx(
+            config=config,
+            branch_name="feat/expensive",
+            worktree_dir=Path("/tmp/wt/88"),
+        )
+        ctx.add_cost(Decimal("0.02"))
+
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.PAUSED
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.branch_name == "feat/expensive"
+            assert task_run.worktree_path == "/tmp/wt/88"
+
+    async def test_context_updated_mid_pipeline(self) -> None:
+        """Context fields set by a middle step are persisted even if a later step fails."""
+        ctx = _make_ctx()
+
+        class WorktreeSettingStep(BaseStep):
+            name = "set_worktree"
+
+            async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
+                ctx_inner.branch_name = "feat/dynamic"
+                ctx_inner.worktree_dir = Path("/tmp/wt/dynamic")
+                return StepResult(success=True, summary="Set worktree")
+
+            async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step_a = WorktreeSettingStep()
+        step_b = DummyStep(should_pass=True, gate_pass=False, name="failing_gate")
+
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.PAUSED
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.branch_name == "feat/dynamic"
+            assert task_run.worktree_path == "/tmp/wt/dynamic"
+
+    async def test_pr_number_persisted_on_failure(self) -> None:
+        """pr_number set during execution is saved even if a later step fails."""
+        ctx = _make_ctx(
+            branch_name="feat/pr-test",
+            pr_number=42,
+        )
+        step = DummyStep(should_pass=True, gate_pass=False)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.PAUSED
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.pr_number == 42
