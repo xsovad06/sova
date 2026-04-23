@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sova.utils.logging import get_logger
-from sova.utils.shell import run, run_checked
+from sova.utils.shell import run, run_checked, subprocess_error
 
 log = get_logger(component="git.worktree")
 
@@ -36,7 +36,9 @@ async def create_worktree(
     """Create a git worktree for an issue.
 
     Creates the worktree in ``<project_dir>/.claude/worktrees/<issue_id>``,
-    branching from *base_branch*.
+    branching from *base_branch*.  If the branch already exists (e.g. from a
+    previous run), the existing branch is checked out into the worktree instead
+    of creating a new one.
 
     Args:
         issue_id: Issue identifier (used for directory naming).
@@ -51,7 +53,18 @@ async def create_worktree(
 
     log.info("worktree.create", issue=issue_id, path=str(worktree_path), branch=branch)
 
-    await run_checked(
+    # If the worktree directory already exists, check if it's valid and reusable
+    if worktree_path.exists():
+        head = await run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_path)
+        if head.success and head.stdout.strip() == branch:
+            log.info("worktree.reuse", path=str(worktree_path), branch=branch)
+            return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
+        # Stale or wrong-branch worktree -- remove and recreate
+        log.info("worktree.stale_remove", path=str(worktree_path))
+        await cleanup_worktree(worktree_path, cwd=project_dir)
+
+    # Try creating a new branch in a worktree
+    result = await run(
         "git",
         "worktree",
         "add",
@@ -61,6 +74,24 @@ async def create_worktree(
         base_branch,
         cwd=project_dir,
     )
+
+    if not result.success:
+        if "a branch named" in result.stderr and "already exists" in result.stderr:
+            # Branch exists from a previous run -- check it out into the worktree
+            log.info("worktree.existing_branch", branch=branch)
+            await run_checked(
+                "git",
+                "worktree",
+                "add",
+                str(worktree_path),
+                branch,
+                cwd=project_dir,
+            )
+        else:
+            raise subprocess_error(
+                ("git", "worktree", "add", str(worktree_path), "-b", branch, base_branch),
+                result,
+            )
 
     if copy_files:
         _copy_worktree_files(project_dir, worktree_path, copy_files)

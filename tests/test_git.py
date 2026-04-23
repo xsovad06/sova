@@ -306,38 +306,64 @@ class TestGetCIChecks:
 
 class TestCreateWorktree:
     async def test_creates_worktree(self) -> None:
-        with patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.worktree.Path.mkdir"):
-                with patch("sova.git.worktree._copy_worktree_files"):
-                    with patch("sova.git.worktree._ensure_compose_project_name"):
-                        info = await create_worktree(
-                            issue_id="42",
-                            branch="feat/login",
-                            base_branch="main",
-                            project_dir=Path("/repo"),
-                        )
+                with patch("sova.git.worktree.Path.exists", return_value=False):
+                    with patch("sova.git.worktree._copy_worktree_files"):
+                        with patch("sova.git.worktree._ensure_compose_project_name"):
+                            info = await create_worktree(
+                                issue_id="42",
+                                branch="feat/login",
+                                base_branch="main",
+                                project_dir=Path("/repo"),
+                            )
 
-                        assert isinstance(info, WorktreeInfo)
-                        assert info.issue_id == "42"
-                        assert info.branch == "feat/login"
-                        assert ".claude/worktrees" in str(info.path)
-                        mock_run.assert_called()
+                            assert isinstance(info, WorktreeInfo)
+                            assert info.issue_id == "42"
+                            assert info.branch == "feat/login"
+                            assert ".claude/worktrees" in str(info.path)
+                            mock_run.assert_called()
 
     async def test_worktree_path_includes_issue_id(self) -> None:
-        with patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.worktree.Path.mkdir"):
-                with patch("sova.git.worktree._copy_worktree_files"):
-                    with patch("sova.git.worktree._ensure_compose_project_name"):
-                        info = await create_worktree(
-                            issue_id="42",
-                            branch="feat/login",
-                            base_branch="main",
-                            project_dir=Path("/repo"),
-                        )
+                with patch("sova.git.worktree.Path.exists", return_value=False):
+                    with patch("sova.git.worktree._copy_worktree_files"):
+                        with patch("sova.git.worktree._ensure_compose_project_name"):
+                            info = await create_worktree(
+                                issue_id="42",
+                                branch="feat/login",
+                                base_branch="main",
+                                project_dir=Path("/repo"),
+                            )
 
-                        assert "42" in str(info.path)
+                            assert "42" in str(info.path)
+
+    async def test_reuses_existing_branch(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.worktree.run_checked", new_callable=AsyncMock) as mock_run_checked,
+        ):
+            # First call (git worktree add -b) fails with "already exists"
+            mock_run.return_value = _shell_fail(stderr="fatal: a branch named 'feat/login' already exists")
+            mock_run_checked.return_value = _shell_ok()
+            with patch("sova.git.worktree.Path.mkdir"):
+                with patch("sova.git.worktree.Path.exists", return_value=False):
+                    with patch("sova.git.worktree._copy_worktree_files"):
+                        with patch("sova.git.worktree._ensure_compose_project_name"):
+                            info = await create_worktree(
+                                issue_id="42",
+                                branch="feat/login",
+                                base_branch="main",
+                                project_dir=Path("/repo"),
+                            )
+
+                            assert isinstance(info, WorktreeInfo)
+                            assert info.branch == "feat/login"
+                            # run_checked should have been called for the fallback (without -b)
+                            mock_run_checked.assert_called_once()
 
 
 class TestCleanupWorktree:
