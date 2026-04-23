@@ -19,9 +19,7 @@ _NAME_TO_LEVEL: dict[str, int] = {
 _log_file_handle: object | None = None
 
 
-def setup_logging(
-    *, json_output: bool = False, level: str = "INFO", log_file: Path | None = None
-) -> None:
+def setup_logging(*, json_output: bool = False, level: str = "INFO", log_file: Path | None = None) -> None:
     """Configure structlog for SOVA.
 
     Args:
