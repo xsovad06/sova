@@ -892,7 +892,8 @@ class TestWorkAPI:
 class TestLogsAPI:
     """Tests for the logs API endpoints."""
 
-    async def test_logs_empty(self, client: AsyncClient) -> None:
+    async def test_logs_empty(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.logs.get_project_dir", lambda: tmp_path)
         resp = await client.get("/api/logs")
         assert resp.status_code == 200
         data = resp.json()

@@ -9,6 +9,18 @@ from pathlib import Path
 # Cache: path -> (mtime, parsed_lines)
 _log_cache: dict[str, tuple[float, list[dict]]] = {}
 
+_META_KEYS = frozenset({"component", "level", "timestamp", "event", "message"})
+
+
+def _build_message(entry: dict) -> str:
+    """Build a human-readable message from structlog event + context fields."""
+    event = entry.get("event", "")
+    context = {k: v for k, v in entry.items() if k not in _META_KEYS and v is not None}
+    if not context:
+        return event
+    parts = [f"{k}={v}" for k, v in context.items()]
+    return f"{event}  ({', '.join(parts)})"
+
 
 def _get_log_path(project_dir: Path | None = None) -> Path:
     """Resolve the log file path for a project."""
@@ -37,9 +49,10 @@ def _parse_log_file(log_path: Path) -> list[dict]:
                 continue
             try:
                 entry = json.loads(line)
+                if "message" not in entry:
+                    entry["message"] = _build_message(entry)
                 entries.append(entry)
             except json.JSONDecodeError:
-                # Plain text line -- wrap it
                 entries.append(
                     {
                         "level": "INFO",
@@ -69,7 +82,6 @@ def get_logs(
     log_path = _get_log_path(project_dir)
     all_entries = _parse_log_file(log_path)
 
-    # Filter
     filtered = all_entries
     if level:
         level_upper = level.upper()
