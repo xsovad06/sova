@@ -127,12 +127,31 @@ def dashboard(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
+    reload: Annotated[bool, typer.Option("--reload", help="Auto-reload on source changes.")] = False,
 ) -> None:
     """Start the SOVA dashboard web UI."""
     import uvicorn
 
-    from sova.dashboard.app import create_app
-
-    app = create_app(project_dir=project)
     console.print(f"[cyan]Starting SOVA dashboard at http://{host}:{port}[/cyan]")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+
+    if reload:
+        import os
+
+        if project:
+            os.environ["SOVA_DASHBOARD_PROJECT"] = str(project.resolve())
+        reload_dir = str(Path(__file__).resolve().parent.parent / "dashboard")
+        console.print(f"[dim]Watching {reload_dir} for changes[/dim]")
+        uvicorn.run(
+            "sova.dashboard.app:create_app",
+            factory=True,
+            host=host,
+            port=port,
+            log_level="info",
+            reload=True,
+            reload_dirs=[reload_dir],
+        )
+    else:
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=project)
+        uvicorn.run(app, host=host, port=port, log_level="info")

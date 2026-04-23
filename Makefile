@@ -1,4 +1,4 @@
-.PHONY: serve test lint lint-bash lint-py format check install-deps help
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps help
 
 SHELL := /bin/bash
 
@@ -10,6 +10,9 @@ help: ## Show this help
 
 serve: ## Start the dashboard (http://localhost:8111)
 	sova dashboard
+
+dev: ## Start the dashboard with auto-reload
+	sova dashboard --reload
 
 test: test-bash test-py ## Run all tests
 

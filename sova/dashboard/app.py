@@ -8,6 +8,7 @@ Supports two modes:
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,6 +53,11 @@ def create_app(
         project_dir: Explicit project directory (forces single-project mode).
         multi_project: Force multi-project mode. None = auto-detect.
     """
+    if project_dir is None:
+        env_project = os.environ.get("SOVA_DASHBOARD_PROJECT")
+        if env_project:
+            project_dir = Path(env_project)
+
     # Auto-detect mode
     if multi_project is None:
         if project_dir is not None:
