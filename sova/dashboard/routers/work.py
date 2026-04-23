@@ -22,6 +22,18 @@ async def get_active():
         await session.close()
 
 
+@router.get("/work/active-grouped")
+async def get_active_grouped():
+    """Get non-terminal runs grouped by issue (latest run per issue + previous)."""
+    session = await get_session()
+    try:
+        async with session.begin():
+            groups = await work_service.get_active_work_grouped(session)
+        return {"issues": groups}
+    finally:
+        await session.close()
+
+
 @router.get("/work/history")
 async def get_history(status: str | None = None, role: str | None = None, limit: int = 50):
     """Get completed/failed task run history."""
@@ -42,6 +54,18 @@ async def get_summary():
         async with session.begin():
             summary = await work_service.get_work_summary(session)
         return summary
+    finally:
+        await session.close()
+
+
+@router.get("/work/issue/{issue_number}")
+async def get_issue_runs(issue_number: str):
+    """Get all runs for a specific issue."""
+    session = await get_session()
+    try:
+        async with session.begin():
+            runs = await work_service.get_runs_for_issue(session, issue_number)
+        return {"runs": runs}
     finally:
         await session.close()
 
