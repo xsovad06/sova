@@ -54,34 +54,59 @@ Before writing anything:
 3. Update existing entries rather than adding duplicates
 4. Remove entries that are now outdated or wrong
 
-### 4. Write Knowledge
+### 4. Confirm Existing Patterns
 
-**For `docs/*-guidelines.md` (Tier 1):**
+Before writing new entries, scan `learnings.md` for patterns you **relied on or validated** this session. For each one, bump its confirmation counter:
+- `[confirmed: 0]` -> `[confirmed: 1]`
+- `[confirmed: 1]` -> `[confirmed: 2]` (now eligible for promotion)
+
+**What counts as "confirmed":**
+- You relied on the pattern during this session (used it, encountered the same scenario)
+- The pattern prevented a mistake (you checked it and it saved time)
+- A review or test validated the pattern was correct
+
+**What does NOT count:**
+- Simply reading the entry without using it
+- The entry existing in the file
+
+### 5. Write New Knowledge
+
+**For `.claude/rules/*.md` (Tier 1):**
 - Follow the existing structure and formatting
 - Write full explanations with code examples where helpful
 - These are for all contributors -- avoid agent-specific jargon
+- Only write here directly for patterns already confirmed across 2+ sessions
 
 **For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern -- bold label, then the lesson
 - Include the "why" -- not just what to do, but why it matters
 - Include file paths when relevant
+- **Always append `[confirmed: 0]` at the end of new entries**
 
 **For user auto-memory (Tier 3):**
 - Follow the two-step process: write topic file, then update `MEMORY.md` index
 - Only for genuinely new user preferences or workflow changes
 
-### 5. Verify Sizes
+### 6. Promote Mature Patterns (Tier 2 -> Tier 1)
+
+Scan `learnings.md` for entries with `[confirmed: 2]` or higher. For each:
+1. Move the pattern to the appropriate `.claude/rules/*.md` file (architecture.md, bash-patterns.md, or a new rules file if needed)
+2. Expand it into a full guideline with context and examples (Tier 1 entries are more detailed than Tier 2 one-liners)
+3. Remove the entry from `learnings.md`
+4. Report the promotion in the summary
+
+This counter-based promotion is the ONLY mechanism for Tier 2 -> Tier 1 graduation. It works across sessions because the counter persists in the file.
+
+### 7. Verify Sizes
 
 Agent memory files should stay concise:
 - `MEMORY.md` -- under 80 lines
-- `learnings.md` -- under 150 lines (prune oldest if needed)
+- `learnings.md` -- under 150 lines (prune oldest with `[confirmed: 0]` first if needed)
 - `review-feedback.md` -- under 150 lines
 
-If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `docs/*-guidelines.md` file and remove the agent-memory entry.
+### 8. Summary
 
-### 6. Summary
-
-List what was extracted and where it was saved. Flag any patterns promoted from Tier 2 to Tier 1.
+List what was extracted, where it was saved, and any patterns promoted from Tier 2 to Tier 1.
 
 ## What to Look For
 
@@ -105,5 +130,7 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 - Update existing entries when the pattern evolved
 - Keep entries actionable -- someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)
-- **Promote mature patterns** from agent-memory to `docs/*-guidelines.md`
+- **New learnings always start at `[confirmed: 0]`** -- never skip the counter
+- **Promote at `[confirmed: 2]`** -- move to `.claude/rules/*.md`, remove from learnings
+- **When pruning for size**: remove `[confirmed: 0]` entries (oldest first) before removing confirmed ones
 - NEVER use emojis in any output
