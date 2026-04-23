@@ -745,7 +745,7 @@ class TestTasksAPI:
         active = data["tasks"][0]
         assert active["issue_number"] == "44"
         assert active["status"] == "developing"
-        assert "time_in_state" in active
+        assert "elapsed_seconds" in active
 
     async def test_task_history_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/tasks/history")

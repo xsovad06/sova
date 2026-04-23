@@ -145,6 +145,94 @@ async def get_work_summary(session: AsyncSession) -> dict:
     return {"total": total, "done": done, "failed": failed, "active": active}
 
 
+async def get_active_work_grouped(session: AsyncSession) -> list[dict]:
+    """Get non-terminal runs grouped by issue, with latest run first.
+
+    Returns a list of issue groups:
+      [{"issue_number": "42", "latest_run": {...}, "previous_runs": [...], "run_count": 3}]
+    """
+    items = await get_active_work(session)
+
+    groups: dict[str, list[dict]] = {}
+    for item in items:
+        groups.setdefault(item["issue_number"], []).append(item)
+
+    result = []
+    for issue, runs in groups.items():
+        runs.sort(key=lambda r: r["started_at"] or "", reverse=True)
+        result.append(
+            {
+                "issue_number": issue,
+                "latest_run": runs[0],
+                "previous_runs": runs[1:],
+                "run_count": len(runs),
+            }
+        )
+
+    result.sort(key=lambda g: g["latest_run"]["started_at"] or "", reverse=True)
+    return result
+
+
+async def get_runs_for_issue(session: AsyncSession, issue_number: str) -> list[dict]:
+    """Get all runs for a specific issue, most recent first."""
+    issue_number = issue_number.lstrip("#").strip()
+    stmt = (
+        select(TaskRun)
+        .where(TaskRun.issue_number == issue_number)
+        .order_by(TaskRun.started_at.desc())
+    )
+    result = await session.execute(stmt)
+    return [_run_to_dict(r) for r in result.scalars().all()]
+
+
+async def list_runs(
+    session: AsyncSession,
+    *,
+    limit: int = 50,
+    status: str | None = None,
+) -> list[dict]:
+    """List task runs, most recent first. Unified replacement for run_service.list_runs."""
+    stmt = select(TaskRun).order_by(TaskRun.started_at.desc())
+    if status:
+        stmt = stmt.where(TaskRun.status == status)
+    stmt = stmt.limit(min(limit, 200))
+
+    result = await session.execute(stmt)
+    return [_run_to_dict(r) for r in result.scalars().all()]
+
+
+async def get_run(session: AsyncSession, run_id: int) -> dict | None:
+    """Get a single task run by ID."""
+    run = await session.get(TaskRun, run_id)
+    return _run_to_dict(run) if run else None
+
+
+async def get_run_steps(session: AsyncSession, run_id: int) -> list[dict]:
+    """Get all step executions for a run, in order."""
+    stmt = (
+        select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
+    )
+    result = await session.execute(stmt)
+    return [_step_to_dict(s) for s in result.scalars().all()]
+
+
+async def mark_run_failed(
+    session: AsyncSession, run_id: int, reason: str = "Manually abandoned"
+) -> dict | None:
+    """Mark a non-terminal run as failed."""
+    run = await session.get(TaskRun, run_id)
+    if run is None:
+        return None
+    if run.status in _TERMINAL:
+        return {"error": f"Run is already {run.status}"}
+    run.status = "failed"
+    run.error_message = reason
+    if not run.ended_at:
+        run.ended_at = datetime.now(timezone.utc)
+    await session.flush()
+    return _run_to_dict(run)
+
+
 def _run_to_dict(run: TaskRun) -> dict:
     return {
         "id": run.id,
