@@ -37,10 +37,12 @@ async def _run_workflow(
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.dispatcher import dispatch
+    from sova.utils.logging import setup_logging
 
     resolved_dir = project_dir or Path.cwd()
     config = load_config(resolved_dir)
 
+    setup_logging(log_file=resolved_dir / ".claude" / "sova.log")
     await init_db(resolved_dir)
 
     adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)

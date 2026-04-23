@@ -8,6 +8,7 @@ Supports two modes:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -41,6 +42,60 @@ from sova.db.session import close_db, init_db, init_db_for_project
 
 BASE = Path(__file__).parent
 
+_SWEEP_INTERVAL = 5  # seconds
+
+
+async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
+    """Periodically check for dead agent processes and mark their TaskRuns as interrupted."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from sova.dashboard.services.control_service import _is_process_alive, _projects
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    _TERMINAL = {"done", "failed", "rejected", "interrupted"}
+
+    while True:
+        await asyncio.sleep(_SWEEP_INTERVAL)
+        try:
+            managed_run_ids: set[int] = set()
+            for pa in _projects.values():
+                managed_run_ids.update(pa.agents.keys())
+
+            dirs: list[Path] = []
+            if is_multi:
+                for _slug, path_str in list_projects().items():
+                    p = Path(path_str)
+                    if p.is_dir():
+                        dirs.append(p)
+            else:
+                dirs.append((project_dir or Path.cwd()).resolve())
+
+            for d in dirs:
+                session = await get_session(project_dir=d)
+                async with session.begin():
+                    stmt = select(TaskRun).where(
+                        TaskRun.status.notin_(_TERMINAL),
+                        TaskRun.pid.isnot(None),
+                    )
+                    result = await session.execute(stmt)
+                    runs = result.scalars().all()
+
+                    for run in runs:
+                        if run.id in managed_run_ids:
+                            continue
+                        if not _is_process_alive(run.pid):
+                            run.status = "interrupted"
+                            run.error_message = "Agent process died unexpectedly"
+                            run.ended_at = datetime.now(timezone.utc)
+                await session.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+
 
 def create_app(
     *,
@@ -69,8 +124,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        from sova.utils.logging import setup_logging
+
+        resolved = (project_dir or Path.cwd()).resolve()
+        log_file = resolved / ".claude" / "sova.log"
+        setup_logging(log_file=log_file)
+
         if is_multi:
-            # Initialize DB for each registered project
             for _slug, path_str in list_projects().items():
                 p = Path(path_str)
                 if p.is_dir():
@@ -79,7 +139,14 @@ def create_app(
         else:
             await init_db(project_dir)
             await recover_stale_runs(project_dir)
+
+        sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         yield
+        sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
         await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)

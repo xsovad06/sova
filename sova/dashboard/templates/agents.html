@@ -101,6 +101,7 @@ function renderAgentCard(agent, completed) {
         '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
         '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
+        (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +
@@ -113,7 +114,9 @@ function renderAgentCard(agent, completed) {
       '<button onclick="viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
-      '<button onclick="stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors">Stop</button>' +
+      (agent.source !== 'external'
+        ? '<button onclick="stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors">Stop</button>'
+        : '') +
     '</div>' +
   '</div>';
 }

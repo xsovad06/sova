@@ -21,8 +21,8 @@ class StartAgentRequest(BaseModel):
 
 @router.get("/agents/active")
 async def get_active_agents():
-    """Get all running + recently completed agents."""
-    return await control_service.get_all_agents()
+    """Get all running + recently completed agents (dashboard + external)."""
+    return await control_service.get_unified_agents()
 
 
 @router.get("/agents/interrupted")

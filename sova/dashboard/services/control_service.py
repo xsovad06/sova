@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sova.core.steps import get_developer_step_names
 from sova.dashboard.project_context import get_project_dir, get_project_slug
+from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.control import AgentProcess
 from sova.utils.logging import get_logger
 
@@ -41,6 +42,7 @@ class AgentState:
     role: str
     process: AgentProcess
     output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
+    output_writer: OutputWriter | None = None
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)
@@ -198,22 +200,92 @@ def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = 
     """Get output lines since the given cursor.
 
     If run_id is specified, returns output for that specific agent.
+    Falls back to the persisted output file when the agent is not in memory.
     Otherwise returns output for the first (legacy single-agent compat).
     """
+    from sova.dashboard.services.output_service import read_lines
+
     pa = _get_project_agents(slug)
 
     if run_id is not None:
         agent = pa.agents.get(run_id)
-        if agent is None:
-            return []
-        lines = list(agent.output_lines)
-        return lines[since:]
+        if agent is not None:
+            lines = list(agent.output_lines)
+            return lines[since:]
+        lines, _total = read_lines(pa.project_dir, run_id, since)
+        return lines
 
     if not pa.agents:
         return []
     first = next(iter(pa.agents.values()))
     lines = list(first.output_lines)
     return lines[since:]
+
+
+async def get_unified_agents(slug: str | None = None) -> dict:
+    """Get all agents: dashboard-spawned (in-memory) + CLI-spawned (DB with alive PID).
+
+    Returns the same shape as get_all_agents() but includes externally started agents
+    detected via PID liveness checks on non-terminal TaskRun records.
+    """
+    base = await get_all_agents(slug)
+    pa = _get_project_agents(slug)
+
+    in_memory_run_ids = {a["run_id"] for a in base["agents"]}
+
+    try:
+        from sqlalchemy import select
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        _TERMINAL = {"done", "failed", "rejected", "interrupted"}
+        session = await get_session(project_dir=pa.project_dir)
+        async with session.begin():
+            stmt = select(TaskRun).where(
+                TaskRun.status.notin_(_TERMINAL),
+                TaskRun.pid.isnot(None),
+            )
+            result = await session.execute(stmt)
+            runs = result.scalars().all()
+
+        await session.close()
+
+        now = datetime.now(timezone.utc)
+        for run in runs:
+            if run.id in in_memory_run_ids:
+                continue
+            if not _is_process_alive(run.pid):
+                continue
+            progress = get_step_progress(run.current_step)
+            started = run.started_at or now
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            elapsed = (now - started).total_seconds()
+            base["agents"].append(
+                {
+                    "run_id": run.id,
+                    "issue": run.issue_number,
+                    "role": run.role,
+                    "status": run.status,
+                    "pid": run.pid,
+                    "current_step": run.current_step or "agent",
+                    "step_index": progress["step_index"],
+                    "total_steps": progress["total_steps"],
+                    "elapsed_seconds": round(elapsed),
+                    "cost_usd": float(run.total_cost_usd or 0),
+                    "output_lines": 0,
+                    "source": "external",
+                }
+            )
+    except Exception:
+        log.debug("unified_agents.external_fetch_failed", exc_info=True)
+
+    for agent in base["agents"]:
+        if "source" not in agent:
+            agent["source"] = "dashboard"
+
+    return base
 
 
 # -- Agent lifecycle ----------------------------------------------------------
@@ -256,11 +328,15 @@ async def start_agent(
             await process.stop()
             return {"error": "Failed to create task run record"}
 
+        writer = OutputWriter(cwd, run_id)
+        await _set_output_file_path(run_id, writer.path, cwd)
+
         agent = AgentState(
             run_id=run_id,
             issue=issue,
             role=role or "auto",
             process=process,
+            output_writer=writer,
             project_dir=cwd,
         )
         pa.agents[run_id] = agent
@@ -345,11 +421,15 @@ async def start_command(
             await process.stop()
             return {"error": "Failed to create task run record"}
 
+        writer = OutputWriter(cwd, run_id)
+        await _set_output_file_path(run_id, writer.path, cwd)
+
         agent = AgentState(
             run_id=run_id,
             issue=issue,
             role=role,
             process=process,
+            output_writer=writer,
             project_dir=cwd,
         )
         pa.agents[run_id] = agent
@@ -366,7 +446,7 @@ async def start_command(
 
 
 async def _read_output(agent: AgentState) -> None:
-    """Background task to read stdout lines into the agent's deque."""
+    """Background task to read stdout lines into the agent's deque and output file."""
     try:
         if agent.process is None:
             return
@@ -374,6 +454,8 @@ async def _read_output(agent: AgentState) -> None:
             text = _parse_stream_line(line, agent)
             if text:
                 agent.output_lines.append(text)
+                if agent.output_writer:
+                    agent.output_writer.write_line(text)
     except asyncio.CancelledError:
         pass
 
@@ -415,13 +497,16 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
 
 
 async def _read_stderr(agent: AgentState) -> None:
-    """Background task to capture stderr lines into the agent's output deque."""
+    """Background task to capture stderr lines into the agent's output deque and file."""
     try:
         if agent.process is None:
             return
         async for line in agent.process.stderr_lines():
             if line.strip():
-                agent.output_lines.append(f"[stderr] {line}")
+                text = f"[stderr] {line}"
+                agent.output_lines.append(text)
+                if agent.output_writer:
+                    agent.output_writer.write_line(text)
     except asyncio.CancelledError:
         pass
 
@@ -460,7 +545,25 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             )
         )
 
+    if agent.output_writer:
+        agent.output_writer.close()
+
     await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
+
+    if exit_code != 0:
+        try:
+            from sova.config.loader import load_config
+            from sova.ipc.notifications import notify
+
+            cfg = load_config(agent.project_dir)
+            notify(
+                cfg.notification,
+                f"SOVA -- #{agent.issue} {status}",
+                f"Agent exited with code {exit_code}",
+            )
+        except Exception:
+            log.debug("notify.failed", run_id=run_id, exc_info=True)
+
     log.info("agent.completed", run_id=run_id, issue=agent.issue, status=status, cost=cost)
 
 
@@ -581,6 +684,22 @@ async def _create_task_run(issue: str, role: str, project_dir: Path, *, pid: int
     except Exception:
         log.warning("task_run.create_failed", exc_info=True)
         return None
+
+
+async def _set_output_file_path(run_id: int, path: Path, project_dir: Path) -> None:
+    """Store the output file path on the TaskRun record."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        session = await get_session(project_dir=project_dir)
+        async with session.begin():
+            task_run = await session.get(TaskRun, run_id)
+            if task_run:
+                task_run.output_file_path = str(path)
+        await session.close()
+    except Exception:
+        log.debug("output_file_path.set_failed", run_id=run_id, exc_info=True)
 
 
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:

@@ -13,6 +13,7 @@ Key responsibilities:
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,8 +22,10 @@ from decimal import Decimal
 from sova.core.context import ExecutionContext
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.dashboard.services.output_service import OutputWriter
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
+from sova.ipc.notifications import notify
 from sova.utils.logging import get_logger
 
 log = get_logger(component="workflow")
@@ -82,11 +85,18 @@ class WorkflowEngine:
         self._steps = steps
         self._ctx = ctx
         self._task_run_id: int | None = None
+        self._output_writer: OutputWriter | None = None
 
     async def run(self) -> WorkflowResult:
         """Execute all steps in order, respecting gates and retries."""
         self._task_run_id = await self._create_task_run()
         self._ctx.task_run_id = self._task_run_id
+
+        self._output_writer = OutputWriter(self._ctx.project_dir, self._task_run_id)
+        await self._set_output_file_path(str(self._output_writer.path))
+        self._output_writer.write_line(
+            f"=== Workflow started: issue #{self._ctx.issue_number}, role={self._ctx.role} ==="
+        )
 
         result = WorkflowResult(
             success=False,
@@ -102,6 +112,8 @@ class WorkflowEngine:
                 log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
                 result.final_status = TaskStatus.PAUSED
                 result.error = f"Budget exceeded: ${self._ctx.cost_usd}"
+                self._write_output(f"PAUSED: {result.error}")
+                self._close_output()
                 await self._record_failure(
                     step.name,
                     "budget_exceeded",
@@ -119,10 +131,14 @@ class WorkflowEngine:
 
             # Update current step on the task run
             await self._set_current_step(step.name)
+            self._write_output(f"\n--- Step: {step.name} ---")
 
             # Execute with retries
             record = await self._execute_with_retries(step)
             result.step_records.append(record)
+
+            if record.result and record.result.summary:
+                self._write_output(record.result.summary)
 
             if record.status == "failed":
                 result.steps_failed += 1
@@ -139,6 +155,15 @@ class WorkflowEngine:
 
                 await self._record_failure(step.name, failure_type, result.error or "Unknown error")
                 await self._update_task_run_status(result.final_status, error=result.error)
+
+                self._write_output(f"FAILED: {result.error}")
+                self._close_output()
+
+                notify(
+                    self._ctx.config.notification,
+                    f"SOVA -- #{self._ctx.issue_number} {result.final_status.value}",
+                    f"Step '{step.name}' failed: {result.error or 'Unknown error'}",
+                )
 
                 log.error(
                     "workflow.step.failed",
@@ -159,8 +184,16 @@ class WorkflowEngine:
         # All steps completed successfully
         result.success = True
         result.final_status = TaskStatus.DONE
+        self._write_output(f"\n=== Workflow completed: ${result.total_cost_usd} ===")
+        self._close_output()
         await self._update_task_run_status(TaskStatus.DONE)
         await self._finalize_task_run()
+
+        notify(
+            self._ctx.config.notification,
+            f"SOVA -- #{self._ctx.issue_number} done",
+            f"All steps completed (${result.total_cost_usd})",
+        )
 
         log.info("workflow.done", issue=self._ctx.issue_number, cost=str(result.total_cost_usd))
         return result
@@ -212,6 +245,17 @@ class WorkflowEngine:
         record.status = "failed"
         return record
 
+    # -- Output helpers --
+
+    def _write_output(self, text: str) -> None:
+        if self._output_writer:
+            self._output_writer.write_line(text)
+
+    def _close_output(self) -> None:
+        if self._output_writer:
+            self._output_writer.close()
+            self._output_writer = None
+
     # -- DB persistence --
 
     async def _create_task_run(self) -> int:
@@ -224,6 +268,7 @@ class WorkflowEngine:
                 status=TaskStatus.PENDING.value,
                 branch_name=self._ctx.branch_name,
                 resumed_from_id=self._ctx.resume_run_id,
+                pid=os.getpid(),
             )
             session.add(task_run)
             await session.flush()
@@ -236,6 +281,14 @@ class WorkflowEngine:
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.current_step = step_name
+
+    async def _set_output_file_path(self, path: str) -> None:
+        """Store the output file path on the TaskRun record."""
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, self._task_run_id)
+            if task_run:
+                task_run.output_file_path = path
 
     async def _update_task_run_status(self, status: TaskStatus, *, error: str | None = None) -> None:
         """Update the TaskRun status and optional error message."""
