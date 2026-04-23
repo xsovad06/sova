@@ -94,12 +94,22 @@ git diff  # review your own fixes
 
 If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
 
-### Step 6: Run CI Checks Locally
+### Step 6: Commit Review Fixes
+
+If you made any auto-fixes, stage and commit them:
+```bash
+git add -A
+git commit -m "fix: address review findings"
+```
+
+Skip this step if no fixes were made.
+
+### Step 7: Run CI Checks Locally
 
 Run the same checks the pipeline will run, scoped to modules that have changes (see CLAUDE.md for commands).
 Only run checks for modules with changed files. If any check fails, fix the issue and loop back to Step 5 before proceeding.
 
-### Step 7: Summary
+### Step 8: Summary
 
 ```
 ## Review Summary

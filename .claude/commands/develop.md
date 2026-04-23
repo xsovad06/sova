@@ -63,7 +63,19 @@ Run the project's linter and test suite (see CLAUDE.md for commands):
 
 If tests fail, fix and re-run (up to 3 attempts).
 
-### Step 5: Self-Check
+### Step 5: Commit Your Work
+
+Stage and commit all changes using the conventional commits format from AGENTS.md:
+```bash
+git add -A
+git commit -m "type(scope): short description
+
+Closes #<issue_number>"
+```
+
+Use the appropriate type (`feat`, `fix`, `refactor`, `test`, etc.) and scope for the change. Split into logical commits if the change spans multiple concerns (e.g., separate commits for new module, tests, config changes).
+
+### Step 6: Self-Check
 
 Before declaring done:
 - [ ] All tests pass
@@ -71,6 +83,7 @@ Before declaring done:
 - [ ] No debug code or print statements left
 - [ ] No unnecessary changes outside the task scope
 - [ ] New code follows existing patterns exactly
+- [ ] All changes are committed (no uncommitted files)
 
 ## Cross-References
 
