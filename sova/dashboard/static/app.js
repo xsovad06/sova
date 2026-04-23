@@ -203,7 +203,14 @@ async function _pollActivity() {
       }
     } else {
       if (_lastActivityState === 'running') {
-        _addNotification('Agent completed', 'info');
+        var completed = data.completed || [];
+        var latest = completed.length > 0 ? completed[completed.length - 1] : null;
+        if (latest && (latest.status === 'failed' || latest.status === 'paused')) {
+          var label = latest.issue ? '#' + latest.issue : 'Agent';
+          _addNotification(label + ' ' + latest.status + (latest.status === 'paused' ? ' -- needs attention' : ' -- check logs'), 'warning');
+        } else {
+          _addNotification('Agent completed', 'info');
+        }
       }
       dot.className = _dotClass('bg-accent-green', false);
       _lastActivityState = 'idle';
