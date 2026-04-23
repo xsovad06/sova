@@ -27,13 +27,24 @@ A standalone application that any software project can install to gain autonomou
 
 ```bash
 git clone <repo> ~/project-automation-kit
-cd ~/project-automation-kit
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+pip install --user --break-system-packages -e ~/project-automation-kit
 ```
 
-After installation, the `sova` command is available in your virtualenv.
+This installs the `sova` command globally. Ensure your Python user bin directory is on PATH:
+
+```bash
+# Add to ~/.zshrc (macOS with Homebrew Python 3.14):
+export PATH="$HOME/Library/Python/3.14/bin:$PATH"
+
+# Linux:
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+For development (tests, linting), also install dev dependencies:
+
+```bash
+pip install --user --break-system-packages -e ~/project-automation-kit"[dev]"
+```
 
 ## Quick Start
 

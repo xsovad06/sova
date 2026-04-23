@@ -7,7 +7,7 @@ This file provides Claude Code-specific commands and behaviors. Architecture, co
 ## Running the Project
 
 ```bash
-# SOVA CLI (Python -- requires pip install -e . in venv)
+# SOVA CLI (globally installed via: pip install --user --break-system-packages -e .)
 sova --help                         # Show all commands
 sova install /path/to/project       # Install SOVA into a project
 sova setup /path/to/project         # Run setup wizard
