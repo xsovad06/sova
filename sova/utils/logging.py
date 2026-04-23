@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 import structlog
+
+_NAME_TO_LEVEL: dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
 _log_file_handle: object | None = None
 
@@ -51,7 +60,7 @@ def setup_logging(
 
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(structlog.get_level_from_name(level)),
+        wrapper_class=structlog.make_filtering_bound_logger(_NAME_TO_LEVEL.get(level.upper(), logging.INFO)),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
