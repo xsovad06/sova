@@ -499,9 +499,10 @@ class TestCommitStep:
         ctx.task = Task(id="73", title="LLM provider abstraction")
         step = CommitStep()
 
-        with patch("sova.core.steps.commit.run") as mock_run, patch(
-            "sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock
-        ) as mock_commit:
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat
                 MagicMock(success=True, stdout=""),  # staged

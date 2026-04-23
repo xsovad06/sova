@@ -10,12 +10,14 @@ SOVA has four main components:
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
-- `core/workflow.py` -- WorkflowEngine: executes 12-step pipeline with DB persistence (TaskRun, StepExecution, FailureRecord)
-- `core/state.py` -- 16-state TaskStatus StrEnum with transition validation
+- `core/workflow.py` -- WorkflowEngine: executes 13-step pipeline with DB persistence (TaskRun, StepExecution, FailureRecord)
+- `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
-- `core/steps/` -- 12 BaseStep implementations with execute/validate_output/can_skip
+- `core/steps/` -- 13 BaseStep implementations with execute/validate_output/can_skip
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state
+- **Step gate checks**: every `validate_output()` must check all forms of change -- unstaged diff (`git diff --stat HEAD`), staged diff (`git diff --cached --stat`), and commits ahead of base (`git log {base}..HEAD --oneline`). LLM agents may commit directly, leaving working-tree diffs empty even when real work was done. Never return `GateCheckResult(passed=True)` unconditionally.
+- **Context persistence at step boundaries**: `_sync_task_run_context()` persists `worktree_path`, `branch_name`, and `pr_number` to the TaskRun after every step. This ensures the checkpoint/resume system can restore context even if the run pauses or crashes mid-pipeline.
 
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
@@ -86,4 +88,6 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Markdown commands**: Claude Code loads them as slash commands, 20 commands with category frontmatter
 - **Persona auto-detection**: detects project tech stack and loads relevant guidance
 - **DB persistence**: TaskRun, CostRecord, StepExecution tracked in SQLite/PostgreSQL
+- **Dual TaskRun write paths**: the dashboard's `control_service` creates a TaskRun tracking the outer process lifecycle (spawned/done/failed), while `WorkflowEngine` creates a separate TaskRun tracking inner workflow state (pending/developing/paused/done). These are independent DB records. Cost aggregation uses `TaskRun.total_cost_usd` (always written by both paths); `CostRecord` is only reliable for per-model/per-phase breakdowns.
 - **Combined server**: `sova server start` runs dashboard + scheduler in one async process
+- **File-backed service test isolation**: dashboard services that read project files (log_service, handoff_service, control_service) use module-level project dir + mtime caches. Tests MUST monkeypatch `get_project_dir` to point at `tmp_path`, otherwise they read real project files and produce flaky results. Caches (`_log_cache`, `_handoff_cache`) may also need clearing between tests.

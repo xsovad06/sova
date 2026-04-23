@@ -357,14 +357,14 @@ function roleColor(role) {
 
 var PIPELINE_STEPS = [
   'sync', 'assess', 'create_worktree', 'develop', 'simplify',
-  'self_review', 'push', 'create_pr', 'monitor_ci',
+  'self_review', 'commit', 'push', 'create_pr', 'monitor_ci',
   'automated_review', 'address_review', 'complete'
 ];
 
 var STEP_LABELS = {
   sync: 'Sync', assess: 'Assess', create_worktree: 'Worktree',
   develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
-  push: 'Push', create_pr: 'PR', monitor_ci: 'CI',
+  commit: 'Commit', push: 'Push', create_pr: 'PR', monitor_ci: 'CI',
   automated_review: 'Auto Review', address_review: 'Address', complete: 'Done'
 };
 
