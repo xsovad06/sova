@@ -9,6 +9,7 @@ from sova.core.steps.address_review import AddressReviewStep
 from sova.core.steps.assess import AssessStep
 from sova.core.steps.automated_review import AutomatedReviewStep
 from sova.core.steps.base import BaseStep
+from sova.core.steps.commit import CommitStep
 from sova.core.steps.complete import CompleteStep
 from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
@@ -29,6 +30,7 @@ def get_developer_steps() -> list[BaseStep]:
         DevelopStep(),
         SimplifyStep(),
         SelfReviewStep(),
+        CommitStep(),
         PushStep(),
         CreatePRStep(),
         MonitorCIStep(),

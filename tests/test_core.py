@@ -66,6 +66,7 @@ class TestTaskStatus:
             "DEVELOPING",
             "SIMPLIFYING",
             "REVIEWING",
+            "COMMITTING",
             "PUSHING",
             "PR_CREATED",
             "CI_MONITORING",
@@ -121,6 +122,7 @@ class TestTaskStatus:
             TaskStatus.DEVELOPING,
             TaskStatus.SIMPLIFYING,
             TaskStatus.REVIEWING,
+            TaskStatus.COMMITTING,
             TaskStatus.PUSHING,
             TaskStatus.PR_CREATED,
             TaskStatus.CI_MONITORING,
@@ -489,6 +491,91 @@ class TestDevelopStep:
         assert gate.passed
 
 
+class TestCommitStep:
+    async def test_commits_uncommitted_changes(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.task = Task(id="73", title="LLM provider abstraction")
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run, patch(
+            "sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock
+        ) as mock_commit:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" config/base.py | 5 +++++\n"),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout="apps/ai/__init__.py\n"),  # untracked
+                MagicMock(success=True, stdout=""),  # log (no commits yet)
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_commit.assert_awaited_once()
+        msg = mock_commit.call_args[0][0]
+        assert "LLM provider abstraction" in msg
+        assert "Closes #42" in msg
+
+    async def test_skips_when_already_committed(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout=""),  # untracked (clean)
+                MagicMock(success=True, stdout="abc123 feat: something\n"),  # log (has commits)
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "already exist" in result.summary
+
+    async def test_fails_when_no_changes_and_no_commits(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # untracked
+                MagicMock(success=True, stdout=""),  # log (no commits)
+            ]
+            result = await step.execute(ctx)
+
+        assert not result.success
+
+    async def test_gate_requires_commits_ahead(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="")
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
+    async def test_gate_passes_with_commits(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: something\n")
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+
 class TestPushStep:
     async def test_gate_check_requires_commits_ahead(self) -> None:
         from sova.core.steps.push import PushStep
@@ -548,6 +635,7 @@ class TestStepRegistry:
             "develop",
             "simplify",
             "self_review",
+            "commit",
             "push",
             "create_pr",
             "monitor_ci",

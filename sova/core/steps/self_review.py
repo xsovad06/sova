@@ -29,21 +29,23 @@ class SelfReviewStep(BaseStep):
             return StepResult(success=False, summary="Self-review failed", error=str(exc))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: commits must still exist after review (review may rearrange commits)."""
+        """Gate: changes or commits must still exist after review."""
         from sova.utils.shell import run
 
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
-        if has_commits:
-            return GateCheckResult(passed=True)
 
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        untracked = await run("git", "ls-files", "--others", "--exclude-standard", cwd=ctx.working_dir)
         has_changes = bool(
-            (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
+            (diff_result.success and diff_result.stdout.strip())
+            or (staged.success and staged.stdout.strip())
+            or (untracked.success and untracked.stdout.strip())
         )
-        if has_changes:
-            return GateCheckResult(passed=False, reason="Commits lost during review but uncommitted changes remain")
+
+        if has_commits or has_changes:
+            return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="All commits and changes lost during review")
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:

@@ -38,6 +38,7 @@ _STEP_STATUS_MAP: dict[str, TaskStatus] = {
     "develop": TaskStatus.DEVELOPING,
     "simplify": TaskStatus.SIMPLIFYING,
     "self_review": TaskStatus.REVIEWING,
+    "commit": TaskStatus.COMMITTING,
     "push": TaskStatus.PUSHING,
     "create_pr": TaskStatus.PR_CREATED,
     "monitor_ci": TaskStatus.CI_MONITORING,

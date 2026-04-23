@@ -20,6 +20,7 @@ class TaskStatus(StrEnum):
     DEVELOPING = "developing"
     SIMPLIFYING = "simplifying"
     REVIEWING = "reviewing"
+    COMMITTING = "committing"
     PUSHING = "pushing"
     PR_CREATED = "pr_created"
     CI_MONITORING = "ci_monitoring"
@@ -45,7 +46,8 @@ _TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.IN_PROGRESS: frozenset({TaskStatus.DEVELOPING}),
     TaskStatus.DEVELOPING: frozenset({TaskStatus.SIMPLIFYING}),
     TaskStatus.SIMPLIFYING: frozenset({TaskStatus.REVIEWING}),
-    TaskStatus.REVIEWING: frozenset({TaskStatus.PUSHING}),
+    TaskStatus.REVIEWING: frozenset({TaskStatus.COMMITTING}),
+    TaskStatus.COMMITTING: frozenset({TaskStatus.PUSHING}),
     TaskStatus.PUSHING: frozenset({TaskStatus.PR_CREATED}),
     TaskStatus.PR_CREATED: frozenset({TaskStatus.CI_MONITORING}),
     TaskStatus.CI_MONITORING: frozenset({TaskStatus.AUTOMATED_REVIEW}),
