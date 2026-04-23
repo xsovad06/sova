@@ -120,6 +120,7 @@ class WorkflowEngine:
                     result.error,
                 )
                 await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
+                await self._sync_task_run_context()
                 return result
 
             # Check if step can be skipped
@@ -155,6 +156,7 @@ class WorkflowEngine:
 
                 await self._record_failure(step.name, failure_type, result.error or "Unknown error")
                 await self._update_task_run_status(result.final_status, error=result.error)
+                await self._sync_task_run_context()
 
                 self._write_output(f"FAILED: {result.error}")
                 self._close_output()
@@ -175,6 +177,7 @@ class WorkflowEngine:
 
             result.steps_completed += 1
             result.total_cost_usd += Decimal(str(record.result.cost_usd)) if record.result else Decimal("0")
+            await self._sync_task_run_context()
 
             # Update the workflow status based on the step
             step_status = _STEP_STATUS_MAP.get(step.name)
@@ -302,6 +305,18 @@ class WorkflowEngine:
                     task_run.error_message = error
                 if status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PAUSED):
                     task_run.ended_at = datetime.now(timezone.utc)
+
+    async def _sync_task_run_context(self) -> None:
+        """Persist mutable context fields to the TaskRun so they survive crashes and are available on resume."""
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, self._task_run_id)
+            if task_run:
+                task_run.branch_name = self._ctx.branch_name
+                if self._ctx.worktree_dir:
+                    task_run.worktree_path = str(self._ctx.worktree_dir)
+                if self._ctx.pr_number:
+                    task_run.pr_number = self._ctx.pr_number
 
     async def _finalize_task_run(self) -> None:
         """Write final state to the TaskRun after successful completion."""
