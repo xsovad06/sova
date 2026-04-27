@@ -482,6 +482,73 @@ class TestControlServiceRecovery:
 
 
 # ---------------------------------------------------------------------------
+# Control Service -- duplicate agent prevention
+# ---------------------------------------------------------------------------
+
+
+class TestDuplicateAgentPrevention:
+    async def test_start_agent_rejects_duplicate_issue(self) -> None:
+        """Starting an agent for an issue that already has one running should fail."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import control_service
+        from sova.dashboard.services.control_service import AgentState, ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+        existing = AgentState(
+            run_id=1,
+            issue="73",
+            role="developer",
+            process=MagicMock(),
+        )
+        pa.agents[1] = existing
+
+        with patch.object(control_service, "_get_project_agents", return_value=pa):
+            result = await start_agent("73")
+
+        assert "error" in result
+        assert "already has an active agent" in result["error"]
+        assert result["existing_run_id"] == 1
+
+    async def test_start_agent_allows_different_issue(self) -> None:
+        """Starting an agent for a different issue should succeed (mocked spawn)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import control_service
+        from sova.dashboard.services.control_service import AgentState, ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+        existing = AgentState(
+            run_id=1,
+            issue="73",
+            role="developer",
+            process=MagicMock(),
+        )
+        pa.agents[1] = existing
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        mock_process.stdout_lines = AsyncMock(return_value=AsyncMock(__aiter__=AsyncMock(return_value=iter([]))))
+        mock_process.stderr_lines = AsyncMock(return_value=AsyncMock(__aiter__=AsyncMock(return_value=iter([]))))
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(control_service, "_get_project_agents", return_value=pa),
+            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(control_service, "_create_task_run", new_callable=AsyncMock, return_value=2),
+            patch.object(control_service, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(control_service, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(control_service, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(control_service, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.control_service.OutputWriter"),
+        ):
+            result = await start_agent("74")
+
+        assert result["status"] == "started"
+        assert result["run_id"] == 2
+
+
+# ---------------------------------------------------------------------------
 # Memory API
 # ---------------------------------------------------------------------------
 

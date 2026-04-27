@@ -310,6 +310,13 @@ async def start_agent(
                 "running": len(pa.agents),
             }
 
+        for existing in pa.agents.values():
+            if existing.issue == issue:
+                return {
+                    "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
+                    "existing_run_id": existing.run_id,
+                }
+
         prompt = f"sova run {issue}"
         if resume_run_id:
             prompt += f" --resume {resume_run_id}"
@@ -650,7 +657,8 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
         from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
-        adapter = create_adapter(cfg.task_source.type, cfg.github_repo, cfg.github_user)
+        ts = cfg.task_source
+        adapter = create_adapter(ts.type, cfg.github_repo, cfg.github_user, ts.github_project_number)
         await adapter.transition_state(issue, TaskState.IN_PROGRESS)
         log.info("issue.transitioned", issue=issue, state="in_progress")
     except Exception:
