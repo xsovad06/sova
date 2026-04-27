@@ -337,30 +337,56 @@ class TestReviewerRole:
         assert TaskState.IN_REVIEW in role.allowed_input_states
 
     async def test_execute_reviews_pr(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
-        result = await role.execute(ctx)
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
 
         assert result.success
 
     async def test_execute_discovers_pr_when_not_provided(self) -> None:
+        import json
+        from decimal import Decimal
         from unittest.mock import patch
 
         from sova.git.operations import PRInfo
+        from sova.llm.models import LLMResult
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
         role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
-        with patch(
-            "sova.roles.reviewer.find_pr_for_issue",
-            new_callable=AsyncMock,
-            return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82"),
+        with (
+            patch(
+                "sova.roles.reviewer.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
         ):
             result = await role.execute(ctx)
 
@@ -701,3 +727,307 @@ class TestTriageLabelApplication:
             "human_only": "agent:human-only",
         }
         assert role.SUITABILITY_LABELS == expected
+
+
+# ---------------------------------------------------------------------------
+# ReviewerRole -- LLM-based review
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerLLMReview:
+    """Tests for the full LLM-based ReviewerRole implementation."""
+
+    def _llm_response(self, findings: list[dict] | None = None, summary: str = "Looks good") -> str:
+        import json
+
+        data = {"findings": findings or [], "summary": summary}
+        return json.dumps(data)
+
+    async def test_successful_review_with_findings(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+
+        findings = [
+            {
+                "file": "foo.py", "line": 5, "severity": 7,
+                "category": "bug", "description": "Null check missing",
+                "suggestion": "Add check",
+            },
+            {"file": "bar.py", "severity": 2, "category": "style", "description": "Minor formatting"},
+        ]
+        llm_result = LLMResult(
+            text=self._llm_response(findings, "Two issues found"),
+            model="sonnet", cost_usd=Decimal("0.01"),
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff content"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py", "bar.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "2 findings" in result.summary
+        assert "1 actionable" in result.summary
+        adapter.post_comment.assert_awaited_once()
+        comment = adapter.post_comment.call_args[0][1]
+        assert "Null check missing" in comment
+        assert ctx.cost_usd == Decimal("0.01")
+
+    async def test_review_no_findings(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+
+        llm_result = LLMResult(text=self._llm_response([], "Clean code"), model="sonnet", cost_usd=Decimal("0.005"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "0 findings" in result.summary
+        comment = adapter.post_comment.call_args[0][1]
+        assert "No issues found" in comment
+
+    async def test_llm_failure_graceful_fallback(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=RuntimeError("LLM unavailable")),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        comment = adapter.post_comment.call_args[0][1]
+        assert "manual review" in comment.lower()
+
+    async def test_large_diff_chunking(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+
+        # Create a diff larger than DIFF_CHUNK_SIZE (100KB)
+        large_diff = "diff --git a/a.py b/a.py\n" + ("+" + "x" * 200 + "\n") * 600
+        large_diff += "diff --git a/b.py b/b.py\n" + ("+" + "y" * 200 + "\n") * 600
+
+        finding_a = [{"file": "a.py", "severity": 5, "category": "bug", "description": "Issue in a"}]
+        finding_b = [{"file": "b.py", "severity": 4, "category": "bug", "description": "Issue in b"}]
+        chunk1_result = LLMResult(
+            text=self._llm_response(finding_a, "Chunk 1"),
+            model="sonnet", cost_usd=Decimal("0.01"),
+        )
+        chunk2_result = LLMResult(
+            text=self._llm_response(finding_b, "Chunk 2"),
+            model="sonnet", cost_usd=Decimal("0.01"),
+        )
+
+        side = [chunk1_result, chunk2_result]
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=large_diff),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py", "b.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=side) as mock_invoke,
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert mock_invoke.call_count == 2
+        assert "2 findings" in result.summary
+        assert ctx.cost_usd == Decimal("0.02")
+
+    async def test_handoff_address_review_when_actionable(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.task_run_id = 1
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Bad"}]
+        llm_result = LLMResult(text=self._llm_response(findings), model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            role = ReviewerRole()
+            await role.execute(ctx)
+
+        mock_db_handoff.assert_awaited_once()
+        handoff = mock_db_handoff.call_args[0][1]
+        assert handoff.next_action == "address_review"
+        assert len(handoff.pending_findings) == 1
+
+        mock_file_handoff.assert_called_once()
+        dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert dashboard_handoff.next_actions[0].id == "address_review"
+
+    async def test_handoff_approve_when_no_actionable(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.task_run_id = 1
+
+        findings = [{"file": "x.py", "severity": 1, "category": "style", "description": "Minor"}]
+        llm_result = LLMResult(text=self._llm_response(findings), model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            role = ReviewerRole()
+            await role.execute(ctx)
+
+        handoff = mock_db_handoff.call_args[0][1]
+        assert handoff.next_action == "approve"
+        assert len(handoff.pending_findings) == 0
+
+        dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert dashboard_handoff.next_actions[0].id == "approve"
+
+    async def test_diff_fetch_failure(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+
+        err = RuntimeError("Network error")
+        with patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, side_effect=err):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "Network error" in result.error
+
+
+class TestReviewerParsing:
+    """Tests for reviewer pure functions."""
+
+    def test_parse_findings_valid_json(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            '{"findings": [{"file": "a.py", "severity": 5,'
+            ' "category": "bug", "description": "Bad"}], "summary": "OK"}'
+        )
+        findings, summary = _parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].severity == 5
+        assert summary == "OK"
+
+    def test_parse_findings_with_markdown_fences(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = '```json\n{"findings": [], "summary": "Clean"}\n```'
+        findings, summary = _parse_findings(text)
+        assert findings == []
+        assert summary == "Clean"
+
+    def test_parse_findings_invalid_json(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        findings, summary = _parse_findings("not json at all")
+        assert findings == []
+        assert "Failed" in summary
+
+    def test_parse_findings_json_embedded_in_text(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            'Here is the review: {"findings": [{"file": "x.py",'
+            ' "severity": 3, "category": "style", "description": "D"}],'
+            ' "summary": "S"} done'
+        )
+        findings, summary = _parse_findings(text)
+        assert len(findings) == 1
+
+    def test_chunk_diff_small(self) -> None:
+        from sova.roles.reviewer import _chunk_diff
+
+        diff = "diff --git a/f.py b/f.py\n+hello\n"
+        chunks = _chunk_diff(diff, chunk_size=10000)
+        assert len(chunks) == 1
+
+    def test_chunk_diff_large(self) -> None:
+        from sova.roles.reviewer import _chunk_diff
+
+        diff = "diff --git a/a.py b/a.py\n" + ("+" + "x" * 99 + "\n") * 700
+        diff += "diff --git a/b.py b/b.py\n" + ("+" + "y" * 99 + "\n") * 700
+        chunks = _chunk_diff(diff, chunk_size=70000)
+        assert len(chunks) == 2
+
+    def test_format_findings_no_findings(self) -> None:
+        from sova.roles.reviewer import _format_findings_comment
+
+        comment = _format_findings_comment([], "All good", 42)
+        assert "No issues found" in comment
+        assert "PR #42" in comment
+
+    def test_format_findings_with_actionable(self) -> None:
+        from sova.roles.reviewer import ReviewFinding, _format_findings_comment
+
+        findings = [
+            ReviewFinding(file="a.py", severity=7, category="bug", description="Null ref", suggestion="Add check"),
+            ReviewFinding(file="b.py", severity=1, category="style", description="Whitespace"),
+        ]
+        comment = _format_findings_comment(findings, "Mixed", 10)
+        assert "2 findings" in comment
+        assert "1 actionable" in comment
+        assert "Null ref" in comment
+        assert "Findings requiring action" in comment
+        assert "BLOCK" in comment

@@ -21,6 +21,8 @@ from sova.git.operations import (
     find_pr_for_issue,
     get_ci_checks,
     get_current_branch,
+    get_pr_diff,
+    get_pr_files,
     get_pr_status,
     push,
     rebase,
@@ -671,3 +673,59 @@ class TestEnsureComposeProjectName:
 
         env_content = (worktree / ".env").read_text()
         assert "COMPOSE_PROJECT_NAME=my_project" in env_content
+
+
+# ---------------------------------------------------------------------------
+# PR diff and files
+# ---------------------------------------------------------------------------
+
+SAMPLE_DIFF = """\
+diff --git a/foo.py b/foo.py
+--- a/foo.py
++++ b/foo.py
+@@ -1,3 +1,4 @@
++import os
+ def hello():
+     pass
+"""
+
+
+class TestGetPrDiff:
+    async def test_returns_diff(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=SAMPLE_DIFF)
+            result = await get_pr_diff(42, repo="user/repo", github_user="test")
+
+        assert "diff --git" in result
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0]
+        assert "diff" in args
+        assert "42" in args
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not found")
+            with pytest.raises(RuntimeError, match="Failed to get diff"):
+                await get_pr_diff(42, repo="user/repo")
+
+
+class TestGetPrFiles:
+    async def test_returns_file_list(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="foo.py\nbar.py\n")
+            result = await get_pr_files(42, repo="user/repo")
+
+        assert result == ["foo.py", "bar.py"]
+
+    async def test_filters_empty_lines(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="foo.py\n\nbar.py\n\n")
+            result = await get_pr_files(42, repo="user/repo")
+
+        assert result == ["foo.py", "bar.py"]
+
+    async def test_raises_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not found")
+            with pytest.raises(RuntimeError, match="Failed to get files"):
+                await get_pr_files(42, repo="user/repo")
