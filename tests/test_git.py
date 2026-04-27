@@ -14,6 +14,7 @@ from sova.git.operations import (
     CICheck,
     PRInfo,
     PRStatus,
+    assign_pr,
     commit,
     create_branch,
     create_pr,
@@ -128,8 +129,10 @@ class TestCommit:
     async def test_commits_with_message(self) -> None:
         with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="")
 
-            await commit("feat: add login page", cwd=Path("/repo"))
+                await commit("feat: add login page", cwd=Path("/repo"))
 
             calls = [c[0] for c in mock_run.call_args_list]
             commit_call = [args for args in calls if "commit" in args]
@@ -139,8 +142,10 @@ class TestCommit:
     async def test_commits_specific_files(self) -> None:
         with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test_app.py\n")
 
-            await commit("fix: typo", files=["src/app.py", "tests/test_app.py"], cwd=Path("/repo"))
+                await commit("fix: typo", files=["src/app.py", "tests/test_app.py"], cwd=Path("/repo"))
 
             calls = [c[0] for c in mock_run.call_args_list]
             add_call = [args for args in calls if "add" in args]
@@ -150,14 +155,37 @@ class TestCommit:
     async def test_commits_all_when_no_files(self) -> None:
         with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="")
 
-            await commit("chore: update", cwd=Path("/repo"))
+                await commit("chore: update", cwd=Path("/repo"))
 
             calls = [c[0] for c in mock_run.call_args_list]
             add_call = [args for args in calls if "add" in args]
             assert len(add_call) >= 1
             # Should use -A when no specific files
             assert "-A" in add_call[0]
+
+    async def test_warns_on_suspicious_staged_files(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout=".venv\n.env\napp.py\n")
+
+                with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
+                    await commit("chore: update", cwd=Path("/repo"))
+
+    async def test_no_error_on_clean_staged_files(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test.py\n")
+
+                await commit("feat: add app", cwd=Path("/repo"))
+
+            calls = [c[0] for c in mock_run.call_args_list]
+            commit_call = [args for args in calls if "commit" in args]
+            assert len(commit_call) >= 1
 
 
 class TestPush:
@@ -223,6 +251,27 @@ class TestCreatePR:
                     head="feat/login",
                     repo="user/repo",
                 )
+
+
+class TestAssignPR:
+    async def test_assigns_pr_to_user(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+
+            await assign_pr(42, assignee="xsovad06", repo="user/repo")
+
+            call_args = mock_run.call_args[0]
+            assert "pr" in call_args
+            assert "edit" in call_args
+            assert "--add-assignee" in call_args
+            assert "xsovad06" in call_args
+
+    async def test_assign_pr_logs_warning_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not found")
+
+            # Should not raise, just log
+            await assign_pr(42, assignee="xsovad06", repo="user/repo")
 
 
 class TestGetPRStatus:

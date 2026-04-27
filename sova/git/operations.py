@@ -128,6 +128,20 @@ async def rebase(base: str, cwd: Path | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+_SUSPICIOUS_PATHS = frozenset(
+    {
+        ".venv",
+        ".env",
+        ".env.local",
+        "credentials.json",
+        ".secrets",
+        "node_modules",
+        ".DS_Store",
+        "__pycache__",
+    }
+)
+
+
 async def commit(message: str, files: list[str] | None = None, cwd: Path | None = None) -> None:
     """Stage files and create a commit."""
     log.info("git.commit", message=message[:80])
@@ -136,6 +150,14 @@ async def commit(message: str, files: list[str] | None = None, cwd: Path | None 
         await run_checked("git", "add", *files, cwd=cwd)
     else:
         await run_checked("git", "add", "-A", cwd=cwd)
+
+    staged = await run("git", "diff", "--cached", "--name-only", cwd=cwd)
+    if staged.success:
+        bad = [f for f in staged.stdout.strip().splitlines() if f.strip() in _SUSPICIOUS_PATHS]
+        if bad:
+            for f in bad:
+                await run("git", "reset", "HEAD", "--", f, cwd=cwd)
+            raise RuntimeError(f"Refusing to commit suspicious files: {', '.join(bad)}")
 
     await run_checked("git", "commit", "-m", message, cwd=cwd)
 
@@ -205,6 +227,25 @@ async def create_pr(
         raise RuntimeError(f"Failed to parse PR number from: {pr_url}") from exc
 
     return PRInfo(number=pr_number, url=pr_url)
+
+
+async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: str = "") -> None:
+    """Assign a pull request to a user via gh CLI."""
+    log.info("git.assign_pr", pr=pr_number, assignee=assignee)
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "edit",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--add-assignee",
+        assignee,
+        env=env,
+    )
+    if not result.success:
+        log.warning("git.assign_pr.failed", pr=pr_number, stderr=result.stderr[:200])
 
 
 async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:
