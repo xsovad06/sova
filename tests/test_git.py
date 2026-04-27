@@ -261,15 +261,13 @@ class TestGetCIChecks:
             [
                 {
                     "name": "tests",
-                    "status": "COMPLETED",
-                    "conclusion": "SUCCESS",
-                    "detailsUrl": "https://github.com/runs/1",
+                    "state": "SUCCESS",
+                    "link": "https://github.com/runs/1",
                 },
                 {
                     "name": "lint",
-                    "status": "COMPLETED",
-                    "conclusion": "FAILURE",
-                    "detailsUrl": "https://github.com/runs/2",
+                    "state": "FAILURE",
+                    "link": "https://github.com/runs/2",
                 },
             ]
         )
@@ -282,7 +280,19 @@ class TestGetCIChecks:
             assert checks[0].name == "tests"
             assert checks[0].status == CheckStatus.COMPLETED
             assert checks[0].conclusion == CheckConclusion.SUCCESS
+            assert checks[1].status == CheckStatus.COMPLETED
             assert checks[1].conclusion == CheckConclusion.FAILURE
+
+    async def test_pending_state_maps_to_in_progress(self) -> None:
+        checks_json = json.dumps([{"name": "build", "state": "PENDING", "link": ""}])
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.IN_PROGRESS
+            assert checks[0].conclusion is None
 
     async def test_returns_empty_on_no_checks(self) -> None:
         with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:

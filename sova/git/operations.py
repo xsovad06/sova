@@ -240,6 +240,18 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
     )
 
 
+_GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
+    "SUCCESS": (CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
+    "FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "ERROR": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "STARTUP_FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "PENDING": (CheckStatus.IN_PROGRESS, None),
+    "SKIPPING": (CheckStatus.COMPLETED, CheckConclusion.SKIPPED),
+    "CANCELLED": (CheckStatus.COMPLETED, CheckConclusion.CANCELLED),
+    "EXPECTED": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
+}
+
+
 async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> list[CICheck]:
     """Get CI check results for a pull request."""
     env = await resolve_gh_env(github_user)
@@ -251,7 +263,7 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
         "--repo",
         repo,
         "--json",
-        "name,status,conclusion,detailsUrl",
+        "name,state,link",
         env=env,
     )
 
@@ -267,15 +279,15 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
 
     checks: list[CICheck] = []
     for item in checks_data:
-        conclusion_raw = item.get("conclusion")
-        conclusion = CheckConclusion(conclusion_raw) if conclusion_raw else None
+        state_raw = item.get("state", "PENDING")
+        status, conclusion = _GH_STATE_MAP.get(state_raw, (CheckStatus.IN_PROGRESS, None))
 
         checks.append(
             CICheck(
                 name=item["name"],
-                status=CheckStatus(item["status"]),
+                status=status,
                 conclusion=conclusion,
-                details_url=item.get("detailsUrl", ""),
+                details_url=item.get("link", ""),
             )
         )
 
