@@ -608,6 +608,77 @@ class TestCreatePRStep:
         gate = await step.validate_output(ctx)
         assert gate.passed
 
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_generates_rich_body(self, mock_create_pr, mock_run, mock_invoke) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- Added widget support\n\nCloses #42",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="42", title="Add widget", body="We need a widget"),
+            branch_name="feat/issue-42",
+        )
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 10
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "## Summary" in body_arg
+        assert "Added widget" in body_arg
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_appends_closes_when_missing(self, mock_create_pr, mock_run, mock_invoke) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- Did stuff",
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+        mock_create_pr.return_value = MagicMock(number=12, url="https://github.com/x/y/pull/12")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "Closes #42" in body_arg
+
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_falls_back_on_llm_failure(self, mock_create_pr, mock_run, mock_invoke) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.side_effect = RuntimeError("LLM unavailable")
+        mock_create_pr.return_value = MagicMock(number=11, url="https://github.com/x/y/pull/11")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 11
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert body_arg == "Closes #42"
+
 
 class TestCompleteStep:
     async def test_completes_and_transitions_tracker(self) -> None:
