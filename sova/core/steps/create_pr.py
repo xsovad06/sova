@@ -65,6 +65,17 @@ class CreatePRStep(BaseStep):
             ctx.pr_number = pr_info.number
             ctx.pr_url = pr_info.url
 
+            if ctx.config.github_user:
+                try:
+                    await git_ops.assign_pr(
+                        pr_info.number,
+                        assignee=ctx.config.github_user,
+                        repo=ctx.repo,
+                        github_user=ctx.config.github_user,
+                    )
+                except Exception as exc:
+                    log.warning("step.create_pr.assign_failed", error=str(exc))
+
             try:
                 await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
             except Exception as exc:
@@ -111,8 +122,31 @@ class CreatePRStep(BaseStep):
                 body += f"\n\nCloses #{ctx.issue_number}"
             return body
         except RuntimeError:
-            log.warning("step.create_pr.body_generation_failed", fallback="minimal")
-            return f"Closes #{ctx.issue_number}"
+            log.warning("step.create_pr.body_generation_failed", fallback="structured")
+            return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
+
+    @staticmethod
+    def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
+        lines = [
+            "## Summary",
+            "",
+            f"Automated changes for: {task_title}",
+            "",
+            f"Closes #{ctx.issue_number}",
+            "",
+            "## Commits",
+            "",
+            "```",
+            commit_log or "(none)",
+            "```",
+            "",
+            "## Files changed",
+            "",
+            "```",
+            diff_stat or "(none)",
+            "```",
+        ]
+        return "\n".join(lines)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: PR number must have been extracted."""
