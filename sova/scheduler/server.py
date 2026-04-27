@@ -116,6 +116,7 @@ class SOVAServer:
             self._config.task_source.type,
             self._config.github_repo,
             self._config.github_user,
+            self._config.task_source.github_project_number,
         )
         executor = ParallelExecutor(
             config=self._config,

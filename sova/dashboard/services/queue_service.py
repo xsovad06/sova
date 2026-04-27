@@ -62,7 +62,8 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
         return []
 
     try:
-        adapter = create_adapter(cfg.task_source.type, repo, cfg.github_user)
+        ts = cfg.task_source
+        adapter = create_adapter(ts.type, repo, cfg.github_user, ts.github_project_number)
         tasks = await adapter.list_tasks()
     except Exception as e:
         log.warning("Failed to fetch tasks for queue: %s", e)

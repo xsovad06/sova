@@ -20,6 +20,9 @@ class TaskSourceConfig(BaseSettings):
     milestone: str = ""
     labels: str = ""
 
+    # GitHub Projects V2 board integration (0 = disabled)
+    github_project_number: int = 0
+
     # JIRA
     jira_base_url: str = ""
     jira_email: str = ""

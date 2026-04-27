@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 
 from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.gh import resolve_gh_env
@@ -24,9 +25,35 @@ _STATE_LABELS: dict[TaskState, str] = {
 # Reverse map: label -> state (for reading state from labels).
 _LABEL_TO_STATE: dict[str, TaskState] = {v: k for k, v in _STATE_LABELS.items()}
 
+# Maps TaskState to candidate board column names (case-insensitive match).
+_STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
+    TaskState.BACKLOG: ["backlog", "todo", "to do"],
+    TaskState.TRIAGED: ["triaged", "ready", "todo", "to do"],
+    TaskState.RESEARCHED: ["researched", "ready", "todo", "to do"],
+    TaskState.IN_PROGRESS: ["in progress", "doing"],
+    TaskState.IN_REVIEW: ["in review", "review", "verification"],
+    TaskState.DONE: ["done", "completed"],
+    TaskState.NEEDS_SPEC: ["todo", "to do", "backlog"],
+    TaskState.HUMAN_ONLY: ["todo", "to do", "backlog"],
+}
+
+
+@dataclass
+class _ProjectBoardMeta:
+    """Cached metadata for a GitHub Projects V2 board."""
+
+    project_id: str
+    status_field_id: str
+    options: dict[str, str] = field(default_factory=dict)
+
 
 class GitHubAdapter(TaskAdapter):
     """Task adapter backed by GitHub Issues and the ``gh`` CLI."""
+
+    def __init__(self, repo: str, github_user: str = "", project_number: int = 0) -> None:
+        super().__init__(repo=repo, github_user=github_user)
+        self.project_number = project_number
+        self._board_meta: _ProjectBoardMeta | None = None
 
     async def _gh(self, *args: str, **kwargs: object) -> ShellResult:
         """Run a ``gh`` CLI command with per-project auth."""
@@ -86,11 +113,11 @@ class GitHubAdapter(TaskAdapter):
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         if new_state == TaskState.DONE:
             await self._gh("issue", "close", task_id, "--repo", self.repo)
+            await self._move_on_board(task_id, new_state)
             return
 
         label = _STATE_LABELS.get(new_state)
         if label:
-            # Remove any existing agent state labels first, then add the new one.
             await self._clear_state_labels(task_id)
             await self._gh(
                 "issue",
@@ -101,6 +128,8 @@ class GitHubAdapter(TaskAdapter):
                 "--add-label",
                 label,
             )
+
+        await self._move_on_board(task_id, new_state)
 
     async def assign(self, task_id: str, agent_role: str) -> None:
         # GitHub assignees are users, not roles. We use the configured
@@ -228,6 +257,143 @@ class GitHubAdapter(TaskAdapter):
                     "--remove-label",
                     label,
                 )
+
+    # -- Project board integration -----------------------------------------------
+
+    async def _move_on_board(self, task_id: str, new_state: TaskState) -> None:
+        """Move an issue to the matching column on the GitHub Projects V2 board."""
+        if not self.project_number:
+            return
+
+        meta = await self._get_board_meta()
+        if meta is None:
+            return
+
+        option_id = self._resolve_board_option(new_state, meta)
+        if option_id is None:
+            log.debug("board.no_matching_option", state=str(new_state))
+            return
+
+        item_id = await self._get_issue_item_id(task_id, meta.project_id)
+        if item_id is None:
+            log.debug("board.issue_not_on_board", issue=task_id)
+            return
+
+        mutation = """
+        mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+          updateProjectV2ItemFieldValue(input: {
+            projectId: $projectId
+            itemId: $itemId
+            fieldId: $fieldId
+            value: { singleSelectOptionId: $optionId }
+          }) { projectV2Item { id } }
+        }
+        """
+        result = await self._gh(
+            "api", "graphql",
+            "-f", f"query={mutation}",
+            "-f", f"projectId={meta.project_id}",
+            "-f", f"itemId={item_id}",
+            "-f", f"fieldId={meta.status_field_id}",
+            "-f", f"optionId={option_id}",
+        )
+        if result.success:
+            log.info("board.moved", issue=task_id, state=str(new_state))
+        else:
+            log.warning("board.move_failed", issue=task_id, stderr=result.stderr[:200])
+
+    async def _get_board_meta(self) -> _ProjectBoardMeta | None:
+        """Fetch and cache project ID, status field ID, and option IDs."""
+        if self._board_meta is not None:
+            return self._board_meta
+
+        owner = self.repo.split("/")[0] if "/" in self.repo else self.github_user
+        if not owner:
+            return None
+
+        query = """
+        query($owner: String!, $number: Int!) {
+          user(login: $owner) {
+            projectV2(number: $number) {
+              id
+              field(name: "Status") {
+                ... on ProjectV2SingleSelectField {
+                  id
+                  options { id name }
+                }
+              }
+            }
+          }
+        }
+        """
+        result = await self._gh(
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-f", f"owner={owner}",
+            "-F", f"number={self.project_number}",
+        )
+        if not result.success:
+            log.warning("board.meta_fetch_failed", stderr=result.stderr[:200])
+            return None
+
+        try:
+            data = json.loads(result.stdout)
+            project = data["data"]["user"]["projectV2"]
+            field_data = project["field"]
+            options = {opt["name"].lower(): opt["id"] for opt in field_data["options"]}
+            self._board_meta = _ProjectBoardMeta(
+                project_id=project["id"],
+                status_field_id=field_data["id"],
+                options=options,
+            )
+            return self._board_meta
+        except (json.JSONDecodeError, KeyError, TypeError):
+            log.warning("board.meta_parse_failed", exc_info=True)
+            return None
+
+    async def _get_issue_item_id(self, task_id: str, project_id: str) -> str | None:
+        """Find the project item ID for an issue on the board."""
+        owner, name = self.repo.split("/", 1) if "/" in self.repo else (self.github_user, self.repo)
+        query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            issue(number: $number) {
+              projectItems(first: 10) {
+                nodes { id project { id } }
+              }
+            }
+          }
+        }
+        """
+        result = await self._gh(
+            "api", "graphql",
+            "-f", f"query={query}",
+            "-f", f"owner={owner}",
+            "-f", f"name={name}",
+            "-F", f"number={task_id}",
+        )
+        if not result.success:
+            return None
+
+        try:
+            data = json.loads(result.stdout)
+            items = data["data"]["repository"]["issue"]["projectItems"]["nodes"]
+            for item in items:
+                if item["project"]["id"] == project_id:
+                    return item["id"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+        return None
+
+    @staticmethod
+    def _resolve_board_option(state: TaskState, meta: _ProjectBoardMeta) -> str | None:
+        """Match a TaskState to a board status option ID."""
+        candidates = _STATE_TO_BOARD_NAMES.get(state, [])
+        for name in candidates:
+            option_id = meta.options.get(name)
+            if option_id:
+                return option_id
+        return None
 
 
 def _parse_issue(data: dict) -> Task:

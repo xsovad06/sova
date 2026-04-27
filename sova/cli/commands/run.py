@@ -45,7 +45,8 @@ async def _run_workflow(
     setup_logging(log_file=resolved_dir / ".claude" / "sova.log")
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
+    ts = config.task_source
+    adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
 
     checkpoint = {}
     if resume_run_id is not None:
@@ -153,7 +154,8 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
 
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
+    ts = config.task_source
+    adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
     interval = config.watch.interval_active
 
     console.print(f"[bold]Watch mode started (polling every {interval}s)[/bold]")
@@ -216,7 +218,8 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
 
     await init_db(resolved_dir)
 
-    adapter = create_adapter(config.task_source.type, config.github_repo, config.github_user)
+    ts = config.task_source
+    adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
     max_concurrent = config.max_parallel_agents
 
     console.print(f"[bold]Processing {len(issues)} issues (max {max_concurrent} concurrent)[/bold]")

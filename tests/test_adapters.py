@@ -416,6 +416,7 @@ class TestAdapterFactory:
 
         adapter = create_adapter(adapter_type="github", repo="user/repo")
         assert isinstance(adapter, GitHubAdapter)
+        assert adapter.project_number == 0
 
     def test_create_github_adapter_with_user(self) -> None:
         from sova.adapters import create_adapter
@@ -424,8 +425,147 @@ class TestAdapterFactory:
         assert isinstance(adapter, GitHubAdapter)
         assert adapter.github_user == "xsovad06"
 
+    def test_create_github_adapter_with_project_number(self) -> None:
+        from sova.adapters import create_adapter
+
+        adapter = create_adapter(adapter_type="github", repo="user/repo", project_number=1)
+        assert isinstance(adapter, GitHubAdapter)
+        assert adapter.project_number == 1
+
     def test_create_unknown_adapter_raises(self) -> None:
         from sova.adapters import create_adapter
 
         with pytest.raises(ValueError, match="Unknown adapter type"):
             create_adapter(adapter_type="unknown", repo="user/repo")
+
+
+# ---------------------------------------------------------------------------
+# Project board integration
+# ---------------------------------------------------------------------------
+
+
+class TestProjectBoard:
+    def setup_method(self) -> None:
+        self.adapter = GitHubAdapter(repo="user/repo", project_number=1)
+
+    @pytest.fixture
+    def mock_run(self):
+        with (
+            patch("sova.adapters.github.run", new_callable=AsyncMock) as mock,
+            patch("sova.adapters.github.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            yield mock
+
+    def test_resolve_board_option_matches_in_progress(self) -> None:
+        from sova.adapters.github import _ProjectBoardMeta
+
+        meta = _ProjectBoardMeta(
+            project_id="PVT_123",
+            status_field_id="PVTSSF_456",
+            options={"todo": "opt1", "in progress": "opt2", "done": "opt3"},
+        )
+        result = GitHubAdapter._resolve_board_option(TaskState.IN_PROGRESS, meta)
+        assert result == "opt2"
+
+    def test_resolve_board_option_matches_verification_for_in_review(self) -> None:
+        from sova.adapters.github import _ProjectBoardMeta
+
+        meta = _ProjectBoardMeta(
+            project_id="PVT_123",
+            status_field_id="PVTSSF_456",
+            options={"todo": "opt1", "in progress": "opt2", "verification": "opt3", "done": "opt4"},
+        )
+        result = GitHubAdapter._resolve_board_option(TaskState.IN_REVIEW, meta)
+        assert result == "opt3"
+
+    def test_resolve_board_option_returns_none_for_no_match(self) -> None:
+        from sova.adapters.github import _ProjectBoardMeta
+
+        meta = _ProjectBoardMeta(
+            project_id="PVT_123",
+            status_field_id="PVTSSF_456",
+            options={"custom column": "opt1"},
+        )
+        result = GitHubAdapter._resolve_board_option(TaskState.IN_PROGRESS, meta)
+        assert result is None
+
+    async def test_move_on_board_skipped_when_project_number_zero(self, mock_run: AsyncMock) -> None:
+        adapter = GitHubAdapter(repo="user/repo", project_number=0)
+        await adapter._move_on_board("42", TaskState.IN_PROGRESS)
+        mock_run.assert_not_called()
+
+    async def test_move_on_board_calls_graphql_mutation(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.github import _ProjectBoardMeta
+
+        self.adapter._board_meta = _ProjectBoardMeta(
+            project_id="PVT_123",
+            status_field_id="PVTSSF_456",
+            options={"in progress": "opt_ip"},
+        )
+        item_response = json.dumps({
+            "data": {"repository": {"issue": {"projectItems": {"nodes": [
+                {"id": "PVTI_789", "project": {"id": "PVT_123"}}
+            ]}}}}
+        })
+        mock_run.side_effect = [
+            _shell_result(stdout=item_response),
+            _shell_result(),
+        ]
+
+        await self.adapter._move_on_board("42", TaskState.IN_PROGRESS)
+
+        assert mock_run.call_count == 2
+        mutation_call_args = mock_run.call_args[0]
+        assert "api" in mutation_call_args
+        assert "graphql" in mutation_call_args
+
+    async def test_get_board_meta_parses_response(self, mock_run: AsyncMock) -> None:
+        response = json.dumps({
+            "data": {"user": {"projectV2": {
+                "id": "PVT_abc",
+                "field": {
+                    "id": "PVTSSF_def",
+                    "options": [
+                        {"id": "opt1", "name": "Todo"},
+                        {"id": "opt2", "name": "In Progress"},
+                        {"id": "opt3", "name": "Done"},
+                    ],
+                },
+            }}}
+        })
+        mock_run.return_value = _shell_result(stdout=response)
+
+        meta = await self.adapter._get_board_meta()
+
+        assert meta is not None
+        assert meta.project_id == "PVT_abc"
+        assert meta.status_field_id == "PVTSSF_def"
+        assert meta.options == {"todo": "opt1", "in progress": "opt2", "done": "opt3"}
+
+    async def test_get_board_meta_caches_result(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.github import _ProjectBoardMeta
+
+        cached = _ProjectBoardMeta(project_id="PVT_cached", status_field_id="F_1", options={})
+        self.adapter._board_meta = cached
+
+        result = await self.adapter._get_board_meta()
+
+        assert result is cached
+        mock_run.assert_not_called()
+
+    async def test_transition_state_calls_move_on_board(self, mock_run: AsyncMock) -> None:
+        mock_run.side_effect = [
+            _shell_result(stdout='{"labels": []}'),
+            _shell_result(),
+        ]
+
+        with patch.object(self.adapter, "_move_on_board", new_callable=AsyncMock) as mock_move:
+            await self.adapter.transition_state("42", TaskState.IN_PROGRESS)
+            mock_move.assert_called_once_with("42", TaskState.IN_PROGRESS)
+
+    async def test_transition_state_done_calls_move_on_board(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        with patch.object(self.adapter, "_move_on_board", new_callable=AsyncMock) as mock_move:
+            await self.adapter.transition_state("42", TaskState.DONE)
+            mock_move.assert_called_once_with("42", TaskState.DONE)

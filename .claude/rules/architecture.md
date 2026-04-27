@@ -27,7 +27,7 @@ SOVA has four main components:
 - 13 API routers under `/api`: overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work
 - 12 services: run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup
 - Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
-- **Multi-agent control**: manages concurrent agent processes per project with slot limits
+- **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup
 - **Batch operations**: triage/harden multiple issues from the queue with progress tracking
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
@@ -45,7 +45,7 @@ SOVA has four main components:
 
 ## Supporting Modules
 
-- **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels), factory, per-project `gh` auth via `sova/utils/gh.py`
+- **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels + Projects V2 board), factory, per-project `gh` auth via `sova/utils/gh.py`
 - **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing
 - **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`)
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)
