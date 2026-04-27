@@ -315,17 +315,40 @@ document.addEventListener('click', function(e) {
 });
 
 /* ============================================================
-   6. INITIALIZATION
+   6. PR LINK HELPER
+   ============================================================ */
+
+window.SOVA_GITHUB_REPO = null;
+
+function _initGithubRepo() {
+  fetchAPI(apiUrl('/settings/config')).then(function(data) {
+    window.SOVA_GITHUB_REPO = (data.config && data.config.github_repo) || null;
+  }).catch(function() {});
+}
+
+function prLink(prNumber) {
+  if (!prNumber) return '--';
+  var repo = window.SOVA_GITHUB_REPO;
+  if (repo) {
+    return '<a href="https://github.com/' + escapeHtml(repo) + '/pull/' + prNumber + '" target="_blank" rel="noopener" ' +
+      'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + prNumber + '</a>';
+  }
+  return '#' + prNumber;
+}
+
+/* ============================================================
+   7. INITIALIZATION
    ============================================================ */
 
 initColors();
+_initGithubRepo();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();
 }
 
 /* ============================================================
-   7. ROLE COLORS
+   8. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
@@ -352,7 +375,7 @@ function roleColor(role) {
 }
 
 /* ============================================================
-   8. STEP PIPELINE BAR
+   9. STEP PIPELINE BAR
    ============================================================ */
 
 var PIPELINE_STEPS = [
@@ -406,7 +429,7 @@ function formatElapsed(seconds) {
 }
 
 /* ============================================================
-   9. RUNS TABLE (shared)
+   10. RUNS TABLE (shared)
    ============================================================ */
 
 function renderRunsTable(runs, targetId) {

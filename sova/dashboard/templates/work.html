@@ -110,7 +110,7 @@ async function loadActive() {
         '</div>' +
         '<div class="mb-2">' + pipeline + '</div>' +
         (task.branch_name ? '<div class="text-xs text-gray-500 mt-2">Branch: ' + escapeHtml(task.branch_name) + '</div>' : '') +
-        (task.pr_number ? '<div class="text-xs text-gray-500">PR: #' + escapeHtml(String(task.pr_number)) + '</div>' : '');
+        (task.pr_number ? '<div class="text-xs text-gray-500">PR: ' + prLink(task.pr_number) + '</div>' : '');
 
       if (prevCount > 0) {
         card += '<div class="mt-3 border-t border-gray-700/30 pt-2">' +
@@ -197,7 +197,7 @@ function renderHistoryTable(tasks, targetId, showError) {
         '<td class="p-3 text-gray-400">' + stepsText + '</td>' +
         '<td class="p-3 text-right text-accent-green">$' + t.total_cost_usd.toFixed(4) + '</td>' +
         '<td class="p-3 text-gray-400">' + (t.duration_formatted || '--') + '</td>' +
-        '<td class="p-3 text-gray-400">' + (t.pr_number ? '#' + t.pr_number : '--') + '</td>' +
+        '<td class="p-3 text-gray-400">' + prLink(t.pr_number) + '</td>' +
         '<td class="p-3 text-gray-500 text-xs">' + (t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--') + '</td>' +
       '</tr>' +
       (showError && t.error_message ? '<tr class="border-t border-gray-700/10"><td colspan="8" class="px-3 pb-3 pt-1 text-xs text-accent-red">' + escapeHtml(t.error_message) + '</td></tr>' : '');

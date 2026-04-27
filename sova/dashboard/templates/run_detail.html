@@ -26,6 +26,9 @@
   </div>
 </div>
 
+<!-- Run info (branch, PR, duration) -->
+<div id="run-info" class="hidden text-xs text-gray-500 mb-4"></div>
+
 <!-- Run chain (other runs for the same issue) -->
 <div id="run-chain" class="hidden mb-4">
   <div class="flex items-center gap-2 flex-wrap text-xs" id="run-chain-content"></div>
@@ -122,6 +125,17 @@ async function loadRunDetail() {
     statusEl.className = 'text-xl font-bold ' + statusColor(run.status);
 
     document.getElementById('detail-cost').textContent = '$' + run.total_cost_usd.toFixed(4);
+
+    // PR + branch info
+    var infoEl = document.getElementById('run-info');
+    var infoParts = [];
+    if (run.branch_name) infoParts.push('Branch: <span class="text-gray-300">' + escapeHtml(run.branch_name) + '</span>');
+    if (run.pr_number) infoParts.push('PR: ' + prLink(run.pr_number));
+    if (run.duration_formatted) infoParts.push('Duration: <span class="text-gray-300">' + escapeHtml(run.duration_formatted) + '</span>');
+    if (infoParts.length > 0) {
+      infoEl.classList.remove('hidden');
+      infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
+    }
 
     // Pipeline bar
     document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false);
