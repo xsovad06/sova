@@ -401,6 +401,21 @@ class TestControlAPI:
         assert resp.status_code == 200
         assert len(resp.json()["interrupted"]) == 0
 
+    async def test_dismiss_interrupted_marks_as_failed(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Dismissing interrupted runs should change their status to failed."""
+        async with session.begin():
+            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99999))
+            session.add(TaskRun(issue_number="73", role="developer", status="interrupted", pid=99998))
+            session.add(TaskRun(issue_number="42", role="auto", status="done"))
+
+        resp = await client.post("/api/agents/interrupted/dismiss")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dismissed"] == 2
+
+        resp2 = await client.get("/api/agents/interrupted")
+        assert resp2.json()["interrupted"] == []
+
 
 # ---------------------------------------------------------------------------
 # Control Service -- recovery and normalization

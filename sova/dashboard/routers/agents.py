@@ -42,6 +42,31 @@ async def interrupted_runs():
         return {"interrupted": []}
 
 
+@router.post("/agents/interrupted/dismiss")
+async def dismiss_interrupted():
+    """Mark all interrupted runs as failed so they no longer show in the banner."""
+    from sqlalchemy import update
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        session = await get_session()
+        async with session.begin():
+            stmt = (
+                update(TaskRun)
+                .where(TaskRun.status == "interrupted")
+                .values(status="failed", error_message="Dismissed by user")
+            )
+            result = await session.execute(stmt)
+            count = result.rowcount
+        await session.close()
+        return {"dismissed": count}
+    except Exception:
+        log.debug("dismiss_interrupted.failed", exc_info=True)
+        return {"dismissed": 0}
+
+
 @router.get("/agents/pipeline")
 async def get_pipeline():
     """Get the developer pipeline step names."""

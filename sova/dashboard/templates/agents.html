@@ -329,9 +329,12 @@ async function checkInterrupted() {
 
     banner.classList.remove('hidden');
     banner.innerHTML = '<div class="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">' +
-      '<div class="flex items-center gap-2 mb-2">' +
-        '<span class="text-sm font-medium text-accent-yellow">Interrupted Runs</span>' +
-        '<span class="text-xs text-gray-500">Dashboard was restarted while these were running</span>' +
+      '<div class="flex items-center justify-between mb-2">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-sm font-medium text-accent-yellow">Interrupted Runs</span>' +
+          '<span class="text-xs text-gray-500">Dashboard was restarted while these were running</span>' +
+        '</div>' +
+        '<button onclick="dismissInterrupted()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors">Dismiss all</button>' +
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {
@@ -342,6 +345,13 @@ async function checkInterrupted() {
       }).join('') +
       '</div>' +
     '</div>';
+  } catch (e) { /* ignore */ }
+}
+
+async function dismissInterrupted() {
+  try {
+    await fetch(apiUrl('/agents/interrupted/dismiss'), { method: 'POST' });
+    document.getElementById('interrupted-banner').classList.add('hidden');
   } catch (e) { /* ignore */ }
 }
 
