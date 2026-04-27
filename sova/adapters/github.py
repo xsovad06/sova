@@ -290,12 +290,18 @@ class GitHubAdapter(TaskAdapter):
         }
         """
         result = await self._gh(
-            "api", "graphql",
-            "-f", f"query={mutation}",
-            "-f", f"projectId={meta.project_id}",
-            "-f", f"itemId={item_id}",
-            "-f", f"fieldId={meta.status_field_id}",
-            "-f", f"optionId={option_id}",
+            "api",
+            "graphql",
+            "-f",
+            f"query={mutation}",
+            "-f",
+            f"projectId={meta.project_id}",
+            "-f",
+            f"itemId={item_id}",
+            "-f",
+            f"fieldId={meta.status_field_id}",
+            "-f",
+            f"optionId={option_id}",
         )
         if result.success:
             log.info("board.moved", issue=task_id, state=str(new_state))
@@ -327,10 +333,14 @@ class GitHubAdapter(TaskAdapter):
         }
         """
         result = await self._gh(
-            "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-F", f"number={self.project_number}",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-F",
+            f"number={self.project_number}",
         )
         if not result.success:
             log.warning("board.meta_fetch_failed", stderr=result.stderr[:200])
@@ -366,11 +376,16 @@ class GitHubAdapter(TaskAdapter):
         }
         """
         result = await self._gh(
-            "api", "graphql",
-            "-f", f"query={query}",
-            "-f", f"owner={owner}",
-            "-f", f"name={name}",
-            "-F", f"number={task_id}",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"name={name}",
+            "-F",
+            f"number={task_id}",
         )
         if not result.success:
             return None

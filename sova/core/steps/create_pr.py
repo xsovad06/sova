@@ -76,11 +76,18 @@ class CreatePRStep(BaseStep):
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
         log_result = await run(
-            "git", "log", f"{ctx.base_branch}..HEAD", "--format=%h %s%n%b", "--no-merges",
+            "git",
+            "log",
+            f"{ctx.base_branch}..HEAD",
+            "--format=%h %s%n%b",
+            "--no-merges",
             cwd=ctx.working_dir,
         )
         diff_result = await run(
-            "git", "diff", f"{ctx.base_branch}..HEAD", "--stat",
+            "git",
+            "diff",
+            f"{ctx.base_branch}..HEAD",
+            "--stat",
             cwd=ctx.working_dir,
         )
 

@@ -502,11 +502,15 @@ class TestProjectBoard:
             status_field_id="PVTSSF_456",
             options={"in progress": "opt_ip"},
         )
-        item_response = json.dumps({
-            "data": {"repository": {"issue": {"projectItems": {"nodes": [
-                {"id": "PVTI_789", "project": {"id": "PVT_123"}}
-            ]}}}}
-        })
+        item_response = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "issue": {"projectItems": {"nodes": [{"id": "PVTI_789", "project": {"id": "PVT_123"}}]}}
+                    }
+                }
+            }
+        )
         mock_run.side_effect = [
             _shell_result(stdout=item_response),
             _shell_result(),
@@ -520,19 +524,25 @@ class TestProjectBoard:
         assert "graphql" in mutation_call_args
 
     async def test_get_board_meta_parses_response(self, mock_run: AsyncMock) -> None:
-        response = json.dumps({
-            "data": {"user": {"projectV2": {
-                "id": "PVT_abc",
-                "field": {
-                    "id": "PVTSSF_def",
-                    "options": [
-                        {"id": "opt1", "name": "Todo"},
-                        {"id": "opt2", "name": "In Progress"},
-                        {"id": "opt3", "name": "Done"},
-                    ],
-                },
-            }}}
-        })
+        response = json.dumps(
+            {
+                "data": {
+                    "user": {
+                        "projectV2": {
+                            "id": "PVT_abc",
+                            "field": {
+                                "id": "PVTSSF_def",
+                                "options": [
+                                    {"id": "opt1", "name": "Todo"},
+                                    {"id": "opt2", "name": "In Progress"},
+                                    {"id": "opt3", "name": "Done"},
+                                ],
+                            },
+                        }
+                    }
+                }
+            }
+        )
         mock_run.return_value = _shell_result(stdout=response)
 
         meta = await self.adapter._get_board_meta()
