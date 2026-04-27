@@ -1,0 +1,10 @@
+{"timestamp":"2026-04-20T10:00:04Z","issue":"32","phase":"harden","model":"claude-opus-4-6","input_tokens":3,"output_tokens":1247,"cache_tokens":16421,"cost_usd":0.13382125,"duration_ms":37484}
+{"timestamp":"2026-04-20T10:01:09Z","issue":"33","phase":"harden","model":"claude-opus-4-6","input_tokens":1500,"output_tokens":2295,"cache_tokens":29438,"cost_usd":0.3001475,"duration_ms":60732}
+{"timestamp":"2026-04-20T10:02:41Z","issue":"39","phase":"harden","model":"claude-opus-4-6","input_tokens":1734,"output_tokens":3684,"cache_tokens":44453,"cost_usd":0.43976224999999997,"duration_ms":88605}
+{"timestamp":"2026-04-20T10:04:09Z","issue":"40","phase":"harden","model":"claude-opus-4-6","input_tokens":4656,"output_tokens":3197,"cache_tokens":41816,"cost_usd":0.4212185,"duration_ms":84042}
+{"timestamp":"2026-04-20T10:05:26Z","issue":"41","phase":"harden","model":"claude-opus-4-6","input_tokens":176,"output_tokens":2964,"cache_tokens":34397,"cost_usd":0.34738224999999995,"duration_ms":73206}
+{"timestamp":"2026-04-20T10:06:42Z","issue":"42","phase":"harden","model":"claude-opus-4-6","input_tokens":6392,"output_tokens":2636,"cache_tokens":32710,"cost_usd":0.355616,"duration_ms":72214}
+{"timestamp":"2026-04-20T10:08:01Z","issue":"43","phase":"harden","model":"claude-opus-4-6","input_tokens":3810,"output_tokens":2813,"cache_tokens":33623,"cost_usd":0.35381525,"duration_ms":74987}
+{"timestamp":"2026-04-20T10:09:28Z","issue":"44","phase":"harden","model":"claude-opus-4-6","input_tokens":1671,"output_tokens":3084,"cache_tokens":36368,"cost_usd":0.3664615,"duration_ms":83223}
+{"timestamp":"2026-04-20T10:10:31Z","issue":"45","phase":"harden","model":"claude-opus-4-6","input_tokens":955,"output_tokens":2232,"cache_tokens":27319,"cost_usd":0.26597875000000004,"duration_ms":59098}
+{"timestamp":"2026-04-20T19:53:09Z","issue":"47","phase":"harden","model":"claude-opus-4-6","input_tokens":1711,"output_tokens":6448,"cache_tokens":51385,"cost_usd":0.68608875,"duration_ms":146125}
