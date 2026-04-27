@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.git.operations import find_pr_for_issue
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
@@ -42,11 +43,22 @@ class ReviewerRole(AgentRole):
             )
 
         if not ctx.pr_number:
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} has no linked PR",
-                error="PR number is required for review. No PR linked to this issue.",
+            log.info("reviewer.discovering_pr", issue=ctx.issue_number)
+            pr_info = await find_pr_for_issue(
+                ctx.issue_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
             )
+            if pr_info:
+                ctx.pr_number = pr_info.number
+                ctx.pr_url = pr_info.url
+                log.info("reviewer.pr_discovered", pr=pr_info.number)
+            else:
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} has no linked PR",
+                    error="No PR found for this issue. Create a PR first.",
+                )
 
         log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number)
 

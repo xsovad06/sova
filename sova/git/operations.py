@@ -248,6 +248,41 @@ async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: st
         log.warning("git.assign_pr.failed", pr=pr_number, stderr=result.stderr[:200])
 
 
+async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
+    """Find an open PR linked to an issue via gh CLI search."""
+    log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--search",
+        issue_id,
+        "--json",
+        "number,url",
+        "--limit",
+        "5",
+        env=env,
+    )
+    if not result.success:
+        log.warning("git.find_pr_for_issue.failed", stderr=result.stderr[:200])
+        return None
+
+    try:
+        prs = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not prs:
+        return None
+
+    return PRInfo(number=prs[0]["number"], url=prs[0].get("url", ""))
+
+
 async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:
     """Get the current status of a pull request."""
     env = await resolve_gh_env(github_user)

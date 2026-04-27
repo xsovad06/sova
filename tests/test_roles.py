@@ -347,17 +347,44 @@ class TestReviewerRole:
 
         assert result.success
 
-    async def test_execute_requires_pr_number(self) -> None:
+    async def test_execute_discovers_pr_when_not_provided(self) -> None:
+        from unittest.mock import patch
+
+        from sova.git.operations import PRInfo
         from sova.roles.reviewer import ReviewerRole
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
         role = ReviewerRole()
 
-        result = await role.execute(ctx)
+        with patch(
+            "sova.roles.reviewer.find_pr_for_issue",
+            new_callable=AsyncMock,
+            return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 82
+
+    async def test_execute_fails_when_no_pr_found(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
+        role = ReviewerRole()
+
+        with patch(
+            "sova.roles.reviewer.find_pr_for_issue",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await role.execute(ctx)
 
         assert not result.success
-        assert "pr" in result.error.lower()
+        assert "no pr" in result.error.lower()
 
     async def test_rejects_wrong_state(self) -> None:
         from sova.roles.reviewer import ReviewerRole

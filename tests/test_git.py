@@ -18,6 +18,7 @@ from sova.git.operations import (
     commit,
     create_branch,
     create_pr,
+    find_pr_for_issue,
     get_ci_checks,
     get_current_branch,
     get_pr_status,
@@ -272,6 +273,49 @@ class TestAssignPR:
 
             # Should not raise, just log
             await assign_pr(42, assignee="xsovad06", repo="user/repo")
+
+
+class TestFindPRForIssue:
+    async def test_finds_pr_by_issue_number(self) -> None:
+        pr_json = json.dumps([{"number": 82, "url": "https://github.com/user/repo/pull/82"}])
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 82
+            call_args = mock_run.call_args[0]
+            assert "--search" in call_args
+
+    async def test_returns_none_when_no_pr_found(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="[]")
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is None
+
+    async def test_returns_none_on_failure(self) -> None:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="error")
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is None
+
+    async def test_returns_first_pr_when_multiple(self) -> None:
+        pr_json = json.dumps([
+            {"number": 82, "url": "https://github.com/user/repo/pull/82"},
+            {"number": 80, "url": "https://github.com/user/repo/pull/80"},
+        ])
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 82
 
 
 class TestGetPRStatus:
