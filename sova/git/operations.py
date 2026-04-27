@@ -328,6 +328,28 @@ _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
 }
 
 
+async def get_pr_diff(pr_number: int, *, repo: str, github_user: str = "") -> str:
+    """Fetch the full diff of a pull request via gh CLI."""
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh", "pr", "diff", str(pr_number), "--repo", repo, env=env,
+    )
+    if not result.success:
+        raise RuntimeError(f"Failed to get diff for PR #{pr_number}: {result.stderr[:200]}")
+    return result.stdout
+
+
+async def get_pr_files(pr_number: int, *, repo: str, github_user: str = "") -> list[str]:
+    """Fetch the list of changed file paths in a pull request."""
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh", "pr", "diff", str(pr_number), "--repo", repo, "--name-only", env=env,
+    )
+    if not result.success:
+        raise RuntimeError(f"Failed to get files for PR #{pr_number}: {result.stderr[:200]}")
+    return [f for f in result.stdout.strip().splitlines() if f.strip()]
+
+
 async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> list[CICheck]:
     """Get CI check results for a pull request."""
     env = await resolve_gh_env(github_user)
