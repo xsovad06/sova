@@ -332,7 +332,13 @@ async def get_pr_diff(pr_number: int, *, repo: str, github_user: str = "") -> st
     """Fetch the full diff of a pull request via gh CLI."""
     env = await resolve_gh_env(github_user)
     result = await run(
-        "gh", "pr", "diff", str(pr_number), "--repo", repo, env=env,
+        "gh",
+        "pr",
+        "diff",
+        str(pr_number),
+        "--repo",
+        repo,
+        env=env,
     )
     if not result.success:
         raise RuntimeError(f"Failed to get diff for PR #{pr_number}: {result.stderr[:200]}")
@@ -343,7 +349,14 @@ async def get_pr_files(pr_number: int, *, repo: str, github_user: str = "") -> l
     """Fetch the list of changed file paths in a pull request."""
     env = await resolve_gh_env(github_user)
     result = await run(
-        "gh", "pr", "diff", str(pr_number), "--repo", repo, "--name-only", env=env,
+        "gh",
+        "pr",
+        "diff",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--name-only",
+        env=env,
     )
     if not result.success:
         raise RuntimeError(f"Failed to get files for PR #{pr_number}: {result.stderr[:200]}")

@@ -755,15 +755,19 @@ class TestReviewerLLMReview:
 
         findings = [
             {
-                "file": "foo.py", "line": 5, "severity": 7,
-                "category": "bug", "description": "Null check missing",
+                "file": "foo.py",
+                "line": 5,
+                "severity": 7,
+                "category": "bug",
+                "description": "Null check missing",
                 "suggestion": "Add check",
             },
             {"file": "bar.py", "severity": 2, "category": "style", "description": "Minor formatting"},
         ]
         llm_result = LLMResult(
             text=self._llm_response(findings, "Two issues found"),
-            model="sonnet", cost_usd=Decimal("0.01"),
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
         )
 
         with (
@@ -852,11 +856,13 @@ class TestReviewerLLMReview:
         finding_b = [{"file": "b.py", "severity": 4, "category": "bug", "description": "Issue in b"}]
         chunk1_result = LLMResult(
             text=self._llm_response(finding_a, "Chunk 1"),
-            model="sonnet", cost_usd=Decimal("0.01"),
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
         )
         chunk2_result = LLMResult(
             text=self._llm_response(finding_b, "Chunk 2"),
-            model="sonnet", cost_usd=Decimal("0.01"),
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
         )
 
         side = [chunk1_result, chunk2_result]
@@ -963,8 +969,7 @@ class TestReviewerParsing:
         from sova.roles.reviewer import _parse_findings
 
         text = (
-            '{"findings": [{"file": "a.py", "severity": 5,'
-            ' "category": "bug", "description": "Bad"}], "summary": "OK"}'
+            '{"findings": [{"file": "a.py", "severity": 5, "category": "bug", "description": "Bad"}], "summary": "OK"}'
         )
         findings, summary = _parse_findings(text)
         assert len(findings) == 1

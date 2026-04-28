@@ -307,10 +307,12 @@ class TestFindPRForIssue:
             assert result is None
 
     async def test_returns_first_pr_when_multiple(self) -> None:
-        pr_json = json.dumps([
-            {"number": 82, "url": "https://github.com/user/repo/pull/82"},
-            {"number": 80, "url": "https://github.com/user/repo/pull/80"},
-        ])
+        pr_json = json.dumps(
+            [
+                {"number": 82, "url": "https://github.com/user/repo/pull/82"},
+                {"number": 80, "url": "https://github.com/user/repo/pull/80"},
+            ]
+        )
         with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 

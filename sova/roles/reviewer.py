@@ -295,9 +295,7 @@ class ReviewerRole(AgentRole):
             findings=[f.description for f in review.actionable],
         )
 
-    async def _run_review(
-        self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]
-    ) -> ReviewResult:
+    async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
         chunks = _chunk_diff(diff)
         result = ReviewResult()
@@ -324,9 +322,7 @@ class ReviewerRole(AgentRole):
 
         return result
 
-    async def _write_handoff(
-        self, ctx: ExecutionContext, review: ReviewResult
-    ) -> None:
+    async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Write both DB-backed and file-based handoffs."""
         actionable = review.actionable
         next_action = "address_review" if actionable else "approve"
