@@ -28,6 +28,26 @@
   </div>
 </div>
 
+<!-- Handoff Action Panel (shown when no agents running but handoff awaits action) -->
+<div id="handoff-panel" class="hidden mb-6">
+  <div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span>
+      <span class="text-sm text-accent-yellow font-medium">Review Complete -- Action Required</span>
+    </div>
+    <div id="handoff-panel-details" class="mb-3">
+      <p id="handoff-panel-summary" class="text-sm text-gray-300"></p>
+      <p id="handoff-panel-meta" class="text-xs text-gray-500 mt-1"></p>
+    </div>
+    <div id="handoff-panel-actions" class="flex flex-wrap gap-2"></div>
+    <div class="mt-3 border-t border-gray-700/30 pt-3">
+      <button onclick="dismissHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+        Dismiss
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- Running Agents Grid -->
 <div id="agents-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
   <div class="text-gray-500 text-sm">No agents running</div>
@@ -66,8 +86,10 @@ async function loadAgents() {
     if (data.agents.length === 0 && data.completed.length === 0) {
       grid.innerHTML = '<div class="col-span-2 text-gray-500 text-sm py-8 text-center">No agents running</div>';
       updateLogTabs([]);
+      checkStandaloneHandoff();
       return;
     }
+    hideHandoffPanel();
 
     var cards = [];
 
@@ -314,6 +336,65 @@ async function executeHandoffAction(actionId) {
   } catch (e) {
     alert('Failed to execute action: ' + e.message);
   }
+}
+
+// -- Standalone handoff panel (shown when no agents running) --
+
+async function checkStandaloneHandoff() {
+  try {
+    var res = await fetch(apiUrl('/handoff'));
+    if (!res.ok) { hideHandoffPanel(); return; }
+    var data = await res.json();
+
+    if (!data.has_handoff || !data.handoff || data.handoff.status !== 'awaiting_action') {
+      hideHandoffPanel();
+      return;
+    }
+
+    var handoff = data.handoff;
+    var panel = document.getElementById('handoff-panel');
+    var summary = document.getElementById('handoff-panel-summary');
+    var meta = document.getElementById('handoff-panel-meta');
+    var actionsDiv = document.getElementById('handoff-panel-actions');
+
+    summary.textContent = handoff.summary || 'Review completed';
+    var metaParts = [];
+    if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
+    if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
+    if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
+    meta.textContent = metaParts.join('  |  ');
+
+    var actions = (handoff.next_actions || []).map(function(action) {
+      var btnStyle = action.style === 'approve'
+        ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
+        : action.style === 'danger'
+        ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
+        : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
+      return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+        'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
+        'title="' + escapeHtml(action.description || '') + '">' +
+        escapeHtml(action.label) + '</button>';
+    }).join(' ');
+
+    actionsDiv.innerHTML = actions;
+    panel.classList.remove('hidden');
+  } catch (e) {
+    hideHandoffPanel();
+  }
+}
+
+function hideHandoffPanel() {
+  document.getElementById('handoff-panel').classList.add('hidden');
+}
+
+async function dismissHandoff() {
+  try {
+    await fetch(apiUrl('/handoff/clear'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (e) { /* ignore */ }
+  hideHandoffPanel();
 }
 
 // -- Interrupted runs --
