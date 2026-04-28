@@ -74,7 +74,7 @@ async function loadDashboard() {
           '<div class="flex items-center gap-2 mb-2">' +
             '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
             '<span class="text-sm font-medium">#' + escapeHtml(a.issue) + '</span>' +
-            '<span class="px-1 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(a.role) + '</span>' +
+            '<span class="px-1 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(a.role)) + '</span>' +
           '</div>' +
           '<div class="mb-1">' + pipeline + '</div>' +
           '<div class="flex justify-between text-xs text-gray-500">' +

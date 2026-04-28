@@ -122,7 +122,7 @@ function renderAgentCard(agent, completed) {
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
         '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
-        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
+        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
@@ -155,7 +155,7 @@ function renderCompletedCard(agent) {
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + statusDotClass + '"></span>' +
         '<span class="text-sm font-medium text-gray-300">#' + escapeHtml(agent.issue) + '</span>' +
-        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(agent.role) + '</span>' +
+        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + agent.status + '</span>' +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
@@ -182,7 +182,7 @@ function updateLogTabs(agents) {
     var isActive = activeLogRunId === a.run_id;
     var activeClass = isActive ? 'bg-surface text-white border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300';
     return '<button onclick="viewLogs(' + a.run_id + ')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
-      '#' + escapeHtml(a.issue) + ' <span class="' + colors.text + '">' + escapeHtml(a.role) + '</span>' +
+      '#' + escapeHtml(a.issue) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role)) + '</span>' +
     '</button>';
   }).join('');
 }
@@ -419,9 +419,9 @@ async function checkInterrupted() {
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {
-        return '<button onclick="restartInterrupted(\'' + escapeHtml(r.issue_number) + '\', \'' + escapeHtml(r.role) + '\')" ' +
+        return '<button onclick="restartInterrupted(\'' + escapeHtml(r.issue_number) + '\', \'' + escapeHtml(formatRole(r.role)) + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">' +
-          '#' + escapeHtml(r.issue_number) + ' ' + escapeHtml(r.role) +
+          '#' + escapeHtml(r.issue_number) + ' ' + escapeHtml(formatRole(r.role)) +
         '</button>';
       }).join('') +
       '</div>' +

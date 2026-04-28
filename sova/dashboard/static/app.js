@@ -370,8 +370,24 @@ var ROLE_COLORS = {
 
 function roleColor(role) {
   if (!role) return ROLE_COLORS.auto;
-  var key = role.split(':')[0];
+  var key = role.startsWith('command:') ? _commandToRole(role) : role;
   return ROLE_COLORS[key] || ROLE_COLORS.auto;
+}
+
+function formatRole(role) {
+  if (!role) return 'auto';
+  if (!role.startsWith('command:')) return role;
+  var cmd = role.slice('command:'.length).trim();
+  var name = cmd.split(/\s+/)[0].replace(/^\//, '');
+  return name;
+}
+
+function _commandToRole(role) {
+  var cmd = role.slice('command:'.length).trim().replace(/^\//, '');
+  if (cmd.startsWith('address-pr')) return 'developer';
+  if (cmd.startsWith('review')) return 'reviewer';
+  if (cmd.startsWith('develop')) return 'developer';
+  return 'auto';
 }
 
 /* ============================================================

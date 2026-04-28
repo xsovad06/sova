@@ -100,7 +100,7 @@ async function loadActive() {
           '<div class="flex items-center gap-2">' +
             '<span class="w-2 h-2 rounded-full ' + statusDot(task.status) + '"></span>' +
             '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(task.issue_number) + '</span>' +
-            '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(task.role) + '</span>' +
+            '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(task.role)) + '</span>' +
             '<span class="text-xs ' + statusColor(task.status) + '">' + escapeHtml(task.status) + '</span>' +
           '</div>' +
           '<div class="flex items-center gap-3 text-xs">' +
@@ -192,7 +192,7 @@ function renderHistoryTable(tasks, targetId, showError) {
 
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
         '<td class="p-3 text-accent">#' + escapeHtml(t.issue_number) + '</td>' +
-        '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(t.role) + '</span></td>' +
+        '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(t.role)) + '</span></td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(t.status) + '"></span><span class="' + statusColor(t.status) + '">' + escapeHtml(t.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + stepsText + '</td>' +
         '<td class="p-3 text-right text-accent-green">$' + t.total_cost_usd.toFixed(4) + '</td>' +
