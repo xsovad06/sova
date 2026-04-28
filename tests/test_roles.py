@@ -810,6 +810,7 @@ class TestReviewerLLMReview:
         assert "0 findings" in result.summary
         comment = adapter.post_comment.call_args[0][1]
         assert "No issues found" in comment
+        assert "LGTM" in comment
 
     async def test_llm_failure_graceful_fallback(self) -> None:
         from unittest.mock import patch
@@ -1017,6 +1018,7 @@ class TestReviewerParsing:
         comment = _format_findings_comment([], "All good", 42)
         assert "No issues found" in comment
         assert "PR #42" in comment
+        assert "LGTM" in comment
 
     def test_format_findings_with_actionable(self) -> None:
         from sova.roles.reviewer import ReviewFinding, _format_findings_comment

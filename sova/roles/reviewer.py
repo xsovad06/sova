@@ -171,9 +171,10 @@ def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_num
     actionable = [f for f in findings if f.severity >= 3]
 
     if not findings:
-        lines.append("No issues found after thorough review.")
         if summary:
-            lines.extend(["", summary])
+            lines.extend([summary, ""])
+        lines.append("No issues found after thorough review.")
+        lines.extend(["", "---", "**Assessment**: LGTM -- no issues found, ready to merge"])
         return "\n".join(lines)
 
     # Summary block
@@ -210,7 +211,7 @@ def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_num
     elif actionable:
         assessment = "REVISE -- actionable findings should be addressed"
     else:
-        assessment = "APPROVE -- only minor observations, ready to merge"
+        assessment = "LGTM -- only minor observations, ready to merge"
     lines.extend(["---", f"**Assessment**: {assessment}"])
 
     return "\n".join(lines)
