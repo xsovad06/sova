@@ -267,7 +267,7 @@ class ReviewerRole(AgentRole):
         try:
             diff = await get_pr_diff(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
             files = await get_pr_files(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
-        except RuntimeError as exc:
+        except Exception as exc:
             return RoleResult(
                 success=False,
                 summary=f"Failed to fetch PR #{ctx.pr_number} diff",

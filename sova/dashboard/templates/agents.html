@@ -94,10 +94,11 @@ async function loadIssues() {
     var res = await fetch(apiUrl('/tasks/issues'));
     if (!res.ok) return;
     var data = await res.json();
-    _allIssues = (data.issues || []).sort(function(a, b) {
+    var issues = data.issues || [];
+    _allIssues = issues.sort(function(a, b) {
       return parseInt(b.number) - parseInt(a.number);
     });
-    _issuesLoaded = true;
+    if (issues.length > 0) _issuesLoaded = true;
   } catch (e) { /* ignore */ }
 }
 
@@ -189,6 +190,8 @@ function issueKeydown(e) {
     e.preventDefault();
     if (_highlightIdx >= 0) {
       selectIssue(_highlightIdx);
+    } else if (_filteredIssues.length > 0) {
+      selectIssue(0);
     }
   } else if (e.key === 'Escape') {
     hideIssueDropdown();
