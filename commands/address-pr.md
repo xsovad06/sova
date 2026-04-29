@@ -28,28 +28,29 @@ Score each review comment, fix valuable ones, politely decline low-value ones, a
 4. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
 5. **Score each comment 1-10**:
-   - 1-2: cosmetic nitpicks, subjective style, trivial renames
-   - 3-5: minor improvements -- DRY violations, missing edge cases, readability
+   - 1-2: purely subjective preferences -- naming style, comment wording, formatting not caught by linter
+   - 3-5: minor improvements -- DRY violations, missing edge cases, error handling, code removal
    - 6-8: meaningful -- potential bugs, missing validation, test gaps
    - 9-10: critical -- security, data loss, correctness bugs
+
+   Bump to 3+ (not 1-2) if the finding removes code, improves error handling, reduces duplication, or fixes doc inconsistencies. Reserve 1-2 only for truly subjective style preferences.
 
    For bot suggestions: evaluate critically -- don't blindly accept. Bots lack project context and may suggest changes that conflict with project conventions.
 
 6. **For comments scoring 3+**: Fix the issue in the code.
    - If you CANNOT fix it (needs architectural decision, unclear requirements): add to NEEDS_HUMAN_INPUT list.
 
-7. **For comments scoring below 3**: Decline politely.
-   - Acknowledge the suggestion briefly.
-   - Explain why the current code is sufficient.
-   - Keep tone respectful but firm.
+7. **For comments scoring 1-2**: Auto-fix if the change removes code, improves error handling, or reduces duplication. Decline only purely subjective preferences.
 
 8. **After all fixes**:
    Run the project's linter and tests (see CLAUDE.md for commands).
-   ```bash
-   git add -A && git commit --amend --no-edit
-   git push --force-with-lease
+   Stage and commit with a message following the project's commit conventions (see AGENTS.md).
+   The commit type is `fix` and the description must summarize WHAT was fixed, not just reference the issue/PR.
    ```
-   NEVER create new 'fix' commits -- always amend/squash into existing commits.
+   fix(<scope>): address review findings from PR #<PR_NUMBER>
+   ```
+   Example: `fix(ai): address review findings from PR #82`
+   The scope comes from the area of code changed. Do NOT use generic messages like `feat: issue #N`.
 
 9. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
    - Addressed (3+): `Fixed: [what changed].` or `Added [what].`

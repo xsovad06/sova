@@ -82,7 +82,7 @@ After this command completes, run `/pr` to create the pull request.
 ## Rules
 
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
-- Do NOT fix cosmetic-only issues (score 1-2) -- report them but leave them.
+- For score 1-2 findings: auto-fix if the change removes code, improves error handling, or reduces duplication. Skip only purely subjective preferences (naming style, comment wording).
 - Do NOT reformat code that wasn't changed in this branch.
 - If a simplification or fix is risky, flag it for human review instead of applying.
 - Each phase builds on the previous -- Phase 2 reviews the state after Phase 1's changes.

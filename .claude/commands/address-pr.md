@@ -27,62 +27,55 @@ Score each review comment, fix valuable ones, politely decline low-value ones, a
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews
    ```
 
-4. **Also check issue comments** for SOVA review comments (they start with `## Code Review for PR`):
-   ```bash
-   # Find the linked issue number from the PR body (look for "Closes #N")
-   gh pr view <PR_NUMBER> --json body --jq '.body' | grep -oP 'Closes #\K\d+'
-   # Then fetch issue comments
-   gh api repos/<OWNER>/<REPO>/issues/<ISSUE_NUMBER>/comments --jq '.[] | select(.body | startswith("## Code Review")) | .body'
-   ```
-
-5. **Merge all sources**: combine handoff findings, PR review comments, and issue review comments.
+4. **Merge all sources**: combine handoff findings and PR review comments.
    Deduplicate by file+description. Handoff findings take priority (they have pre-scored severity).
 
-6. Find the working directory -- check for an existing worktree or create one:
+5. Find the working directory -- check for an existing worktree or create one:
    ```bash
    git worktree list
    ```
 
-7. **Score each comment 1-10** (skip for handoff findings which are pre-scored):
-   - 1-2: cosmetic nitpicks, subjective style, trivial renames
-   - 3-5: minor improvements -- DRY violations, missing edge cases, readability
+6. **Score each comment 1-10** (skip for handoff findings which are pre-scored):
+   - 1-2: purely subjective preferences -- naming style, comment wording, formatting not caught by linter
+   - 3-5: minor improvements -- DRY violations, missing edge cases, error handling, code removal
    - 6-8: meaningful -- potential bugs, missing validation, test gaps
    - 9-10: critical -- security, data loss, correctness bugs
 
-8. **For comments scoring 3+**: Fix the issue in the code.
+   Bump to 3+ (not 1-2) if the finding removes code, improves error handling, reduces duplication, or fixes doc inconsistencies. Reserve 1-2 only for truly subjective style preferences.
+
+7. **For comments scoring 3+**: Fix the issue in the code.
    - If you CANNOT fix it (needs architectural decision, unclear requirements): add to NEEDS_HUMAN_INPUT list.
 
-9. **For comments scoring below 3**: Decline politely.
-   - Acknowledge the suggestion briefly.
-   - Explain why the current code is sufficient.
-   - Keep tone respectful but firm.
+8. **For comments scoring 1-2**: Auto-fix if the change removes code, improves error handling, or reduces duplication. Decline only purely subjective preferences.
 
-10. **After all fixes**:
-    Run the project's linter and tests (see CLAUDE.md for commands).
-    ```bash
-    git add -A && git commit --amend --no-edit
-    git push --force-with-lease
-    ```
-    NEVER create new 'fix' commits -- always amend/squash into existing commits.
+9. **After all fixes**:
+   Run the project's linter and tests (see CLAUDE.md for commands).
+   Stage and commit with a message following the project's commit conventions (see AGENTS.md).
+   The commit type is `fix` and the description must summarize WHAT was fixed, not just reference the issue/PR.
+   ```
+   fix(<scope>): address review findings from PR #<PR_NUMBER>
+   ```
+   Example: `fix(ai): address review findings from PR #82`
+   The scope comes from the area of code changed. Do NOT use generic messages like `feat: issue #N`.
 
-11. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
+10. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
     - Addressed (3+): `Fixed: [what changed].` or `Added [what].`
     - Declined (<3): brief explanation of why current code is sufficient.
     - No filler words, no 'Great catch!', no emojis.
 
-12. **Resolve each thread** using GraphQL (for PR review comments only):
+11. **Resolve each thread** using GraphQL (for PR review comments only):
     ```bash
     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
     ```
 
-13. **Clear the handoff** after addressing all findings:
+12. **Clear the handoff** after addressing all findings:
     ```bash
     rm -f .claude/agent-control/handoff.json
     ```
 
-14. **Update memory**: Append lessons from comments scored 3+ to `.claude/agent-memory/review-feedback.md`.
+13. **Update memory**: Append lessons from comments scored 3+ to `.claude/agent-memory/review-feedback.md`.
 
-15. **Print summary**:
+14. **Print summary**:
     - Table: | Source | File | Score | Action |
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
 

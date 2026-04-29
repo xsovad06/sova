@@ -52,8 +52,8 @@ For each issue found, assign a **fix value score from 1-10**:
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| 1-2 | Cosmetic or stylistic nitpick, no real impact | Report only, do not fix |
-| 3-5 | Meaningful improvement: correctness, readability, or maintainability | **Auto-fix** |
+| 1-2 | Purely subjective preference: naming style, comment wording, formatting not caught by linter | Auto-fix if it removes code, improves error handling, or reduces duplication; skip otherwise |
+| 3-5 | Meaningful improvement: correctness, readability, DRY, error handling, code removal | **Auto-fix** |
 | 6-8 | Important: prevents bugs, security issues, or significant tech debt | **Auto-fix** |
 | 9-10 | Critical: data loss, security vulnerability, or broken functionality | **Auto-fix** |
 
@@ -117,7 +117,7 @@ Only run checks for modules with changed files. If any check fails, fix the issu
 **Files reviewed**: N
 **Findings**: N total (N critical, N important, N moderate, N low)
 **Auto-fixed**: N findings (scores >= 3)
-**Skipped**: N findings (scores 1-2, cosmetic only)
+**Skipped**: N findings (scores 1-2, subjective only)
 **Assessment**: ready to push / needs human review / needs fixes
 
 ### Remaining items (if any)

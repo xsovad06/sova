@@ -123,6 +123,14 @@ Suggestion: How to fix it, with code if helpful.
 
 Severity: **CRITICAL** / **HIGH** / **MEDIUM** / **LOW**
 
+Scoring guidance -- bump to 3+ (not 1-2) if the finding:
+- Removes code or reduces duplication (less code = fewer bugs)
+- Improves error handling (catches specific exceptions, removes silent failures)
+- Fixes a doc inconsistency that misleads contributors or agents
+- Eliminates dead code or unused imports
+
+Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
+
 ### Verdict
 
 - **Approve** -- no blockers, findings are minor
