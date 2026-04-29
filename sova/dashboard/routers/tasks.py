@@ -2,13 +2,56 @@
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter
 
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services.task_service import get_active_tasks, get_task_history
 from sova.db.session import get_session
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.tasks")
 
 router = APIRouter(tags=["tasks"])
+
+_issues_cache: dict[str, tuple[float, list[dict]]] = {}
+_CACHE_TTL = 60
+
+
+@router.get("/tasks/issues")
+async def list_issues():
+    """Get all open issues from the task source (cached 60s)."""
+    project_dir = get_project_dir()
+    cache_key = str(project_dir or "default")
+
+    cached = _issues_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _CACHE_TTL:
+        return {"issues": cached[1]}
+
+    try:
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        ts = cfg.task_source
+        adapter = create_adapter(ts.type, cfg.github_repo, cfg.github_user, ts.github_project_number)
+        tasks = await adapter.list_tasks()
+
+        issues = [
+            {
+                "number": t.id,
+                "title": t.title,
+                "state": t.state.value,
+                "labels": t.labels,
+            }
+            for t in tasks
+        ]
+        _issues_cache[cache_key] = (time.time(), issues)
+        return {"issues": issues}
+    except Exception:
+        log.debug("Failed to fetch issues", exc_info=True)
+        return {"issues": []}
 
 
 @router.get("/tasks/active")

@@ -5,9 +5,17 @@
 
 <!-- Start Panel -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-6">
-  <div class="flex items-center gap-3">
-    <input type="text" id="agent-issue" placeholder="Issue number (e.g. 42)"
-      class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-48 focus:border-accent focus:outline-none">
+  <div class="flex items-center gap-3 flex-wrap">
+    <!-- Issue combobox -->
+    <div class="relative" id="issue-combobox">
+      <input type="text" id="agent-issue" placeholder="Search issues..." autocomplete="off"
+        class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-72 focus:border-accent focus:outline-none"
+        oninput="filterIssues()" onfocus="showIssueDropdown()" onkeydown="issueKeydown(event)">
+      <input type="hidden" id="agent-issue-number" value="">
+      <div id="issue-dropdown"
+        class="hidden absolute z-50 mt-1 w-96 max-h-64 overflow-y-auto bg-surface border border-gray-700 rounded-lg shadow-xl">
+      </div>
+    </div>
     <select id="agent-role" class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:border-accent focus:outline-none"
       onchange="togglePrInput()">
       <option value="">Auto (dispatcher)</option>
@@ -72,6 +80,126 @@
 {% block scripts %}
 <script>
 var activeLogRunId = null;
+
+// -- Issue combobox --
+
+var _allIssues = [];
+var _filteredIssues = [];
+var _highlightIdx = -1;
+var _issuesLoaded = false;
+
+async function loadIssues() {
+  if (_issuesLoaded) return;
+  try {
+    var res = await fetch(apiUrl('/tasks/issues'));
+    if (!res.ok) return;
+    var data = await res.json();
+    _allIssues = (data.issues || []).sort(function(a, b) {
+      return parseInt(b.number) - parseInt(a.number);
+    });
+    _issuesLoaded = true;
+  } catch (e) { /* ignore */ }
+}
+
+function stateTag(state) {
+  var colors = {
+    backlog: 'bg-gray-600/30 text-gray-400',
+    triaged: 'bg-accent-yellow/20 text-accent-yellow',
+    researched: 'bg-accent-purple/20 text-accent-purple',
+    in_progress: 'bg-accent/20 text-accent',
+    in_review: 'bg-accent-green/20 text-accent-green',
+    done: 'bg-accent-green/30 text-accent-green',
+  };
+  var cls = colors[state] || 'bg-gray-600/30 text-gray-400';
+  return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(state) + '</span>';
+}
+
+function renderIssueDropdown() {
+  var dd = document.getElementById('issue-dropdown');
+  if (_filteredIssues.length === 0) {
+    dd.innerHTML = '<div class="px-3 py-2 text-xs text-gray-500">No matching issues</div>';
+    dd.classList.remove('hidden');
+    return;
+  }
+  var html = _filteredIssues.map(function(issue, idx) {
+    var active = idx === _highlightIdx ? 'bg-accent/10' : '';
+    return '<div class="px-3 py-2 cursor-pointer hover:bg-accent/10 transition-colors text-sm ' + active + '" ' +
+      'onmousedown="selectIssue(' + idx + ')" ' +
+      'id="issue-opt-' + idx + '">' +
+      '<div class="flex items-center gap-2">' +
+        '<span class="text-accent font-medium">#' + escapeHtml(issue.number) + '</span>' +
+        stateTag(issue.state) +
+      '</div>' +
+      '<div class="text-gray-300 text-xs mt-0.5 truncate">' + escapeHtml(issue.title) + '</div>' +
+    '</div>';
+  }).join('');
+  dd.innerHTML = html;
+  dd.classList.remove('hidden');
+}
+
+function filterIssues() {
+  var q = document.getElementById('agent-issue').value.trim().toLowerCase().replace(/^#/, '');
+  document.getElementById('agent-issue-number').value = '';
+  if (!q) {
+    _filteredIssues = _allIssues.slice(0, 20);
+  } else {
+    _filteredIssues = _allIssues.filter(function(i) {
+      return i.number.toString().includes(q) || i.title.toLowerCase().includes(q);
+    }).slice(0, 20);
+  }
+  _highlightIdx = -1;
+  renderIssueDropdown();
+}
+
+function showIssueDropdown() {
+  loadIssues().then(function() {
+    filterIssues();
+  });
+}
+
+function hideIssueDropdown() {
+  document.getElementById('issue-dropdown').classList.add('hidden');
+}
+
+function selectIssue(idx) {
+  var issue = _filteredIssues[idx];
+  if (!issue) return;
+  document.getElementById('agent-issue').value = '#' + issue.number + ' ' + issue.title;
+  document.getElementById('agent-issue-number').value = issue.number;
+  hideIssueDropdown();
+}
+
+function issueKeydown(e) {
+  var dd = document.getElementById('issue-dropdown');
+  if (dd.classList.contains('hidden')) return;
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _highlightIdx = Math.min(_highlightIdx + 1, _filteredIssues.length - 1);
+    renderIssueDropdown();
+    var el = document.getElementById('issue-opt-' + _highlightIdx);
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _highlightIdx = Math.max(_highlightIdx - 1, 0);
+    renderIssueDropdown();
+    var el2 = document.getElementById('issue-opt-' + _highlightIdx);
+    if (el2) el2.scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_highlightIdx >= 0) {
+      selectIssue(_highlightIdx);
+    }
+  } else if (e.key === 'Escape') {
+    hideIssueDropdown();
+  }
+}
+
+document.addEventListener('click', function(e) {
+  if (!document.getElementById('issue-combobox').contains(e.target)) {
+    hideIssueDropdown();
+  }
+});
 var logCursor = 0;
 var agentPollInterval = null;
 var logPollInterval = null;
@@ -250,10 +378,11 @@ function togglePrInput() {
 
 async function startAgent() {
   var issueEl = document.getElementById('agent-issue');
+  var issueNumEl = document.getElementById('agent-issue-number');
   var roleEl = document.getElementById('agent-role');
   var forceEl = document.getElementById('agent-force');
   var prEl = document.getElementById('agent-pr');
-  var issue = issueEl.value.trim();
+  var issue = issueNumEl.value || issueEl.value.replace(/^#/, '').split(/\s/)[0].trim();
   if (!issue) { issueEl.focus(); return; }
 
   var btn = document.getElementById('start-btn');
@@ -279,6 +408,7 @@ async function startAgent() {
       alert(result.error);
     } else {
       issueEl.value = '';
+      issueNumEl.value = '';
       prEl.value = '';
       forceEl.checked = false;
       if (result.run_id) viewLogs(result.run_id);
