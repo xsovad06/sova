@@ -160,7 +160,7 @@ class TestTriageRole:
 
         assert result.success
 
-    async def test_posts_assessment_comment(self) -> None:
+    async def test_appends_assessment_to_body(self) -> None:
         from sova.roles.triage import TriageRole
 
         adapter = _mock_adapter(TaskState.BACKLOG)
@@ -169,9 +169,9 @@ class TestTriageRole:
 
         await role.execute(ctx)
 
-        adapter.post_comment.assert_awaited_once()
-        comment_body = adapter.post_comment.call_args[0][1]
-        assert "triage" in comment_body.lower() or "assessment" in comment_body.lower()
+        adapter.edit_body.assert_awaited_once()
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "triage" in updated_body.lower() or "assessment" in updated_body.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ class TestResearcherRole:
 
         assert not result.success
 
-    async def test_posts_research_comment(self) -> None:
+    async def test_appends_research_to_body(self) -> None:
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
@@ -221,7 +221,9 @@ class TestResearcherRole:
 
         await role.execute(ctx)
 
-        adapter.post_comment.assert_awaited_once()
+        adapter.edit_body.assert_awaited_once()
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "research" in updated_body.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -783,8 +785,8 @@ class TestReviewerLLMReview:
         assert result.success
         assert "2 findings" in result.summary
         assert "1 actionable" in result.summary
-        adapter.post_comment.assert_awaited_once()
-        comment = adapter.post_comment.call_args[0][1]
+        adapter.post_pr_comment.assert_awaited_once()
+        comment = adapter.post_pr_comment.call_args[0][1]
         assert "Null check missing" in comment
         assert ctx.cost_usd == Decimal("0.01")
 
@@ -812,7 +814,7 @@ class TestReviewerLLMReview:
 
         assert result.success
         assert "0 findings" in result.summary
-        comment = adapter.post_comment.call_args[0][1]
+        comment = adapter.post_pr_comment.call_args[0][1]
         assert "No issues found" in comment
         assert "LGTM" in comment
 
@@ -835,7 +837,7 @@ class TestReviewerLLMReview:
             result = await role.execute(ctx)
 
         assert result.success
-        comment = adapter.post_comment.call_args[0][1]
+        comment = adapter.post_pr_comment.call_args[0][1]
         assert "manual review" in comment.lower()
 
     async def test_large_diff_chunking(self) -> None:

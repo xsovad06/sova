@@ -167,8 +167,9 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                 label_name = role.SUITABILITY_LABELS[assessment.suitability]
                 await adapter.add_label(task.id, label_name)
 
-                comment = role._build_assessment_comment(task, assessment)
-                await adapter.post_comment(task.id, comment)
+                assessment_section = role._build_assessment_comment(task, assessment)
+                updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
+                await adapter.edit_body(task.id, updated_body)
 
                 if task.state in role.allowed_input_states:
                     await adapter.transition_state(task.id, TaskState.TRIAGED)
@@ -256,11 +257,6 @@ async def _run_batch_harden(
                     continue
 
                 await adapter.edit_body(task.id, enriched_body)
-                await adapter.post_comment(
-                    task.id,
-                    "Issue hardened by SOVA (body updated with enriched requirements, "
-                    "acceptance criteria, and technical approach).",
-                )
 
                 triage_detail = ""
                 if not skip_triage:

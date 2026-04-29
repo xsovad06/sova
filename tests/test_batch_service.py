@@ -279,7 +279,7 @@ class TestBatchHarden:
         assert job.status == "done"
         assert job.results[0].status == "done"
         adapter.edit_body.assert_called_once()
-        adapter.post_comment.assert_called_once()
+        adapter.post_comment.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
     @patch("sova.config.loader.load_config")

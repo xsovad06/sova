@@ -99,13 +99,6 @@ async def _harden(
 
         # Update issue body
         await adapter.edit_body(task.id, enriched_body)
-
-        # Post a brief comment noting the hardening
-        await adapter.post_comment(
-            task.id,
-            "Issue hardened by SOVA (body updated with enriched requirements, "
-            "acceptance criteria, and technical approach).",
-        )
         console.print(f"[green]  Updated issue #{task.id} body.[/green]")
 
         # Re-triage with enriched content

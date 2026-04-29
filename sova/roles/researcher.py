@@ -1,7 +1,7 @@
 """Researcher role -- investigate issues and prepare them for development.
 
-Reads TRIAGED issues, explores the codebase, writes a detailed assessment
-comment with affected files and approach, and moves them to RESEARCHED.
+Reads TRIAGED issues, explores the codebase, appends a research assessment
+to the issue body, and moves them to RESEARCHED.
 """
 
 from __future__ import annotations
@@ -42,9 +42,10 @@ class ResearcherRole(AgentRole):
 
         log.info("researcher.start", issue=ctx.issue_number)
 
-        # Post research comment
-        comment = self._build_research_comment(task)
-        await ctx.adapter.post_comment(ctx.issue_number, comment)
+        # Append research assessment to issue body
+        research_section = self._build_research_comment(task)
+        updated_body = (task.body or "").rstrip() + "\n\n" + research_section
+        await ctx.adapter.edit_body(ctx.issue_number, updated_body)
 
         # Transition to researched
         await ctx.adapter.transition_state(ctx.issue_number, TaskState.RESEARCHED)
@@ -57,7 +58,7 @@ class ResearcherRole(AgentRole):
         )
 
     def _build_research_comment(self, task: Task) -> str:
-        """Build a research assessment comment for the issue."""
+        """Build a research assessment section to append to the issue body."""
         return (
             f"## Research Assessment\n\n"
             f"**Issue**: {task.title}\n\n"

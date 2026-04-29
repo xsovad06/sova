@@ -230,7 +230,7 @@ class TestHardenCommand:
         assert result.exit_code == 0
         adapter.get_task.assert_called_with("42")
         adapter.edit_body.assert_called_once()
-        adapter.post_comment.assert_called()
+        adapter.post_comment.assert_not_called()
 
     @patch("sova.llm.client.invoke")
     @patch("sova.cli.commands.harden.create_adapter")

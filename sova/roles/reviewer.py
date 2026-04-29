@@ -1,8 +1,8 @@
 """Reviewer role -- review PRs and provide feedback.
 
 Reads IN_REVIEW issues with linked PRs, reviews the code changes
-via LLM, and posts scored review findings. Writes a handoff with
-actionable findings for the Developer to address.
+via LLM, and posts scored review findings on the PR. Writes a handoff
+with actionable findings for the Developer to address.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ def _chunk_diff(diff: str, chunk_size: int = DIFF_CHUNK_SIZE) -> list[str]:
 
 
 def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_number: int) -> str:
-    """Format findings into a GitHub issue comment matching /review-full style."""
+    """Format findings into a GitHub PR comment matching /review-full style."""
     lines = [f"## Code Review for PR #{pr_number}", ""]
 
     actionable = [f for f in findings if f.severity >= 3]
@@ -277,9 +277,9 @@ class ReviewerRole(AgentRole):
         # Run LLM review (chunked if needed)
         review = await self._run_review(ctx, task, diff, files)
 
-        # Post review comment
+        # Post review comment on the PR, not the issue
         comment = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
-        await ctx.adapter.post_comment(ctx.issue_number, comment)
+        await ctx.adapter.post_pr_comment(ctx.pr_number, comment)
 
         # Write handoff
         await self._write_handoff(ctx, review)

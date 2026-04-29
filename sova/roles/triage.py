@@ -1,7 +1,7 @@
 """Triage role -- assess issues and classify them for the pipeline.
 
 Reads BACKLOG issues, evaluates them for agent suitability, applies
-labels, posts an assessment comment, and moves them to TRIAGED.
+labels, appends assessment to the issue body, and moves them to TRIAGED.
 
 Uses heuristic pre-checks and optional Claude-based deep assessment.
 """
@@ -209,9 +209,10 @@ class TriageRole(AgentRole):
         label = self.SUITABILITY_LABELS[assessment.suitability]
         await ctx.adapter.add_label(ctx.issue_number, label)
 
-        # Post assessment comment
-        comment = self._build_assessment_comment(task, assessment)
-        await ctx.adapter.post_comment(ctx.issue_number, comment)
+        # Append assessment to issue body
+        assessment_section = self._build_assessment_comment(task, assessment)
+        updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
+        await ctx.adapter.edit_body(ctx.issue_number, updated_body)
 
         # Transition to triaged
         await ctx.adapter.transition_state(ctx.issue_number, TaskState.TRIAGED)
@@ -224,7 +225,7 @@ class TriageRole(AgentRole):
         )
 
     def _build_assessment_comment(self, task: Task, assessment: TaskAssessment) -> str:
-        """Build a triage assessment comment for the issue."""
+        """Build a triage assessment section to append to the issue body."""
         has_body = bool(task.body and task.body.strip())
         missing = ", ".join(assessment.missing_context) if assessment.missing_context else "none"
         parts = [
