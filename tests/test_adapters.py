@@ -85,6 +85,7 @@ class TestTaskAdapterInterface:
             "add_label",
             "remove_label",
             "post_comment",
+            "post_pr_comment",
             "edit_body",
             "get_state",
             "link_pr",
@@ -327,6 +328,18 @@ class TestGitHubAdapter:
         assert "issue" in call_args
         assert "comment" in call_args
         assert "42" in call_args
+
+    # -- post_pr_comment --
+
+    async def test_post_pr_comment(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        await self.adapter.post_pr_comment(82, "Review findings here.")
+
+        call_args = mock_run.call_args[0]
+        assert "pr" in call_args
+        assert "comment" in call_args
+        assert "82" in call_args
 
     # -- get_state --
 

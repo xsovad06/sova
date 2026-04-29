@@ -177,6 +177,17 @@ class GitHubAdapter(TaskAdapter):
             body,
         )
 
+    async def post_pr_comment(self, pr_number: int, body: str) -> None:
+        await self._gh(
+            "pr",
+            "comment",
+            str(pr_number),
+            "--repo",
+            self.repo,
+            "--body",
+            body,
+        )
+
     async def edit_body(self, task_id: str, body: str) -> None:
         await self._gh(
             "issue",
