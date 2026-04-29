@@ -8,13 +8,16 @@
   <div class="flex items-center gap-3">
     <input type="text" id="agent-issue" placeholder="Issue number (e.g. 42)"
       class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-48 focus:border-accent focus:outline-none">
-    <select id="agent-role" class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:border-accent focus:outline-none">
+    <select id="agent-role" class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:border-accent focus:outline-none"
+      onchange="togglePrInput()">
       <option value="">Auto (dispatcher)</option>
       <option value="developer">Developer</option>
       <option value="triage">Triage</option>
       <option value="researcher">Researcher</option>
       <option value="reviewer">Reviewer</option>
     </select>
+    <input type="text" id="agent-pr" placeholder="PR # (optional)"
+      class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-36 focus:border-accent focus:outline-none hidden">
     <label class="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer select-none">
       <input type="checkbox" id="agent-force" class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">
       <span>--force</span>
@@ -234,10 +237,22 @@ async function pollLogs() {
 
 // -- Agent actions --
 
+function togglePrInput() {
+  var role = document.getElementById('agent-role').value;
+  var prEl = document.getElementById('agent-pr');
+  if (role === 'reviewer') {
+    prEl.classList.remove('hidden');
+  } else {
+    prEl.classList.add('hidden');
+    prEl.value = '';
+  }
+}
+
 async function startAgent() {
   var issueEl = document.getElementById('agent-issue');
   var roleEl = document.getElementById('agent-role');
   var forceEl = document.getElementById('agent-force');
+  var prEl = document.getElementById('agent-pr');
   var issue = issueEl.value.trim();
   if (!issue) { issueEl.focus(); return; }
 
@@ -245,21 +260,26 @@ async function startAgent() {
   btn.disabled = true;
   btn.textContent = 'Starting...';
 
+  var payload = {
+    issue: issue,
+    role: roleEl.value || null,
+    force: forceEl.checked,
+  };
+  var prVal = prEl.value.trim();
+  if (prVal) payload.pr_number = parseInt(prVal, 10);
+
   try {
     var result = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        issue: issue,
-        role: roleEl.value || null,
-        force: forceEl.checked,
-      }),
+      body: JSON.stringify(payload),
     }).then(function(r) { return r.json(); });
 
     if (result.error) {
       alert(result.error);
     } else {
       issueEl.value = '';
+      prEl.value = '';
       forceEl.checked = false;
       if (result.run_id) viewLogs(result.run_id);
     }
