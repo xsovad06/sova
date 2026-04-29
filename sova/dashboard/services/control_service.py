@@ -298,6 +298,7 @@ async def start_agent(
     force: bool = False,
     slug: str | None = None,
     resume_run_id: int | None = None,
+    pr_number: int | None = None,
 ) -> dict:
     """Start an agent process for the given issue."""
     issue = issue.lstrip("#").strip()
@@ -324,6 +325,8 @@ async def start_agent(
             prompt += f" --role {role}"
         if force:
             prompt += " --force"
+        if pr_number:
+            prompt += f" --pr {pr_number}"
 
         cwd = pa.project_dir
         gh_env = await _resolve_project_gh_env(cwd)

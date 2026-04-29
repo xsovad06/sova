@@ -19,9 +19,12 @@ def run_issue(
     role: Annotated[Optional[str], typer.Option("--role", "-r", help="Force a specific role.")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip pipeline gate checks.")] = False,
     resume: Annotated[Optional[int], typer.Option("--resume", help="Resume from a previous run ID.")] = None,
+    pr: Annotated[Optional[int], typer.Option("--pr", help="PR number (skips PR discovery).")] = None,
 ) -> None:
     """Run the agent workflow for a single issue."""
-    asyncio.run(_run_workflow(issue, project_dir=project, role_name=role, force=force, resume_run_id=resume))
+    asyncio.run(
+        _run_workflow(issue, project_dir=project, role_name=role, force=force, resume_run_id=resume, pr_number=pr)
+    )
 
 
 async def _run_workflow(
@@ -31,6 +34,7 @@ async def _run_workflow(
     role_name: str | None,
     force: bool,
     resume_run_id: int | None = None,
+    pr_number: int | None = None,
 ) -> None:
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
@@ -70,7 +74,7 @@ async def _run_workflow(
         completed_steps=frozenset(checkpoint.get("completed_steps", set())),
         branch_name=checkpoint.get("branch_name", ""),
         worktree_dir=checkpoint.get("worktree_dir"),
-        pr_number=checkpoint.get("pr_number"),
+        pr_number=pr_number or checkpoint.get("pr_number"),
         cost_usd=checkpoint.get("cost_usd", Decimal("0")),
     )
 

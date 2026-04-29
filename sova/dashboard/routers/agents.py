@@ -17,6 +17,7 @@ class StartAgentRequest(BaseModel):
     role: str | None = None
     force: bool = False
     resume_run_id: int | None = None
+    pr_number: int | None = None
 
 
 @router.get("/agents/active")
@@ -88,6 +89,7 @@ async def start_agent(req: StartAgentRequest):
         role=req.role,
         force=req.force,
         resume_run_id=req.resume_run_id,
+        pr_number=req.pr_number,
     )
 
 
