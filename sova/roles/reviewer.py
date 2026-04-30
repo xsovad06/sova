@@ -356,6 +356,18 @@ class ReviewerRole(AgentRole):
 
         # Dashboard handoff
         actions: list[HandoffAction] = []
+        findings_data = [
+            {
+                "file": f.file,
+                "line": f.line,
+                "severity": f.severity,
+                "category": f.category,
+                "description": f.description,
+                "suggestion": f.suggestion,
+            }
+            for f in actionable
+        ]
+
         if actionable:
             actions.append(
                 HandoffAction(
@@ -363,10 +375,11 @@ class ReviewerRole(AgentRole):
                     label="Address Review",
                     description=f"Fix {len(actionable)} actionable findings",
                     style="approve",
-                    mode="claude-command",
-                    command=f"/address-pr {ctx.pr_number}",
-                    args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                )
+                    mode="agent",
+                    command="",
+                    args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
+                    auto_execute=True,
+                ),
             )
         else:
             actions.append(
@@ -378,7 +391,7 @@ class ReviewerRole(AgentRole):
                     mode="claude-command",
                     command=f"/integrate-pr {ctx.pr_number}",
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                )
+                ),
             )
             actions.append(
                 HandoffAction(
@@ -389,7 +402,7 @@ class ReviewerRole(AgentRole):
                     mode="claude-command",
                     command=f"/approve-merge {ctx.pr_number}",
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                )
+                ),
             )
 
         dashboard_handoff = DashboardHandoff(
@@ -399,7 +412,11 @@ class ReviewerRole(AgentRole):
             pr_number=ctx.pr_number,
             branch=ctx.branch_name,
             summary=f"{len(review.findings)} findings ({len(actionable)} actionable)",
-            details={"next_action": next_action, "cost_usd": str(review.total_cost)},
+            details={
+                "next_action": next_action,
+                "cost_usd": str(review.total_cost),
+                "findings": findings_data,
+            },
             next_actions=actions,
         )
 

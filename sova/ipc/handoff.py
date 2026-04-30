@@ -41,6 +41,7 @@ class HandoffAction(BaseModel):
     mode: Literal["agent", "claude-command", "shell"] = "claude-command"
     command: str = ""
     args: dict = Field(default_factory=dict)
+    auto_execute: bool = False
 
 
 # ---------------------------------------------------------------------------

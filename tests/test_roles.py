@@ -238,7 +238,7 @@ class TestDeveloperRole:
         role = DeveloperRole()
         assert role.name == "developer"
         assert TaskState.RESEARCHED in role.allowed_input_states
-        assert role.output_state == TaskState.DONE
+        assert role.output_state == TaskState.IN_REVIEW
 
     def test_enforces_gate_3(self) -> None:
         """Developer must refuse non-Researched issues."""
@@ -322,7 +322,7 @@ class TestDeveloperRole:
         assert "develop" in names
         assert "push" in names
         assert "create_pr" in names
-        assert "complete" in names
+        assert "handoff_to_reviewer" in names
 
 
 # ---------------------------------------------------------------------------

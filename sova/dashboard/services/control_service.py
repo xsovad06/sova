@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from sova.core.steps import get_developer_step_names
+from sova.core.steps import get_address_review_step_names, get_developer_step_names
 from sova.dashboard.project_context import get_project_dir, get_project_slug
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.control import AgentProcess
@@ -28,6 +28,7 @@ log = get_logger(component="dashboard.control")
 _DEFAULT_SLUG = "__default__"
 
 DEVELOPER_PIPELINE = get_developer_step_names()
+ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
 
 MAX_RECENTLY_COMPLETED = 5
 RECENTLY_COMPLETED_TTL = 60.0
@@ -625,6 +626,9 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     log.info("agent.completed", run_id=run_id, issue=agent.issue, status=status, cost=cost)
 
+    if exit_code == 0:
+        await _process_auto_handoff(agent)
+
 
 # -- Startup recovery --------------------------------------------------------
 
@@ -797,6 +801,59 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         log.warning("task_run.finalize_failed", exc_info=True)
 
 
+# -- Auto-handoff orchestration -----------------------------------------------
+
+
+async def _process_auto_handoff(agent: AgentState) -> None:
+    """Check for auto-executable handoff actions after an agent completes.
+
+    Reads the handoff file and auto-triggers the first action marked
+    with auto_execute=True. This enables role chaining (e.g., Developer
+    hands off to Reviewer automatically after CI passes).
+    """
+    try:
+        from sova.ipc.handoff import read_handoff_file
+
+        handoff = read_handoff_file(agent.project_dir)
+        if handoff is None or handoff.status != "awaiting_action":
+            return
+
+        for action in handoff.next_actions:
+            if not action.auto_execute:
+                continue
+
+            log.info(
+                "auto_handoff.executing",
+                run_id=agent.run_id,
+                action_id=action.id,
+                mode=action.mode,
+                issue=handoff.issue,
+            )
+
+            if action.mode == "agent":
+                args = action.args or {}
+                raw_pr = args.get("pr") or handoff.pr_number
+                result = await start_agent(
+                    str(args.get("issue", handoff.issue)),
+                    role=args.get("role"),
+                    pr_number=int(raw_pr) if raw_pr is not None else None,
+                    slug=None,
+                )
+                log.info("auto_handoff.agent_started", result=result)
+            elif action.mode == "claude-command":
+                cmd = action.command.lstrip("/").split()[0] if action.command else ""
+                if cmd:
+                    result = await start_command(cmd, action.args, slug=None)
+                    log.info("auto_handoff.command_started", result=result)
+            else:
+                log.warning("auto_handoff.unsupported_mode", mode=action.mode)
+
+            return  # only execute the first auto action
+
+    except Exception:
+        log.warning("auto_handoff.failed", run_id=agent.run_id, exc_info=True)
+
+
 # -- Pipeline progress -------------------------------------------------------
 
 
@@ -804,8 +861,12 @@ def get_step_progress(current_step: str | None) -> dict:
     """Compute step index from current_step name."""
     if current_step is None:
         return {"step_index": -1, "total_steps": len(DEVELOPER_PIPELINE), "steps": DEVELOPER_PIPELINE}
+
+    _ADDRESS_REVIEW_ONLY = {"address_review", "handoff_to_user"}
+    pipeline = ADDRESS_REVIEW_PIPELINE if current_step in _ADDRESS_REVIEW_ONLY else DEVELOPER_PIPELINE
+
     try:
-        idx = DEVELOPER_PIPELINE.index(current_step)
+        idx = pipeline.index(current_step)
     except ValueError:
         idx = -1
-    return {"step_index": idx, "total_steps": len(DEVELOPER_PIPELINE), "steps": DEVELOPER_PIPELINE}
+    return {"step_index": idx, "total_steps": len(pipeline), "steps": pipeline}
