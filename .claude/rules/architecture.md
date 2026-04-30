@@ -10,12 +10,15 @@ SOVA has four main components:
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
-- `core/workflow.py` -- WorkflowEngine: executes 14-step pipeline with DB persistence (TaskRun, StepExecution, FailureRecord)
+- `core/workflow.py` -- WorkflowEngine: executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
-- `core/steps/` -- 14 BaseStep implementations with execute/validate_output/can_skip
+- `core/steps/` -- 16 BaseStep implementations with execute/validate_output/can_skip. Two pipeline variants:
+  - **Developer pipeline** (12 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> monitor_ci -> handoff_to_reviewer
+  - **Address-review pipeline** (5 steps): address_review -> commit -> validate -> push -> handoff_to_user
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state
+- **Role chaining**: Developer -> Reviewer -> Developer handoff chain runs autonomously. `HandoffAction.auto_execute` triggers auto-spawn of the next agent when the current one exits. Developer writes handoff to Reviewer (auto), Reviewer writes handoff back to Developer if findings exist (auto) or to user if clean (manual "Integrate PR" button). Issue stays `IN_REVIEW` until human merges via `/integrate-pr` or `/approve-merge`.
 - **Step gate checks**: every `validate_output()` must check all forms of change -- unstaged diff (`git diff --stat HEAD`), staged diff (`git diff --cached --stat`), and commits ahead of base (`git log {base}..HEAD --oneline`). LLM agents may commit directly, leaving working-tree diffs empty even when real work was done. Never return `GateCheckResult(passed=True)` unconditionally.
 - **Context persistence at step boundaries**: `_sync_task_run_context()` persists `worktree_path`, `branch_name`, and `pr_number` to the TaskRun after every step. This ensures the checkpoint/resume system can restore context even if the run pauses or crashes mid-pipeline.
 
@@ -32,6 +35,7 @@ SOVA has four main components:
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed)
+  - `_process_auto_handoff()` in `control_service.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining
   - Enables chaining: `integrate-pr` (full pipeline) or `ship-pr` -> `agent-resume` -> `approve-merge` (step-by-step)
 - **Claude command execution**: `control_service.start_command()` runs Claude Code commands from handoff actions
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport), run via `make test-py`

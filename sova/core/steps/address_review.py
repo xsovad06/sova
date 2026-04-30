@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.ipc.handoff import read_handoff
+from sova.ipc.handoff import read_handoff, read_handoff_file
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -17,14 +16,10 @@ log = get_logger(component="step.address_review")
 
 def _load_review_findings(project_dir: Path) -> list[dict]:
     """Load review findings from the reviewer's handoff file."""
-    path = project_dir / ".claude" / "agent-control" / "handoff.json"
-    if not path.exists():
+    handoff = read_handoff_file(project_dir)
+    if handoff is None:
         return []
-    try:
-        data = json.loads(path.read_text())
-        return data.get("details", {}).get("findings", [])
-    except (json.JSONDecodeError, OSError):
-        return []
+    return handoff.details.get("findings", [])
 
 
 async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
