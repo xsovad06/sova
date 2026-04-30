@@ -39,6 +39,22 @@
   </div>
 </div>
 
+<!-- PR Actions Panel (shown when selected issue has a linked PR) -->
+<div id="pr-actions-panel" class="hidden mb-6">
+  <div id="pr-actions-card" class="rounded-lg border p-4">
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <span id="pr-status-dot" class="w-2.5 h-2.5 rounded-full"></span>
+        <span id="pr-status-label" class="text-sm font-medium"></span>
+        <a id="pr-link" href="#" target="_blank" class="text-xs text-gray-500 hover:text-accent transition-colors">view on GitHub</a>
+      </div>
+      <div id="pr-status-badges" class="flex items-center gap-2"></div>
+    </div>
+    <p id="pr-title" class="text-sm text-gray-300 mb-3"></p>
+    <div id="pr-action-buttons" class="flex flex-wrap gap-2"></div>
+  </div>
+</div>
+
 <!-- Handoff Action Panel (shown when no agents running but handoff awaits action) -->
 <div id="handoff-panel" class="hidden mb-6">
   <div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
@@ -141,6 +157,7 @@ function renderIssueDropdown() {
 function filterIssues() {
   var q = document.getElementById('agent-issue').value.trim().toLowerCase().replace(/^#/, '');
   document.getElementById('agent-issue-number').value = '';
+  hidePrActionsPanel();
   if (!q) {
     _filteredIssues = _allIssues.slice(0, 20);
   } else {
@@ -168,6 +185,149 @@ function selectIssue(idx) {
   document.getElementById('agent-issue').value = '#' + issue.number + ' ' + issue.title;
   document.getElementById('agent-issue-number').value = issue.number;
   hideIssueDropdown();
+  fetchPrStatus(issue.number);
+}
+
+// -- PR status panel --
+
+var _prStatusAbort = null;
+
+async function fetchPrStatus(issueNumber) {
+  if (_prStatusAbort) _prStatusAbort.abort();
+  var controller = new AbortController();
+  _prStatusAbort = controller;
+
+  var panel = document.getElementById('pr-actions-panel');
+
+  try {
+    var res = await fetch(apiUrl('/agents/issue/' + issueNumber + '/pr-status'), { signal: controller.signal });
+    if (!res.ok) { panel.classList.add('hidden'); return; }
+    var data = await res.json();
+
+    if (!data.has_pr) { panel.classList.add('hidden'); return; }
+    if (data.error) { panel.classList.add('hidden'); return; }
+
+    renderPrActionsPanel(data, issueNumber);
+  } catch (e) {
+    if (e.name !== 'AbortError') panel.classList.add('hidden');
+  }
+}
+
+function renderPrActionsPanel(pr, issueNumber) {
+  var panel = document.getElementById('pr-actions-panel');
+  var card = document.getElementById('pr-actions-card');
+  var dot = document.getElementById('pr-status-dot');
+  var label = document.getElementById('pr-status-label');
+  var link = document.getElementById('pr-link');
+  var badges = document.getElementById('pr-status-badges');
+  var title = document.getElementById('pr-title');
+  var buttons = document.getElementById('pr-action-buttons');
+
+  // Status dot and label
+  var ciGreen = pr.ci_status === 'passed' || pr.ci_status === 'none';
+  var readyToIntegrate = pr.state === 'OPEN' && ciGreen && pr.is_mergeable && pr.review_decision !== 'CHANGES_REQUESTED';
+  if (readyToIntegrate) {
+    dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-green';
+    label.className = 'text-sm font-medium text-accent-green';
+    label.textContent = 'PR #' + pr.pr_number + ' -- Ready to Integrate';
+    card.className = 'rounded-lg border border-accent-green/30 bg-accent-green/5 p-4';
+  } else if (pr.state === 'OPEN' && pr.review_decision !== 'CHANGES_REQUESTED') {
+    dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-yellow';
+    label.className = 'text-sm font-medium text-accent-yellow';
+    var reason = !ciGreen ? 'CI ' + pr.ci_status : 'not mergeable';
+    label.textContent = 'PR #' + pr.pr_number + ' -- ' + reason;
+    card.className = 'rounded-lg border border-accent-yellow/30 bg-accent-yellow/5 p-4';
+  } else if (pr.state === 'MERGED') {
+    dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-purple';
+    label.className = 'text-sm font-medium text-accent-purple';
+    label.textContent = 'PR #' + pr.pr_number + ' -- Merged';
+    card.className = 'rounded-lg border border-accent-purple/30 bg-accent-purple/5 p-4';
+  } else {
+    dot.className = 'w-2.5 h-2.5 rounded-full bg-gray-500';
+    label.className = 'text-sm font-medium text-gray-400';
+    label.textContent = 'PR #' + pr.pr_number;
+    card.className = 'rounded-lg border border-gray-700/50 bg-surface-card p-4';
+  }
+
+  if (pr.url) { link.href = pr.url; link.classList.remove('hidden'); }
+  else { link.classList.add('hidden'); }
+
+  // Badges
+  var badgeHtml = '';
+  var reviewColors = {
+    APPROVED: 'bg-accent-green/20 text-accent-green',
+    CHANGES_REQUESTED: 'bg-accent-red/20 text-accent-red',
+    REVIEW_REQUIRED: 'bg-accent-yellow/20 text-accent-yellow',
+  };
+  var reviewLabel = pr.review_decision || 'no review';
+  var reviewClass = reviewColors[pr.review_decision] || 'bg-gray-600/30 text-gray-400';
+  badgeHtml += '<span class="px-1.5 py-0.5 rounded text-xs ' + reviewClass + '">' + escapeHtml(reviewLabel.toLowerCase().replace(/_/g, ' ')) + '</span>';
+
+  var ciColors = { passed: 'bg-accent-green/20 text-accent-green', failed: 'bg-accent-red/20 text-accent-red', pending: 'bg-accent-yellow/20 text-accent-yellow', none: 'bg-gray-600/30 text-gray-400' };
+  var ciClass = ciColors[pr.ci_status] || 'bg-gray-600/30 text-gray-400';
+  badgeHtml += '<span class="px-1.5 py-0.5 rounded text-xs ' + ciClass + '">CI: ' + escapeHtml(pr.ci_status) + '</span>';
+
+  if (pr.is_mergeable) {
+    badgeHtml += '<span class="px-1.5 py-0.5 rounded text-xs bg-accent-green/20 text-accent-green">mergeable</span>';
+  } else if (pr.mergeable === 'CONFLICTING') {
+    badgeHtml += '<span class="px-1.5 py-0.5 rounded text-xs bg-accent-red/20 text-accent-red">conflicts</span>';
+  }
+  badges.innerHTML = badgeHtml;
+
+  title.textContent = pr.title || '';
+
+  // Action buttons based on PR state
+  var actionsHtml = '';
+  if (readyToIntegrate) {
+    actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-4 py-2 rounded text-sm font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30 transition-colors">' +
+      'Integrate PR</button>';
+    actionsHtml += '<button onclick="runCommand(\'approve-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors">' +
+      'Merge Only</button>';
+  } else if (pr.state === 'OPEN' && pr.review_decision === 'CHANGES_REQUESTED') {
+    actionsHtml += '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors">' +
+      'Address Review</button>';
+  } else if (pr.state === 'OPEN') {
+    actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors">' +
+      'Integrate PR</button>';
+  }
+  if (pr.state === 'MERGED') {
+    actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors">' +
+      'Post-Merge Cleanup</button>';
+  }
+  buttons.innerHTML = actionsHtml;
+
+  panel.classList.remove('hidden');
+}
+
+function hidePrActionsPanel() {
+  document.getElementById('pr-actions-panel').classList.add('hidden');
+}
+
+async function runCommand(command, args) {
+  try {
+    var result = await fetch(apiUrl('/agents/command'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: command, args: args }),
+    }).then(function(r) { return r.json(); });
+
+    if (result.error) {
+      alert(result.error);
+    } else {
+      hidePrActionsPanel();
+      document.getElementById('agent-issue').value = '';
+      document.getElementById('agent-issue-number').value = '';
+      if (result.run_id) viewLogs(result.run_id);
+    }
+  } catch (e) {
+    alert('Failed to run command: ' + e.message);
+  }
+  loadAgents();
 }
 
 function issueKeydown(e) {

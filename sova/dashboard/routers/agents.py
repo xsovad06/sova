@@ -20,6 +20,11 @@ class StartAgentRequest(BaseModel):
     pr_number: int | None = None
 
 
+class RunCommandRequest(BaseModel):
+    command: str
+    args: dict | None = None
+
+
 @router.get("/agents/active")
 async def get_active_agents():
     """Get all running + recently completed agents (dashboard + external)."""
@@ -97,3 +102,76 @@ async def start_agent(req: StartAgentRequest):
 async def stop_agent(run_id: int):
     """Stop a specific running agent."""
     return await control_service.stop_agent(run_id=run_id)
+
+
+@router.get("/agents/issue/{issue_number}/pr-status")
+async def get_issue_pr_status(issue_number: str):
+    """Get PR status for an issue -- approval state, CI, mergeability."""
+    from sova.config.loader import load_config
+    from sova.dashboard.project_context import get_project_dir
+    from sova.git.operations import (
+        CheckConclusion,
+        CheckStatus,
+        find_pr_for_issue,
+        get_ci_checks,
+        get_pr_status,
+    )
+
+    project_dir = get_project_dir()
+    if not project_dir:
+        return {"has_pr": False}
+
+    try:
+        cfg = load_config(project_dir)
+    except Exception:
+        return {"has_pr": False}
+
+    repo = cfg.github_repo
+    gh_user = cfg.github_user
+    if not repo:
+        return {"has_pr": False}
+
+    pr_info = await find_pr_for_issue(issue_number, repo=repo, github_user=gh_user)
+    if not pr_info:
+        return {"has_pr": False}
+
+    try:
+        status = await get_pr_status(pr_info.number, repo=repo, github_user=gh_user)
+    except Exception:
+        log.debug("pr_status.fetch_failed", issue=issue_number, exc_info=True)
+        return {"has_pr": True, "pr_number": pr_info.number, "error": "Failed to fetch PR status"}
+
+    ci_summary = "unknown"
+    try:
+        checks = await get_ci_checks(pr_info.number, repo=repo, github_user=gh_user)
+        if not checks:
+            ci_summary = "none"
+        elif all(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.SUCCESS for c in checks):
+            ci_summary = "passed"
+        elif any(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.FAILURE for c in checks):
+            ci_summary = "failed"
+        elif any(c.status == CheckStatus.IN_PROGRESS for c in checks):
+            ci_summary = "pending"
+        else:
+            ci_summary = "passed"
+    except Exception:
+        log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
+
+    return {
+        "has_pr": True,
+        "pr_number": status.number,
+        "state": status.state,
+        "review_decision": status.review_decision,
+        "mergeable": status.mergeable,
+        "ci_status": ci_summary,
+        "title": status.title,
+        "url": status.url,
+        "is_approved": status.is_approved,
+        "is_mergeable": status.is_mergeable,
+    }
+
+
+@router.post("/agents/command")
+async def run_command(req: RunCommandRequest):
+    """Execute a Claude Code command (e.g. /integrate-pr, /approve-merge)."""
+    return await control_service.start_command(req.command, req.args or {})

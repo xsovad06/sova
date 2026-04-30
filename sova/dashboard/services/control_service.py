@@ -400,6 +400,52 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
 
 
+def _strip_frontmatter(content: str) -> str:
+    """Remove YAML frontmatter (--- ... ---) from command file content."""
+    if content.startswith("---"):
+        end = content.find("---", 3)
+        if end != -1:
+            return content[end + 3:].lstrip("\n")
+    return content
+
+
+def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) -> str:
+    """Build the prompt for a Claude Code command.
+
+    If the command exists in the target project's .claude/commands/, use
+    slash-command syntax (Claude Code resolves it locally). Otherwise, read
+    the command file from SOVA's own commands directory and send the full
+    rendered content as the prompt.
+    """
+    arg_str = ""
+    if args:
+        arg_str = " ".join(f"{k}={v}" for k, v in args.items())
+
+    target_cmd = project_dir / ".claude" / "commands" / f"{command}.md"
+    if target_cmd.is_file():
+        prompt = f"/{command}"
+        if arg_str:
+            prompt += " " + arg_str
+        return prompt
+
+    sova_root = Path(__file__).resolve().parent.parent.parent.parent
+    sova_cmd = sova_root / ".claude" / "commands" / f"{command}.md"
+    if not sova_cmd.is_file():
+        sova_cmd = sova_root / "commands" / f"{command}.md"
+
+    if sova_cmd.is_file():
+        content = sova_cmd.read_text(encoding="utf-8")
+        content = _strip_frontmatter(content)
+        content = content.replace("$ARGUMENTS", arg_str)
+        log.info("command.resolved_from_sova", command=command, source=str(sova_cmd))
+        return content
+
+    prompt = f"/{command}"
+    if arg_str:
+        prompt += " " + arg_str
+    return prompt
+
+
 async def start_command(
     command: str,
     args: dict | None = None,
@@ -415,12 +461,9 @@ async def start_command(
                 "running": len(pa.agents),
             }
 
-        prompt = f"/{command}"
-        if args:
-            arg_parts = [f"{k}={v}" for k, v in args.items()]
-            prompt += " " + " ".join(arg_parts)
-
         cwd = pa.project_dir
+        prompt = _resolve_command_prompt(command, args, cwd)
+
         gh_env = await _resolve_project_gh_env(cwd)
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
 

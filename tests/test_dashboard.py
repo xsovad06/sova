@@ -926,6 +926,88 @@ class TestAgentsAPI:
         data = resp.json()
         assert data["lines"] == []
 
+    async def test_pr_status_no_project_dir(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/issue/42/pr-status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_pr"] is False
+
+    async def test_pr_status_with_pr(self, client: AsyncClient) -> None:
+        from dataclasses import dataclass
+        from unittest.mock import AsyncMock, patch
+
+        @dataclass
+        class FakePRInfo:
+            number: int = 10
+            url: str = "https://github.com/test/repo/pull/10"
+
+        @dataclass
+        class FakePRStatus:
+            number: int = 10
+            state: str = "OPEN"
+            mergeable: str = "MERGEABLE"
+            review_decision: str = "APPROVED"
+            url: str = "https://github.com/test/repo/pull/10"
+            title: str = "Test PR"
+            is_approved: bool = True
+            is_mergeable: bool = True
+
+        @dataclass
+        class FakeConfig:
+            github_repo: str = "test/repo"
+            github_user: str = "testuser"
+
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/test"),
+            patch("sova.config.loader.load_config", return_value=FakeConfig()),
+            patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=FakePRInfo()),
+            patch("sova.git.operations.get_pr_status", new_callable=AsyncMock, return_value=FakePRStatus()),
+            patch("sova.git.operations.get_ci_checks", new_callable=AsyncMock, return_value=[]),
+        ):
+            resp = await client.get("/api/agents/issue/42/pr-status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_pr"] is True
+        assert data["pr_number"] == 10
+        assert data["is_approved"] is True
+        assert data["ci_status"] == "none"
+        assert data["review_decision"] == "APPROVED"
+
+    async def test_pr_status_no_pr_found(self, client: AsyncClient) -> None:
+        from dataclasses import dataclass
+        from unittest.mock import AsyncMock, patch
+
+        @dataclass
+        class FakeConfig:
+            github_repo: str = "test/repo"
+            github_user: str = "testuser"
+
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/test"),
+            patch("sova.config.loader.load_config", return_value=FakeConfig()),
+            patch("sova.git.operations.find_pr_for_issue", new_callable=AsyncMock, return_value=None),
+        ):
+            resp = await client.get("/api/agents/issue/99/pr-status")
+
+        assert resp.status_code == 200
+        assert resp.json()["has_pr"] is False
+
+    async def test_run_command_endpoint(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        with patch.object(
+            cs, "start_command", new_callable=AsyncMock, return_value={"status": "started", "run_id": 1, "pid": 123}
+        ):
+            resp = await client.post("/api/agents/command", json={"command": "integrate-pr", "args": {"pr": 73}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "started"
+        assert data["run_id"] == 1
+
 
 class TestWorkAPI:
     """Tests for the new work API endpoints."""
