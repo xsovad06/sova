@@ -28,7 +28,7 @@ SOVA has four main components:
 - 12 services: run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup
 - Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup
-- **Batch operations**: triage/harden multiple issues from the queue with progress tracking
+- **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed)
@@ -46,7 +46,7 @@ SOVA has four main components:
 ## Supporting Modules
 
 - **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels + Projects V2 board), factory, per-project `gh` auth via `sova/utils/gh.py`
-- **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing
+- **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing. `--output-format json` returns `{result, total_cost_usd, usage, duration_ms, session_id}`. `--output-format stream-json` emits JSONL: `type: "assistant"` (content blocks), `type: "content_block_delta"` (streaming text), `type: "result"` (final cost/usage). Dashboard's `_parse_stream_line()` extracts readable text from these events.
 - **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`)
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)
 - **`sova/knowledge/`** -- Memory CRUD + search + promote, tier loading, persona detection, review patterns
