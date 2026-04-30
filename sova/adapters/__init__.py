@@ -14,7 +14,7 @@ def create_adapter(
     """Create a task adapter by type name.
 
     Args:
-        adapter_type: One of "github", "jira", "linear", "manual".
+        adapter_type: Adapter type. Currently only "github" is supported.
         repo: Repository identifier (e.g., "owner/repo").
         github_user: GitHub account name for ``gh`` CLI auth.
         project_number: GitHub Projects V2 board number (0 = disabled).

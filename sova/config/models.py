@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TaskSourceConfig(BaseSettings):
     """Task source configuration."""
 
-    type: Literal["github", "jira", "linear", "manual"] = "github"
+    type: Literal["github"] = "github"
     config: str = ""
 
     # GitHub Issues filtering

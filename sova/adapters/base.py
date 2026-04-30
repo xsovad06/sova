@@ -47,7 +47,7 @@ class TaskFilters:
 class TaskAdapter(ABC):
     """Abstract base for task source adapters.
 
-    Each adapter connects to a tracker (GitHub, JIRA, Linear) and provides
+    Each adapter connects to a tracker (currently GitHub only) and provides
     both read access and state management. Agents own the issue lifecycle
     on the tracker -- every state transition is visible to humans.
     """
