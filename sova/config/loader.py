@@ -54,8 +54,16 @@ def _load_from_toml(path: Path) -> ProjectConfig:
 
 
 _NESTED_SECTIONS = (
-    "task_source", "agent", "review", "ci", "watch",
-    "worktree", "commit", "triage", "roles", "notification",
+    "task_source",
+    "agent",
+    "review",
+    "ci",
+    "watch",
+    "worktree",
+    "commit",
+    "triage",
+    "roles",
+    "notification",
 )
 
 
