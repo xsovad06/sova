@@ -44,6 +44,8 @@ _STEP_STATUS_MAP: dict[str, TaskStatus] = {
     "monitor_ci": TaskStatus.CI_MONITORING,
     "automated_review": TaskStatus.AUTOMATED_REVIEW,
     "address_review": TaskStatus.ADDRESSING_REVIEW,
+    "handoff_to_reviewer": TaskStatus.DONE,
+    "handoff_to_user": TaskStatus.DONE,
     "complete": TaskStatus.DONE,
 }
 
