@@ -152,6 +152,23 @@ async def test_create_task_assessment() -> None:
         assert float(assessment.confidence) == pytest.approx(0.85)
 
 
+async def test_task_assessment_default_project_slug() -> None:
+    """TaskAssessmentRecord without explicit project_slug defaults to empty string."""
+    async with await get_session() as session:
+        assessment = TaskAssessmentRecord(
+            issue_number="99",
+            suitability="needs_spec",
+            confidence=0.60,
+            reasoning="Missing acceptance criteria",
+        )
+        session.add(assessment)
+        await session.commit()
+        await session.refresh(assessment)
+
+        assert assessment.project_slug == ""
+        assert assessment.issue_number == "99"
+
+
 async def test_query_task_runs_by_status() -> None:
     """Query task runs filtered by status."""
     async with await get_session() as session:
