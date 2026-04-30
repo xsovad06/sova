@@ -14,6 +14,7 @@ from sova.config.models import (
     CIConfig,
     ProjectConfig,
     ReviewConfig,
+    TaskSourceConfig,
     TriageConfig,
     WatchConfig,
     WorktreeConfig,
@@ -49,7 +50,7 @@ model = "sonnet"
 max_budget = 5.00
 
 [task_source]
-type = "jira"
+type = "github"
 
 [review]
 enabled = false
@@ -74,7 +75,7 @@ reviewer = "Koda"
     assert cfg.test_cmd == "pytest"
     assert cfg.agent.model == "sonnet"
     assert cfg.agent.max_budget == Decimal("5")
-    assert cfg.task_source.type == "jira"
+    assert cfg.task_source.type == "github"
     assert cfg.review.enabled is False
     assert cfg.review.max_rounds == 3
     assert cfg.triage.min_confidence == 0.8
@@ -342,6 +343,11 @@ class TestFieldConstraints:
     def test_triage_min_confidence_boundary_one(self) -> None:
         cfg = TriageConfig(min_confidence=1.0)
         assert cfg.min_confidence == 1.0
+
+    @pytest.mark.parametrize("bad_type", ["jira", "linear", "manual", "unknown"])
+    def test_task_source_rejects_non_github_type(self, bad_type: str) -> None:
+        with pytest.raises(ValidationError):
+            TaskSourceConfig(type=bad_type)
 
     def test_defaults_still_accepted(self) -> None:
         """All constrained models accept their default values."""
