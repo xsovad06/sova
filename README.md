@@ -254,7 +254,7 @@ project-automation-kit/
     commands/                      # Command distribution
     config/                        # Pydantic Settings + TOML
     db/                            # SQLAlchemy ORM + async session
-  commands/                        # 20 standardized commands (markdown)
+  commands/                        # 21 standardized commands (markdown)
   invariants/                      # Pre-push constraint scripts (bash)
   personas/                        # Tech-stack guidance (markdown)
   tests/                           # pytest suite

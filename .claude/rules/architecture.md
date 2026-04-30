@@ -32,7 +32,7 @@ SOVA has four main components:
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed)
-  - Enables chaining: `ship-pr` -> `agent-resume` -> `approve-merge`
+  - Enables chaining: `integrate-pr` (full pipeline) or `ship-pr` -> `agent-resume` -> `approve-merge` (step-by-step)
 - **Claude command execution**: `control_service.start_command()` runs Claude Code commands from handoff actions
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport), run via `make test-py`
 

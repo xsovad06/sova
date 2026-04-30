@@ -183,14 +183,17 @@ This repo has Claude Code commands in `.claude/commands/`:
 - `/rearrange-commits` -- reorganize branch commits into clean steps
 
 ### Shipping Pipeline
+- `/integrate-pr` -- full pipeline: rebase, CI, merge, cleanup, learn (one click)
 - `/ship-pr` -- rebase approved PR, push, write handoff for dashboard
 - `/approve-merge` -- merge PR (squash), delete branch, post-merge cleanup
 - `/agent-resume` -- smart router: assess PR state and decide next action
+
+### Post-Work
+- `/after-merge` -- post-merge cleanup
+- `/ingest-review` -- extract review feedback into agent memory
+- `/extract-knowledge` -- promote learnings across knowledge tiers
 
 ### Project Management
 - `/new-feature` -- set up a new feature branch
 - `/standup` -- daily context summary
 - `/find-task` -- browse GitHub Issues backlog
-
-### Post-Work
-- `/after-merge` -- post-merge cleanup

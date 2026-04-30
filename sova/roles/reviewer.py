@@ -371,10 +371,21 @@ class ReviewerRole(AgentRole):
         else:
             actions.append(
                 HandoffAction(
-                    id="approve",
-                    label="Approve PR",
-                    description="No actionable findings -- ready to merge",
+                    id="integrate",
+                    label="Integrate PR",
+                    description="No actionable findings -- rebase, merge, cleanup, and learn",
                     style="approve",
+                    mode="claude-command",
+                    command=f"/integrate-pr {ctx.pr_number}",
+                    args={"issue": ctx.issue_number, "pr": ctx.pr_number},
+                )
+            )
+            actions.append(
+                HandoffAction(
+                    id="approve",
+                    label="Merge Only",
+                    description="Squash merge without rebase or learning -- skip the full pipeline",
+                    style="neutral",
                     mode="claude-command",
                     command=f"/approve-merge {ctx.pr_number}",
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number},
