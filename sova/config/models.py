@@ -34,7 +34,7 @@ class AgentConfig(BaseSettings):
     """Agent behavior configuration."""
 
     model: str = "opus"
-    max_budget: Decimal = Decimal("10.00")
+    max_budget: Decimal = Field(Decimal("10.00"), gt=0)
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
 
@@ -45,7 +45,7 @@ class ReviewConfig(BaseSettings):
     """Automated review configuration."""
 
     enabled: bool = True
-    max_rounds: int = 2
+    max_rounds: int = Field(2, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_")
 
@@ -53,8 +53,8 @@ class ReviewConfig(BaseSettings):
 class CIConfig(BaseSettings):
     """CI monitoring configuration."""
 
-    poll_interval: int = 60
-    max_wait: int = 600
+    poll_interval: int = Field(60, gt=0)
+    max_wait: int = Field(600, gt=0)
     flaky_checks: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_CI_")
@@ -63,10 +63,10 @@ class CIConfig(BaseSettings):
 class WatchConfig(BaseSettings):
     """Watch mode configuration."""
 
-    interval_active: int = 300
-    interval_idle: int = 1800
+    interval_active: int = Field(300, gt=0)
+    interval_idle: int = Field(1800, gt=0)
     auto_select_issues: bool = True
-    veto_seconds: int = 30
+    veto_seconds: int = Field(30, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_WATCH_")
 
@@ -75,8 +75,8 @@ class WorktreeConfig(BaseSettings):
     """Worktree management configuration."""
 
     copy_files: list[str] = Field(default_factory=lambda: [".env", ".env.local"])
-    ttl_done_days: int = 3
-    ttl_paused_days: int = 7
+    ttl_done_days: int = Field(3, gt=0)
+    ttl_paused_days: int = Field(7, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_WORKTREE_")
 
@@ -98,7 +98,7 @@ class TriageConfig(BaseSettings):
     """Triage role configuration."""
 
     auto_label: bool = True
-    min_confidence: float = 0.7
+    min_confidence: float = Field(0.7, ge=0, le=1)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 
