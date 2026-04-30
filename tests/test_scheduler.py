@@ -183,13 +183,12 @@ class TestWatchLoop:
     async def test_veto_window_skips_task_when_vetoed(self) -> None:
         from sova.scheduler.watch import WatchLoop
 
-        config = _make_config(watch=WatchConfig(veto_seconds=0))
+        config = _make_config(watch=WatchConfig(veto_seconds=1))
         adapter = _mock_adapter()
         loop = WatchLoop(config=config, adapter=adapter)
 
-        # veto_seconds=0 means no veto window, task proceeds immediately
+        # Short veto window expires without interruption, task proceeds
         task = _make_task("42", state=TaskState.BACKLOG)
-        # Should not raise
         can_proceed = await loop.check_veto(task)
         assert can_proceed is True
 
