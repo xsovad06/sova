@@ -2,6 +2,12 @@
 
 SHELL := /bin/bash
 
+# GNU Make 3.81 (macOS default) skips the shell for simple commands,
+# bypassing exported PATH. Use full paths for pip-installed tools.
+PYTHON_USER_BIN := $(shell python3 -m site --user-base)/bin
+RUFF := $(PYTHON_USER_BIN)/ruff
+PYTEST := $(PYTHON_USER_BIN)/pytest
+
 # ── Main targets ──────────────────────────────────────────────
 
 help: ## Show this help
@@ -29,7 +35,7 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 	done
 
 test-py: ## Run pytest suite
-	pytest tests/ -v
+	$(PYTEST) tests/ -v
 
 # ── Linting ───────────────────────────────────────────────────
 
@@ -39,14 +45,14 @@ lint-bash: ## ShellCheck on invariant scripts
 	shellcheck invariants/*.sh
 
 lint-py: ## Ruff lint + format check
-	ruff check sova/ tests/
-	ruff format --check sova/ tests/
+	$(RUFF) check sova/ tests/
+	$(RUFF) format --check sova/ tests/
 
 # ── Formatting ────────────────────────────────────────────────
 
 format: ## Auto-format Python code
-	ruff format sova/ tests/
-	ruff check --fix sova/ tests/
+	$(RUFF) format sova/ tests/
+	$(RUFF) check --fix sova/ tests/
 
 # ── Setup ─────────────────────────────────────────────────────
 
