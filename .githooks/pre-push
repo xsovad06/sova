@@ -15,6 +15,11 @@ if command -v ruff &>/dev/null; then
   RUFF="ruff"
 elif [[ -x ".venv/bin/ruff" ]]; then
   RUFF=".venv/bin/ruff"
+else
+  _user_bin="$(python3 -m site --user-base 2>/dev/null)/bin"
+  if [[ -x "$_user_bin/ruff" ]]; then
+    RUFF="$_user_bin/ruff"
+  fi
 fi
 
 run_ruff() {
