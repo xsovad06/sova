@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from sova.db.models import CostRecord, FailureRecord, Memory, StepExecution, TaskAssessmentRecord, TaskRun
 from sova.db.session import close_db, get_session, init_db
@@ -180,3 +180,80 @@ async def test_query_task_runs_by_status() -> None:
         result = await session.execute(select(TaskRun).where(TaskRun.status == "done"))
         done_runs = result.scalars().all()
         assert len(done_runs) == 2
+
+
+async def test_assessments_project_slug_index_exists() -> None:
+    """task_assessments table has an index on project_slug for multi-project filtering."""
+    async with await get_session() as session:
+        conn = await session.connection()
+        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("task_assessments"))
+    index_names = {idx["name"] for idx in indexes}
+    assert "ix_assessments_project_slug" in index_names
+
+
+async def test_memories_superseded_by_index_exists() -> None:
+    """memories table has an index on superseded_by for search() filtering."""
+    async with await get_session() as session:
+        conn = await session.connection()
+        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("memories"))
+    index_names = {idx["name"] for idx in indexes}
+    assert "ix_memories_superseded_by" in index_names
+
+
+async def test_filter_memories_by_superseded_by() -> None:
+    """Queries filtering on superseded_by benefit from the new index."""
+    async with await get_session() as session:
+        m1 = Memory(category="learning", title="Old", content="Replaced", tags="")
+        session.add(m1)
+        await session.commit()
+        await session.refresh(m1)
+
+        m2 = Memory(category="learning", title="New", content="Current", tags="")
+        session.add(m2)
+        await session.commit()
+        await session.refresh(m2)
+
+        m1.superseded_by = m2.id
+        await session.commit()
+
+        result = await session.execute(select(Memory).where(Memory.superseded_by.is_(None)))
+        active = result.scalars().all()
+        assert len(active) == 1
+        assert active[0].title == "New"
+
+
+async def test_filter_assessments_by_project_slug() -> None:
+    """Queries filtering on project_slug benefit from the new index."""
+    async with await get_session() as session:
+        session.add(
+            TaskAssessmentRecord(
+                issue_number="1",
+                project_slug="alpha",
+                suitability="ready",
+                confidence=0.9,
+                reasoning="Good",
+            )
+        )
+        session.add(
+            TaskAssessmentRecord(
+                issue_number="2",
+                project_slug="beta",
+                suitability="ready",
+                confidence=0.8,
+                reasoning="OK",
+            )
+        )
+        session.add(
+            TaskAssessmentRecord(
+                issue_number="3",
+                project_slug="alpha",
+                suitability="needs_spec",
+                confidence=0.6,
+                reasoning="Thin",
+            )
+        )
+        await session.commit()
+
+        result = await session.execute(select(TaskAssessmentRecord).where(TaskAssessmentRecord.project_slug == "alpha"))
+        alpha = result.scalars().all()
+        assert len(alpha) == 2
