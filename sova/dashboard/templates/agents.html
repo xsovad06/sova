@@ -411,6 +411,8 @@ function renderAgentCard(agent, completed) {
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
   var elapsed = formatElapsed(agent.elapsed_seconds);
 
+  var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
+
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
     '<div class="flex items-center justify-between mb-3">' +
       '<div class="flex items-center gap-2">' +
@@ -418,6 +420,7 @@ function renderAgentCard(agent, completed) {
         '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
+        prBadge +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +
@@ -444,6 +447,8 @@ function renderCompletedCard(agent) {
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
   var agoText = agent.completed_seconds_ago + 's ago';
 
+  var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
+
   return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all">' +
     '<div class="flex items-center justify-between">' +
       '<div class="flex items-center gap-2">' +
@@ -451,6 +456,7 @@ function renderCompletedCard(agent) {
         '<span class="text-sm font-medium text-gray-300">#' + escapeHtml(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + agent.status + '</span>' +
+        prBadge +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +

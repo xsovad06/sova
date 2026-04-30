@@ -122,7 +122,8 @@ async def get_all_agents(slug: str | None = None) -> dict:
 
     _prune_completed(pa, now)
 
-    db_states = await _fetch_run_states([a.run_id for a in pa.agents.values()])
+    all_run_ids = [a.run_id for a in pa.agents.values()] + [ca.run_id for ca in pa.recently_completed]
+    db_states = await _fetch_run_states(all_run_ids)
 
     agents = []
     for agent in pa.agents.values():
@@ -143,11 +144,13 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "elapsed_seconds": round(elapsed),
                 "cost_usd": db.get("cost_usd", agent.last_result_cost or 0.0),
                 "output_lines": len(agent.output_lines),
+                "pr_number": db.get("pr_number"),
             }
         )
 
     completed = []
     for ca in pa.recently_completed:
+        db = db_states.get(ca.run_id, {})
         completed.append(
             {
                 "run_id": ca.run_id,
@@ -156,6 +159,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "status": ca.status,
                 "cost_usd": ca.cost,
                 "completed_seconds_ago": round(now - ca.completed_at),
+                "pr_number": db.get("pr_number"),
             }
         )
 
@@ -188,6 +192,7 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
                 "current_step": r.current_step or "agent",
                 "status": r.status,
                 "cost_usd": float(r.total_cost_usd or 0),
+                "pr_number": r.pr_number,
             }
             for r in runs
         }
@@ -276,6 +281,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                     "cost_usd": float(run.total_cost_usd or 0),
                     "output_lines": 0,
                     "source": "external",
+                    "pr_number": run.pr_number,
                 }
             )
     except Exception:
