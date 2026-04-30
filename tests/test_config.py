@@ -5,8 +5,19 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from sova.config.loader import load_config
-from sova.config.models import ProjectConfig
+from sova.config.models import (
+    AgentConfig,
+    CIConfig,
+    ProjectConfig,
+    ReviewConfig,
+    TriageConfig,
+    WatchConfig,
+    WorktreeConfig,
+)
 
 
 def test_default_config() -> None:
@@ -268,3 +279,75 @@ class TestProjectRegistry:
         slug1 = registry.register_project(project)
         slug2 = registry.register_project(project)
         assert slug1 == slug2  # Same path re-registers under same slug
+
+
+class TestFieldConstraints:
+    """Pydantic Field constraints reject invalid numeric values."""
+
+    @pytest.mark.parametrize(
+        "model_cls, field, invalid_value",
+        [
+            (AgentConfig, "max_budget", Decimal("-1")),
+            (AgentConfig, "max_budget", Decimal("0")),
+            (ReviewConfig, "max_rounds", 0),
+            (ReviewConfig, "max_rounds", -1),
+            (CIConfig, "poll_interval", 0),
+            (CIConfig, "poll_interval", -60),
+            (CIConfig, "max_wait", 0),
+            (CIConfig, "max_wait", -1),
+            (WatchConfig, "interval_active", 0),
+            (WatchConfig, "interval_active", -1),
+            (WatchConfig, "interval_idle", 0),
+            (WatchConfig, "interval_idle", -300),
+            (WatchConfig, "veto_seconds", 0),
+            (WatchConfig, "veto_seconds", -5),
+            (WorktreeConfig, "ttl_done_days", 0),
+            (WorktreeConfig, "ttl_done_days", -1),
+            (WorktreeConfig, "ttl_paused_days", 0),
+            (WorktreeConfig, "ttl_paused_days", -1),
+            (TriageConfig, "min_confidence", -0.1),
+            (TriageConfig, "min_confidence", 1.5),
+        ],
+        ids=[
+            "agent-max_budget-negative",
+            "agent-max_budget-zero",
+            "review-max_rounds-zero",
+            "review-max_rounds-negative",
+            "ci-poll_interval-zero",
+            "ci-poll_interval-negative",
+            "ci-max_wait-zero",
+            "ci-max_wait-negative",
+            "watch-interval_active-zero",
+            "watch-interval_active-negative",
+            "watch-interval_idle-zero",
+            "watch-interval_idle-negative",
+            "watch-veto_seconds-zero",
+            "watch-veto_seconds-negative",
+            "worktree-ttl_done_days-zero",
+            "worktree-ttl_done_days-negative",
+            "worktree-ttl_paused_days-zero",
+            "worktree-ttl_paused_days-negative",
+            "triage-min_confidence-negative",
+            "triage-min_confidence-above-one",
+        ],
+    )
+    def test_rejects_invalid(self, model_cls: type, field: str, invalid_value: object) -> None:
+        with pytest.raises(ValidationError):
+            model_cls(**{field: invalid_value})
+
+    def test_triage_min_confidence_boundary_zero(self) -> None:
+        cfg = TriageConfig(min_confidence=0.0)
+        assert cfg.min_confidence == 0.0
+
+    def test_triage_min_confidence_boundary_one(self) -> None:
+        cfg = TriageConfig(min_confidence=1.0)
+        assert cfg.min_confidence == 1.0
+
+    def test_defaults_still_accepted(self) -> None:
+        """All constrained models accept their default values."""
+        AgentConfig()
+        ReviewConfig()
+        CIConfig()
+        WatchConfig()
+        WorktreeConfig()
+        TriageConfig()
