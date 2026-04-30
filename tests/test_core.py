@@ -577,6 +577,124 @@ class TestCommitStep:
         assert gate.passed
 
 
+class TestValidateStep:
+    async def test_skips_when_no_hook(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=False, stdout=""),  # git config --get core.hooksPath
+                MagicMock(success=True, stdout=".git\n"),  # git rev-parse --git-dir
+                MagicMock(success=False, stdout=""),  # test -x (no hook)
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "no pre-push hook" in result.summary.lower()
+
+    async def test_passes_when_hook_succeeds(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x (hook exists)
+                MagicMock(success=True, stdout="All checks passed\n", stderr=""),  # hook run
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "passed" in result.summary.lower()
+
+    async def test_invokes_llm_on_hook_failure(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: missing type hints\n", stderr=""),  # hook fails
+                MagicMock(success=True, stdout="All checks passed\n", stderr=""),  # hook passes after fix
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed type hints",
+                model="sonnet",
+                cost_usd=Decimal("0.02"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 fix attempt" in result.summary
+        mock_invoke.assert_awaited_once()
+        assert "missing type hints" in mock_invoke.call_args[1].get("prompt", mock_invoke.call_args[0][0])
+
+    async def test_fails_after_max_attempts(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with (
+            patch("sova.core.steps.validate.run") as mock_run,
+            patch("sova.core.steps.validate.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=".githooks\n"),  # core.hooksPath
+                MagicMock(success=True, stdout=""),  # test -x
+                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # hook fails
+                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # still fails after fix 1
+                MagicMock(success=False, stdout="FAIL: error\n", stderr=""),  # still fails after fix 2
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Attempted fix",
+                model="sonnet",
+                cost_usd=Decimal("0.01"),
+            )
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "still failing" in result.summary.lower()
+        assert mock_invoke.await_count == 2
+
+    async def test_gate_requires_commits(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="")
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
+    async def test_gate_passes_with_commits(self) -> None:
+        from sova.core.steps.validate import ValidateStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = ValidateStep()
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: something\n")
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+
 class TestPushStep:
     async def test_gate_check_requires_commits_ahead(self) -> None:
         from sova.core.steps.push import PushStep
@@ -768,6 +886,7 @@ class TestStepRegistry:
             "simplify",
             "self_review",
             "commit",
+            "validate",
             "push",
             "create_pr",
             "monitor_ci",

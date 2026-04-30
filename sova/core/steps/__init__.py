@@ -19,6 +19,7 @@ from sova.core.steps.push import PushStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.sync import SyncStep
+from sova.core.steps.validate import ValidateStep
 
 
 def get_developer_steps() -> list[BaseStep]:
@@ -31,6 +32,7 @@ def get_developer_steps() -> list[BaseStep]:
         SimplifyStep(),
         SelfReviewStep(),
         CommitStep(),
+        ValidateStep(),
         PushStep(),
         CreatePRStep(),
         MonitorCIStep(),

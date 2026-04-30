@@ -10,10 +10,10 @@ SOVA has four main components:
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
-- `core/workflow.py` -- WorkflowEngine: executes 13-step pipeline with DB persistence (TaskRun, StepExecution, FailureRecord)
+- `core/workflow.py` -- WorkflowEngine: executes 14-step pipeline with DB persistence (TaskRun, StepExecution, FailureRecord)
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
-- `core/steps/` -- 13 BaseStep implementations with execute/validate_output/can_skip
+- `core/steps/` -- 14 BaseStep implementations with execute/validate_output/can_skip
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state
 - **Step gate checks**: every `validate_output()` must check all forms of change -- unstaged diff (`git diff --stat HEAD`), staged diff (`git diff --cached --stat`), and commits ahead of base (`git log {base}..HEAD --oneline`). LLM agents may commit directly, leaving working-tree diffs empty even when real work was done. Never return `GateCheckResult(passed=True)` unconditionally.
