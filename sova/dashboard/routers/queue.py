@@ -59,6 +59,15 @@ async def start_batch(req: BatchRequest):
     return {"batch_id": batch_id, "status": "started", "count": len(req.issues)}
 
 
+@router.get("/queue/batch/active")
+async def active_batch():
+    """Return the currently running batch, if any."""
+    active = batch_service.get_active_batch()
+    if active is None:
+        return {"active": False}
+    return {"active": True, "batch": active}
+
+
 @router.get("/queue/batch/{batch_id}/status")
 async def batch_status(batch_id: str):
     """Get progress of a batch operation."""

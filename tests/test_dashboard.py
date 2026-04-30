@@ -891,6 +891,27 @@ class TestBatchAPI:
         data = resp.json()
         assert data["cancelled"] is False
 
+    async def test_active_batch_none(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/queue/batch/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] is False
+
+    async def test_active_batch_returns_running(self, client: AsyncClient) -> None:
+        from sova.dashboard.services.batch_service import BatchJob, _active_batches
+
+        _active_batches["test_active"] = BatchJob(
+            batch_id="test_active", action="triage", status="running", results=[]
+        )
+        try:
+            resp = await client.get("/api/queue/batch/active")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["active"] is True
+            assert data["batch"]["batch_id"] == "test_active"
+        finally:
+            _active_batches.pop("test_active", None)
+
 
 class TestAgentsAPI:
     """Tests for the new agents API endpoints."""

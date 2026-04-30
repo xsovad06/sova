@@ -13,6 +13,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.batch")
 
+DEFAULT_CONCURRENCY = {"triage": 3, "harden": 2}
+
 
 @dataclass
 class BatchItemResult:
@@ -28,6 +30,7 @@ class BatchJob:
     status: str = "running"  # running | done | cancelled
     results: list[BatchItemResult] = field(default_factory=list)
     cancelled: bool = False
+    max_concurrency: int = 1
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
     _task: asyncio.Task | None = field(default=None, repr=False)
@@ -48,6 +51,7 @@ class BatchJob:
             "total": self.total,
             "completed": self.completed_count,
             "failed": sum(1 for r in self.results if r.status == "failed"),
+            "max_concurrency": self.max_concurrency,
             "results": [{"issue_id": r.issue_id, "status": r.status, "detail": r.detail} for r in self.results],
         }
 
@@ -73,6 +77,14 @@ def get_batch_status(batch_id: str) -> dict | None:
     return job.to_dict()
 
 
+def get_active_batch() -> dict | None:
+    """Return the first running batch, if any."""
+    for job in _active_batches.values():
+        if job.status == "running":
+            return job.to_dict()
+    return None
+
+
 def cancel_batch(batch_id: str) -> bool:
     job = _active_batches.get(batch_id)
     if job is None or job.status != "running":
@@ -88,15 +100,17 @@ async def start_batch(
     options: dict | None = None,
 ) -> str:
     """Start a batch operation and return the batch_id."""
+    opts = options or {}
+    concurrency = opts.get("max_concurrency", DEFAULT_CONCURRENCY.get(action, 1))
+
     batch_id = uuid.uuid4().hex[:12]
     job = BatchJob(
         batch_id=batch_id,
         action=action,
+        max_concurrency=concurrency,
         results=[BatchItemResult(issue_id=iid) for iid in issue_ids],
     )
     _active_batches[batch_id] = job
-
-    opts = options or {}
 
     if action == "triage":
         job._task = asyncio.create_task(_run_batch_triage(job, project_dir))
@@ -109,7 +123,7 @@ async def start_batch(
             r.status = "failed"
             r.detail = f"Unknown action: {action}"
 
-    log.info("batch.started", batch_id=batch_id, action=action, count=len(issue_ids))
+    log.info("batch.started", batch_id=batch_id, action=action, count=len(issue_ids), concurrency=concurrency)
     return batch_id
 
 
@@ -147,41 +161,46 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
         role = TriageRole()
 
-        for item in job.results:
-            if job.cancelled:
-                item.status = "skipped"
-                item.detail = "Cancelled"
-                continue
+        sem = asyncio.Semaphore(job.max_concurrency)
 
-            item.status = "running"
-            try:
-                task = await adapter.get_task(item.issue_id)
-
-                if task.state not in VALID_STATES_FOR_ACTION["triage"]:
+        async def _process_item(item: BatchItemResult) -> None:
+            async with sem:
+                if job.cancelled:
                     item.status = "skipped"
-                    item.detail = f"State {task.state.value} not eligible for triage"
-                    continue
+                    item.detail = "Cancelled"
+                    return
 
-                assessment = await role.assess_task(task)
+                item.status = "running"
+                try:
+                    task = await adapter.get_task(item.issue_id)
 
-                label_name = role.SUITABILITY_LABELS[assessment.suitability]
-                await adapter.add_label(task.id, label_name)
+                    if task.state not in VALID_STATES_FOR_ACTION["triage"]:
+                        item.status = "skipped"
+                        item.detail = f"State {task.state.value} not eligible for triage"
+                        return
 
-                assessment_section = role._build_assessment_comment(task, assessment)
-                updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
-                await adapter.edit_body(task.id, updated_body)
+                    assessment = await role.assess_task(task)
 
-                if task.state in role.allowed_input_states:
-                    await adapter.transition_state(task.id, TaskState.TRIAGED)
+                    label_name = role.SUITABILITY_LABELS[assessment.suitability]
+                    await adapter.add_label(task.id, label_name)
 
-                item.status = "done"
-                item.detail = f"Suitability: {assessment.suitability}"
-                log.info("batch.triage.done", issue=item.issue_id, suitability=assessment.suitability)
+                    assessment_section = role._build_assessment_comment(task, assessment)
+                    updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
+                    await adapter.edit_body(task.id, updated_body)
 
-            except Exception as exc:
-                item.status = "failed"
-                item.detail = str(exc)
-                log.warning("batch.triage.failed", issue=item.issue_id, error=str(exc))
+                    if task.state in role.allowed_input_states:
+                        await adapter.transition_state(task.id, TaskState.TRIAGED)
+
+                    item.status = "done"
+                    item.detail = f"Suitability: {assessment.suitability}"
+                    log.info("batch.triage.done", issue=item.issue_id, suitability=assessment.suitability)
+
+                except Exception as exc:
+                    item.status = "failed"
+                    item.detail = str(exc)
+                    log.warning("batch.triage.failed", issue=item.issue_id, error=str(exc))
+
+        await asyncio.gather(*[_process_item(item) for item in job.results])
 
     except Exception as exc:
         log.error("batch.triage.fatal", error=str(exc))
@@ -229,55 +248,62 @@ async def _run_batch_harden(
         project_docs = _load_project_docs(project_dir)
         all_issues_summary = _format_issues_summary(all_open)
 
-        for item in job.results:
-            if job.cancelled:
-                item.status = "skipped"
-                item.detail = "Cancelled"
-                continue
+        sem = asyncio.Semaphore(job.max_concurrency)
 
-            item.status = "running"
-            try:
-                task = await adapter.get_task(item.issue_id)
-
-                if task.state not in VALID_STATES_FOR_ACTION["harden"]:
+        async def _process_item(item: BatchItemResult) -> None:
+            async with sem:
+                if job.cancelled:
                     item.status = "skipped"
-                    item.detail = f"State {task.state.value} not eligible for harden"
-                    continue
+                    item.detail = "Cancelled"
+                    return
 
-                issue_type = _detect_issue_type(task.labels)
-                template_content = _load_issue_template(project_dir, issue_type)
-                prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
+                item.status = "running"
+                try:
+                    task = await adapter.get_task(item.issue_id)
 
-                result = await invoke(prompt, cwd=project_dir, timeout=300)
-                enriched_body = _strip_code_fences(result.text)
+                    if task.state not in VALID_STATES_FOR_ACTION["harden"]:
+                        item.status = "skipped"
+                        item.detail = f"State {task.state.value} not eligible for harden"
+                        return
 
-                if not enriched_body.strip():
+                    issue_type = _detect_issue_type(task.labels)
+                    template_content = _load_issue_template(project_dir, issue_type)
+                    prompt = _build_harden_prompt(
+                        task, project_docs, all_issues_summary, template_content, issue_type
+                    )
+
+                    result = await invoke(prompt, cwd=project_dir, timeout=300)
+                    enriched_body = _strip_code_fences(result.text)
+
+                    if not enriched_body.strip():
+                        item.status = "failed"
+                        item.detail = "LLM returned empty result"
+                        return
+
+                    await adapter.edit_body(task.id, enriched_body)
+
+                    triage_detail = ""
+                    if not skip_triage:
+                        try:
+                            enriched_task = replace(task, body=enriched_body)
+                            role = TriageRole()
+                            assessment = await role.assess_task(enriched_task)
+                            label = role.SUITABILITY_LABELS[assessment.suitability]
+                            await adapter.add_label(task.id, label)
+                            triage_detail = f", re-triaged: {assessment.suitability}"
+                        except Exception:
+                            triage_detail = ", re-triage failed"
+
+                    item.status = "done"
+                    item.detail = f"Hardened{triage_detail}"
+                    log.info("batch.harden.done", issue=item.issue_id)
+
+                except Exception as exc:
                     item.status = "failed"
-                    item.detail = "LLM returned empty result"
-                    continue
+                    item.detail = str(exc)
+                    log.warning("batch.harden.failed", issue=item.issue_id, error=str(exc))
 
-                await adapter.edit_body(task.id, enriched_body)
-
-                triage_detail = ""
-                if not skip_triage:
-                    try:
-                        enriched_task = replace(task, body=enriched_body)
-                        role = TriageRole()
-                        assessment = await role.assess_task(enriched_task)
-                        label = role.SUITABILITY_LABELS[assessment.suitability]
-                        await adapter.add_label(task.id, label)
-                        triage_detail = f", re-triaged: {assessment.suitability}"
-                    except Exception:
-                        triage_detail = ", re-triage failed"
-
-                item.status = "done"
-                item.detail = f"Hardened{triage_detail}"
-                log.info("batch.harden.done", issue=item.issue_id)
-
-            except Exception as exc:
-                item.status = "failed"
-                item.detail = str(exc)
-                log.warning("batch.harden.failed", issue=item.issue_id, error=str(exc))
+        await asyncio.gather(*[_process_item(item) for item in job.results])
 
     except Exception as exc:
         log.error("batch.harden.fatal", error=str(exc))
