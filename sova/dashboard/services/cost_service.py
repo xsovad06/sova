@@ -39,12 +39,16 @@ async def get_summary(session: AsyncSession) -> dict:
 
 
 async def get_daily(session: AsyncSession, days: int = 14) -> list[dict]:
-    """Daily cost totals for the last N days."""
+    """Daily cost totals for the last N days.
+
+    Uses TaskRun.total_cost_usd (consistent with summary) rather than
+    CostRecord, which misses costs from the dashboard control_service path.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    day_col = func.date(CostRecord.recorded_at).label("day")
+    day_col = func.date(TaskRun.started_at).label("day")
     stmt = (
-        select(day_col, func.sum(CostRecord.cost_usd).label("cost"))
-        .where(CostRecord.recorded_at >= cutoff)
+        select(day_col, func.sum(TaskRun.total_cost_usd).label("cost"))
+        .where(TaskRun.started_at >= cutoff, TaskRun.total_cost_usd > 0)
         .group_by(day_col)
         .order_by(day_col)
     )
