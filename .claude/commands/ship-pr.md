@@ -25,10 +25,9 @@ gh pr checks <PR_NUMBER>
 
 Verify:
 - PR state is `OPEN`
-- Review decision is `APPROVED`
 - Note the base branch (usually `main`) and head branch
 
-If the PR is not approved, write a handoff with status `failed` and stop.
+Note: formal GitHub review approval is NOT required. The user triggering this command is the approval. Log the review status for the record, but proceed regardless.
 
 ### 2. Sync and Rebase
 

@@ -405,7 +405,7 @@ def _strip_frontmatter(content: str) -> str:
     if content.startswith("---"):
         end = content.find("---", 3)
         if end != -1:
-            return content[end + 3:].lstrip("\n")
+            return content[end + 3 :].lstrip("\n")
     return content
 
 

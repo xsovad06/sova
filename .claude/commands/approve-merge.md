@@ -35,8 +35,9 @@ gh pr checks <PR_NUMBER>
 
 Verify:
 - PR state is `OPEN`
-- Review decision is `APPROVED`
 - PR is mergeable (no conflicts)
+
+Note: formal GitHub review approval is NOT required. The user triggering this command from the dashboard is the approval. Log the review status for the record, but proceed regardless.
 
 If CI checks are still pending, wait up to 5 minutes (polling every 30 seconds). If they don't complete, write a handoff with "Wait for CI" action and stop.
 
