@@ -654,6 +654,49 @@ class TestAutoHandoff:
         mock_agent.assert_not_awaited()
         mock_cmd.assert_not_awaited()
 
+    async def test_auto_handoff_claude_command(self) -> None:
+        """_process_auto_handoff should run claude-command actions with auto_execute."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import control_service
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = AgentState(
+            run_id=1,
+            issue="42",
+            role="reviewer",
+            process=MagicMock(),
+        )
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            summary="Clean review",
+            next_actions=[
+                HandoffAction(
+                    id="integrate",
+                    label="Integrate PR",
+                    mode="claude-command",
+                    command="/integrate-pr 10",
+                    args={"issue": "42", "pr": 10},
+                    auto_execute=True,
+                ),
+            ],
+        )
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch.object(
+                control_service, "start_command", new_callable=AsyncMock, return_value={"status": "started"}
+            ) as mock_cmd,
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_cmd.assert_awaited_once_with("integrate-pr", {"issue": "42", "pr": 10}, slug=None)
+
     async def test_auto_handoff_no_handoff_file(self) -> None:
         """_process_auto_handoff should handle missing handoff gracefully."""
         from unittest.mock import MagicMock, patch

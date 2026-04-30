@@ -857,12 +857,14 @@ async def _process_auto_handoff(agent: AgentState) -> None:
 # -- Pipeline progress -------------------------------------------------------
 
 
+_ADDRESS_REVIEW_ONLY = frozenset({"address_review", "handoff_to_user"})
+
+
 def get_step_progress(current_step: str | None) -> dict:
     """Compute step index from current_step name."""
     if current_step is None:
         return {"step_index": -1, "total_steps": len(DEVELOPER_PIPELINE), "steps": DEVELOPER_PIPELINE}
 
-    _ADDRESS_REVIEW_ONLY = {"address_review", "handoff_to_user"}
     pipeline = ADDRESS_REVIEW_PIPELINE if current_step in _ADDRESS_REVIEW_ONLY else DEVELOPER_PIPELINE
 
     try:

@@ -327,23 +327,25 @@ class ReviewerRole(AgentRole):
         actionable = review.actionable
         next_action = "address_review" if actionable else "approve"
 
+        findings_data = [
+            {
+                "file": f.file,
+                "line": f.line,
+                "severity": f.severity,
+                "category": f.category,
+                "description": f.description,
+                "suggestion": f.suggestion,
+            }
+            for f in actionable
+        ]
+
         agent_handoff = AgentHandoff(
             role="reviewer",
             phase="review",
             summary=review.summary,
             key_decisions=[],
             next_action=next_action,
-            pending_findings=[
-                {
-                    "file": f.file,
-                    "line": f.line,
-                    "severity": f.severity,
-                    "category": f.category,
-                    "description": f.description,
-                    "suggestion": f.suggestion,
-                }
-                for f in actionable
-            ],
+            pending_findings=findings_data,
             pr_number=ctx.pr_number,
             branch_name=ctx.branch_name,
         )
@@ -356,17 +358,6 @@ class ReviewerRole(AgentRole):
 
         # Dashboard handoff
         actions: list[HandoffAction] = []
-        findings_data = [
-            {
-                "file": f.file,
-                "line": f.line,
-                "severity": f.severity,
-                "category": f.category,
-                "description": f.description,
-                "suggestion": f.suggestion,
-            }
-            for f in actionable
-        ]
 
         if actionable:
             actions.append(
