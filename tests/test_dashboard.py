@@ -564,6 +564,114 @@ class TestDuplicateAgentPrevention:
 
 
 # ---------------------------------------------------------------------------
+# Auto-handoff orchestration
+# ---------------------------------------------------------------------------
+
+
+class TestAutoHandoff:
+    async def test_auto_handoff_spawns_agent(self) -> None:
+        """_process_auto_handoff should auto-spawn an agent for auto_execute actions."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import control_service
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = AgentState(
+            run_id=1,
+            issue="42",
+            role="developer",
+            process=MagicMock(),
+        )
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            branch="feat/test",
+            summary="Ready for review",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review",
+                    mode="agent",
+                    args={"issue": "42", "pr": 10, "role": "reviewer"},
+                    auto_execute=True,
+                ),
+            ],
+        )
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch.object(
+                control_service, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
+            ) as mock_start,
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_awaited_once_with("42", role="reviewer", pr_number=10, slug=None)
+
+    async def test_auto_handoff_skips_non_auto_actions(self) -> None:
+        """_process_auto_handoff should not trigger actions without auto_execute."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import control_service
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = AgentState(
+            run_id=1,
+            issue="42",
+            role="reviewer",
+            process=MagicMock(),
+        )
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            summary="Clean review",
+            next_actions=[
+                HandoffAction(
+                    id="integrate",
+                    label="Integrate PR",
+                    mode="claude-command",
+                    command="/integrate-pr 10",
+                    auto_execute=False,
+                ),
+            ],
+        )
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_agent,
+            patch.object(control_service, "start_command", new_callable=AsyncMock) as mock_cmd,
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_agent.assert_not_awaited()
+        mock_cmd.assert_not_awaited()
+
+    async def test_auto_handoff_no_handoff_file(self) -> None:
+        """_process_auto_handoff should handle missing handoff gracefully."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+
+        agent = AgentState(
+            run_id=1,
+            issue="42",
+            role="developer",
+            process=MagicMock(),
+        )
+
+        with patch("sova.ipc.handoff.read_handoff_file", return_value=None):
+            await _process_auto_handoff(agent)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
 # Memory API
 # ---------------------------------------------------------------------------
 
@@ -937,7 +1045,7 @@ class TestAgentsAPI:
         data = resp.json()
         assert "steps" in data
         assert "sync" in data["steps"]
-        assert "complete" in data["steps"]
+        assert "handoff_to_reviewer" in data["steps"]
 
     async def test_agents_output_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/999/output?since=0")

@@ -872,6 +872,76 @@ class TestCompleteStep:
         adapter.transition_state.assert_awaited_once_with("42", TaskState.DONE)
 
 
+class TestHandoffToReviewerStep:
+    async def test_writes_handoff_and_succeeds(self) -> None:
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=42)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        step = HandoffToReviewerStep()
+
+        with (
+            patch("sova.core.steps.handoff_to_reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps.handoff_to_reviewer.write_handoff_file") as mock_file,
+            patch("sova.core.steps.handoff_to_reviewer.notify"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "Reviewer" in result.summary
+        mock_file.assert_called_once()
+        handoff = mock_file.call_args[0][1]
+        assert handoff.status == "awaiting_action"
+        assert len(handoff.next_actions) == 1
+        assert handoff.next_actions[0].auto_execute is True
+        assert handoff.next_actions[0].mode == "agent"
+
+    async def test_can_skip_when_completed(self) -> None:
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        ctx = _make_ctx(completed_steps=frozenset({"handoff_to_reviewer"}))
+        step = HandoffToReviewerStep()
+        assert await step.can_skip(ctx)
+
+
+class TestHandoffToUserStep:
+    async def test_writes_handoff_with_integrate_actions(self) -> None:
+        from sova.core.steps.handoff_to_user import HandoffToUserStep
+
+        ctx = _make_ctx(pr_number=42)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        step = HandoffToUserStep()
+
+        with (
+            patch("sova.core.steps.handoff_to_user.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps.handoff_to_user.write_handoff_file") as mock_file,
+            patch("sova.core.steps.handoff_to_user.notify"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        handoff = mock_file.call_args[0][1]
+        assert len(handoff.next_actions) == 2
+        assert handoff.next_actions[0].id == "integrate"
+        assert handoff.next_actions[1].id == "approve"
+        assert all(not a.auto_execute for a in handoff.next_actions)
+
+
+class TestAddressReviewStep:
+    async def test_no_findings_returns_success(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(pr_number=42)
+        ctx.project_dir = Path("/tmp/nonexistent")
+        step = AddressReviewStep()
+
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert "No review findings" in result.summary
+
+
 class TestStepRegistry:
     def test_get_developer_steps_returns_all(self) -> None:
         from sova.core.steps import get_developer_steps
@@ -890,9 +960,20 @@ class TestStepRegistry:
             "push",
             "create_pr",
             "monitor_ci",
-            "automated_review",
+            "handoff_to_reviewer",
+        ]
+
+    def test_get_address_review_steps(self) -> None:
+        from sova.core.steps import get_address_review_steps
+
+        steps = get_address_review_steps()
+        names = [s.name for s in steps]
+        assert names == [
             "address_review",
-            "complete",
+            "commit",
+            "validate",
+            "push",
+            "handoff_to_user",
         ]
 
 
