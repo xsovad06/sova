@@ -125,6 +125,7 @@ class Memory(Base):
     __table_args__ = (
         Index("ix_memories_category", "category"),
         Index("ix_memories_tags", "tags"),
+        Index("ix_memories_superseded_by", "superseded_by"),
     )
 
 
@@ -148,4 +149,5 @@ class TaskAssessmentRecord(Base):
     __table_args__ = (
         Index("ix_assessments_issue", "issue_number"),
         Index("ix_assessments_suitability", "suitability"),
+        Index("ix_assessments_project_slug", "project_slug"),
     )
