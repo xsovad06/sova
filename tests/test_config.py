@@ -71,6 +71,38 @@ reviewer = "Koda"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
 
 
+def test_notification_section_loaded_from_toml(tmp_path: Path) -> None:
+    """Notification config is loaded from [notification] section in sova.toml."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[notification]
+desktop = true
+slack_webhook_url = "https://hooks.slack.com/services/xxx"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.notification.desktop is True
+    assert cfg.notification.slack_webhook_url == "https://hooks.slack.com/services/xxx"
+
+
+def test_notification_defaults_when_missing(tmp_path: Path) -> None:
+    """Without [notification] section, defaults are used."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.notification.desktop is False
+    assert cfg.notification.slack_webhook_url == ""
+
+
 def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
     """Legacy .conf files are no longer loaded; defaults are returned instead.
 

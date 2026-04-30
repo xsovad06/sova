@@ -53,6 +53,12 @@ def _load_from_toml(path: Path) -> ProjectConfig:
     return ProjectConfig(**flat)
 
 
+_NESTED_SECTIONS = (
+    "task_source", "agent", "review", "ci", "watch",
+    "worktree", "commit", "triage", "roles", "notification",
+)
+
+
 def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
     """Flatten nested TOML sections into ProjectConfig fields.
 
@@ -67,7 +73,7 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
             result[key] = value
 
     # Nested sections map to their config models
-    for section in ("task_source", "agent", "review", "ci", "watch", "worktree", "commit", "triage", "roles"):
+    for section in _NESTED_SECTIONS:
         if section in data:
             result[section] = data[section]
 
