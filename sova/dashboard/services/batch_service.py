@@ -268,9 +268,7 @@ async def _run_batch_harden(
 
                     issue_type = _detect_issue_type(task.labels)
                     template_content = _load_issue_template(project_dir, issue_type)
-                    prompt = _build_harden_prompt(
-                        task, project_docs, all_issues_summary, template_content, issue_type
-                    )
+                    prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
 
                     result = await invoke(prompt, cwd=project_dir, timeout=300)
                     enriched_body = _strip_code_fences(result.text)

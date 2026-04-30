@@ -368,10 +368,7 @@ class TestBatchConcurrency:
     ) -> None:
         from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
 
-        tasks = [
-            Task(id=str(i), title=f"Task {i}", body="Body", state=TaskState.BACKLOG)
-            for i in range(1, 5)
-        ]
+        tasks = [Task(id=str(i), title=f"Task {i}", body="Body", state=TaskState.BACKLOG) for i in range(1, 5)]
         adapter = _mock_adapter(tasks)
         mock_create_adapter.return_value = adapter
         mock_config.return_value = _mock_config()

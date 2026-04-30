@@ -900,9 +900,7 @@ class TestBatchAPI:
     async def test_active_batch_returns_running(self, client: AsyncClient) -> None:
         from sova.dashboard.services.batch_service import BatchJob, _active_batches
 
-        _active_batches["test_active"] = BatchJob(
-            batch_id="test_active", action="triage", status="running", results=[]
-        )
+        _active_batches["test_active"] = BatchJob(batch_id="test_active", action="triage", status="running", results=[])
         try:
             resp = await client.get("/api/queue/batch/active")
             assert resp.status_code == 200
