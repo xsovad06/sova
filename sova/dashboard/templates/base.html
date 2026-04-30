@@ -107,6 +107,26 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- Global batch progress bar (visible on all pages during batch ops) -->
+  <div id="global-batch-bar" class="hidden fixed bottom-0 left-64 right-0 bg-surface-card border-t border-gray-700/50 px-6 py-3 z-50">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span id="global-batch-label" class="text-sm text-gray-300 font-medium"></span>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          <div class="w-40 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+            <div id="global-batch-progress-bar" class="h-full bg-accent rounded-full transition-all duration-300" style="width: 0%"></div>
+          </div>
+          <span id="global-batch-progress-text" class="text-xs text-gray-400 whitespace-nowrap"></span>
+        </div>
+        <button id="global-batch-cancel-btn" onclick="cancelGlobalBatch()" class="px-2 py-1 rounded text-xs text-accent-red hover:bg-accent-red/10 transition-colors">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     window.SOVA_PROJECT_SLUG = "{{ project_slug if project_slug is defined else '' }}";
     window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api" : "/api";

@@ -13,8 +13,8 @@
   <p class="text-gray-500 text-sm">Loading...</p>
 </div>
 
-<!-- Bulk action bar -->
-<div id="bulk-bar" class="hidden fixed bottom-0 left-56 right-0 bg-surface-card border-t border-gray-700/50 px-6 py-3 z-40 transition-all">
+<!-- Bulk action bar (selection + action buttons only; progress is in the global bar) -->
+<div id="bulk-bar" class="hidden fixed left-64 right-0 bg-surface-card border-t border-gray-700/50 px-6 py-3 z-40 transition-all" style="bottom: 0">
   <div class="flex items-center justify-between">
     <div class="flex items-center gap-3">
       <span id="bulk-count" class="text-sm text-gray-300 font-medium"></span>
@@ -30,15 +30,6 @@
         disabled>Run</button>
     </div>
     <div class="flex items-center gap-3">
-      <div id="bulk-progress" class="hidden flex items-center gap-2">
-        <div class="w-40 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-          <div id="bulk-progress-bar" class="h-full bg-accent rounded-full transition-all duration-300" style="width: 0%"></div>
-        </div>
-        <span id="bulk-progress-text" class="text-xs text-gray-400 whitespace-nowrap"></span>
-      </div>
-      <button id="bulk-cancel-btn" onclick="cancelBatch()" class="hidden px-2 py-1 rounded text-xs text-accent-red hover:bg-accent-red/10 transition-colors">
-        Cancel
-      </button>
       <button onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
         Deselect
       </button>
@@ -71,9 +62,12 @@ var validStates = {
 };
 
 var selectedItems = {};
-var currentBatchId = null;
-var batchPollInterval = null;
 var queueData = [];
+
+function _onGlobalBatchCleared() {
+  deselectAll();
+  loadQueue();
+}
 
 function renderRunStatusBadge(item) {
   if (!item.last_run) return '';
@@ -182,6 +176,7 @@ function updateSelectionUI() {
   }
 
   bar.classList.remove('hidden');
+  bar.style.bottom = _globalBatchId ? '48px' : '0';
   countEl.textContent = count + ' selected';
 
   // Compute action eligibility
@@ -195,13 +190,14 @@ function updateSelectionUI() {
   var hardenBtn = document.getElementById('bulk-harden-btn');
   var runBtn = document.getElementById('bulk-run-btn');
 
-  triageBtn.disabled = triageCount === 0 || currentBatchId;
+  var batchRunning = !!_globalBatchId;
+  triageBtn.disabled = triageCount === 0 || batchRunning;
   triageBtn.textContent = triageCount > 0 ? 'Triage (' + triageCount + ')' : 'Triage';
 
-  hardenBtn.disabled = hardenCount === 0 || currentBatchId;
+  hardenBtn.disabled = hardenCount === 0 || batchRunning;
   hardenBtn.textContent = hardenCount > 0 ? 'Harden (' + hardenCount + ')' : 'Harden';
 
-  runBtn.disabled = runCount === 0 || currentBatchId;
+  runBtn.disabled = runCount === 0 || batchRunning;
   runBtn.textContent = runCount > 0 ? 'Run (' + runCount + ')' : 'Run';
 }
 
@@ -312,7 +308,7 @@ async function executeBulkAction(action) {
     return;
   }
 
-  // Triage or harden -- background batch with progress
+  // Triage or harden -- background batch with global progress bar
   try {
     var resp = await fetch(apiUrl('/queue/batch'), {
       method: 'POST',
@@ -326,106 +322,11 @@ async function executeBulkAction(action) {
       return;
     }
 
-    currentBatchId = data.batch_id;
-    showBatchProgress(action, issues.length);
-    batchPollInterval = setInterval(pollBatchProgress, 2000);
+    startGlobalBatch(data.batch_id, action, issues.length);
+    updateSelectionUI();
   } catch (e) {
     alert('Failed to start batch: ' + e.message);
   }
-}
-
-function showBatchProgress(action, total) {
-  var progressEl = document.getElementById('bulk-progress');
-  var cancelBtn = document.getElementById('bulk-cancel-btn');
-  var progressText = document.getElementById('bulk-progress-text');
-  var progressBar = document.getElementById('bulk-progress-bar');
-
-  progressEl.classList.remove('hidden');
-  cancelBtn.classList.remove('hidden');
-  progressBar.style.width = '0%';
-  progressText.textContent = 'Starting ' + action + '...';
-
-  // Disable action buttons during batch
-  updateSelectionUI();
-}
-
-async function pollBatchProgress() {
-  if (!currentBatchId) return;
-
-  try {
-    var data = await fetchAPI(apiUrl('/queue/batch/' + currentBatchId + '/status'));
-
-    if (data.error) {
-      clearBatchProgress();
-      return;
-    }
-
-    var pct = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
-    var progressBar = document.getElementById('bulk-progress-bar');
-    var progressText = document.getElementById('bulk-progress-text');
-
-    progressBar.style.width = pct + '%';
-
-    if (data.status === 'running') {
-      var running = data.results.filter(function(r) { return r.status === 'running'; });
-      var runningIssue = running.length > 0 ? ' #' + running[0].issue_id : '';
-      progressText.textContent = data.completed + '/' + data.total + runningIssue;
-    } else {
-      // Done or cancelled
-      var failed = data.failed || 0;
-      var done = data.completed - failed;
-      var summary = done + ' done';
-      if (failed > 0) summary += ', ' + failed + ' failed';
-      if (data.status === 'cancelled') summary += ' (cancelled)';
-      progressText.textContent = summary;
-
-      progressBar.style.width = '100%';
-      if (failed > 0) {
-        progressBar.classList.remove('bg-accent');
-        progressBar.classList.add('bg-accent-yellow');
-      } else {
-        progressBar.classList.remove('bg-accent');
-        progressBar.classList.add('bg-accent-green');
-      }
-
-      setTimeout(function() {
-        clearBatchProgress();
-        deselectAll();
-        loadQueue();
-      }, 2500);
-    }
-  } catch (e) {
-    console.error('Failed to poll batch:', e);
-  }
-}
-
-async function cancelBatch() {
-  if (!currentBatchId) return;
-  try {
-    await fetch(apiUrl('/queue/batch/' + currentBatchId + '/cancel'), { method: 'POST' });
-  } catch (e) {
-    console.error('Failed to cancel batch:', e);
-  }
-}
-
-function clearBatchProgress() {
-  if (batchPollInterval) {
-    clearInterval(batchPollInterval);
-    batchPollInterval = null;
-  }
-  currentBatchId = null;
-
-  var progressEl = document.getElementById('bulk-progress');
-  var cancelBtn = document.getElementById('bulk-cancel-btn');
-  var progressBar = document.getElementById('bulk-progress-bar');
-
-  progressEl.classList.add('hidden');
-  cancelBtn.classList.add('hidden');
-  progressBar.style.width = '0%';
-  progressBar.classList.remove('bg-accent-green', 'bg-accent-yellow');
-  progressBar.classList.add('bg-accent');
-
-  updateSelectionUI();
 }
 
 loadQueue();

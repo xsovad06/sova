@@ -337,7 +337,142 @@ function prLink(prNumber) {
 }
 
 /* ============================================================
-   7. INITIALIZATION
+   7. GLOBAL BATCH PROGRESS
+   ============================================================ */
+
+var _globalBatchId = null;
+var _globalBatchPollInterval = null;
+
+function initGlobalBatch() {
+  var stored = sessionStorage.getItem('sova-batch-id');
+  if (stored) {
+    _resumeGlobalBatchPolling(stored);
+  } else {
+    _discoverActiveBatch();
+  }
+}
+
+async function _discoverActiveBatch() {
+  try {
+    var data = await fetchAPI(apiUrl('/queue/batch/active'));
+    if (data.active && data.batch) {
+      _resumeGlobalBatchPolling(data.batch.batch_id);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function startGlobalBatch(batchId, action, total) {
+  _globalBatchId = batchId;
+  sessionStorage.setItem('sova-batch-id', batchId);
+  _showGlobalBatchBar(action, total);
+  _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+}
+
+function _resumeGlobalBatchPolling(batchId) {
+  _globalBatchId = batchId;
+  sessionStorage.setItem('sova-batch-id', batchId);
+  _showGlobalBatchBar('batch', 0);
+  _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+  _pollGlobalBatch();
+}
+
+function _showGlobalBatchBar(action, total) {
+  var bar = document.getElementById('global-batch-bar');
+  var label = document.getElementById('global-batch-label');
+  var progressBar = document.getElementById('global-batch-progress-bar');
+  var progressText = document.getElementById('global-batch-progress-text');
+  if (!bar) return;
+
+  bar.classList.remove('hidden');
+  label.textContent = action.charAt(0).toUpperCase() + action.slice(1);
+  progressBar.style.width = '0%';
+  progressText.textContent = total > 0 ? 'Starting ' + action + '...' : 'Reconnecting...';
+}
+
+async function _pollGlobalBatch() {
+  if (!_globalBatchId) return;
+
+  try {
+    var data = await fetchAPI(apiUrl('/queue/batch/' + _globalBatchId + '/status'));
+
+    if (data.error) {
+      _clearGlobalBatch();
+      return;
+    }
+
+    var label = document.getElementById('global-batch-label');
+    var progressBar = document.getElementById('global-batch-progress-bar');
+    var progressText = document.getElementById('global-batch-progress-text');
+    if (!progressBar) return;
+
+    var pct = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
+    progressBar.style.width = pct + '%';
+    label.textContent = data.action.charAt(0).toUpperCase() + data.action.slice(1);
+
+    if (data.status === 'running') {
+      var running = data.results.filter(function(r) { return r.status === 'running'; });
+      var runningIds = running.map(function(r) { return '#' + r.issue_id; }).join(', ');
+      var runningText = runningIds ? ' ' + runningIds : '';
+      progressText.textContent = data.completed + '/' + data.total + runningText;
+    } else {
+      var failed = data.failed || 0;
+      var done = data.completed - failed;
+      var summary = done + ' done';
+      if (failed > 0) summary += ', ' + failed + ' failed';
+      if (data.status === 'cancelled') summary += ' (cancelled)';
+      progressText.textContent = summary;
+
+      progressBar.style.width = '100%';
+      if (failed > 0) {
+        progressBar.classList.remove('bg-accent');
+        progressBar.classList.add('bg-accent-yellow');
+      } else {
+        progressBar.classList.remove('bg-accent');
+        progressBar.classList.add('bg-accent-green');
+      }
+
+      var batchAction = data.action;
+      var msg = batchAction.charAt(0).toUpperCase() + batchAction.slice(1) + ': ' + summary;
+      _addNotification(msg, failed > 0 ? 'warning' : 'info');
+
+      setTimeout(function() {
+        _clearGlobalBatch();
+      }, 3000);
+    }
+  } catch (e) {
+    console.error('Failed to poll global batch:', e);
+  }
+}
+
+function cancelGlobalBatch() {
+  if (!_globalBatchId) return;
+  fetch(apiUrl('/queue/batch/' + _globalBatchId + '/cancel'), { method: 'POST' }).catch(function(e) {
+    console.error('Failed to cancel batch:', e);
+  });
+}
+
+function _clearGlobalBatch() {
+  if (_globalBatchPollInterval) {
+    clearInterval(_globalBatchPollInterval);
+    _globalBatchPollInterval = null;
+  }
+  _globalBatchId = null;
+  sessionStorage.removeItem('sova-batch-id');
+
+  var bar = document.getElementById('global-batch-bar');
+  var progressBar = document.getElementById('global-batch-progress-bar');
+  if (bar) bar.classList.add('hidden');
+  if (progressBar) {
+    progressBar.style.width = '0%';
+    progressBar.classList.remove('bg-accent-green', 'bg-accent-yellow');
+    progressBar.classList.add('bg-accent');
+  }
+
+  if (typeof _onGlobalBatchCleared === 'function') _onGlobalBatchCleared();
+}
+
+/* ============================================================
+   8. INITIALIZATION
    ============================================================ */
 
 initColors();
@@ -346,9 +481,10 @@ if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();
 }
+initGlobalBatch();
 
 /* ============================================================
-   8. ROLE COLORS
+   9. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
@@ -391,7 +527,7 @@ function _commandToRole(role) {
 }
 
 /* ============================================================
-   9. STEP PIPELINE BAR
+   10. STEP PIPELINE BAR
    ============================================================ */
 
 var PIPELINE_STEPS = [
@@ -445,7 +581,7 @@ function formatElapsed(seconds) {
 }
 
 /* ============================================================
-   10. RUNS TABLE (shared)
+   11. RUNS TABLE (shared)
    ============================================================ */
 
 function renderRunsTable(runs, targetId) {
