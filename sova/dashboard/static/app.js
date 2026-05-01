@@ -36,6 +36,11 @@ async function fetchAPI(url) {
   return res.json();
 }
 
+async function getErrorDetail(res, fallback) {
+  try { var body = await res.json(); return body.detail || fallback; }
+  catch (_e) { return fallback; }
+}
+
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

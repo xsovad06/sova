@@ -310,22 +310,22 @@ function hidePrActionsPanel() {
 
 async function runCommand(command, args) {
   try {
-    var result = await fetch(apiUrl('/agents/command'), {
+    var res = await fetch(apiUrl('/agents/command'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command: command, args: args }),
-    }).then(function(r) { return r.json(); });
-
-    if (result.error) {
-      alert(result.error);
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to run command'), 'error');
     } else {
+      var result = await res.json();
       hidePrActionsPanel();
       document.getElementById('agent-issue').value = '';
       document.getElementById('agent-issue-number').value = '';
       if (result.run_id) viewLogs(result.run_id);
     }
   } catch (e) {
-    alert('Failed to run command: ' + e.message);
+    showToast('Failed to run command: ' + e.message, 'error');
   }
   loadAgents();
 }
@@ -567,15 +567,15 @@ async function startAgent() {
   if (prVal) payload.pr_number = parseInt(prVal, 10);
 
   try {
-    var result = await fetch(apiUrl('/agents/start'), {
+    var res = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).then(function(r) { return r.json(); });
-
-    if (result.error) {
-      alert(result.error);
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to start agent'), 'error');
     } else {
+      var result = await res.json();
       issueEl.value = '';
       issueNumEl.value = '';
       prEl.value = '';
@@ -583,7 +583,7 @@ async function startAgent() {
       if (result.run_id) viewLogs(result.run_id);
     }
   } catch (e) {
-    alert('Failed to start agent: ' + e.message);
+    showToast('Failed to start agent: ' + e.message, 'error');
   }
 
   btn.disabled = false;
@@ -646,14 +646,18 @@ async function checkHandoffForAgents(agents) {
 
 async function executeHandoffAction(actionId) {
   try {
-    await fetch(apiUrl('/handoff/execute'), {
+    var res = await fetch(apiUrl('/handoff/execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action_id: actionId }),
     });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to execute action'), 'error');
+      return;
+    }
     loadAgents();
   } catch (e) {
-    alert('Failed to execute action: ' + e.message);
+    showToast('Failed to execute action: ' + e.message, 'error');
   }
 }
 

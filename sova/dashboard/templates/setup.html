@@ -284,8 +284,11 @@ async function scanProject() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project_path: currentProjectPath }),
     });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Scan failed'), 'error');
+      return;
+    }
     scanData = await res.json();
-    if (scanData.error) { alert(scanData.error); return; }
 
     document.getElementById('scan-results').classList.remove('hidden');
     document.getElementById('scan-name').textContent = scanData.project_name;
@@ -344,16 +347,18 @@ async function installProject(updateOnly) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project_path: currentProjectPath, update_only: updateOnly }),
     });
-    const result = await res.json();
     const output = document.getElementById('install-output');
+    if (!res.ok) {
+      output.textContent = 'Failed: ' + await getErrorDetail(res, 'unknown');
+      output.className = 'text-xs text-accent-red';
+      return;
+    }
+    const result = await res.json();
     if (result.status === 'ok') {
       output.textContent = 'Installed';
       output.className = 'text-xs text-accent-green';
       document.getElementById('install-status').textContent = 'Installed';
       document.getElementById('install-status').className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
-    } else {
-      output.textContent = 'Failed: ' + (result.error || 'unknown');
-      output.className = 'text-xs text-accent-red';
     }
   } finally {
     btn.textContent = origText;
@@ -389,14 +394,16 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const result = await res.json();
   const status = document.getElementById('save-status');
+  if (!res.ok) {
+    status.textContent = 'Error: ' + await getErrorDetail(res, 'unknown');
+    status.className = 'self-center text-xs text-accent-red';
+    return;
+  }
+  const result = await res.json();
   if (result.status === 'ok') {
     status.textContent = 'Saved to ' + result.config_path;
     status.className = 'self-center text-xs text-accent-green';
-  } else {
-    status.textContent = 'Error: ' + (result.error || 'unknown');
-    status.className = 'self-center text-xs text-accent-red';
   }
 });
 

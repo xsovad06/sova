@@ -299,14 +299,16 @@ async function executeBulkAction(action) {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ issues: issues, action: 'run', options: {} }),
       });
+      if (!resp.ok) {
+        showToast(await getErrorDetail(resp, 'Failed to start batch run'), 'error');
+        return;
+      }
       var data = await resp.json();
       if (data.started) {
         window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
-      } else if (data.error) {
-        alert(data.error);
       }
     } catch (e) {
-      alert('Failed to start agent: ' + e.message);
+      showToast('Failed to start agent: ' + e.message, 'error');
     }
     return;
   }
@@ -318,17 +320,16 @@ async function executeBulkAction(action) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ issues: issues, action: action, options: {} }),
     });
-    var data = await resp.json();
-
-    if (data.error) {
-      alert(data.error);
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to start batch'), 'error');
       return;
     }
+    var data = await resp.json();
 
     startGlobalBatch(data.batch_id, action, issues.length);
     updateSelectionUI();
   } catch (e) {
-    alert('Failed to start batch: ' + e.message);
+    showToast('Failed to start batch: ' + e.message, 'error');
   }
 }
 

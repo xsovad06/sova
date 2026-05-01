@@ -265,23 +265,23 @@ async function resumeRun() {
 
   try {
     var cleanRole = role.startsWith('command:') ? null : role;
-    var result = await fetch(apiUrl('/agents/start'), {
+    var res = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ issue: issue, role: cleanRole, force: true, resume_run_id: runId }),
-    }).then(function(r) { return r.json(); });
-
-    if (result.error) {
-      alert(result.error);
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to resume'), 'error');
       btn.disabled = false;
       btn.textContent = 'Resume';
       return;
     }
+    var result = await res.json();
 
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
     window.location.href = prefix + '/agents';
   } catch (e) {
-    alert('Failed to resume: ' + e.message);
+    showToast('Failed to resume: ' + e.message, 'error');
     btn.disabled = false;
     btn.textContent = 'Resume';
   }

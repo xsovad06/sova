@@ -464,12 +464,12 @@ async function executeHandoffAction(actionId) {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({action_id: actionId}),
     });
-    var data = await res.json();
-    if (data.error) {
-      alert(data.error);
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to execute action'), 'error');
       if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
       return;
     }
+    var data = await res.json();
 
     hideAllHandoffPanels();
     currentHandoffId = null;
