@@ -28,16 +28,16 @@ SOVA has four main components:
 - 12 pages: dashboard, agents, work, run_detail, costs, queue, logs, settings, memory, setup, home, style_guide
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
 - 13 API routers under `/api`: overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work
-- 12 services: run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup
+- 16 services: run, cost, memory, control (facade), handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff
 - Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed)
-  - `_process_auto_handoff()` in `control_service.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining
+  - `_process_auto_handoff()` in `agent_handoff.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining
   - Enables chaining: `integrate-pr` (full pipeline) or `ship-pr` -> `agent-resume` -> `approve-merge` (step-by-step)
-- **Claude command execution**: `control_service.start_command()` runs Claude Code commands from handoff actions
+- **Claude command execution**: `agent_lifecycle.start_command()` runs Claude Code commands from handoff actions (re-exported via `control_service` facade)
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport), run via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
@@ -56,7 +56,7 @@ SOVA has four main components:
 - **`sova/knowledge/`** -- Memory CRUD + search + promote, tier loading, persona detection, review patterns
 - **`sova/commands/`** -- command distribution: catalog (discover + classify), templates (regex rendering), manifest (SHA-256 tracking), distribution (install/update/diff with conflict detection)
 - **`sova/config/`** -- Pydantic Settings v2, TOML loader, project registry
-- **`sova/db/`** -- SQLAlchemy 2.0 async ORM models (TaskRun, StepExecution, FailureRecord, CostRecord, Memory, TaskAssessmentRecord), session factory (SQLite default, PostgreSQL optional)
+- **`sova/db/`** -- SQLAlchemy 2.0 async ORM models (TaskRun, StepExecution, FailureRecord, CostRecord, Memory, TaskAssessmentRecord), session factory (SQLite default, PostgreSQL optional). **Session pattern**: always use `async with await get_session() as session:` (context manager auto-closes). Never use manual `session = await get_session(); ...; await session.close()` -- exceptions between acquire and close leak sessions.
 
 ## Config System
 - **SOVA config**: `sova.toml` per project (Pydantic Settings, env var overrides via `SOVA_` prefix)
@@ -101,7 +101,8 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Stale run recovery + dismiss**: `recover_stale_runs()` marks dead-PID TaskRuns as "interrupted" on dashboard startup. `POST /api/agents/interrupted/dismiss` changes interrupted runs to "failed" so users can clear the banner. The "interrupted" status must be in `_TERMINAL` sets in `work_service.py`.
 - **`gh pr create` outputs a URL, not JSON**: unlike `gh pr view`, `gh pr create` does NOT support `--json`. It returns the PR URL as plain text. Parse PR number from the URL path: `int(url.rstrip("/").split("/")[-1])`. All other `gh pr` subcommands (`view`, `list`, `checks`) support `--json`.
 - **Roles must self-discover missing context**: when a role is spawned fresh from the dashboard (not via `--resume`), `ExecutionContext` fields populated by earlier pipeline steps (e.g., `pr_number` from `CreatePRStep`) are `None`. Roles that depend on upstream context must look it up from GitHub rather than failing. Pattern: `ReviewerRole` calls `find_pr_for_issue()` when `ctx.pr_number` is missing.
-- **Post-stage suspicious file guard**: `commit()` in `sova/git/operations.py` checks staged files against `_SUSPICIOUS_PATHS` (`.venv`, `.env`, `credentials.json`, etc.) after `git add` but before `git commit`. Bad files are unstaged with `git reset HEAD` and a RuntimeError is raised. This catches `.gitignore` edge cases (symlinks, pattern mismatches).
+- **Post-stage suspicious file guard**: `commit()` in `sova/git/operations.py` checks staged files against `_SUSPICIOUS_PATHS` (`.venv`, `.env`, `credentials.json`, etc.) after `git add` but before `git commit`. Uses `Path(f).parts` for component matching so nested paths like `src/.env` or `vendor/credentials.json` are caught, not just exact filenames. Bad files are unstaged with `git reset HEAD` and a RuntimeError is raised. This catches `.gitignore` edge cases (symlinks, pattern mismatches).
+- **JXA for macOS notifications**: `send_desktop_notification()` in `sova/ipc/notifications.py` uses JXA (JavaScript for Automation) with `json.dumps()` for injection-safe escaping of title and message strings, instead of AppleScript f-string interpolation with manual `replace()`. Always include `soundName: "Glass"` in the JXA options -- macOS notifications are silent by default.
 - **Dual handoff persistence (file + DB)**: agents write both DB-backed `AgentHandoff` (for orchestrator/scheduler history via `write_handoff()`) and file-based `DashboardHandoff` (for dashboard polling via `write_handoff_file()`). Dashboard reads the file for speed (no async DB in polling loop); scheduler queries the DB for cross-run state. `DashboardHandoff` has `next_actions` (UI buttons); `AgentHandoff` has `pending_findings` (agent context). Both written in every role's `_write_handoff()`.
 - **Adapter ABC contract**: `TaskAdapter` in `sova/adapters/base.py` defines 12 methods: `list_tasks`, `get_task`, `get_state`, `transition_state`, `assign`, `add_label`, `remove_label`, `post_comment`, `post_pr_comment`, `edit_body`, `link_pr`, plus `github_user` field. When adding new agent capabilities that interact with the tracker, add the method to the ABC first, then implement in `GitHubAdapter`. Factory: `create_adapter(type, repo, github_user, project_number)`.
 - **LLM for user-facing outputs with structured fallback**: workflow steps producing user-facing content (PR descriptions, review comments) use a focused LLM call (Sonnet, ~$0.01) with structured context (commit log, diff stats, issue body). Fallback MUST preserve available data -- build a structured body from already-fetched data rather than discarding to a bare stub. Pattern: `_generate_pr_body()` + `_build_fallback_body()` in `create_pr.py`, `_run_review()` in `reviewer.py`.
