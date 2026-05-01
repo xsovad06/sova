@@ -32,22 +32,22 @@ Top 10 findings ranked by severity and effort-to-fix. This is the "if you only h
 
 | # | Issue | Finding | Severity | Effort | Status |
 |---|-------|---------|----------|--------|--------|
-| 1 | [#52](https://github.com/xsovad06/project-automation-kit/issues/52) | Install ruff / fix `make check` | P1 | 15 min | OPEN |
-| 2 | [#53](https://github.com/xsovad06/project-automation-kit/issues/53) | Add migration 003 for `project_slug` column | P1 | 30 min | OPEN |
-| 3 | [#54](https://github.com/xsovad06/project-automation-kit/issues/54) | Add Pydantic `Field` constraints to config models | P2 | 1 hour | OPEN |
+| 1 | [#52](https://github.com/xsovad06/project-automation-kit/issues/52) | Install ruff / fix `make check` | P1 | 15 min | DONE |
+| 2 | [#53](https://github.com/xsovad06/project-automation-kit/issues/53) | Add migration 003 for `project_slug` column | P1 | 30 min | DONE |
+| 3 | [#54](https://github.com/xsovad06/project-automation-kit/issues/54) | Add Pydantic `Field` constraints to config models | P2 | 1 hour | DONE |
 | 4 | [#55](https://github.com/xsovad06/project-automation-kit/issues/55) | Validate `issue_id` in worktree path construction | P2 | 30 min | OPEN |
 | 5 | [#56](https://github.com/xsovad06/project-automation-kit/issues/56) | Fix session leak pattern in control_service.py | P2 | 1 hour | OPEN |
 | 6 | [#57](https://github.com/xsovad06/project-automation-kit/issues/57) | Improve suspicious file guard to check path components | P2 | 30 min | OPEN |
 | 7 | [#58](https://github.com/xsovad06/project-automation-kit/issues/58) | Remove dead code in worktree.py line 180-181 | P4 | 5 min | OPEN |
-| 8 | [#59](https://github.com/xsovad06/project-automation-kit/issues/59) | Add missing DB indexes (project_slug, superseded_by) | P2 | 30 min | OPEN |
+| 8 | [#59](https://github.com/xsovad06/project-automation-kit/issues/59) | Add missing DB indexes (project_slug, superseded_by) | P2 | 30 min | DONE |
 | 9 | [#60](https://github.com/xsovad06/project-automation-kit/issues/60) | Fix test warnings (unawaited coroutine mocks) | P3 | 30 min | OPEN |
 | 10 | [#61](https://github.com/xsovad06/project-automation-kit/issues/61) | Split control_service.py into 3 modules | P2 | 4 hours | OPEN |
 | 11 | [#62](https://github.com/xsovad06/project-automation-kit/issues/62) | Use proper HTTP status codes in API routers | P3 | 2 hours | OPEN |
 | 12 | [#63](https://github.com/xsovad06/project-automation-kit/issues/63) | Improve AppleScript notification escaping | P3 | 30 min | OPEN |
 | 13 | [#64](https://github.com/xsovad06/project-automation-kit/issues/64) | Add logging to reviewer parse_findings failure | P3 | 15 min | OPEN |
-| 14 | [#65](https://github.com/xsovad06/project-automation-kit/issues/65) | Narrow adapter config Literal to implemented types | P2 | 30 min | OPEN |
+| 14 | [#65](https://github.com/xsovad06/project-automation-kit/issues/65) | Narrow adapter config Literal to implemented types | P2 | 30 min | DONE |
 
-**Total for items 1-9**: ~5 hours. Item 10 is a larger refactor best done as a standalone PR.
+**Progress**: 5/14 done. Remaining ~9 hours across 9 issues.
 
 ---
 

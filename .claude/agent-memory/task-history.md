@@ -70,3 +70,4 @@
 | 2026-05-01 | - | Create sova.toml for project-automation-kit itself (dogfooding). Dashboard was not showing issues due to missing config. Set github_repo, github_user, github_project_number=2, no_ai_coauthor=true. | Done |
 | 2026-05-01 | - | Fix macOS notifications: send desktop notifications on all agent completions (not just errors). Sort queue by priority label and show issue age column. Two commits: fix(dashboard) notifications + feat(dashboard) queue sorting. | Done |
 | 2026-05-01 | - | Scope batch progress bar to active project in multi-project mode. Added project_dir to BatchJob, filtered get_active_batch() by project, scoped sessionStorage key by slug. 2 new tests, 677 total. | Done |
+| 2026-05-01 | - | Queue page ordering: sort by state priority + priority: label + creation date (oldest first). Added createdAt to GitHub adapter, _extract_label_priority() in queue_service, "opened X ago" in template. README rewrite. | Done |
