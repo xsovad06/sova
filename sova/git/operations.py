@@ -153,7 +153,11 @@ async def commit(message: str, files: list[str] | None = None, cwd: Path | None 
 
     staged = await run("git", "diff", "--cached", "--name-only", cwd=cwd)
     if staged.success:
-        bad = [f for f in staged.stdout.strip().splitlines() if f.strip() in _SUSPICIOUS_PATHS]
+        bad = [
+            f
+            for f in staged.stdout.strip().splitlines()
+            if any(part in _SUSPICIOUS_PATHS for part in Path(f.strip()).parts)
+        ]
         if bad:
             for f in bad:
                 await run("git", "reset", "HEAD", "--", f, cwd=cwd)
