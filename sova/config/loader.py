@@ -116,6 +116,7 @@ _LEGACY_KEY_MAP: dict[str, tuple[str, str]] = {
     "REVIEW_MAX_ROUNDS": ("review", "max_rounds"),
     "CI_POLL_INTERVAL": ("ci", "poll_interval"),
     "CI_MAX_WAIT": ("ci", "max_wait"),
+    "CI_NO_CHECKS_GRACE_PERIOD": ("ci", "no_checks_grace_period"),
     "FLAKY_CHECKS": ("ci", "flaky_checks"),
     "WATCH_INTERVAL_ACTIVE": ("watch", "interval_active"),
     "WATCH_INTERVAL_IDLE": ("watch", "interval_idle"),

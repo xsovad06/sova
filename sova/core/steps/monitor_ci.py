@@ -22,14 +22,21 @@ class MonitorCIStep(BaseStep):
 
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
+        grace_period = ctx.config.ci.no_checks_grace_period
         elapsed = 0
 
-        log.info("step.monitor_ci", pr=ctx.pr_number, max_wait=max_wait)
+        log.info("step.monitor_ci", pr=ctx.pr_number, max_wait=max_wait, grace_period=grace_period)
 
         while elapsed < max_wait:
             checks = await get_ci_checks(ctx.pr_number, repo=ctx.repo)
 
             if not checks:
+                if elapsed >= grace_period:
+                    log.warning("step.monitor_ci.no_checks_after_grace", elapsed=elapsed, grace=grace_period)
+                    return StepResult(
+                        success=True,
+                        summary=f"No CI checks found after {elapsed}s grace period, proceeding",
+                    )
                 log.debug("step.monitor_ci.no_checks", elapsed=elapsed)
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
