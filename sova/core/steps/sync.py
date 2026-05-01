@@ -1,4 +1,9 @@
-"""Step 1: Sync -- pull latest changes on the base branch."""
+"""Step 1: Sync -- pull latest changes on the base branch.
+
+Also fetches the task from the tracker so ctx.task is populated for
+downstream steps (commit message, PR title) even when --force skips
+the assess step.
+"""
 
 from __future__ import annotations
 
@@ -19,9 +24,16 @@ class SyncStep(BaseStep):
         log.info("step.sync", base_branch=base)
         try:
             await git_ops.sync_branch(base, cwd=ctx.project_dir)
-            return StepResult(success=True, summary=f"Synced {base}")
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to sync", error=str(exc))
+
+        if ctx.task is None:
+            try:
+                ctx.task = await ctx.adapter.get_task(ctx.issue_number)
+            except Exception:
+                log.warning("step.sync.task_fetch_failed", issue=ctx.issue_number, exc_info=True)
+
+        return StepResult(success=True, summary=f"Synced {base}")
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         return GateCheckResult(passed=True)
