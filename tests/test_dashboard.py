@@ -543,8 +543,13 @@ class TestDuplicateAgentPrevention:
 
         mock_process = MagicMock()
         mock_process.pid = 12345
-        mock_process.stdout_lines = AsyncMock(return_value=AsyncMock(__aiter__=AsyncMock(return_value=iter([]))))
-        mock_process.stderr_lines = AsyncMock(return_value=AsyncMock(__aiter__=AsyncMock(return_value=iter([]))))
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
         mock_process.wait = AsyncMock(return_value=0)
 
         with (
