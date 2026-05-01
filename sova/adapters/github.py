@@ -71,7 +71,7 @@ class GitHubAdapter(TaskAdapter):
             "--state",
             filters.state,
             "--json",
-            "number,title,body,state,labels,assignees,milestone,url",
+            "number,title,body,state,labels,assignees,milestone,url,createdAt",
             "--limit",
             "50",
         ]
@@ -102,7 +102,7 @@ class GitHubAdapter(TaskAdapter):
             "--repo",
             self.repo,
             "--json",
-            "number,title,body,state,labels,assignees,milestone,url",
+            "number,title,body,state,labels,assignees,milestone,url,createdAt",
         )
         if not result.success:
             raise RuntimeError(f"Failed to fetch issue #{task_id}: {result.stderr[:200]}")
@@ -437,6 +437,10 @@ def _parse_issue(data: dict) -> Task:
             state = _LABEL_TO_STATE[label]
             break
 
+    metadata: dict = {}
+    if data.get("createdAt"):
+        metadata["created_at"] = data["createdAt"]
+
     return Task(
         id=str(data["number"]),
         title=data.get("title", ""),
@@ -446,4 +450,5 @@ def _parse_issue(data: dict) -> Task:
         assignees=assignees,
         url=data.get("url", ""),
         milestone=milestone,
+        metadata=metadata,
     )

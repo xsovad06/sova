@@ -41,6 +41,21 @@ _RECOMMENDED_ACTION: dict[TaskState, str] = {
     TaskState.IN_PROGRESS: "resume",
 }
 
+_PRIORITY_LABEL_ORDER: dict[str, int] = {
+    "priority:critical": 0,
+    "priority:high": 1,
+    "priority:medium": 2,
+    "priority:low": 3,
+}
+
+
+def _extract_label_priority(labels: list[str]) -> int:
+    """Extract numeric priority from priority: labels. Lower = higher priority."""
+    for label in labels:
+        if label in _PRIORITY_LABEL_ORDER:
+            return _PRIORITY_LABEL_ORDER[label]
+    return 99
+
 
 async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     """Fetch open issues and return a priority-sorted queue.
@@ -70,7 +85,13 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
         return []
 
     actionable = [t for t in tasks if t.state in _ACTIONABLE_STATES]
-    actionable.sort(key=lambda t: _STATE_PRIORITY.get(t.state, 99))
+    actionable.sort(
+        key=lambda t: (
+            _STATE_PRIORITY.get(t.state, 99),
+            _extract_label_priority(t.labels),
+            t.metadata.get("created_at", "9999"),
+        )
+    )
 
     last_runs = await _get_last_runs_by_issue(project_dir)
 
@@ -88,6 +109,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "labels": t.labels,
                 "url": t.url,
                 "last_run": last_runs.get(t.id),
+                "created_at": t.metadata.get("created_at", ""),
             }
         )
 

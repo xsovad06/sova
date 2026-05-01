@@ -244,6 +244,7 @@ async function loadQueue() {
           '</div>' +
           '<div class="flex items-center gap-2 mt-1">' +
             '<span class="text-xs text-gray-500">' + stateText + '</span>' +
+            (item.created_at ? '<span class="text-gray-600">|</span><span class="text-xs text-gray-600">opened ' + timeAgo(item.created_at) + '</span>' : '') +
             (labelsHtml ? '<span class="text-gray-600">|</span>' + labelsHtml : '') +
           '</div>' +
         '</div>' +
