@@ -30,6 +30,7 @@ from sova.git.operations import (
 )
 from sova.git.worktree import (
     WorktreeInfo,
+    _copy_worktree_files,
     _ensure_compose_project_name,
     cleanup_worktree,
     create_worktree,
@@ -174,6 +175,15 @@ class TestCommit:
             mock_run.return_value = _shell_ok()
             with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout=".venv\n.env\napp.py\n")
+
+                with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
+                    await commit("chore: update", cwd=Path("/repo"))
+
+    async def test_catches_suspicious_files_in_subdirectories(self) -> None:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok()
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
+                mock_run_soft.return_value = _shell_ok(stdout="src/.env\nvendor/credentials.json\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
                     await commit("chore: update", cwd=Path("/repo"))
@@ -471,6 +481,62 @@ class TestCreateWorktree:
                             assert info.branch == "feat/login"
                             # run_checked should have been called for the fallback (without -b)
                             mock_run_checked.assert_called_once()
+
+
+class TestCreateWorktreePathValidation:
+    async def test_rejects_dotdot_in_issue_id(self) -> None:
+        with pytest.raises(ValueError, match="path traversal"):
+            await create_worktree(
+                issue_id="../escape",
+                branch="feat/x",
+                base_branch="main",
+                project_dir=Path("/repo"),
+            )
+
+    async def test_rejects_slash_in_issue_id(self) -> None:
+        with pytest.raises(ValueError, match="path traversal"):
+            await create_worktree(
+                issue_id="foo/bar",
+                branch="feat/x",
+                base_branch="main",
+                project_dir=Path("/repo"),
+            )
+
+    async def test_rejects_absolute_issue_id(self) -> None:
+        with pytest.raises(ValueError, match="path traversal"):
+            await create_worktree(
+                issue_id="/etc/passwd",
+                branch="feat/x",
+                base_branch="main",
+                project_dir=Path("/repo"),
+            )
+
+
+class TestCopyWorktreeFilesValidation:
+    def test_skips_path_traversal_in_source(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (project / "safe.txt").write_text("ok")
+
+        _copy_worktree_files(project, worktree, ["../escape.txt", "safe.txt"])
+
+        assert (worktree / "safe.txt").exists()
+        assert not (worktree / "escape.txt").exists()
+
+    def test_skips_path_traversal_in_dest(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (project / "safe.txt").write_text("ok")
+
+        _copy_worktree_files(project, worktree, ["safe.txt"])
+
+        assert (worktree / "safe.txt").exists()
 
 
 class TestCleanupWorktree:

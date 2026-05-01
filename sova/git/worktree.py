@@ -48,6 +48,9 @@ async def create_worktree(
         copy_files: Files to copy from the project root into the worktree
                     (e.g., ``.env``). Defaults to none.
     """
+    if ".." in issue_id or "/" in issue_id or issue_id.startswith(("/", "\\")):
+        raise ValueError(f"Invalid issue_id (path traversal): {issue_id!r}")
+
     worktree_path = project_dir / WORKTREE_DIR / issue_id
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -176,10 +179,7 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
     # Check if compose file already has an explicit name
     content = compose_file.read_text()
     for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("name:") and not stripped.startswith("name:", 0):
-            return
-        if stripped.startswith("name:"):
+        if line.strip().startswith("name:"):
             return
 
     # Derive project name from the main repo directory (matches Docker Compose default)
@@ -196,10 +196,19 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
     """Copy files from the project root into a worktree."""
+    resolved_project = project_dir.resolve()
+    resolved_worktree = worktree_path.resolve()
     for filename in files:
-        src = project_dir / filename
-        if src.exists():
-            dst = worktree_path / filename
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            log.debug("worktree.copy_file", file=filename)
+        src = (project_dir / filename).resolve()
+        if not src.is_relative_to(resolved_project):
+            log.warning("worktree.copy_file.path_traversal", file=filename)
+            continue
+        if not src.exists():
+            continue
+        dst = (worktree_path / filename).resolve()
+        if not dst.is_relative_to(resolved_worktree):
+            log.warning("worktree.copy_file.path_traversal", file=filename)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        log.debug("worktree.copy_file", file=filename)
