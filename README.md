@@ -67,8 +67,8 @@ pip install --user -e .
 Ensure your Python user bin directory is on `PATH`:
 
 ```bash
-# macOS
-export PATH="$HOME/Library/Python/$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/bin:$PATH"
+# macOS (replace 3.12 with your Python version)
+export PATH="$HOME/Library/Python/3.12/bin:$PATH"
 
 # Linux
 export PATH="$HOME/.local/bin:$PATH"
@@ -117,6 +117,7 @@ SOVA uses a `sova.toml` file in each project root. Minimal example:
 
 ```toml
 github_repo = "owner/repo"
+github_user = "owner"
 base_branch = "main"
 
 [task_source]
@@ -131,11 +132,11 @@ Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA
 
 | Category | Commands |
 |----------|----------|
-| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>` |
+| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|status` |
-| **Setup** | `sova install <path>`, `sova setup <path>` |
+| **Setup** | `sova install <path>`, `sova setup <path>`, `sova init-db` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
-| **Monitor** | `sova status`, `sova costs`, `sova dashboard` |
+| **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search <query>`, `sova memory prune` |
 | **Commands** | `sova commands list\|diff\|update` |
 | **Maintenance** | `sova cleanup`, `sova migrate config\|costs` |
