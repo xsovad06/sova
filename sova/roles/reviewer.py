@@ -122,8 +122,10 @@ def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
             try:
                 data = json.loads(text[start:end])
             except json.JSONDecodeError:
+                log.warning("parse_findings.failed", text_preview=text[:200], exc_info=True)
                 return [], "Failed to parse review response"
         else:
+            log.warning("parse_findings.failed", text_preview=text[:200], exc_info=True)
             return [], "Failed to parse review response"
 
     findings = []

@@ -996,6 +996,27 @@ class TestReviewerParsing:
         assert findings == []
         assert "Failed" in summary
 
+    def test_parse_findings_invalid_json_logs_warning(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import _parse_findings
+
+        with patch("sova.roles.reviewer.log") as mock_log:
+            _parse_findings("not json at all")
+            mock_log.warning.assert_called_once()
+            assert mock_log.warning.call_args[0][0] == "parse_findings.failed"
+            assert "text_preview" in mock_log.warning.call_args[1]
+
+    def test_parse_findings_bad_embedded_json_logs_warning(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import _parse_findings
+
+        with patch("sova.roles.reviewer.log") as mock_log:
+            _parse_findings("prefix {invalid json} suffix")
+            mock_log.warning.assert_called_once()
+            assert mock_log.warning.call_args[0][0] == "parse_findings.failed"
+
     def test_parse_findings_json_embedded_in_text(self) -> None:
         from sova.roles.reviewer import _parse_findings
 
