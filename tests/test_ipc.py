@@ -668,6 +668,22 @@ class TestDesktopNotification:
                 mock_run.assert_awaited_once()
                 call_args = mock_run.call_args[0]
                 assert "osascript" in call_args
+                assert "-l" in call_args
+                assert "JavaScript" in call_args
+
+    async def test_send_desktop_macos_escapes_special_chars(self) -> None:
+        from sova.ipc.notifications import send_desktop_notification
+
+        with patch("sova.ipc.notifications.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("sova.ipc.notifications.run") as mock_run:
+                mock_run.return_value = MagicMock(success=True)
+                await send_desktop_notification('Title with "quotes"', 'Body with \\ and "quotes"')
+
+                mock_run.assert_awaited_once()
+                script_arg = mock_run.call_args[0][-1]
+                assert "displayNotification" in script_arg
+                assert '\\"quotes\\"' in script_arg
 
     async def test_send_desktop_linux(self) -> None:
         from sova.ipc.notifications import send_desktop_notification

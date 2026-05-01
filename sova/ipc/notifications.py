@@ -62,10 +62,12 @@ def notify(config: NotificationConfig, title: str, message: str) -> None:
 async def send_desktop_notification(title: str, message: str) -> None:
     """Send a desktop notification using platform-native tools."""
     if sys.platform == "darwin":
-        safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
-        safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
-        script = f'display notification "{safe_message}" with title "{safe_title}" sound name "Glass"'
-        await run("osascript", "-e", script)
+        script = (
+            "var app = Application.currentApplication();"
+            "app.includeStandardAdditions = true;"
+            f'app.displayNotification({json.dumps(message)}, {{withTitle: {json.dumps(title)}, soundName: "Glass"}});'
+        )
+        await run("osascript", "-l", "JavaScript", "-e", script)
         log.info("notify.desktop", platform="macos", title=title)
     elif sys.platform == "linux":
         await run("notify-send", title, message)
