@@ -10,6 +10,13 @@ from sova.utils.shell import run
 
 log = get_logger(component="step.commit")
 
+_AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-")
+
+
+def _is_agent_artifact(path: str) -> bool:
+    """Check if a path is an agent/tool artifact that shouldn't be committed."""
+    return any(path.startswith(p) for p in _AGENT_ARTIFACT_PREFIXES)
+
 
 class CommitStep(BaseStep):
     name = "commit"
@@ -23,12 +30,15 @@ class CommitStep(BaseStep):
 
         has_unstaged = bool(diff_result.success and diff_result.stdout.strip())
         has_staged = bool(staged.success and staged.stdout.strip())
-        has_untracked = bool(untracked.success and untracked.stdout.strip())
+
+        untracked_files = [f for f in untracked.stdout.strip().splitlines() if f.strip()] if untracked.success else []
+        meaningful_untracked = [f for f in untracked_files if not _is_agent_artifact(f)]
+        has_meaningful_untracked = bool(meaningful_untracked)
 
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
 
-        if not has_unstaged and not has_staged and not has_untracked:
+        if not has_unstaged and not has_staged and not has_meaningful_untracked:
             if has_commits:
                 return StepResult(success=True, summary="Nothing to commit, commits already exist")
             return StepResult(success=False, summary="No changes to commit", error="No changes to commit")
