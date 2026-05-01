@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.config.registry import register_project
@@ -64,14 +64,14 @@ async def install_project(req: InstallRequest):
 
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
-        return {"error": f"Directory not found: {project}"}
+        raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
     try:
         await _install(path=project, no_dashboard=True, update=req.update_only)
         slug = register_project(project)
         return {"status": "ok", "slug": slug}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.post("/setup/configure")
@@ -79,7 +79,7 @@ async def configure_project(req: ConfigureRequest):
     """Generate sova.toml from wizard input and register the project."""
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
-        return {"error": f"Directory not found: {project}"}
+        raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
     toml_content = setup_service.generate_sova_toml(
         github_repo=req.github_repo,

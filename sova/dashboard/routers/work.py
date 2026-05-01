@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from sova.dashboard.services import work_service
 from sova.db.session import get_session
@@ -78,7 +78,7 @@ async def get_detail(run_id: int):
         async with session.begin():
             detail = await work_service.get_work_detail(session, run_id)
         if detail is None:
-            return {"error": "Run not found"}
+            raise HTTPException(status_code=404, detail="Run not found")
         return detail
     finally:
         await session.close()
@@ -94,7 +94,7 @@ async def mark_failed(run_id: int):
         async with session.begin():
             result = await run_service.mark_run_failed(session, run_id)
         if result is None:
-            return {"error": "Run not found"}
+            raise HTTPException(status_code=404, detail="Run not found")
         return result
     finally:
         await session.close()

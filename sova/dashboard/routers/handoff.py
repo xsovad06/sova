@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.dashboard.services import control_service, handoff_service
@@ -32,12 +32,12 @@ async def execute_handoff_action(req: ExecuteActionRequest):
     """
     handoff = handoff_service.get_handoff()
     if not handoff:
-        return {"error": "No active handoff"}
+        raise HTTPException(status_code=404, detail="No active handoff")
 
     actions = handoff.get("next_actions", [])
     action = next((a for a in actions if a.get("id") == req.action_id), None)
     if not action:
-        return {"error": f"Action '{req.action_id}' not found in handoff"}
+        raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in handoff")
 
     exec_params = handoff_service.build_action_command(action)
 
@@ -55,9 +55,9 @@ async def execute_handoff_action(req: ExecuteActionRequest):
             exec_params.get("args", {}),
         )
     elif exec_params["type"] == "shell":
-        return {"error": "Shell mode not yet supported in SOVA dashboard"}
+        raise HTTPException(status_code=400, detail="Shell mode not yet supported in SOVA dashboard")
     else:
-        return {"error": f"Unknown execution type: {exec_params['type']}"}
+        raise HTTPException(status_code=400, detail=f"Unknown execution type: {exec_params['type']}")
 
     result["action"] = action.get("label", req.action_id)
     return result

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.dashboard.project_context import get_project_dir
@@ -48,7 +48,7 @@ async def start_batch(req: BatchRequest):
         return await batch_service.start_batch_run(req.issues, project_dir)
 
     if req.action not in ("triage", "harden"):
-        return {"error": f"Unknown action: {req.action}"}
+        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
     batch_id = await batch_service.start_batch(
         action=req.action,
@@ -74,7 +74,7 @@ async def batch_status(batch_id: str):
     """Get progress of a batch operation."""
     status = batch_service.get_batch_status(batch_id)
     if status is None:
-        return {"error": "Batch not found"}
+        raise HTTPException(status_code=404, detail="Batch not found")
     return status
 
 
