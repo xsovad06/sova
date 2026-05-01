@@ -1336,3 +1336,189 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.pr_number == 42
+
+
+# ---------------------------------------------------------------------------
+# MonitorCIStep -- no-checks grace period
+# ---------------------------------------------------------------------------
+
+
+class TestMonitorCIStep:
+    async def test_passes_when_all_checks_pass(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 CI checks passed" in result.summary
+
+    async def test_fails_when_check_fails(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_passed=False)
+        check.name = "lint"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "lint" in result.summary
+
+    async def test_no_checks_passes_after_grace_period(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = []
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "no ci checks" in result.summary.lower()
+
+    async def test_no_checks_waits_during_grace_period(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 120
+        config.ci.poll_interval = 60
+        config.ci.max_wait = 180
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            # No checks on first poll, then checks appear
+            mock_checks.side_effect = [[], [check]]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 CI checks passed" in result.summary
+
+    async def test_fails_when_no_pr(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=None)
+        step = MonitorCIStep()
+
+        result = await step.execute(ctx)
+
+        assert not result.success
+        assert "no pr" in result.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# SyncStep -- task fetch
+# ---------------------------------------------------------------------------
+
+
+class TestSyncStepTaskFetch:
+    async def test_fetches_task_during_sync(self) -> None:
+        from sova.core.steps.sync import SyncStep
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Test task")
+        ctx = _make_ctx(adapter=adapter)
+        assert ctx.task is None
+
+        step = SyncStep()
+        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.task is not None
+        assert ctx.task.title == "Test task"
+
+    async def test_preserves_existing_task(self) -> None:
+        from sova.core.steps.sync import SyncStep
+
+        existing_task = Task(id="42", title="Already set")
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, task=existing_task)
+
+        step = SyncStep()
+        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.task.title == "Already set"
+        adapter.get_task.assert_not_awaited()
+
+    async def test_sync_succeeds_even_if_task_fetch_fails(self) -> None:
+        from sova.core.steps.sync import SyncStep
+
+        adapter = _mock_adapter()
+        adapter.get_task.side_effect = RuntimeError("GitHub API down")
+        ctx = _make_ctx(adapter=adapter)
+
+        step = SyncStep()
+        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+            mock_ops.sync_branch = AsyncMock()
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.task is None
+
+
+# ---------------------------------------------------------------------------
+# CommitStep -- agent artifact filtering
+# ---------------------------------------------------------------------------
+
+
+class TestCommitStepAgentArtifacts:
+    async def test_skips_commit_when_only_agent_artifacts_untracked(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with patch("sova.core.steps.commit.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout=".claude/settings.json\n.agent-summary.md\n"),  # only artifacts
+                MagicMock(success=True, stdout="abc123 feat: real work\n"),  # has commits
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "already exist" in result.summary
+
+    async def test_commits_meaningful_untracked_files(self) -> None:
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.task = Task(id="42", title="Add feature")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout="src/new_file.py\n.claude/tmp.json\n"),  # mixed
+                MagicMock(success=True, stdout=""),  # log (no commits)
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_commit.assert_awaited_once()
