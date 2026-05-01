@@ -506,7 +506,7 @@ class TestDuplicateAgentPrevention:
         """Starting an agent for an issue that already has one running should fail."""
         from unittest.mock import MagicMock, patch
 
-        from sova.dashboard.services import control_service
+        from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import AgentState, ProjectAgents, start_agent
 
         pa = ProjectAgents()
@@ -518,7 +518,7 @@ class TestDuplicateAgentPrevention:
         )
         pa.agents[1] = existing
 
-        with patch.object(control_service, "_get_project_agents", return_value=pa):
+        with patch.object(agent_lifecycle, "_get_project_agents", return_value=pa):
             result = await start_agent("73")
 
         assert "error" in result
@@ -529,7 +529,7 @@ class TestDuplicateAgentPrevention:
         """Starting an agent for a different issue should succeed (mocked spawn)."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import control_service
+        from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import AgentState, ProjectAgents, start_agent
 
         pa = ProjectAgents()
@@ -553,14 +553,14 @@ class TestDuplicateAgentPrevention:
         mock_process.wait = AsyncMock(return_value=0)
 
         with (
-            patch.object(control_service, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
-            patch.object(control_service, "_create_task_run", new_callable=AsyncMock, return_value=2),
-            patch.object(control_service, "_set_output_file_path", new_callable=AsyncMock),
-            patch.object(control_service, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
-            patch.object(control_service, "_transition_to_in_progress", new_callable=AsyncMock),
-            patch.object(control_service, "_wait_and_finalize", new_callable=AsyncMock),
-            patch("sova.dashboard.services.control_service.OutputWriter"),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=2),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             result = await start_agent("74")
 
@@ -578,7 +578,7 @@ class TestAutoHandoff:
         """_process_auto_handoff should auto-spawn an agent for auto_execute actions."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import control_service
+        from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
@@ -610,7 +610,7 @@ class TestAutoHandoff:
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch.object(
-                control_service, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
+                agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_start,
         ):
             await _process_auto_handoff(agent)
@@ -621,7 +621,7 @@ class TestAutoHandoff:
         """_process_auto_handoff should not trigger actions without auto_execute."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import control_service
+        from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
@@ -651,8 +651,8 @@ class TestAutoHandoff:
 
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_agent,
-            patch.object(control_service, "start_command", new_callable=AsyncMock) as mock_cmd,
+            patch.object(agent_lifecycle, "start_agent", new_callable=AsyncMock) as mock_agent,
+            patch.object(agent_lifecycle, "start_command", new_callable=AsyncMock) as mock_cmd,
         ):
             await _process_auto_handoff(agent)
 
@@ -663,7 +663,7 @@ class TestAutoHandoff:
         """_process_auto_handoff should run claude-command actions with auto_execute."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
-        from sova.dashboard.services import control_service
+        from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
@@ -695,7 +695,7 @@ class TestAutoHandoff:
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch.object(
-                control_service, "start_command", new_callable=AsyncMock, return_value={"status": "started"}
+                agent_lifecycle, "start_command", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_cmd,
         ):
             await _process_auto_handoff(agent)
