@@ -182,12 +182,11 @@ async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session()
-        async with session.begin():
-            stmt = select(TaskRun).where(TaskRun.id.in_(run_ids))
-            result = await session.execute(stmt)
-            runs = result.scalars().all()
-        await session.close()
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(TaskRun.id.in_(run_ids))
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
         return {
             r.id: {
                 "current_step": r.current_step or "agent",
@@ -246,16 +245,14 @@ async def get_unified_agents(slug: str | None = None) -> dict:
         from sova.db.session import get_session
 
         _TERMINAL = {"done", "failed", "rejected", "interrupted"}
-        session = await get_session(project_dir=pa.project_dir)
-        async with session.begin():
-            stmt = select(TaskRun).where(
-                TaskRun.status.notin_(_TERMINAL),
-                TaskRun.pid.isnot(None),
-            )
-            result = await session.execute(stmt)
-            runs = result.scalars().all()
-
-        await session.close()
+        async with await get_session(project_dir=pa.project_dir) as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(
+                    TaskRun.status.notin_(_TERMINAL),
+                    TaskRun.pid.isnot(None),
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
 
         now = datetime.now(timezone.utc)
         for run in runs:
@@ -655,33 +652,31 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session(project_dir=project_dir)
         interrupted = []
 
-        async with session.begin():
-            stmt = select(TaskRun).where(TaskRun.status == "running")
-            result = await session.execute(stmt)
-            stale_runs = result.scalars().all()
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(TaskRun.status == "running")
+                result = await session.execute(stmt)
+                stale_runs = result.scalars().all()
 
-            for run in stale_runs:
-                if run.pid and _is_process_alive(run.pid):
-                    log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
-                    continue
+                for run in stale_runs:
+                    if run.pid and _is_process_alive(run.pid):
+                        log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                        continue
 
-                run.status = "interrupted"
-                run.error_message = "Dashboard restarted while agent was running"
-                run.ended_at = datetime.now(timezone.utc)
-                interrupted.append(
-                    {
-                        "run_id": run.id,
-                        "issue": run.issue_number,
-                        "role": run.role,
-                        "pid": run.pid,
-                    }
-                )
-                log.warning("recovery.interrupted", run_id=run.id, issue=run.issue_number, pid=run.pid)
-
-        await session.close()
+                    run.status = "interrupted"
+                    run.error_message = "Dashboard restarted while agent was running"
+                    run.ended_at = datetime.now(timezone.utc)
+                    interrupted.append(
+                        {
+                            "run_id": run.id,
+                            "issue": run.issue_number,
+                            "role": run.role,
+                            "pid": run.pid,
+                        }
+                    )
+                    log.warning("recovery.interrupted", run_id=run.id, issue=run.issue_number, pid=run.pid)
 
         if interrupted:
             log.info("recovery.complete", interrupted_count=len(interrupted))
@@ -735,19 +730,18 @@ async def _create_task_run(issue: str, role: str, project_dir: Path, *, pid: int
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session(project_dir=project_dir)
-        async with session.begin():
-            task_run = TaskRun(
-                issue_number=issue,
-                role=role,
-                status="running",
-                current_step="agent",
-                pid=pid,
-            )
-            session.add(task_run)
-            await session.flush()
-            run_id = task_run.id
-        await session.close()
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number=issue,
+                    role=role,
+                    status="running",
+                    current_step="agent",
+                    pid=pid,
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
         log.info("task_run.created", run_id=run_id, issue=issue)
         return run_id
     except Exception:
@@ -761,12 +755,11 @@ async def _set_output_file_path(run_id: int, path: Path, project_dir: Path) -> N
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session(project_dir=project_dir)
-        async with session.begin():
-            task_run = await session.get(TaskRun, run_id)
-            if task_run:
-                task_run.output_file_path = str(path)
-        await session.close()
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run:
+                    task_run.output_file_path = str(path)
     except Exception:
         log.debug("output_file_path.set_failed", run_id=run_id, exc_info=True)
 
@@ -780,27 +773,26 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         status = "done" if exit_code == 0 else "failed"
         cost = Decimal(str(agent.last_result_cost)) if agent.last_result_cost else Decimal("0")
 
-        session = await get_session(project_dir=agent.project_dir)
-        async with session.begin():
-            task_run = await session.get(TaskRun, run_id)
-            if task_run is None:
-                return
-            task_run.status = status
-            task_run.total_cost_usd = cost
-            task_run.ended_at = datetime.now(timezone.utc)
-            if exit_code != 0:
-                task_run.error_message = f"Process exited with code {exit_code}"
+        async with await get_session(project_dir=agent.project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run is None:
+                    return
+                task_run.status = status
+                task_run.total_cost_usd = cost
+                task_run.ended_at = datetime.now(timezone.utc)
+                if exit_code != 0:
+                    task_run.error_message = f"Process exited with code {exit_code}"
 
-            if agent.last_result_cost and agent.last_result_cost > 0:
-                cost_record = CostRecord(
-                    task_run_id=run_id,
-                    phase="agent",
-                    issue=task_run.issue_number,
-                    model="claude",
-                    cost_usd=cost,
-                )
-                session.add(cost_record)
-        await session.close()
+                if agent.last_result_cost and agent.last_result_cost > 0:
+                    cost_record = CostRecord(
+                        task_run_id=run_id,
+                        phase="agent",
+                        issue=task_run.issue_number,
+                        model="claude",
+                        cost_usd=cost,
+                    )
+                    session.add(cost_record)
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
