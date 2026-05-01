@@ -343,8 +343,13 @@ function prLink(prNumber) {
 var _globalBatchId = null;
 var _globalBatchPollInterval = null;
 
+function _batchStorageKey() {
+  var slug = window.SOVA_PROJECT_SLUG || '';
+  return slug ? 'sova-batch-id-' + slug : 'sova-batch-id';
+}
+
 function initGlobalBatch() {
-  var stored = sessionStorage.getItem('sova-batch-id');
+  var stored = sessionStorage.getItem(_batchStorageKey());
   if (stored) {
     _resumeGlobalBatchPolling(stored);
   } else {
@@ -363,14 +368,14 @@ async function _discoverActiveBatch() {
 
 function startGlobalBatch(batchId, action, total) {
   _globalBatchId = batchId;
-  sessionStorage.setItem('sova-batch-id', batchId);
+  sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar(action, total);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
 }
 
 function _resumeGlobalBatchPolling(batchId) {
   _globalBatchId = batchId;
-  sessionStorage.setItem('sova-batch-id', batchId);
+  sessionStorage.setItem(_batchStorageKey(), batchId);
   _showGlobalBatchBar('batch', 0);
   _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
   _pollGlobalBatch();
@@ -457,7 +462,7 @@ function _clearGlobalBatch() {
     _globalBatchPollInterval = null;
   }
   _globalBatchId = null;
-  sessionStorage.removeItem('sova-batch-id');
+  sessionStorage.removeItem(_batchStorageKey());
 
   var bar = document.getElementById('global-batch-bar');
   var progressBar = document.getElementById('global-batch-progress-bar');

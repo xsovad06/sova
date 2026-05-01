@@ -61,8 +61,9 @@ async def start_batch(req: BatchRequest):
 
 @router.get("/queue/batch/active")
 async def active_batch():
-    """Return the currently running batch, if any."""
-    active = batch_service.get_active_batch()
+    """Return the currently running batch for the current project, if any."""
+    project_dir = get_project_dir()
+    active = batch_service.get_active_batch(project_dir)
     if active is None:
         return {"active": False}
     return {"active": True, "batch": active}

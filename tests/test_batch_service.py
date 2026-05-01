@@ -144,6 +144,32 @@ class TestGetActiveBatch:
         assert result is not None
         assert result["batch_id"] == "run1"
 
+    def test_filters_by_project_dir(self) -> None:
+        proj_a = Path("/projects/alpha")
+        proj_b = Path("/projects/beta")
+        _active_batches["a1"] = BatchJob(
+            batch_id="a1",
+            action="harden",
+            status="running",
+            results=[],
+            project_dir=proj_a,
+        )
+        assert get_active_batch(proj_a) is not None
+        assert get_active_batch(proj_a)["batch_id"] == "a1"
+        assert get_active_batch(proj_b) is None
+
+    def test_no_filter_returns_any(self) -> None:
+        _active_batches["a1"] = BatchJob(
+            batch_id="a1",
+            action="triage",
+            status="running",
+            results=[],
+            project_dir=Path("/proj/x"),
+        )
+        result = get_active_batch()
+        assert result is not None
+        assert result["batch_id"] == "a1"
+
 
 class TestStartBatch:
     @patch("sova.dashboard.services.batch_service._run_batch_triage")
@@ -156,6 +182,7 @@ class TestStartBatch:
         job = _active_batches[batch_id]
         assert job.action == "triage"
         assert job.total == 2
+        assert job.project_dir == Path("/tmp")
 
     @patch("sova.dashboard.services.batch_service._run_batch_harden")
     async def test_start_harden_returns_batch_id(self, mock_worker) -> None:

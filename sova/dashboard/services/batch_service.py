@@ -33,6 +33,7 @@ class BatchJob:
     max_concurrency: int = 1
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
+    project_dir: Path | None = None
     _task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
@@ -77,11 +78,14 @@ def get_batch_status(batch_id: str) -> dict | None:
     return job.to_dict()
 
 
-def get_active_batch() -> dict | None:
-    """Return the first running batch, if any."""
+def get_active_batch(project_dir: Path | None = None) -> dict | None:
+    """Return the first running batch, optionally filtered by project."""
     for job in _active_batches.values():
-        if job.status == "running":
-            return job.to_dict()
+        if job.status != "running":
+            continue
+        if project_dir is not None and job.project_dir != project_dir:
+            continue
+        return job.to_dict()
     return None
 
 
@@ -109,6 +113,7 @@ async def start_batch(
         action=action,
         max_concurrency=concurrency,
         results=[BatchItemResult(issue_id=iid) for iid in issue_ids],
+        project_dir=project_dir,
     )
     _active_batches[batch_id] = job
 
