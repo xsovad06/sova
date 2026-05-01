@@ -839,9 +839,9 @@ class TestHandoffAPI:
             "/api/handoff/execute",
             json={"action_id": "merge"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert data["error"] == "No active handoff"
+        assert data["detail"] == "No active handoff"
 
     async def test_execute_action_not_found(self, client: AsyncClient, tmp_path) -> None:
         import json
@@ -868,9 +868,9 @@ class TestHandoffAPI:
             "/api/handoff/execute",
             json={"action_id": "nonexistent"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert "not found" in data["error"]
+        assert "not found" in data["detail"]
 
     async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
@@ -1028,18 +1028,18 @@ class TestBatchAPI:
 
     async def test_batch_status_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/api/queue/batch/nonexistent/status")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert "error" in data
+        assert "detail" in data
 
     async def test_start_batch_invalid_action(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/queue/batch",
             json={"issues": ["1"], "action": "invalid_action"},
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         data = resp.json()
-        assert "error" in data
+        assert "detail" in data
 
     async def test_cancel_nonexistent_batch(self, client: AsyncClient) -> None:
         resp = await client.post("/api/queue/batch/nonexistent/cancel")
@@ -1217,15 +1217,15 @@ class TestWorkAPI:
 
     async def test_work_detail_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/api/work/999")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert "error" in data
+        assert "detail" in data
 
     async def test_work_mark_failed_not_found(self, client: AsyncClient) -> None:
         resp = await client.post("/api/work/999/mark-failed")
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert "error" in data
+        assert "detail" in data
 
     async def test_active_grouped_excludes_superseded_paused_runs(
         self, client: AsyncClient, session: AsyncSession
@@ -1500,3 +1500,21 @@ class TestSetupAPI:
 
         reg_mod._REGISTRY_FILE = orig_file
         reg_mod._REGISTRY_DIR = orig_dir
+
+    async def test_install_nonexistent_directory(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/setup/install",
+            json={"project_path": "/tmp/nonexistent_sova_test_dir_xyz"},
+        )
+        assert resp.status_code == 404
+        data = resp.json()
+        assert "Directory not found" in data["detail"]
+
+    async def test_configure_nonexistent_directory(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/setup/configure",
+            json={"project_path": "/tmp/nonexistent_sova_test_dir_xyz", "github_repo": "u/r"},
+        )
+        assert resp.status_code == 404
+        data = resp.json()
+        assert "Directory not found" in data["detail"]
