@@ -66,3 +66,7 @@
 | 2026-05-01 | #53 | Add Alembic migration 003: project_slug column on task_assessments (server_default=""). 1 new test, 644 tests total. | Done |
 | 2026-05-01 | #54 | Add Pydantic Field constraints to 10 numeric config fields (gt=0 for intervals/budgets, ge=0/le=1 for min_confidence). 23 parametrized validation tests, fixed scheduler test using veto_seconds=0. 667 tests. | Done |
 | 2026-05-01 | #59 | Add missing DB indexes: ix_assessments_project_slug on task_assessments, ix_memories_superseded_by on memories. Alembic migration 004, 4 new tests (inspector + functional). 671 tests. | Done |
+| 2026-05-01 | #65 | Narrow TaskSourceConfig.type Literal from github/jira/linear/manual to github-only. Updated TaskAdapter and create_adapter docstrings. Made migration 003 idempotent (PRAGMA table_info guard). 4 validation tests added. 675 tests. | Done |
+| 2026-05-01 | - | Create sova.toml for project-automation-kit itself (dogfooding). Dashboard was not showing issues due to missing config. Set github_repo, github_user, github_project_number=2, no_ai_coauthor=true. | Done |
+| 2026-05-01 | - | Fix macOS notifications: send desktop notifications on all agent completions (not just errors). Sort queue by priority label and show issue age column. Two commits: fix(dashboard) notifications + feat(dashboard) queue sorting. | Done |
+| 2026-05-01 | - | Scope batch progress bar to active project in multi-project mode. Added project_dir to BatchJob, filtered get_active_batch() by project, scoped sessionStorage key by slug. 2 new tests, 677 total. | Done |
