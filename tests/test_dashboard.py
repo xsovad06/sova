@@ -1222,6 +1222,69 @@ class TestWorkAPI:
         data = resp.json()
         assert "error" in data
 
+    async def test_active_grouped_excludes_superseded_paused_runs(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Paused runs should not appear in Active when a later run completed the issue."""
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="73",
+                role="developer",
+                status="paused",
+                current_step="develop",
+                started_at=now - timedelta(hours=3),
+            )
+        )
+        session.add(
+            TaskRun(
+                issue_number="73",
+                role="developer",
+                status="done",
+                current_step="complete",
+                started_at=now - timedelta(hours=1),
+                ended_at=now,
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/work/active-grouped")
+        data = resp.json()
+        issue_numbers = [g["issue_number"] for g in data.get("issues", [])]
+        assert "73" not in issue_numbers
+
+    async def test_active_grouped_shows_paused_when_no_done_run(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Paused runs should appear in Active when no later run completed the issue."""
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="99",
+                role="developer",
+                status="paused",
+                current_step="develop",
+                started_at=now - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/work/active-grouped")
+        data = resp.json()
+        issue_numbers = [g["issue_number"] for g in data.get("issues", [])]
+        assert "99" in issue_numbers
+
+    async def test_summary_active_count_excludes_superseded(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Summary active count should match the Active tab (exclude superseded)."""
+        now = datetime.now(timezone.utc)
+        session.add(TaskRun(issue_number="50", role="developer", status="paused", started_at=now - timedelta(hours=2)))
+        session.add(TaskRun(issue_number="50", role="developer", status="done", started_at=now, ended_at=now))
+        await session.commit()
+
+        resp = await client.get("/api/work/summary")
+        data = resp.json()
+        assert data["active"] == 0
+
 
 class TestLogsAPI:
     """Tests for the logs API endpoints."""

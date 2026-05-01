@@ -140,7 +140,8 @@ async def get_work_summary(session: AsyncSession) -> dict:
     total = await session.scalar(select(func.count(TaskRun.id))) or 0
     done = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status == "done")) or 0
     failed = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status == "failed")) or 0
-    active = await session.scalar(select(func.count(TaskRun.id)).where(TaskRun.status.not_in(_TERMINAL))) or 0
+    active_groups = await get_active_work_grouped(session)
+    active = len(active_groups)
 
     return {"total": total, "done": done, "failed": failed, "active": active}
 
@@ -148,17 +149,26 @@ async def get_work_summary(session: AsyncSession) -> dict:
 async def get_active_work_grouped(session: AsyncSession) -> list[dict]:
     """Get non-terminal runs grouped by issue, with latest run first.
 
+    Excludes issues whose most recent run (by ID) is already terminal --
+    older "paused" runs are superseded once a later run completes the work.
+
     Returns a list of issue groups:
       [{"issue_number": "42", "latest_run": {...}, "previous_runs": [...], "run_count": 3}]
     """
     items = await get_active_work(session)
+    if not items:
+        return []
 
     groups: dict[str, list[dict]] = {}
     for item in items:
         groups.setdefault(item["issue_number"], []).append(item)
 
+    superseded = await _find_superseded_issues(session, list(groups.keys()))
+
     result = []
     for issue, runs in groups.items():
+        if issue in superseded:
+            continue
         runs.sort(key=lambda r: r["started_at"] or "", reverse=True)
         result.append(
             {
@@ -171,6 +181,31 @@ async def get_active_work_grouped(session: AsyncSession) -> list[dict]:
 
     result.sort(key=lambda g: g["latest_run"]["started_at"] or "", reverse=True)
     return result
+
+
+async def _find_superseded_issues(session: AsyncSession, issue_numbers: list[str]) -> set[str]:
+    """Find issues where the most recent run is already terminal.
+
+    When an issue has older "paused" runs but the latest run completed
+    successfully, those paused runs are superseded and shouldn't show as active.
+    """
+    if not issue_numbers:
+        return set()
+
+    stmt = (
+        select(TaskRun.issue_number, func.max(TaskRun.id).label("latest_id"))
+        .where(TaskRun.issue_number.in_(issue_numbers))
+        .group_by(TaskRun.issue_number)
+    )
+    rows = (await session.execute(stmt)).all()
+    latest_ids = [r.latest_id for r in rows]
+
+    if not latest_ids:
+        return set()
+
+    stmt2 = select(TaskRun.issue_number, TaskRun.status).where(TaskRun.id.in_(latest_ids))
+    rows2 = (await session.execute(stmt2)).all()
+    return {r.issue_number for r in rows2 if r.status in _TERMINAL}
 
 
 async def get_runs_for_issue(session: AsyncSession, issue_number: str) -> list[dict]:
