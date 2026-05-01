@@ -1,0 +1,31 @@
+# SOVA -- Project Configuration (self-hosted)
+
+[project]
+github_repo = "xsovad06/project-automation-kit"
+github_user = "xsovad06"
+base_branch = "main"
+test_cmd = "make test"
+lint_cmd = "make lint"
+format_cmd = "make format"
+
+[task_source]
+type = "github"
+github_project_number = 2
+
+[agent]
+model = "opus"
+max_budget = 10.00
+
+[review]
+enabled = true
+max_rounds = 2
+
+[notification]
+desktop = true
+
+[commit]
+format = "conventional"
+pr_title_format = "conventional"
+branch_naming = "conventional"
+pr_auto_link_issues = true
+no_ai_coauthor = true

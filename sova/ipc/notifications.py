@@ -64,7 +64,7 @@ async def send_desktop_notification(title: str, message: str) -> None:
     if sys.platform == "darwin":
         safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
         safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
-        script = f'display notification "{safe_message}" with title "{safe_title}"'
+        script = f'display notification "{safe_message}" with title "{safe_title}" sound name "Glass"'
         await run("osascript", "-e", script)
         log.info("notify.desktop", platform="macos", title=title)
     elif sys.platform == "linux":

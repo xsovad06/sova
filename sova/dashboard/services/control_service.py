@@ -610,19 +610,24 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
 
-    if exit_code != 0:
-        try:
-            from sova.config.loader import load_config
-            from sova.ipc.notifications import notify
+    try:
+        from sova.config.loader import load_config
+        from sova.ipc.notifications import notify
 
-            cfg = load_config(agent.project_dir)
+        cfg = load_config(agent.project_dir)
+        if exit_code != 0:
             notify(
                 cfg.notification,
-                f"SOVA -- #{agent.issue} {status}",
+                f"SOVA -- #{agent.issue} failed",
                 f"Agent exited with code {exit_code}",
             )
-        except Exception:
-            log.debug("notify.failed", run_id=run_id, exc_info=True)
+        else:
+            msg = f"Agent finished #{agent.issue}"
+            if cost:
+                msg += f" (${cost:.4f})"
+            notify(cfg.notification, f"SOVA -- #{agent.issue} done", msg)
+    except Exception:
+        log.debug("notify.failed", run_id=run_id, exc_info=True)
 
     log.info("agent.completed", run_id=run_id, issue=agent.issue, status=status, cost=cost)
 
