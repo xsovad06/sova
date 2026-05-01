@@ -340,7 +340,7 @@ async def start_agent(
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
         pid = process.pid
 
-        run_id = await _create_task_run(issue, role or "auto", cwd, pid=pid)
+        run_id = await _create_task_run(issue, role or "developer", cwd, pid=pid)
         if run_id is None:
             await process.stop()
             return {"error": "Failed to create task run record"}
@@ -351,7 +351,7 @@ async def start_agent(
         agent = AgentState(
             run_id=run_id,
             issue=issue,
-            role=role or "auto",
+            role=role or "developer",
             process=process,
             output_writer=writer,
             project_dir=cwd,
