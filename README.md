@@ -107,22 +107,21 @@ The web dashboard is SOVA's primary interface for monitoring and controlling age
 sova dashboard --project /path/to/project    # http://localhost:8111
 ```
 
-Pages include: Dashboard (overview), Agents (multi-agent control), Work (issue-centric run history), Costs, Queue (batch operations), Logs, Settings, Memory, and Setup.
+Pages include: Home, Dashboard (overview), Agents (multi-agent control), Work (issue-centric run history), Run Detail (individual run drill-down), Costs, Queue (batch operations), Logs, Settings, Memory, Setup, and Style Guide.
 
 ## Configuration
 
-SOVA uses a `sova.toml` file in each project root. Minimal example:
+SOVA uses a `sova.toml` file in each project root. Minimal example (required fields only):
 
 ```toml
 github_repo = "owner/repo"
 github_user = "owner"
-base_branch = "main"
 
 [task_source]
 type = "github"
 ```
 
-All settings have sensible defaults. For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py).
+All other settings have sensible defaults (e.g., `base_branch` defaults to `main`). For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py).
 
 Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
@@ -130,7 +129,7 @@ Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA
 
 | Category | Commands |
 |----------|----------|
-| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
+| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>` (enrich issue with implementation details), `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|status` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova init-db` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
