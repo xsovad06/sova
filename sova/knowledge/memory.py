@@ -45,10 +45,10 @@ async def store(
         issue_number=issue_number,
     )
 
-    session = await get_session()
-    async with session.begin():
-        session.add(memory)
-        await session.flush()
+    async with await get_session() as session:
+        async with session.begin():
+            session.add(memory)
+            await session.flush()
 
     log.info("knowledge.stored", title=title, category=category, tier=tier)
     return memory
@@ -60,10 +60,10 @@ async def get(memory_id: int) -> Memory | None:
     Returns:
         The Memory record, or None if not found.
     """
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(select(Memory).where(Memory.id == memory_id))
-        return result.scalar_one_or_none()
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(select(Memory).where(Memory.id == memory_id))
+            return result.scalar_one_or_none()
 
 
 async def update(memory_id: int, **fields: object) -> Memory | None:
@@ -76,18 +76,18 @@ async def update(memory_id: int, **fields: object) -> Memory | None:
     Returns:
         The updated Memory, or None if not found.
     """
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(select(Memory).where(Memory.id == memory_id))
-        memory = result.scalar_one_or_none()
-        if memory is None:
-            return None
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(select(Memory).where(Memory.id == memory_id))
+            memory = result.scalar_one_or_none()
+            if memory is None:
+                return None
 
-        for key, value in fields.items():
-            setattr(memory, key, value)
+            for key, value in fields.items():
+                setattr(memory, key, value)
 
-        log.info("knowledge.updated", memory_id=memory_id, fields=list(fields.keys()))
-        return memory
+            log.info("knowledge.updated", memory_id=memory_id, fields=list(fields.keys()))
+            return memory
 
 
 async def delete(memory_id: int) -> bool:
@@ -96,16 +96,16 @@ async def delete(memory_id: int) -> bool:
     Returns:
         True if deleted, False if not found.
     """
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(select(Memory).where(Memory.id == memory_id))
-        memory = result.scalar_one_or_none()
-        if memory is None:
-            return False
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(select(Memory).where(Memory.id == memory_id))
+            memory = result.scalar_one_or_none()
+            if memory is None:
+                return False
 
-        await session.delete(memory)
-        log.info("knowledge.deleted", memory_id=memory_id)
-        return True
+            await session.delete(memory)
+            log.info("knowledge.deleted", memory_id=memory_id)
+            return True
 
 
 async def search(
@@ -152,10 +152,10 @@ async def search(
 
     stmt = stmt.order_by(Memory.updated_at.desc())
 
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(stmt)
-        return list(result.scalars().all())
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
 
 
 async def promote(memory_id: int, new_tier: str) -> Memory | None:
@@ -184,13 +184,13 @@ async def supersede(old_id: int, new_id: int) -> bool:
     Returns:
         True if the old entry was updated, False if not found.
     """
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(select(Memory).where(Memory.id == old_id))
-        memory = result.scalar_one_or_none()
-        if memory is None:
-            return False
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(select(Memory).where(Memory.id == old_id))
+            memory = result.scalar_one_or_none()
+            if memory is None:
+                return False
 
-        memory.superseded_by = new_id
-        log.info("knowledge.superseded", old_id=old_id, new_id=new_id)
-        return True
+            memory.superseded_by = new_id
+            log.info("knowledge.superseded", old_id=old_id, new_id=new_id)
+            return True

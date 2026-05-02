@@ -29,10 +29,10 @@ async def _status(*, project_dir: Path | None) -> None:
     resolved_dir = project_dir or Path.cwd()
     await init_db(resolved_dir)
 
-    session = await get_session()
-    async with session.begin():
-        result = await session.execute(select(TaskRun).order_by(TaskRun.started_at.desc()).limit(10))
-        runs = list(result.scalars().all())
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(select(TaskRun).order_by(TaskRun.started_at.desc()).limit(10))
+            runs = list(result.scalars().all())
 
     if not runs:
         console.print("[yellow]No task runs found.[/yellow]")
@@ -80,23 +80,20 @@ async def _costs(*, project_dir: Path | None) -> None:
     resolved_dir = project_dir or Path.cwd()
     await init_db(resolved_dir)
 
-    session = await get_session()
-    async with session.begin():
-        # Total cost
-        total_result = await session.execute(select(func.sum(CostRecord.cost_usd)))
-        total_cost = total_result.scalar() or Decimal("0")
+    async with await get_session() as session:
+        async with session.begin():
+            total_result = await session.execute(select(func.sum(CostRecord.cost_usd)))
+            total_cost = total_result.scalar() or Decimal("0")
 
-        # Cost by model
-        model_result = await session.execute(
-            select(CostRecord.model, func.sum(CostRecord.cost_usd), func.count())
-            .group_by(CostRecord.model)
-            .order_by(func.sum(CostRecord.cost_usd).desc())
-        )
-        by_model = list(model_result.all())
+            model_result = await session.execute(
+                select(CostRecord.model, func.sum(CostRecord.cost_usd), func.count())
+                .group_by(CostRecord.model)
+                .order_by(func.sum(CostRecord.cost_usd).desc())
+            )
+            by_model = list(model_result.all())
 
-        # Recent costs
-        recent_result = await session.execute(select(CostRecord).order_by(CostRecord.recorded_at.desc()).limit(10))
-        recent = list(recent_result.scalars().all())
+            recent_result = await session.execute(select(CostRecord).order_by(CostRecord.recorded_at.desc()).limit(10))
+            recent = list(recent_result.scalars().all())
 
     console.print(f"\n[bold]Total cost: ${total_cost:.4f}[/bold]\n")
 

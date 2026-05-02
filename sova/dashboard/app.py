@@ -74,23 +74,22 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
                 dirs.append((project_dir or Path.cwd()).resolve())
 
             for d in dirs:
-                session = await get_session(project_dir=d)
-                async with session.begin():
-                    stmt = select(TaskRun).where(
-                        TaskRun.status.notin_(_TERMINAL),
-                        TaskRun.pid.isnot(None),
-                    )
-                    result = await session.execute(stmt)
-                    runs = result.scalars().all()
+                async with await get_session(project_dir=d) as session:
+                    async with session.begin():
+                        stmt = select(TaskRun).where(
+                            TaskRun.status.notin_(_TERMINAL),
+                            TaskRun.pid.isnot(None),
+                        )
+                        result = await session.execute(stmt)
+                        runs = result.scalars().all()
 
-                    for run in runs:
-                        if run.id in managed_run_ids:
-                            continue
-                        if not _is_process_alive(run.pid):
-                            run.status = "interrupted"
-                            run.error_message = "Agent process died unexpectedly"
-                            run.ended_at = datetime.now(timezone.utc)
-                await session.close()
+                        for run in runs:
+                            if run.id in managed_run_ids:
+                                continue
+                            if not _is_process_alive(run.pid):
+                                run.status = "interrupted"
+                                run.error_message = "Agent process died unexpectedly"
+                                run.ended_at = datetime.now(timezone.utc)
         except asyncio.CancelledError:
             raise
         except Exception:

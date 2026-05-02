@@ -20,9 +20,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sova.core.context import ExecutionContext
+from sova.core.output import OutputWriter
 from sova.core.state import TaskStatus
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.dashboard.services.output_service import OutputWriter
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import get_session
 from sova.ipc.notifications import notify
@@ -266,135 +266,134 @@ class WorkflowEngine:
 
     async def _create_task_run(self) -> int:
         """Create the initial TaskRun record and return its ID."""
-        session = await get_session()
-        async with session.begin():
-            task_run = TaskRun(
-                issue_number=self._ctx.issue_number,
-                role=self._ctx.role,
-                status=TaskStatus.PENDING.value,
-                branch_name=self._ctx.branch_name,
-                resumed_from_id=self._ctx.resume_run_id,
-                pid=os.getpid(),
-            )
-            session.add(task_run)
-            await session.flush()
-            return task_run.id
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number=self._ctx.issue_number,
+                    role=self._ctx.role,
+                    status=TaskStatus.PENDING.value,
+                    branch_name=self._ctx.branch_name,
+                    resumed_from_id=self._ctx.resume_run_id,
+                    pid=os.getpid(),
+                )
+                session.add(task_run)
+                await session.flush()
+                return task_run.id
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""
-        session = await get_session()
-        async with session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.current_step = step_name
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.current_step = step_name
 
     async def _set_output_file_path(self, path: str) -> None:
         """Store the output file path on the TaskRun record."""
-        session = await get_session()
-        async with session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.output_file_path = path
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.output_file_path = path
 
     async def _update_task_run_status(self, status: TaskStatus, *, error: str | None = None) -> None:
         """Update the TaskRun status and optional error message."""
-        session = await get_session()
-        async with session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.status = status.value
-                task_run.total_cost_usd = self._ctx.cost_usd
-                if error:
-                    task_run.error_message = error
-                if status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PAUSED):
-                    task_run.ended_at = datetime.now(timezone.utc)
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.status = status.value
+                    task_run.total_cost_usd = self._ctx.cost_usd
+                    if error:
+                        task_run.error_message = error
+                    if status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PAUSED):
+                        task_run.ended_at = datetime.now(timezone.utc)
 
     async def _sync_task_run_context(self) -> None:
         """Persist mutable context fields to the TaskRun so they survive crashes and are available on resume."""
-        session = await get_session()
-        async with session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.branch_name = self._ctx.branch_name
-                if self._ctx.worktree_dir:
-                    task_run.worktree_path = str(self._ctx.worktree_dir)
-                if self._ctx.pr_number:
-                    task_run.pr_number = self._ctx.pr_number
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.branch_name = self._ctx.branch_name
+                    if self._ctx.worktree_dir:
+                        task_run.worktree_path = str(self._ctx.worktree_dir)
+                    if self._ctx.pr_number:
+                        task_run.pr_number = self._ctx.pr_number
 
     async def _finalize_task_run(self) -> None:
         """Write final state to the TaskRun after successful completion."""
-        session = await get_session()
-        async with session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.total_cost_usd = self._ctx.cost_usd
-                task_run.branch_name = self._ctx.branch_name
-                task_run.pr_number = self._ctx.pr_number
-                if self._ctx.worktree_dir:
-                    task_run.worktree_path = str(self._ctx.worktree_dir)
-                if not task_run.ended_at:
-                    task_run.ended_at = datetime.now(timezone.utc)
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.total_cost_usd = self._ctx.cost_usd
+                    task_run.branch_name = self._ctx.branch_name
+                    task_run.pr_number = self._ctx.pr_number
+                    if self._ctx.worktree_dir:
+                        task_run.worktree_path = str(self._ctx.worktree_dir)
+                    if not task_run.ended_at:
+                        task_run.ended_at = datetime.now(timezone.utc)
 
     async def _create_step_execution(self, step_name: str) -> int:
         """Create a StepExecution record and return its ID."""
-        session = await get_session()
-        async with session.begin():
-            step_exec = StepExecution(
-                task_run_id=self._task_run_id,
-                step_name=step_name,
-                status="running",
-            )
-            session.add(step_exec)
-            await session.flush()
-            return step_exec.id
+        async with await get_session() as session:
+            async with session.begin():
+                step_exec = StepExecution(
+                    task_run_id=self._task_run_id,
+                    step_name=step_name,
+                    status="running",
+                )
+                session.add(step_exec)
+                await session.flush()
+                return step_exec.id
 
     async def _update_step_execution(self, step_exec_id: int, result: StepResult, elapsed_ms: int) -> None:
         """Update a StepExecution after step completion."""
-        session = await get_session()
-        async with session.begin():
-            record = await session.get(StepExecution, step_exec_id)
-            if record:
-                record.status = "passed" if result.success else "failed"
-                record.duration_ms = elapsed_ms
-                record.cost_usd = Decimal(str(result.cost_usd))
-                record.output_summary = result.summary
-                record.error_message = result.error if not result.success else None
-                record.ended_at = datetime.now(timezone.utc)
+        async with await get_session() as session:
+            async with session.begin():
+                record = await session.get(StepExecution, step_exec_id)
+                if record:
+                    record.status = "passed" if result.success else "failed"
+                    record.duration_ms = elapsed_ms
+                    record.cost_usd = Decimal(str(result.cost_usd))
+                    record.output_summary = result.summary
+                    record.error_message = result.error if not result.success else None
+                    record.ended_at = datetime.now(timezone.utc)
 
-                # Create a CostRecord so per-phase/issue breakdowns stay accurate
-                if result.cost_usd > 0:
-                    cost_record = CostRecord(
-                        task_run_id=self._task_run_id,
-                        phase=record.step_name,
-                        issue=self._ctx.issue_number,
-                        model="claude",
-                        cost_usd=Decimal(str(result.cost_usd)),
-                        duration_ms=elapsed_ms,
-                    )
-                    session.add(cost_record)
+                    if result.cost_usd > 0:
+                        cost_record = CostRecord(
+                            task_run_id=self._task_run_id,
+                            phase=record.step_name,
+                            issue=self._ctx.issue_number,
+                            model="claude",
+                            cost_usd=Decimal(str(result.cost_usd)),
+                            duration_ms=elapsed_ms,
+                        )
+                        session.add(cost_record)
 
     async def _update_step_execution_gate(self, step_exec_id: int, gate: GateCheckResult) -> None:
         """Record gate check result on the StepExecution."""
-        session = await get_session()
-        async with session.begin():
-            record = await session.get(StepExecution, step_exec_id)
-            if record:
-                record.gate_check_result = gate.reason
-                record.status = "gate_failed"
+        async with await get_session() as session:
+            async with session.begin():
+                record = await session.get(StepExecution, step_exec_id)
+                if record:
+                    record.gate_check_result = gate.reason
+                    record.status = "gate_failed"
 
     async def _record_failure(self, step_name: str, failure_type: str, message: str) -> None:
         """Create a FailureRecord for dashboard observability."""
-        session = await get_session()
-        async with session.begin():
-            failure = FailureRecord(
-                task_run_id=self._task_run_id,
-                step_name=step_name,
-                failure_type=failure_type,
-                message=message,
-                context={
-                    "issue": self._ctx.issue_number,
-                    "branch": self._ctx.branch_name,
-                    "cost_usd": str(self._ctx.cost_usd),
-                },
-            )
-            session.add(failure)
+        async with await get_session() as session:
+            async with session.begin():
+                failure = FailureRecord(
+                    task_run_id=self._task_run_id,
+                    step_name=step_name,
+                    failure_type=failure_type,
+                    message=message,
+                    context={
+                        "issue": self._ctx.issue_number,
+                        "branch": self._ctx.branch_name,
+                        "cost_usd": str(self._ctx.cost_usd),
+                    },
+                )
+                session.add(failure)

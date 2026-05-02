@@ -127,13 +127,12 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        session = await get_session(project_dir=project_dir)
-        async with session.begin():
-            latest_ids = select(func.max(TaskRun.id).label("max_id")).group_by(TaskRun.issue_number).subquery()
-            stmt = select(TaskRun).where(TaskRun.id.in_(select(latest_ids.c.max_id)))
-            result = await session.execute(stmt)
-            runs = result.scalars().all()
-        await session.close()
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                latest_ids = select(func.max(TaskRun.id).label("max_id")).group_by(TaskRun.issue_number).subquery()
+                stmt = select(TaskRun).where(TaskRun.id.in_(select(latest_ids.c.max_id)))
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
 
         return {
             r.issue_number: {

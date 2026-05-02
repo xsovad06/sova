@@ -44,10 +44,9 @@ async def interrupted_runs():
     from sova.db.session import get_session
 
     try:
-        session = await get_session()
-        async with session.begin():
-            runs = await run_service.list_runs(session, status="interrupted", limit=5)
-        await session.close()
-        return {"interrupted": runs}
+        async with await get_session() as session:
+            async with session.begin():
+                runs = await run_service.list_runs(session, status="interrupted", limit=5)
+            return {"interrupted": runs}
     except Exception:
         return {"interrupted": []}

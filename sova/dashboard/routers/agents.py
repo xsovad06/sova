@@ -38,11 +38,10 @@ async def interrupted_runs():
     from sova.db.session import get_session
 
     try:
-        session = await get_session()
-        async with session.begin():
-            runs = await run_service.list_runs(session, status="interrupted", limit=5)
-        await session.close()
-        return {"interrupted": runs}
+        async with await get_session() as session:
+            async with session.begin():
+                runs = await run_service.list_runs(session, status="interrupted", limit=5)
+            return {"interrupted": runs}
     except Exception:
         log.debug("interrupted_runs.failed", exc_info=True)
         return {"interrupted": []}
@@ -57,17 +56,16 @@ async def dismiss_interrupted():
     from sova.db.session import get_session
 
     try:
-        session = await get_session()
-        async with session.begin():
-            stmt = (
-                update(TaskRun)
-                .where(TaskRun.status == "interrupted")
-                .values(status="failed", error_message="Dismissed by user")
-            )
-            result = await session.execute(stmt)
-            count = result.rowcount
-        await session.close()
-        return {"dismissed": count}
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = (
+                    update(TaskRun)
+                    .where(TaskRun.status == "interrupted")
+                    .values(status="failed", error_message="Dismissed by user")
+                )
+                result = await session.execute(stmt)
+                count = result.rowcount
+            return {"dismissed": count}
     except Exception:
         log.debug("dismiss_interrupted.failed", exc_info=True)
         return {"dismissed": 0}

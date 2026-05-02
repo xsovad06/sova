@@ -99,8 +99,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
     from sova.db.models import StepExecution, TaskRun
     from sova.db.session import get_session
 
-    session = await get_session()
-    try:
+    async with await get_session() as session:
         async with session.begin():
             task_run = await session.get(TaskRun, run_id)
             if task_run is None:
@@ -133,8 +132,6 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
                 "cost_usd": task_run.total_cost_usd or Decimal("0"),
                 "role": task_run.role,
             }
-    finally:
-        await session.close()
 
 
 def watch(
