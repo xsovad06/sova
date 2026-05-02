@@ -91,7 +91,7 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Issue state ownership is human**: agents never auto-move issues to DONE. Issues stay IN_REVIEW until the human merges via `/integrate-pr` or `/approve-merge`. The agent prepares the PR; the human approves and merges.
 - **Handoff protocol**: JSON-based inter-agent state passing via file + DB
 - **Short-lived agent model**: agents run, write handoff, exit; dashboard provides the interactive bridge
-- **Markdown commands**: Claude Code loads them as slash commands, 20 commands with category frontmatter
+- **Markdown commands**: Claude Code loads them as slash commands, 22 commands with category frontmatter
 - **Persona auto-detection**: detects project tech stack and loads relevant guidance
 - **DB persistence**: TaskRun, CostRecord, StepExecution tracked in SQLite/PostgreSQL
 - **Dual TaskRun write paths**: the dashboard's `control_service` creates a TaskRun tracking the outer process lifecycle (spawned/done/failed), while `WorkflowEngine` creates a separate TaskRun tracking inner workflow state (pending/developing/paused/done). These are independent DB records. Cost aggregation uses `TaskRun.total_cost_usd` (always written by both paths); `CostRecord` is only reliable for per-model/per-phase breakdowns.

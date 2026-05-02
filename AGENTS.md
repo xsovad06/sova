@@ -42,7 +42,7 @@ project-automation-kit/
     config/                        # Pydantic Settings + TOML config
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
-  commands/                        # 20 standardized commands (markdown with category frontmatter)
+  commands/                        # 22 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
