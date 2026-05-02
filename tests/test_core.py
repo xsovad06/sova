@@ -726,10 +726,11 @@ class TestCreatePRStep:
         gate = await step.validate_output(ctx)
         assert gate.passed
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_generates_rich_body(self, mock_create_pr, mock_run, mock_invoke) -> None:
+    async def test_execute_generates_rich_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -756,10 +757,11 @@ class TestCreatePRStep:
         assert "## Summary" in body_arg
         assert "Added widget" in body_arg
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_appends_closes_when_missing(self, mock_create_pr, mock_run, mock_invoke) -> None:
+    async def test_execute_appends_closes_when_missing(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -778,10 +780,11 @@ class TestCreatePRStep:
         body_arg = mock_create_pr.call_args.kwargs["body"]
         assert "Closes #42" in body_arg
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_falls_back_on_llm_failure(self, mock_create_pr, mock_run, mock_invoke) -> None:
+    async def test_execute_falls_back_on_llm_failure(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.side_effect = [
@@ -806,10 +809,11 @@ class TestCreatePRStep:
         assert "abc123" in body_arg
         assert "src/app.py" in body_arg
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, mock_invoke) -> None:
+    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -832,10 +836,17 @@ class TestCreatePRStep:
         assert result.success
         mock_assign.assert_awaited_once_with(10, assignee="xsovad06", repo="", github_user="xsovad06")
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_skips_assignment_when_no_github_user(self, mock_create_pr, mock_run, mock_invoke) -> None:
+    async def test_execute_skips_assignment_when_no_github_user(
+        self,
+        mock_create_pr,
+        mock_run,
+        mock_invoke,
+        _find,
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
@@ -856,6 +867,21 @@ class TestCreatePRStep:
 
         assert result.success
         mock_assign.assert_not_awaited()
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_execute_adopts_existing_pr(self, mock_find) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_find.return_value = MagicMock(number=55, url="https://github.com/x/y/pull/55")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert "Adopted existing PR #55" in result.summary
+        assert ctx.pr_number == 55
+        assert ctx.pr_url == "https://github.com/x/y/pull/55"
 
 
 class TestCompleteStep:

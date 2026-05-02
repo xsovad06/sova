@@ -253,8 +253,13 @@ async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: st
 
 
 async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") -> PRInfo | None:
-    """Find an open PR linked to an issue via gh CLI search."""
+    """Find an open PR linked to an issue via gh CLI search.
+
+    Searches for PRs whose body contains 'Closes #N' (or variants) and
+    verifies the match to avoid false positives from free-text search.
+    """
     log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
+    issue_num = issue_id.lstrip("#").strip()
     env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
@@ -265,9 +270,9 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
         "--state",
         "open",
         "--search",
-        issue_id,
+        f"#{issue_num} in:body",
         "--json",
-        "number,url",
+        "number,url,body,headRefName",
         "--limit",
         "5",
         env=env,
@@ -281,10 +286,18 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     except json.JSONDecodeError:
         return None
 
-    if not prs:
-        return None
+    import re
 
-    return PRInfo(number=prs[0]["number"], url=prs[0].get("url", ""))
+    link_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
+    branch_pattern = f"issue-{issue_num}"
+
+    for pr in prs:
+        body = pr.get("body", "") or ""
+        head = pr.get("headRefName", "") or ""
+        if link_pattern.search(body) or branch_pattern in head:
+            return PRInfo(number=pr["number"], url=pr.get("url", ""))
+
+    return None
 
 
 async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:

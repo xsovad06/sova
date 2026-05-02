@@ -49,6 +49,17 @@ class CreatePRStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.create_pr", issue=ctx.issue_number, branch=ctx.branch_name)
 
+        existing = await git_ops.find_pr_for_issue(
+            ctx.issue_number,
+            repo=ctx.repo,
+            github_user=ctx.config.github_user,
+        )
+        if existing:
+            log.info("step.create_pr.existing_found", pr=existing.number)
+            ctx.pr_number = existing.number
+            ctx.pr_url = existing.url
+            return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
+
         task_title = ctx.task.title if ctx.task else ctx.branch_name
         title = f"feat(#{ctx.issue_number}): {task_title}"
 

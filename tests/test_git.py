@@ -288,8 +288,17 @@ class TestAssignPR:
 
 
 class TestFindPRForIssue:
-    async def test_finds_pr_by_issue_number(self) -> None:
-        pr_json = json.dumps([{"number": 82, "url": "https://github.com/user/repo/pull/82"}])
+    async def test_finds_pr_by_closes_keyword(self) -> None:
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "## Summary\n\nCloses #73",
+                    "headRefName": "feat/issue-73",
+                }
+            ]
+        )
         with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
@@ -299,6 +308,43 @@ class TestFindPRForIssue:
             assert result.number == 82
             call_args = mock_run.call_args[0]
             assert "--search" in call_args
+
+    async def test_finds_pr_by_branch_name(self) -> None:
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 90,
+                    "url": "https://github.com/user/repo/pull/90",
+                    "body": "Some changes",
+                    "headRefName": "feat/issue-73",
+                }
+            ]
+        )
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 90
+
+    async def test_skips_unrelated_pr(self) -> None:
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "Updated 73 modules",
+                    "headRefName": "feat/refactor-modules",
+                }
+            ]
+        )
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is None
 
     async def test_returns_none_when_no_pr_found(self) -> None:
         with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
@@ -316,11 +362,21 @@ class TestFindPRForIssue:
 
             assert result is None
 
-    async def test_returns_first_pr_when_multiple(self) -> None:
+    async def test_returns_first_matching_pr(self) -> None:
         pr_json = json.dumps(
             [
-                {"number": 82, "url": "https://github.com/user/repo/pull/82"},
-                {"number": 80, "url": "https://github.com/user/repo/pull/80"},
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "Fixes #73",
+                    "headRefName": "feat/issue-73",
+                },
+                {
+                    "number": 80,
+                    "url": "https://github.com/user/repo/pull/80",
+                    "body": "Closes #73",
+                    "headRefName": "feat/issue-73-v2",
+                },
             ]
         )
         with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
