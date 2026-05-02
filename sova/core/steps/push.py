@@ -18,9 +18,11 @@ class PushStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.push", branch=ctx.branch_name, cwd=str(ctx.working_dir))
 
+        force = ctx.pr_number is not None
         try:
             await git_ops.push(
                 ctx.branch_name,
+                force=force,
                 set_upstream=True,
                 cwd=ctx.working_dir,
             )

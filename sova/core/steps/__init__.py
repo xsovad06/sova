@@ -16,6 +16,7 @@ from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.handoff_to_user import HandoffToUserStep
 from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.push import PushStep
+from sova.core.steps.rebase import RebaseStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.sync import SyncStep
@@ -51,6 +52,7 @@ def get_address_review_steps() -> list[BaseStep]:
     off to the user for final review.
     """
     return [
+        RebaseStep(),
         AddressReviewStep(),
         CommitStep(),
         ValidateStep(),

@@ -655,7 +655,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 # -- Pipeline progress -------------------------------------------------------
 
 
-_ADDRESS_REVIEW_ONLY = frozenset({"address_review", "handoff_to_user"})
+_ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
 
 
 def get_step_progress(current_step: str | None) -> dict:
