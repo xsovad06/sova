@@ -995,6 +995,7 @@ class TestStepRegistry:
         steps = get_address_review_steps()
         names = [s.name for s in steps]
         assert names == [
+            "rebase",
             "address_review",
             "commit",
             "validate",
@@ -1548,3 +1549,149 @@ class TestCommitStepAgentArtifacts:
 
         assert result.success
         mock_commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# RebaseStep
+# ---------------------------------------------------------------------------
+
+
+class TestRebaseStep:
+    async def test_clean_rebase(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = RebaseStep()
+
+        with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
+            mock_rebase.return_value = (
+                MagicMock(success=True, conflicts_resolved=0),
+                Decimal("0"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "Rebased onto" in result.summary
+
+    async def test_rebase_with_conflicts_resolved(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = RebaseStep()
+
+        with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
+            mock_rebase.return_value = (
+                MagicMock(success=True, conflicts_resolved=2),
+                Decimal("0.05"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 conflicts resolved" in result.summary
+
+    async def test_rebase_failure(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = RebaseStep()
+
+        with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
+            mock_rebase.return_value = (
+                MagicMock(success=False, conflicts_resolved=0, error="Unresolved conflicts"),
+                Decimal("0.03"),
+            )
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Unresolved conflicts" in result.error
+
+    async def test_gate_check_detects_rebase_in_progress(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RebaseStep()
+
+        with patch.object(Path, "exists", return_value=True):
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
+    async def test_can_skip_when_completed(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(completed_steps=frozenset({"rebase"}))
+        step = RebaseStep()
+        assert await step.can_skip(ctx)
+
+
+# ---------------------------------------------------------------------------
+# RebaseWithConflictResolution (git operations)
+# ---------------------------------------------------------------------------
+
+
+class TestRebaseWithConflictResolution:
+    async def test_clean_rebase_no_conflicts(self) -> None:
+        from sova.git.operations import rebase_with_conflict_resolution
+
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout=""),  # rebase (clean)
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert result.success
+        assert cost == Decimal("0")
+
+    async def test_conflict_resolved_by_llm(self) -> None:
+        from sova.git.operations import rebase_with_conflict_resolution
+        from sova.llm.models import LLMResult
+
+        with (
+            patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.operations.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # fetch
+                MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
+                MagicMock(success=True, stdout="file.py\n"),  # conflicted files
+                MagicMock(success=True, stdout=""),  # no remaining conflicts
+                MagicMock(success=True),  # rebase --continue
+            ]
+            mock_llm.return_value = LLMResult(text="resolved", model="sonnet", cost_usd=Decimal("0.02"))
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert result.success
+        assert result.conflicts_resolved == 1
+        assert cost == Decimal("0.02")
+
+    async def test_conflict_resolution_fails_aborts(self) -> None:
+        from sova.git.operations import rebase_with_conflict_resolution
+
+        with (
+            patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.operations.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # fetch
+                MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
+                MagicMock(success=True, stdout="file.py\n"),  # conflicted files
+                MagicMock(success=True),  # rebase --abort
+            ]
+            mock_llm.side_effect = RuntimeError("LLM failed")
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert not result.success
+        assert "LLM failed" in result.error
+
+    async def test_fetch_failure_returns_error(self) -> None:
+        from sova.git.operations import rebase_with_conflict_resolution
+
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stderr="Could not resolve host")
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert not result.success
+        assert "Fetch failed" in result.error

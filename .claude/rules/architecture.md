@@ -15,7 +15,7 @@ SOVA has four main components:
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/steps/` -- 16 BaseStep implementations with execute/validate_output/can_skip. Two pipeline variants:
   - **Developer pipeline** (12 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> monitor_ci -> handoff_to_reviewer
-  - **Address-review pipeline** (5 steps): address_review -> commit -> validate -> push -> handoff_to_user
+  - **Address-review pipeline** (6 steps): rebase -> address_review -> commit -> validate -> push -> handoff_to_user
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state
 - **Role chaining**: Developer -> Reviewer -> Developer handoff chain runs autonomously. `HandoffAction.auto_execute` triggers auto-spawn of the next agent when the current one exits. Developer writes handoff to Reviewer (auto), Reviewer writes handoff back to Developer if findings exist (auto) or to user if clean (manual "Integrate PR" button). Issue stays `IN_REVIEW` until human merges via `/integrate-pr` or `/approve-merge`.
@@ -30,7 +30,7 @@ SOVA has four main components:
 - 13 API routers under `/api`: overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work
 - 16 services: run, cost, memory, control (facade), handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff
 - Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
-- **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup
+- **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup (`start_agent()` iterates `pa.agents.values()` to reject duplicate agents for the same issue -- the `max_concurrent` slot check alone doesn't prevent this)
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
 - **Handoff system**: agents write `.claude/agent-control/handoff.json` to pass state between agents
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
@@ -38,7 +38,7 @@ SOVA has four main components:
   - `_process_auto_handoff()` in `agent_handoff.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining
   - Enables chaining: `integrate-pr` (full pipeline) or `ship-pr` -> `agent-resume` -> `approve-merge` (step-by-step)
 - **Claude command execution**: `agent_lifecycle.start_command()` runs Claude Code commands from handoff actions (re-exported via `control_service` facade)
-- Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport), run via `make test-py`
+- Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport, in-memory SQLite via `sqlite+aiosqlite://`), run via `make test-py`
 
 ### 4. Scheduler (`sova/scheduler/`)
 - `watch.py` -- WatchLoop: async poll with priority scan (RESEARCHED > TRIAGED > BACKLOG), veto window, asyncio.Event for shutdown
@@ -51,7 +51,7 @@ SOVA has four main components:
 
 - **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels + Projects V2 board), factory, per-project `gh` auth via `sova/utils/gh.py`
 - **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing. `--output-format json` returns `{result, total_cost_usd, usage, duration_ms, session_id}`. `--output-format stream-json` emits JSONL: `type: "assistant"` (content blocks), `type: "content_block_delta"` (streaming text), `type: "result"` (final cost/usage). Dashboard's `_parse_stream_line()` extracts readable text from these events.
-- **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`)
+- **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`). Always wrap `json.loads(result.stdout)` in try/except when parsing `gh` CLI output -- even successful commands can return empty stdout in edge cases.
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)
 - **`sova/knowledge/`** -- Memory CRUD + search + promote, tier loading, persona detection, review patterns
 - **`sova/commands/`** -- command distribution: catalog (discover + classify), templates (regex rendering), manifest (SHA-256 tracking), distribution (install/update/diff with conflict detection)
@@ -107,4 +107,5 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Dual handoff persistence (file + DB)**: agents write both DB-backed `AgentHandoff` (for orchestrator/scheduler history via `write_handoff()`) and file-based `DashboardHandoff` (for dashboard polling via `write_handoff_file()`). Dashboard reads the file for speed (no async DB in polling loop); scheduler queries the DB for cross-run state. `DashboardHandoff` has `next_actions` (UI buttons); `AgentHandoff` has `pending_findings` (agent context). Both written in every role's `_write_handoff()`.
 - **Adapter ABC contract**: `TaskAdapter` in `sova/adapters/base.py` defines 12 methods: `list_tasks`, `get_task`, `get_state`, `transition_state`, `assign`, `add_label`, `remove_label`, `post_comment`, `post_pr_comment`, `edit_body`, `link_pr`, plus `github_user` field. When adding new agent capabilities that interact with the tracker, add the method to the ABC first, then implement in `GitHubAdapter`. Factory: `create_adapter(type, repo, github_user, project_number)`.
 - **LLM for user-facing outputs with structured fallback**: workflow steps producing user-facing content (PR descriptions, review comments) use a focused LLM call (Sonnet, ~$0.01) with structured context (commit log, diff stats, issue body). Fallback MUST preserve available data -- build a structured body from already-fetched data rather than discarding to a bare stub. Pattern: `_generate_pr_body()` + `_build_fallback_body()` in `create_pr.py`, `_run_review()` in `reviewer.py`.
+- **Rebase with LLM conflict resolution**: `rebase_with_conflict_resolution()` in `sova/git/operations.py` rebases onto the latest base branch and uses the LLM to resolve merge conflicts. Loop: detect conflicted files, invoke LLM to fix markers + `git add`, `git rebase --continue`. Aborts on LLM failure or after `max_attempts` (default 3) so the worktree is never left in a broken rebase state. `RebaseStep` in the address-review pipeline runs this before `AddressReviewStep`. `PushStep` uses `--force-with-lease` when `ctx.pr_number` is set (post-rebase history rewrite).
 - **`create_all` vs Alembic for schema management**: `Base.metadata.create_all` only creates missing tables -- it does NOT add columns to existing tables. Adding a column to an ORM model does nothing to a pre-existing SQLite file; queries crash with `OperationalError: no such column`. Conversely, DBs created via `create_all` may already have columns that a later Alembic migration tries to add, crashing with a duplicate column error. Always use Alembic migrations for production schema changes. Keep `create_all` only for test fixtures with in-memory DBs (`init_db(run_migrations=False)`). Alembic `add_column` migrations should be idempotent: check `PRAGMA table_info()` before adding.

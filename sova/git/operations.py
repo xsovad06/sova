@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -177,7 +178,9 @@ async def rebase_with_conflict_resolution(
     """
     cost = Decimal("0")
 
-    await run_checked("git", "fetch", "origin", base, cwd=cwd)
+    fetch = await run("git", "fetch", "origin", base, cwd=cwd)
+    if not fetch.success:
+        return RebaseResult(success=False, error=f"Fetch failed: {fetch.stderr[:200]}"), cost
 
     result = await run("git", "rebase", f"origin/{base}", cwd=cwd)
     if result.success:
@@ -219,7 +222,8 @@ async def rebase_with_conflict_resolution(
             continue
 
         conflicts_resolved += len(conflicted)
-        cont = await run("git", "-c", "core.editor=true", "rebase", "--continue", cwd=cwd)
+        env = {**os.environ, "GIT_EDITOR": "true"}
+        cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
 
