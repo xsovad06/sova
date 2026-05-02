@@ -107,8 +107,6 @@ The web dashboard is SOVA's primary interface for monitoring and controlling age
 sova dashboard --project /path/to/project    # http://localhost:8111
 ```
 
-<!-- screenshot: dashboard overview -->
-
 Pages include: Dashboard (overview), Agents (multi-agent control), Work (issue-centric run history), Costs, Queue (batch operations), Logs, Settings, Memory, and Setup.
 
 ## Configuration
