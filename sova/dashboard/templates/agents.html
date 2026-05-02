@@ -449,6 +449,11 @@ function renderCompletedCard(agent) {
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
+  var rerunBtn = agent.status === 'failed'
+    ? '<button onclick="rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
+        'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors">Re-run</button>'
+    : '';
+
   return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all">' +
     '<div class="flex items-center justify-between">' +
       '<div class="flex items-center gap-2">' +
@@ -459,6 +464,7 @@ function renderCompletedCard(agent) {
         prBadge +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
+        rerunBtn +
         '<span class="text-accent-green">' + cost + '</span>' +
         '<span class="text-gray-500">' + agoText + '</span>' +
       '</div>' +
@@ -762,6 +768,14 @@ async function dismissInterrupted() {
 function restartInterrupted(issue, role) {
   document.getElementById('agent-issue').value = issue;
   document.getElementById('agent-role').value = role === 'auto' ? '' : role;
+  startAgent();
+}
+
+function rerunAgent(issue, role, prNumber) {
+  document.getElementById('agent-issue').value = issue;
+  document.getElementById('agent-issue-number').value = issue;
+  document.getElementById('agent-role').value = role === 'auto' ? '' : role;
+  document.getElementById('agent-pr').value = prNumber || '';
   startAgent();
 }
 

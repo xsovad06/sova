@@ -567,6 +567,43 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         assert result["run_id"] == 2
 
+    async def test_start_agent_passes_pr_number_to_task_run(self) -> None:
+        """pr_number should be forwarded to _create_task_run for immediate persistence."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=3) as mock_create,
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("93", role="reviewer", pr_number=122)
+
+        assert result["status"] == "started"
+        mock_create.assert_awaited_once()
+        call_kwargs = mock_create.call_args
+        assert call_kwargs.kwargs["pr_number"] == 122
+
 
 # ---------------------------------------------------------------------------
 # Auto-handoff orchestration

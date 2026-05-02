@@ -313,7 +313,7 @@ async def start_agent(
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
         pid = process.pid
 
-        run_id = await _create_task_run(issue, role or "developer", cwd, pid=pid)
+        run_id = await _create_task_run(issue, role or "developer", cwd, pid=pid, pr_number=pr_number)
         if run_id is None:
             await process.stop()
             return {"error": "Failed to create task run record"}
@@ -575,7 +575,9 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
 # -- DB persistence ----------------------------------------------------------
 
 
-async def _create_task_run(issue: str, role: str, project_dir: Path, *, pid: int | None = None) -> int | None:
+async def _create_task_run(
+    issue: str, role: str, project_dir: Path, *, pid: int | None = None, pr_number: int | None = None
+) -> int | None:
     """Create a TaskRun record and return its ID."""
     try:
         from sova.db.models import TaskRun
@@ -589,6 +591,7 @@ async def _create_task_run(issue: str, role: str, project_dir: Path, *, pid: int
                     status="running",
                     current_step="agent",
                     pid=pid,
+                    pr_number=pr_number,
                 )
                 session.add(task_run)
                 await session.flush()
