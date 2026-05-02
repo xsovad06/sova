@@ -53,7 +53,7 @@ Follow the `/review` command workflow:
    - Security concerns
    - Code style consistency with the rest of the module
    - Unnecessary changes or leftover debug code
-3. Auto-fix any findings scored >= 3/10.
+3. Address all findings (fix or acknowledge with justification).
 4. Re-run tests after fixes.
 
 ### Phase 3: Organize Commits

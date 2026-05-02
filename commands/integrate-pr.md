@@ -2,42 +2,51 @@
 name: integrate-pr
 description: Full integration pipeline -- rebase, CI, merge, cleanup, learn. One click from approved PR to done.
 user-invocable: true
+category: pr
 ---
 
 # Integrate PR
 
-Full autonomous integration pipeline for an approved PR. Chains the ship-pr, approve-merge, after-merge, and ingest-review workflows into a single uninterrupted run. Stops only on hard failures (conflicts, CI failures, merge rejection).
+Full integration pipeline for a PR. Rebases onto the base branch, waits for CI, merges (squash), cleans up branches, closes the linked issue, and optionally captures review learnings. Works for both manual invocation and autonomous agent use.
 
 PR: $ARGUMENTS
 
 ## Instructions
 
-You are an autonomous agent running the full integration pipeline. Your job is to take an approved PR from its current state all the way to merged, cleaned up, and learnings captured -- without human intervention unless something breaks.
+### Phase 1: Identify the PR
 
-### Phase 1: Gather State
+Determine the PR number from available context, in priority order:
 
-Read the handoff file if one exists:
+1. **From arguments** (`$ARGUMENTS`): use directly if a number is provided
+2. **From current branch**: query for an open PR on the current branch:
+   ```bash
+   gh pr view --json number,title,body,state,baseRefName,headRefName,statusCheckRollup,reviewDecision,commits,mergeable
+   ```
+3. **From recent PRs**: if on the base branch, list recent open PRs authored by the current user:
+   ```bash
+   gh pr list --author @me --state open --limit 10
+   ```
+   Ask the user which one to integrate (unless running autonomously, in which case stop and report ambiguity).
+
+If no PR can be identified, stop and report clearly.
+
+Once identified, fetch full PR metadata:
 
 ```bash
-cat .claude/agent-control/handoff.json 2>/dev/null
+gh pr view <PR_NUMBER> --json number,title,body,state,baseRefName,headRefName,statusCheckRollup,reviewDecision,commits,mergeable
 ```
 
-If present, extract `pr_number`, `issue`, and `branch`. Otherwise parse from arguments.
+**Stop if**:
+- PR state is `CLOSED` -- report and stop.
+- PR state is `MERGED` -- skip to Phase 5 (cleanup only).
 
-Get PR metadata:
+Extract the linked issue number from the PR body (patterns: `Closes #N`, `Fixes #N`, `Resolves #N`) or title (`#N`). This is optional -- the pipeline works without a linked issue.
 
-```bash
-gh pr view <PR_NUMBER> --json title,body,state,baseRefName,headRefName,statusCheckRollup,reviewDecision,commits,mergeable,number
-```
-
-**Hard stop** if:
-- PR state is not `OPEN` (if `MERGED`, skip to Phase 5 cleanup)
-
-Note: review approval is NOT required. When this command is triggered from the dashboard, the user clicking "Integrate PR" is the approval. Log whether the PR has a formal GitHub review approval, but proceed regardless.
-
-Extract the issue number from the PR title (pattern `#NNN` or `Closes #NNN` in the body).
+Log the review decision status (APPROVED, CHANGES_REQUESTED, etc.) but do NOT require formal approval to proceed. The user invoking this command is the approval.
 
 ### Phase 2: Rebase and Push
+
+Ensure you are on the PR's head branch:
 
 ```bash
 git fetch origin
@@ -45,33 +54,32 @@ git checkout <HEAD_BRANCH>
 git rebase origin/<BASE_BRANCH>
 ```
 
-**Hard stop** on merge conflicts -- write a failed handoff listing conflicting files and stop. Do not attempt auto-resolution.
+**Stop on merge conflicts** -- report which files conflict and stop. Do not attempt auto-resolution.
 
-If rebase was a no-op (already up to date), skip the push. Otherwise:
+If the rebase changed nothing (already up to date), skip the push. Otherwise:
 
 ```bash
 git push --force-with-lease
 ```
 
-**Hard stop** if push fails (branch protection, permissions).
+**Stop if push fails** (branch protection, permissions) -- report the error.
 
 ### Phase 3: Wait for CI
 
-After pushing, CI needs to re-run. Poll until complete:
+If the repository has CI checks configured, poll until complete:
 
 ```bash
 gh pr checks <PR_NUMBER>
 ```
 
-Poll every 30 seconds, up to 15 minutes total.
+Poll every 30 seconds, up to 15 minutes.
 
-**If CI passes**: proceed to Phase 4.
-
-**If CI fails**: analyze the failures briefly.
-- If all failures look like infrastructure/flaky (network timeouts, resource limits), post a `/retest` comment and retry once. If it fails again, write a failed handoff and stop.
-- If any failure looks like a real code issue, write a failed handoff with diagnosis and stop.
-
-**If CI times out** (15 minutes): write an `awaiting_action` handoff with "Wait for CI" and "Abort" actions, then stop.
+- **CI passes**: proceed to Phase 4.
+- **No CI checks configured**: proceed to Phase 4 immediately.
+- **CI fails**: analyze the failure output briefly.
+  - If failures look like infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and wait once more. If it fails again, stop and report the diagnosis.
+  - If any failure looks like a real code issue, stop and report the diagnosis with the failing check details.
+- **CI times out** (15 minutes elapsed): stop and report. The user can re-run the command after CI completes.
 
 ### Phase 4: Merge
 
@@ -79,38 +87,42 @@ Poll every 30 seconds, up to 15 minutes total.
 gh pr merge <PR_NUMBER> --squash --delete-branch
 ```
 
-**Hard stop** if merge fails -- write a failed handoff with the error.
+**Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 
 ### Phase 5: Post-Merge Cleanup
 
 ```bash
-# Switch to base branch and sync
 git checkout <BASE_BRANCH>
 git pull origin <BASE_BRANCH>
 
-# Delete local branch
+# Delete local branch if it still exists
 git branch -d <HEAD_BRANCH> 2>/dev/null || true
-
-# Clean up worktrees for this issue
-git worktree list
-# Remove any worktrees matching the issue number pattern
-git worktree remove .claude/worktrees/<ISSUE_PATTERN> --force 2>/dev/null || true
 ```
 
-Close the linked issue if not auto-closed:
+Clean up any worktrees associated with this PR or issue:
+
+```bash
+git worktree list
+# Remove matching worktrees
+git worktree remove <WORKTREE_PATH> --force 2>/dev/null || true
+```
+
+Close the linked issue if one was found and it was not auto-closed:
 
 ```bash
 gh issue close <ISSUE_NUMBER> 2>/dev/null || true
 ```
 
-### Phase 6: Ingest Review Feedback
+### Phase 6: Capture Review Learnings (Optional)
+
+Only run this phase if `.claude/agent-memory/` exists in the project.
 
 Check if there were review comments worth learning from:
 
 ```bash
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-gh api repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments --jq 'length'
-gh api repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .body != "")] | length'
+INLINE_COUNT=$(gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments" --jq 'length')
+REVIEW_COUNT=$(gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews" --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .body != "")] | length')
 ```
 
 If there were substantive review comments (2+ inline comments or any CHANGES_REQUESTED reviews):
@@ -118,7 +130,7 @@ If there were substantive review comments (2+ inline comments or any CHANGES_REQ
 1. Fetch full review data:
    ```bash
    gh pr view <PR_NUMBER> --json comments,reviews,body,title
-   gh api repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments
+   gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
    ```
 
 2. Analyze and extract:
@@ -126,74 +138,33 @@ If there were substantive review comments (2+ inline comments or any CHANGES_REQ
    - **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
    - **Test coverage gaps** -- missing assertions, untested scenarios
 
-3. Read existing memory files:
-   - `.claude/agent-memory/review-feedback.md`
-   - `.claude/agent-memory/common-mistakes.md`
-   - `.claude/agent-memory/task-history.md`
-
-4. Update memory files:
-   - Append new findings to `review-feedback.md` (no duplicates)
+3. Update the agent memory files (only if they exist):
+   - Append new findings to `review-feedback.md` (skip duplicates)
    - Add recurring mistakes to `common-mistakes.md`
-   - Log the PR in `task-history.md` with ticket, date, summary, outcome
+   - Log the PR in `task-history.md` with date, summary, and outcome
 
-If there were no substantive review comments, skip the learning extraction but still log the PR in `task-history.md`.
+If there were no substantive review comments, still log the PR in `task-history.md` (if it exists).
 
-### Phase 7: Write Completion Handoff
+### Phase 7: Report
 
-Write the final handoff to `.claude/agent-control/handoff.json`:
+Output a concise summary covering:
 
-```bash
-mkdir -p .claude/agent-control
-```
-
-- `source`: `"integrate-pr"`
-- `status`: `"completed"`
-- `issue`: the issue number
-- `pr_number`: the PR number
-- `summary`: concise summary of what happened (merged, cleaned, learnings captured)
-- `details`:
-  - `actions_taken`: list of all phases completed
-  - `learnings_captured`: number of new findings ingested (0 if none)
-  - `ci_status`: `"passed"`
-- `next_actions`: empty (pipeline is complete)
-
-### Phase 8: Report
-
-Output a summary:
-- PR merged (squash) into base branch
+- PR number, title, and base branch it was merged into
+- Whether rebase was needed
+- CI status (passed, retried, or skipped)
 - Branches cleaned up (local + remote)
-- Issue closed
-- Learnings captured (count, or "no substantive review comments")
-- Total pipeline duration
+- Issue closed (or no linked issue)
+- Learnings captured (count, or "skipped" if no agent memory)
 
-## Failure Handoffs
+## Error Recovery
 
-When writing a failed handoff at any phase, include:
+When the pipeline stops at any phase, report clearly:
 
-- `source`: `"integrate-pr"`
-- `status`: `"failed"`
-- `summary`: what failed and at which phase
-- `details.failed_phase`: which phase failed (1-6)
-- `details.error`: the error message
-- `next_actions` based on failure type:
+- Which phase failed
+- The specific error
+- What to do next (resolve conflicts, fix CI, retry, etc.)
 
-**Merge conflicts (Phase 2)**:
-1. "Resolve Conflicts" (style: `neutral`) -- manual resolution needed
-2. "Abort" (style: `danger`) -- clear handoff
-
-**CI failures (Phase 3)**:
-1. "Retry CI" (style: `neutral`) -- post `/retest` and wait
-2. "Investigate CI" (style: `neutral`) -- mode: `claude-command`, command: `/agent-resume`, args: `{pr, investigate_ci: true}`
-3. "Abort" (style: `danger`)
-
-**CI timeout (Phase 3)**:
-1. "Wait for CI" (style: `neutral`) -- mode: `claude-command`, command: `/agent-resume`, args: `{pr, wait_for: "ci"}`
-2. "Merge Now" (style: `approve`) -- mode: `claude-command`, command: `/approve-merge`, args: `{pr}`
-3. "Abort" (style: `danger`)
-
-**Merge failure (Phase 4)**:
-1. "Retry Merge" (style: `neutral`) -- mode: `claude-command`, command: `/approve-merge`, args: `{pr}`
-2. "Abort" (style: `danger`)
+The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The command is idempotent -- it detects the current state and picks up from where it left off (e.g., if already rebased, it skips to CI; if already merged, it skips to cleanup).
 
 ## Rules
 
@@ -201,7 +172,6 @@ When writing a failed handoff at any phase, include:
 - Always use `--squash` merge to keep history clean
 - Always use `--delete-branch` to clean up the remote branch
 - Use `--force-with-lease` for pushes, never `--force`
-- Always write a handoff file, even on success (with `status: completed`)
 - Only record actionable, specific lessons in memory -- not generic advice
 - Do not duplicate existing memory entries
 - NEVER use emojis in any output

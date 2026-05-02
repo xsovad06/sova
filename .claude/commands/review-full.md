@@ -38,7 +38,7 @@ Follow the `/simplify` workflow -- review all changed code for opportunities to 
 Follow the `/review` command workflow:
 
 1. Review all changed files for bugs, security, performance, test coverage, consistency, doc freshness.
-2. Score each finding (1-10 fix value). Auto-fix all findings scored >= 3.
+2. Score each finding (1-10 priority). Address all findings (fix or acknowledge with justification).
 3. Run CI checks locally. Fix any failures before proceeding.
 4. Report findings in the standard review format.
 
@@ -60,7 +60,7 @@ See `/rearrange-commits` for the full commit organization process.
 ## Review-Full Summary
 
 **Simplifications**: N changes applied
-**Review findings**: N total (N auto-fixed, N skipped)
+**Review findings**: N total (N fixed, N acknowledged)
 **Commits**: reorganized into N clean commits
 **Assessment**: ready to push / needs human review
 ```
@@ -81,8 +81,8 @@ After this command completes, run `/pr` to create the pull request.
 
 ## Rules
 
+- All findings are addressed by default -- fix or acknowledge with justification (false positive, not applicable, requires human decision).
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
-- For score 1-2 findings: auto-fix if the change removes code, improves error handling, or reduces duplication. Skip only purely subjective preferences (naming style, comment wording).
 - Do NOT reformat code that wasn't changed in this branch.
 - If a simplification or fix is risky, flag it for human review instead of applying.
 - Each phase builds on the previous -- Phase 2 reviews the state after Phase 1's changes.

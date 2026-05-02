@@ -1,12 +1,12 @@
 ---
 name: review
-description: Review changed code as a senior engineer before pushing. Scores findings by fix value and auto-fixes high-value issues (>=3/10).
+description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them.
 user-invocable: true
 ---
 
 # Code Review
 
-Review the current branch changes as a senior engineer. Catch issues before pushing, score them by value, and auto-fix high-value findings.
+Review the current branch changes as a senior engineer. Catch issues before pushing, score them by priority, and address every finding.
 
 ## Instructions
 
@@ -52,10 +52,10 @@ For each issue found, assign a **fix value score from 1-10**:
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| 1-2 | Purely subjective preference: naming style, comment wording, formatting not caught by linter | Auto-fix if it removes code, improves error handling, or reduces duplication; skip otherwise |
-| 3-5 | Meaningful improvement: correctness, readability, DRY, error handling, code removal | **Auto-fix** |
-| 6-8 | Important: prevents bugs, security issues, or significant tech debt | **Auto-fix** |
-| 9-10 | Critical: data loss, security vulnerability, or broken functionality | **Auto-fix** |
+| 1-2 | Low-priority: style preference, minor naming, formatting | **Address**: fix or acknowledge with justification |
+| 3-5 | Moderate: correctness, readability, DRY, error handling | **Address**: fix in code |
+| 6-8 | Important: prevents bugs, security issues, tech debt | **Address**: fix in code |
+| 9-10 | Critical: data loss, security vulnerability, broken functionality | **Address**: fix in code |
 
 **Scoring criteria** -- higher scores for findings that:
 - Prevent a runtime failure or data corruption
@@ -80,23 +80,26 @@ For each finding, report:
 **Category**: Bug / Security / Performance / Test / Consistency / Reuse / Efficiency / Error Handling / Simplicity
 **What**: Description of the issue
 **Why it matters**: Impact if left unfixed
-**Fix**: What to change (or "Auto-fixed" if score >= 3)
+**Fix**: What to change (or "Fixed" / "Acknowledged -- [justification]")
 ```
 
-### Step 5: Auto-Fix All Findings Scored >= 3
+### Step 5: Address All Findings
 
-Fix each qualifying finding directly in the code. After all fixes:
+Fix each finding directly in the code, starting with the highest severity. For each finding:
+- **Default**: Fix it in the code.
+- **Exception**: If a finding is a false positive, not applicable in context, or requires a human decision, acknowledge it with a one-line justification instead of fixing.
 
+If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
+
+After all fixes:
 ```bash
 # Verify nothing is broken
 git diff  # review your own fixes
 ```
 
-If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
-
 ### Step 6: Commit Review Fixes
 
-If you made any auto-fixes, stage and commit them:
+If you made any fixes, stage and commit them:
 ```bash
 git add -A
 git commit -m "fix: address review findings"
@@ -116,19 +119,24 @@ Only run checks for modules with changed files. If any check fails, fix the issu
 
 **Files reviewed**: N
 **Findings**: N total (N critical, N important, N moderate, N low)
-**Auto-fixed**: N findings (scores >= 3)
-**Skipped**: N findings (scores 1-2, subjective only)
+**Fixed**: N findings
+**Acknowledged (not fixed)**: N findings (with justification for each)
+**Flagged for human review**: N findings
 **Assessment**: ready to push / needs human review / needs fixes
 
-### Remaining items (if any)
+### Acknowledged findings (if any)
+- [FILE:LINE] Finding description -- Justification: [false positive / not applicable / requires human decision]
+
+### Flagged for human review (if any)
 - Items that need human decision or are too risky to auto-fix
 ```
 
 ## Rules
 
+- All findings are addressed by default. A finding may only be acknowledged (not fixed) if it is a false positive, not applicable in context, or requires a human decision. Each acknowledged finding must include a one-line justification.
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
 - Search the codebase for existing patterns before suggesting a new one.
 - If a finding requires understanding of business logic you don't have, flag it for human review rather than guessing.
-- Do NOT add comments, docstrings, or type annotations unless they fix a real issue (score >= 3).
+- Do NOT add comments, docstrings, or type annotations unless they fix a real issue.
 - Do NOT reformat code that wasn't changed in this branch.
 - NEVER use emojis in any output.

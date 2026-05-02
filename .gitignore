@@ -33,3 +33,6 @@ dashboard/.venv/
 .claude/worktrees/
 .claude/assets/
 .agent-summary.md
+
+# Health audit (transient work artifact, auto-deleted when all issues resolved)
+docs/HEALTH-AUDIT.md

@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review changed code as a senior engineer before pushing. Scores findings by fix value and auto-fixes high-value issues (>=3/10). Run before /pr to catch issues early.
+description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
 user-invocable: true
 category: core
 ---
@@ -77,10 +77,10 @@ For each issue found, assign a **fix value score from 1-10**:
 
 | Score | Meaning | Action |
 |-------|---------|--------|
-| 1-2 | Purely subjective preference: naming style, comment wording, formatting not caught by linter | Auto-fix if it removes code, improves error handling, or reduces duplication; skip otherwise |
-| 3-5 | Meaningful improvement: correctness, readability, DRY, error handling, code removal | **Auto-fix** |
-| 6-8 | Important: prevents bugs, security issues, or significant tech debt | **Auto-fix** |
-| 9-10 | Critical: data loss, security vulnerability, or broken functionality | **Auto-fix** |
+| 1-2 | Low-priority: style preference, minor naming, formatting | **Address**: fix or acknowledge with justification |
+| 3-5 | Moderate: correctness, readability, DRY, error handling | **Address**: fix in code |
+| 6-8 | Important: prevents bugs, security issues, tech debt | **Address**: fix in code |
+| 9-10 | Critical: data loss, security vulnerability, broken functionality | **Address**: fix in code |
 
 ## 5. Report Findings
 
@@ -92,18 +92,22 @@ For each finding, report:
 **Category**: Bug / Security / Performance / Test / Consistency / Reuse / Efficiency / Error Handling / Simplicity
 **What**: Description of the issue
 **Why it matters**: Impact if left unfixed
-**Fix**: What to change (or "Auto-fixed" if score >= 3)
+**Fix**: What to change (or "Fixed" / "Acknowledged -- [justification]")
 ```
 
-## 6. Auto-Fix All Findings Scored >= 3
+## 6. Address All Findings
 
-Fix each qualifying finding directly in the code. After all fixes:
+Fix each finding directly in the code, starting with the highest severity. For each finding:
+- **Default**: Fix it in the code.
+- **Exception**: If a finding is a false positive, not applicable in context, or requires a human decision, acknowledge it with a one-line justification instead of fixing.
+
+If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
+
+After all fixes:
 
 ```bash
 git diff  # review your own fixes
 ```
-
-If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
 
 ## 7. Run CI Checks Locally
 
@@ -117,11 +121,15 @@ Only run checks for modules with changed files. If any check fails, fix the issu
 
 **Files reviewed**: N
 **Findings**: N total (N critical, N important, N moderate, N low)
-**Auto-fixed**: N findings (scores >= 3)
-**Skipped**: N findings (scores 1-2, subjective only)
+**Fixed**: N findings
+**Acknowledged (not fixed)**: N findings (with justification for each)
+**Flagged for human review**: N findings
 **Assessment**: ready to push / needs human review / needs fixes
 
-### Remaining items (if any)
+### Acknowledged findings (if any)
+- [FILE:LINE] Finding description -- Justification: [false positive / not applicable / requires human decision]
+
+### Flagged for human review (if any)
 - Items that need human decision or are too risky to auto-fix
 ```
 
@@ -139,9 +147,10 @@ Run `/extract-knowledge` to capture any reusable patterns, gotchas, or lessons i
 
 ## Rules
 
+- All findings are addressed by default. A finding may only be acknowledged (not fixed) if it is a false positive, not applicable in context, or requires a human decision. Each acknowledged finding must include a one-line justification.
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
 - Search the codebase for existing patterns before suggesting a new one.
 - If a finding requires understanding of business logic you don't have, flag it for human review.
-- Do NOT add comments, docstrings, or type annotations unless they fix a real issue (score >= 3).
+- Do NOT add comments, docstrings, or type annotations unless they fix a real issue.
 - Do NOT reformat code that wasn't changed in this branch.
 - NEVER use emojis in any output.
