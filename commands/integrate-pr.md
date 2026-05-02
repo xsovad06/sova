@@ -7,7 +7,7 @@ category: pr
 
 # Integrate PR
 
-Full integration pipeline for a PR. Rebases onto the base branch, waits for CI, merges (squash), cleans up branches, closes the linked issue, and optionally captures review learnings. Works for both manual invocation and autonomous agent use.
+Full integration pipeline for a PR. Rebases onto the base branch, waits for CI, merges, cleans up branches/worktrees/stashes, closes the linked issue, captures review learnings, promotes confirmed patterns to project knowledge, and updates agent memory. Replaces the need to run `/after-merge` and `/extract-knowledge` separately. Works for both manual invocation and autonomous agent use.
 
 PR: $ARGUMENTS
 
@@ -83,13 +83,17 @@ Poll every 30 seconds, up to 15 minutes.
 
 ### Phase 4: Merge
 
+Try merge strategies in order until one succeeds (repo settings may restrict some):
+
 ```bash
-gh pr merge <PR_NUMBER> --squash --delete-branch
+gh pr merge <PR_NUMBER> --rebase --delete-branch
 ```
+
+If rebase merge is not allowed, fall back to squash, then regular merge. If all fail, report the error.
 
 **Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 
-### Phase 5: Post-Merge Cleanup
+### Phase 5: Post-Merge Cleanup (incorporates `/after-merge`)
 
 ```bash
 git checkout <BASE_BRANCH>
@@ -113,7 +117,15 @@ Close the linked issue if one was found and it was not auto-closed:
 gh issue close <ISSUE_NUMBER> 2>/dev/null || true
 ```
 
-### Phase 6: Capture Review Learnings (Optional)
+Check for stale stashes that belong to the merged branch:
+
+```bash
+git stash list
+```
+
+If any stash entries reference the merged branch name, report them to the user (do not drop without confirmation).
+
+### Phase 6: Capture Review Learnings (incorporates `/ingest-review`)
 
 Only run this phase if `.claude/agent-memory/` exists in the project.
 
@@ -145,7 +157,26 @@ If there were substantive review comments (2+ inline comments or any CHANGES_REQ
 
 If there were no substantive review comments, still log the PR in `task-history.md` (if it exists).
 
-### Phase 7: Report
+### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
+
+Only run this phase if `.claude/agent-memory/` exists in the project.
+
+1. **Update test count** in `.claude/agent-memory/MEMORY.md` if the PR added or removed tests. Also update any other files that track test counts (README.md, AGENTS.md, etc.).
+
+2. **Promote confirmed patterns to project knowledge**: Review the findings captured in Phase 6. If any pattern was:
+   - Flagged in 2+ PRs, OR
+   - A security/correctness issue with clear prevention rule
+   
+   Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
+
+3. **Add session learnings**: If new framework gotchas, testing patterns, or development insights emerged during this PR's development, append them to `.claude/agent-memory/learnings.md`.
+
+4. **Check file sizes**: Ensure agent memory files stay within limits:
+   - `MEMORY.md` -- under 80 lines
+   - `learnings.md` -- under 150 lines (prune oldest if needed)
+   - `review-feedback.md` -- under 150 lines (prune oldest if needed)
+
+### Phase 8: Report
 
 Output a concise summary covering:
 
@@ -155,6 +186,8 @@ Output a concise summary covering:
 - Branches cleaned up (local + remote)
 - Issue closed (or no linked issue)
 - Learnings captured (count, or "skipped" if no agent memory)
+- Patterns promoted to project knowledge (count, or "none")
+- Stale stashes found (if any)
 
 ## Error Recovery
 
@@ -166,10 +199,16 @@ When the pipeline stops at any phase, report clearly:
 
 The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The command is idempotent -- it detects the current state and picks up from where it left off (e.g., if already rebased, it skips to CI; if already merged, it skips to cleanup).
 
+## Cross-References
+
+- **Replaces**: `/after-merge` (cleanup) + `/extract-knowledge` (learning) -- both are now built into this pipeline
+- **Before this**: `/review-full` or `/address-pr` to prepare the PR
+- **Next**: `/find-task` or `/standup` to pick up the next task
+
 ## Rules
 
 - Never stop between phases unless there is a hard failure
-- Always use `--squash` merge to keep history clean
+- Try `--rebase` merge first, fall back to `--squash`, then `--merge`
 - Always use `--delete-branch` to clean up the remote branch
 - Use `--force-with-lease` for pushes, never `--force`
 - Only record actionable, specific lessons in memory -- not generic advice

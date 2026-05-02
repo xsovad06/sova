@@ -5,7 +5,7 @@ user-invocable: true
 
 # Integrate PR
 
-Full autonomous integration pipeline for an approved PR. Chains the ship-pr, approve-merge, after-merge, and ingest-review workflows into a single uninterrupted run. Stops only on hard failures (conflicts, CI failures, merge rejection).
+Full autonomous integration pipeline for an approved PR. Chains the ship-pr, approve-merge, after-merge, extract-knowledge, and ingest-review workflows into a single uninterrupted run. Stops only on hard failures (conflicts, CI failures, merge rejection).
 
 PR: $ARGUMENTS
 
@@ -74,13 +74,17 @@ Poll every 30 seconds, up to 15 minutes total.
 
 ### Phase 4: Merge
 
+Try merge strategies in order until one succeeds (repo settings may restrict some):
+
 ```bash
-gh pr merge <PR_NUMBER> --squash --delete-branch
+gh pr merge <PR_NUMBER> --rebase --delete-branch
 ```
+
+If rebase merge is not allowed, fall back to `--squash`, then `--merge`. If all fail, write a failed handoff and stop.
 
 **Hard stop** if merge fails -- write a failed handoff with the error.
 
-### Phase 5: Post-Merge Cleanup
+### Phase 5: Post-Merge Cleanup (incorporates `/after-merge`)
 
 ```bash
 # Switch to base branch and sync
@@ -102,7 +106,15 @@ Close the linked issue if not auto-closed:
 gh issue close <ISSUE_NUMBER> 2>/dev/null || true
 ```
 
-### Phase 6: Ingest Review Feedback
+Check for stale stashes that belong to the merged branch:
+
+```bash
+git stash list
+```
+
+If any stash entries reference the merged branch name, log them in the handoff. In autonomous mode, do not drop stashes -- report them. In interactive mode, ask the user.
+
+### Phase 6: Capture Review Learnings (incorporates `/ingest-review`)
 
 Check if there were review comments worth learning from:
 
@@ -137,7 +149,26 @@ If there were substantive review comments (2+ inline comments or any CHANGES_REQ
 
 If there were no substantive review comments, skip the learning extraction but still log the PR in `task-history.md`.
 
-### Phase 7: Write Completion Handoff
+### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
+
+Only run this phase if `.claude/agent-memory/` exists in the project.
+
+1. **Update test count** in `.claude/agent-memory/MEMORY.md` if the PR added or removed tests. Also update any other files that track test counts (README.md, AGENTS.md, etc.).
+
+2. **Promote confirmed patterns to project knowledge**: Review the findings captured in Phase 6. If any pattern was:
+   - Flagged in 2+ PRs, OR
+   - A security/correctness issue with clear prevention rule
+   
+   Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
+
+3. **Add session learnings**: If new framework gotchas, testing patterns, or development insights emerged during this PR's development, append them to `.claude/agent-memory/learnings.md`.
+
+4. **Check file sizes**: Ensure agent memory files stay within limits:
+   - `MEMORY.md` -- under 80 lines
+   - `learnings.md` -- under 150 lines (prune oldest if needed)
+   - `review-feedback.md` -- under 150 lines (prune oldest if needed)
+
+### Phase 8: Write Completion Handoff
 
 Write the final handoff to `.claude/agent-control/handoff.json`:
 
@@ -153,16 +184,20 @@ mkdir -p .claude/agent-control
 - `details`:
   - `actions_taken`: list of all phases completed
   - `learnings_captured`: number of new findings ingested (0 if none)
+  - `patterns_promoted`: number of patterns promoted to project knowledge (0 if none)
+  - `stale_stashes`: list of stash descriptions found (empty if none)
   - `ci_status`: `"passed"`
 - `next_actions`: empty (pipeline is complete)
 
-### Phase 8: Report
+### Phase 9: Report
 
 Output a summary:
-- PR merged (squash) into base branch
+- PR merged into base branch (merge strategy used)
 - Branches cleaned up (local + remote)
 - Issue closed
 - Learnings captured (count, or "no substantive review comments")
+- Patterns promoted to project knowledge (count, or "none")
+- Stale stashes found (if any)
 - Total pipeline duration
 
 ## Failure Handoffs
@@ -172,7 +207,7 @@ When writing a failed handoff at any phase, include:
 - `source`: `"integrate-pr"`
 - `status`: `"failed"`
 - `summary`: what failed and at which phase
-- `details.failed_phase`: which phase failed (1-6)
+- `details.failed_phase`: which phase failed (1-7)
 - `details.error`: the error message
 - `next_actions` based on failure type:
 
@@ -194,10 +229,16 @@ When writing a failed handoff at any phase, include:
 1. "Retry Merge" (style: `neutral`) -- mode: `claude-command`, command: `/approve-merge`, args: `{pr}`
 2. "Abort" (style: `danger`)
 
+## Cross-References
+
+- **Replaces**: `/after-merge` (cleanup) + `/extract-knowledge` (learning) -- both are now built into this pipeline
+- **Before this**: `/review-full` or `/address-pr` to prepare the PR
+- **Next**: `/find-task` or `/standup` to pick up the next task
+
 ## Rules
 
 - Never stop between phases unless there is a hard failure
-- Always use `--squash` merge to keep history clean
+- Try `--rebase` merge first, fall back to `--squash`, then `--merge`
 - Always use `--delete-branch` to clean up the remote branch
 - Use `--force-with-lease` for pushes, never `--force`
 - Always write a handoff file, even on success (with `status: completed`)
