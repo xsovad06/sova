@@ -156,7 +156,7 @@ async def get_session(project_dir: Path | None = None) -> AsyncSession:
         _, factory = _engines[url]
         return factory()
 
-    from sova.dashboard.project_context import get_project_dir
+    from sova.config.context import get_project_dir
 
     ctx_dir = get_project_dir()
     if ctx_dir is not None:
