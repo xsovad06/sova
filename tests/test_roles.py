@@ -784,7 +784,6 @@ class TestReviewerLLMReview:
 
         assert result.success
         assert "2 findings" in result.summary
-        assert "1 actionable" in result.summary
         adapter.post_pr_comment.assert_awaited_once()
         comment = adapter.post_pr_comment.call_args[0][1]
         assert "Null check missing" in comment
@@ -916,7 +915,8 @@ class TestReviewerLLMReview:
         dashboard_handoff = mock_file_handoff.call_args[0][1]
         assert dashboard_handoff.next_actions[0].id == "address_review"
 
-    async def test_handoff_approve_when_no_actionable(self) -> None:
+    async def test_handoff_all_findings_actionable(self) -> None:
+        """All findings (including low-severity) are now actionable and sent to developer."""
         from decimal import Decimal
         from unittest.mock import patch
 
@@ -929,6 +929,38 @@ class TestReviewerLLMReview:
 
         findings = [{"file": "x.py", "severity": 1, "category": "style", "description": "Minor"}]
         llm_result = LLMResult(text=self._llm_response(findings), model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            role = ReviewerRole()
+            await role.execute(ctx)
+
+        handoff = mock_db_handoff.call_args[0][1]
+        assert handoff.next_action == "address_review"
+        assert len(handoff.pending_findings) == 1
+
+        dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert dashboard_handoff.next_actions[0].id == "address_review"
+        assert dashboard_handoff.next_actions[0].label == "Address Review"
+
+    async def test_handoff_approve_when_zero_findings(self) -> None:
+        """With zero findings, handoff recommends approve."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.task_run_id = 1
+
+        llm_result = LLMResult(text=self._llm_response([]), model="sonnet", cost_usd=Decimal("0"))
 
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
@@ -1060,7 +1092,7 @@ class TestReviewerParsing:
         ]
         comment = _format_findings_comment(findings, "Mixed", 10)
         assert "2 findings" in comment
-        assert "1 actionable" in comment
+        assert "all to be addressed" in comment
         assert "Null ref" in comment
         assert "Findings requiring action" in comment
         assert "BLOCK" in comment

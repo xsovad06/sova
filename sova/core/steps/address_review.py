@@ -37,7 +37,13 @@ async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
 
 def _format_findings_prompt(findings: list[dict]) -> str:
     """Format findings into a prompt for the LLM to address."""
-    lines = ["Address the following code review findings. For each finding, fix the issue in the code:\n"]
+    lines = [
+        "Address ALL of the following code review findings. For each finding:",
+        "- DEFAULT: Fix the issue in the code.",
+        "- EXCEPTION: If a finding is a false positive, not applicable in context,",
+        "  or requires a human decision, state the reason instead of fixing.",
+        "  Do NOT skip findings without justification.\n",
+    ]
     for i, f in enumerate(findings, 1):
         loc = f.get("file", "unknown")
         if f.get("line"):

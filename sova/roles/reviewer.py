@@ -46,7 +46,7 @@ class ReviewResult:
 
     @property
     def actionable(self) -> list[ReviewFinding]:
-        return [f for f in self.findings if f.severity >= 3]
+        return list(self.findings)
 
 
 def _build_review_prompt(task: Task, diff: str, files: list[str]) -> str:
@@ -83,7 +83,7 @@ Examine every changed line against each criterion. Score each finding 1-10 (10 =
 ## Critical Rules
 - You MUST find at least one issue. No PR is perfect. If you think the code is clean, look harder.
 - Focus on REAL issues that would cause bugs, security holes, or maintenance problems.
-- Do NOT report cosmetic/style issues below severity 3 unless they indicate a deeper problem.
+- Report ALL findings regardless of severity. Low-severity findings will still be addressed.
 - For each finding, explain WHY it is a problem and provide a CONCRETE fix.
 - Be specific: reference exact file paths and line numbers from the diff.
 
@@ -170,7 +170,7 @@ def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_num
     """Format findings into a GitHub PR comment matching /review-full style."""
     lines = [f"## Code Review for PR #{pr_number}", ""]
 
-    actionable = [f for f in findings if f.severity >= 3]
+    actionable = list(findings)
 
     if not findings:
         if summary:
@@ -183,7 +183,7 @@ def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_num
     if summary:
         lines.extend([summary, ""])
 
-    lines.append(f"**{len(findings)} findings** ({len(actionable)} actionable, severity >= 3)")
+    lines.append(f"**{len(findings)} findings** (all to be addressed)")
     lines.append("")
 
     # Scored findings table
@@ -286,15 +286,14 @@ class ReviewerRole(AgentRole):
         # Write handoff
         await self._write_handoff(ctx, review)
 
-        actionable_count = len(review.actionable)
         total_count = len(review.findings)
-        log.info("reviewer.done", issue=ctx.issue_number, findings=total_count, actionable=actionable_count)
+        log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
 
         return RoleResult(
             success=True,
-            summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings ({actionable_count} actionable)",
+            summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings",
             output_state=TaskState.IN_REVIEW,
-            findings=[f.description for f in review.actionable],
+            findings=[f.description for f in review.findings],
         )
 
     async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
@@ -404,7 +403,7 @@ class ReviewerRole(AgentRole):
             issue=ctx.issue_number,
             pr_number=ctx.pr_number,
             branch=ctx.branch_name,
-            summary=f"{len(review.findings)} findings ({len(actionable)} actionable)",
+            summary=f"{len(review.findings)} findings (all to be addressed)",
             details={
                 "next_action": next_action,
                 "cost_usd": str(review.total_cost),
