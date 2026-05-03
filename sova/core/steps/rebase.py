@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import rebase_with_conflict_resolution
 from sova.utils.logging import get_logger
+from sova.utils.shell import run
 
 log = get_logger(component="step.rebase")
 
@@ -33,14 +36,26 @@ class RebaseStep(BaseStep):
             summary = f"Rebased onto {ctx.base_branch}"
             if result.conflicts_resolved:
                 summary += f" ({result.conflicts_resolved} conflicts resolved)"
-            return StepResult(success=True, summary=summary, cost_usd=float(cost))
+            return StepResult(success=True, summary=summary, cost_usd=cost)
 
         return StepResult(success=False, summary="Rebase failed", error=result.error)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: no rebase-in-progress markers should remain."""
-        rebase_dir = ctx.working_dir / ".git" / "rebase-merge"
-        rebase_apply = ctx.working_dir / ".git" / "rebase-apply"
+        """Gate: no rebase-in-progress markers should remain.
+
+        Uses ``git rev-parse --git-dir`` to locate the actual git directory,
+        which may differ from ``.git`` in worktrees (where ``.git`` is a file).
+        """
+        result = await run("git", "rev-parse", "--git-dir", cwd=ctx.working_dir)
+        if not result.success:
+            return GateCheckResult(passed=False, reason="Cannot determine git directory")
+
+        git_dir = Path(result.stdout.strip())
+        if not git_dir.is_absolute():
+            git_dir = ctx.working_dir / git_dir
+
+        rebase_dir = git_dir / "rebase-merge"
+        rebase_apply = git_dir / "rebase-apply"
         if rebase_dir.exists() or rebase_apply.exists():
             return GateCheckResult(passed=False, reason="Rebase still in progress")
         return GateCheckResult(passed=True)

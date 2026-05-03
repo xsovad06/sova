@@ -884,20 +884,6 @@ class TestCreatePRStep:
         assert ctx.pr_url == "https://github.com/x/y/pull/55"
 
 
-class TestCompleteStep:
-    async def test_completes_and_transitions_tracker(self) -> None:
-        from sova.core.steps.complete import CompleteStep
-
-        adapter = _mock_adapter()
-        ctx = _make_ctx(adapter=adapter, pr_number=42)
-        step = CompleteStep()
-
-        result = await step.execute(ctx)
-
-        assert result.success
-        adapter.transition_state.assert_awaited_once_with("42", TaskState.DONE)
-
-
 class TestHandoffToReviewerStep:
     async def test_writes_handoff_and_succeeds(self) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
@@ -1605,16 +1591,50 @@ class TestRebaseStep:
         assert not result.success
         assert "Unresolved conflicts" in result.error
 
-    async def test_gate_check_detects_rebase_in_progress(self) -> None:
+    async def test_gate_check_detects_rebase_in_progress(self, tmp_path: Path) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(worktree_dir=tmp_path)
+        step = RebaseStep()
+
+        # Simulate rebase-merge marker in the git directory
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir(exist_ok=True)
+        (git_dir / "rebase-merge").mkdir()
+
+        with patch("sova.core.steps.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=str(git_dir))
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
+    async def test_gate_check_passes_when_clean(self, tmp_path: Path) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(worktree_dir=tmp_path)
+        step = RebaseStep()
+
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir(exist_ok=True)
+
+        with patch("sova.core.steps.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=str(git_dir))
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_gate_check_fails_when_git_dir_unknown(self) -> None:
         from sova.core.steps.rebase import RebaseStep
 
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = RebaseStep()
 
-        with patch.object(Path, "exists", return_value=True):
+        with patch("sova.core.steps.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="", stderr="not a git repo")
             gate = await step.validate_output(ctx)
 
         assert not gate.passed
+        assert "Cannot determine git directory" in gate.reason
 
     async def test_can_skip_when_completed(self) -> None:
         from sova.core.steps.rebase import RebaseStep

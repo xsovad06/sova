@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sova.core.context import ExecutionContext
 
@@ -21,7 +22,7 @@ class StepResult:
     success: bool
     summary: str
     error: str | None = None
-    cost_usd: float = 0.0
+    cost_usd: Decimal = Decimal("0")
 
 
 @dataclass

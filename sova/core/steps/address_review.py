@@ -86,7 +86,7 @@ class AddressReviewStep(BaseStep):
             return StepResult(
                 success=True,
                 summary=f"Addressed {len(findings)} review findings",
-                cost_usd=float(result.cost_usd),
+                cost_usd=result.cost_usd,
             )
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to address review findings", error=str(exc))

@@ -38,7 +38,7 @@ class DevelopStep(BaseStep):
             return StepResult(
                 success=True,
                 summary=f"Development completed ({result.total_tokens} tokens)",
-                cost_usd=float(result.cost_usd),
+                cost_usd=result.cost_usd,
             )
         except RuntimeError as exc:
             return StepResult(success=False, summary="Development failed", error=str(exc))

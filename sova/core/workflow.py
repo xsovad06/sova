@@ -39,14 +39,14 @@ _STEP_STATUS_MAP: dict[str, TaskStatus] = {
     "simplify": TaskStatus.SIMPLIFYING,
     "self_review": TaskStatus.REVIEWING,
     "commit": TaskStatus.COMMITTING,
+    "validate": TaskStatus.COMMITTING,
+    "rebase": TaskStatus.ADDRESSING_REVIEW,
     "push": TaskStatus.PUSHING,
     "create_pr": TaskStatus.PR_CREATED,
     "monitor_ci": TaskStatus.CI_MONITORING,
-    "automated_review": TaskStatus.AUTOMATED_REVIEW,
     "address_review": TaskStatus.ADDRESSING_REVIEW,
     "handoff_to_reviewer": TaskStatus.DONE,
     "handoff_to_user": TaskStatus.DONE,
-    "complete": TaskStatus.DONE,
 }
 
 
@@ -179,7 +179,7 @@ class WorkflowEngine:
                 return result
 
             result.steps_completed += 1
-            result.total_cost_usd += Decimal(str(record.result.cost_usd)) if record.result else Decimal("0")
+            result.total_cost_usd += record.result.cost_usd if record.result else Decimal("0")
             await self._sync_task_run_context()
 
             # Update the workflow status based on the step
@@ -356,7 +356,7 @@ class WorkflowEngine:
                 if record:
                     record.status = "passed" if result.success else "failed"
                     record.duration_ms = elapsed_ms
-                    record.cost_usd = Decimal(str(result.cost_usd))
+                    record.cost_usd = result.cost_usd
                     record.output_summary = result.summary
                     record.error_message = result.error if not result.success else None
                     record.ended_at = datetime.now(timezone.utc)
@@ -367,7 +367,7 @@ class WorkflowEngine:
                             phase=record.step_name,
                             issue=self._ctx.issue_number,
                             model="claude",
-                            cost_usd=Decimal(str(result.cost_usd)),
+                            cost_usd=result.cost_usd,
                             duration_ms=elapsed_ms,
                         )
                         session.add(cost_record)

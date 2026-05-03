@@ -13,7 +13,7 @@ SOVA has four main components:
 - `core/workflow.py` -- WorkflowEngine: executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
-- `core/steps/` -- 16 BaseStep implementations with execute/validate_output/can_skip. Two pipeline variants:
+- `core/steps/` -- 14 BaseStep implementations with execute/validate_output/can_skip. Two pipeline variants:
   - **Developer pipeline** (12 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> monitor_ci -> handoff_to_reviewer
   - **Address-review pipeline** (6 steps): rebase -> address_review -> commit -> validate -> push -> handoff_to_user
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer

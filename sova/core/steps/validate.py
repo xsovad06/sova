@@ -92,7 +92,7 @@ class ValidateStep(BaseStep):
                 return StepResult(
                     success=True,
                     summary=f"Pre-push hook passed after {attempt} fix attempt(s)",
-                    cost_usd=float(llm_result.cost_usd),
+                    cost_usd=llm_result.cost_usd,
                 )
 
             hook_output = (retry.stdout + "\n" + retry.stderr).strip()

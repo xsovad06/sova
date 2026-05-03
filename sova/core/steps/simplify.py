@@ -25,7 +25,7 @@ class SimplifyStep(BaseStep):
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )
             ctx.add_cost(result.cost_usd)
-            return StepResult(success=True, summary="Simplification pass completed", cost_usd=float(result.cost_usd))
+            return StepResult(success=True, summary="Simplification pass completed", cost_usd=result.cost_usd)
         except RuntimeError as exc:
             return StepResult(success=False, summary="Simplification failed", error=str(exc))
 
