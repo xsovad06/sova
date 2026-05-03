@@ -31,7 +31,7 @@ project-automation-kit/
     dashboard/                   # FastAPI web UI
     scheduler/                   # Watch loop, parallel executor, server daemon
     ...
-  commands/                      # 20 standardized commands (markdown)
+  commands/                      # 22 standardized commands (markdown)
   invariants/                    # Pluggable pre-push constraint checks
   personas/                      # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
@@ -155,7 +155,7 @@ GitHub adapter exists. JIRA, Odoo (via MCP), and Linear adapters to be built.
 **Status: DONE** (completed 2026-04-16)
 
 The Project-instructions command library and agent commands have been unified:
-- **19 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
+- **22 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
