@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -66,7 +67,7 @@ def _parse_log_file(log_path: Path) -> list[dict]:
     return entries
 
 
-def get_logs(
+async def get_logs(
     project_dir: Path | None = None,
     *,
     level: str = "",
@@ -80,7 +81,7 @@ def get_logs(
     Returns dict with 'entries' (list of log dicts) and 'total' (count before limit).
     """
     log_path = _get_log_path(project_dir)
-    all_entries = _parse_log_file(log_path)
+    all_entries = await asyncio.to_thread(_parse_log_file, log_path)
 
     filtered = all_entries
     if level:
@@ -101,9 +102,9 @@ def get_logs(
     return {"entries": paginated, "total": total}
 
 
-def get_components(project_dir: Path | None = None) -> list[str]:
+async def get_components(project_dir: Path | None = None) -> list[str]:
     """Get distinct component names from the log file."""
     log_path = _get_log_path(project_dir)
-    all_entries = _parse_log_file(log_path)
+    all_entries = await asyncio.to_thread(_parse_log_file, log_path)
     components = sorted({e.get("component", "") for e in all_entries if e.get("component")})
     return components

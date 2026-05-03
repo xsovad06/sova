@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -48,13 +49,13 @@ class ConfigureRequest(BaseModel):
 @router.post("/setup/browse")
 async def browse_directory(req: BrowseRequest):
     """List directories for the project browser."""
-    return setup_service.browse_directory(req.path)
+    return await asyncio.to_thread(setup_service.browse_directory, req.path)
 
 
 @router.post("/setup/scan")
 async def scan_project(req: ScanRequest):
     """Scan a project to detect tech stack and suggest configuration."""
-    return setup_service.scan_project(req.project_path)
+    return await asyncio.to_thread(setup_service.scan_project, req.project_path)
 
 
 @router.post("/setup/install")

@@ -132,43 +132,55 @@ def generate_sova_toml(
     pr_auto_link: bool = True,
 ) -> str:
     """Generate sova.toml content from wizard form data."""
-    return f"""# SOVA configuration
-github_repo = "{github_repo}"
-github_user = "{github_user}"
-base_branch = "{base_branch}"
-test_cmd = "{test_cmd}"
-lint_cmd = "{lint_cmd}"
-format_cmd = "{format_cmd}"
+    import tomlkit
 
-[task_source]
-type = "{task_source}"
+    doc = tomlkit.document()
+    doc.add(tomlkit.comment("SOVA configuration"))
+    doc.add("github_repo", github_repo)
+    doc.add("github_user", github_user)
+    doc.add("base_branch", base_branch)
+    doc.add("test_cmd", test_cmd)
+    doc.add("lint_cmd", lint_cmd)
+    doc.add("format_cmd", format_cmd)
 
-[agent]
-model = "{agent_model}"
-max_budget = "{max_budget}"
+    task_source_table = tomlkit.table()
+    task_source_table.add("type", task_source)
+    doc.add("task_source", task_source_table)
 
-[review]
-enabled = true
-max_rounds = {review_max_rounds}
+    agent_table = tomlkit.table()
+    agent_table.add("model", agent_model)
+    agent_table.add("max_budget", max_budget)
+    doc.add("agent", agent_table)
 
-[commit]
-format = "{commit_format}"
-no_ai_coauthor = {"true" if no_ai_coauthor else "false"}
+    review_table = tomlkit.table()
+    review_table.add("enabled", True)
+    review_table.add("max_rounds", review_max_rounds)
+    doc.add("review", review_table)
 
-[branch]
-naming = "{branch_naming}"
+    commit_table = tomlkit.table()
+    commit_table.add("format", commit_format)
+    commit_table.add("no_ai_coauthor", no_ai_coauthor)
+    doc.add("commit", commit_table)
 
-[pr]
-title_format = "{pr_title_format}"
-auto_link_issues = {"true" if pr_auto_link else "false"}
+    branch_table = tomlkit.table()
+    branch_table.add("naming", branch_naming)
+    doc.add("branch", branch_table)
 
-[triage]
-auto_label = true
-min_confidence = 0.7
+    pr_table = tomlkit.table()
+    pr_table.add("title_format", pr_title_format)
+    pr_table.add("auto_link_issues", pr_auto_link)
+    doc.add("pr", pr_table)
 
-[roles]
-default = "developer"
-"""
+    triage_table = tomlkit.table()
+    triage_table.add("auto_label", True)
+    triage_table.add("min_confidence", 0.7)
+    doc.add("triage", triage_table)
+
+    roles_table = tomlkit.table()
+    roles_table.add("default", "developer")
+    doc.add("roles", roles_table)
+
+    return tomlkit.dumps(doc)
 
 
 # -- Detection helpers --------------------------------------------------------

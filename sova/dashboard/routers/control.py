@@ -40,13 +40,7 @@ async def stop_agent():
 @router.get("/control/interrupted")
 async def interrupted_runs():
     """Get recently interrupted runs (from dashboard crash/restart)."""
-    from sova.dashboard.services import run_service
-    from sova.db.session import get_session
+    from sova.dashboard.services.agent_recovery import get_interrupted_runs
 
-    try:
-        async with await get_session() as session:
-            async with session.begin():
-                runs = await run_service.list_runs(session, status="interrupted", limit=5)
-            return {"interrupted": runs}
-    except Exception:
-        return {"interrupted": []}
+    runs = await get_interrupted_runs()
+    return {"interrupted": runs}

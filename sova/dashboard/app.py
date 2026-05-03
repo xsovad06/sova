@@ -38,7 +38,11 @@ from sova.dashboard.routers import (
 )
 from sova.dashboard.services import control_service, handoff_service
 from sova.dashboard.services.control_service import recover_stale_runs
+from sova.dashboard.services.work_service import _TERMINAL
 from sova.db.session import close_db, init_db, init_db_for_project
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.app")
 
 BASE = Path(__file__).parent
 
@@ -54,8 +58,6 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
     from sova.dashboard.services.control_service import _is_process_alive, _projects
     from sova.db.models import TaskRun
     from sova.db.session import get_session
-
-    _TERMINAL = {"done", "failed", "rejected", "interrupted"}
 
     while True:
         await asyncio.sleep(_SWEEP_INTERVAL)
@@ -93,7 +95,7 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass
+            log.warning("sweep.error", exc_info=True)
 
 
 def create_app(

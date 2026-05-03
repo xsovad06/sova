@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services.log_service import get_components, get_logs
+from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["logs"])
+log = get_logger(component="dashboard.logs")
 
 
 @router.get("/logs")
@@ -19,19 +21,27 @@ async def logs(
     offset: int = 0,
 ):
     """Get filtered log entries."""
-    project_dir = get_project_dir()
-    return get_logs(
-        project_dir,
-        level=level,
-        component=component,
-        search=search,
-        limit=limit,
-        offset=offset,
-    )
+    try:
+        project_dir = get_project_dir()
+        return await get_logs(
+            project_dir,
+            level=level,
+            component=component,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception:
+        log.warning("logs.query.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch logs")
 
 
 @router.get("/logs/components")
 async def log_components():
     """Get distinct component names for the filter dropdown."""
-    project_dir = get_project_dir()
-    return {"components": get_components(project_dir)}
+    try:
+        project_dir = get_project_dir()
+        return {"components": await get_components(project_dir)}
+    except Exception:
+        log.warning("logs.components.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch log components")
