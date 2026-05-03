@@ -604,6 +604,122 @@ class TestDuplicateAgentPrevention:
         call_kwargs = mock_create.call_args
         assert call_kwargs.kwargs["pr_number"] == 122
 
+    async def test_start_command_rejects_duplicate_issue(self) -> None:
+        """start_command() should reject if the same issue already has an active agent."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import AgentState, ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        existing = AgentState(
+            run_id=1,
+            issue="16",
+            role="developer",
+            process=MagicMock(),
+        )
+        pa.agents[1] = existing
+
+        with patch.object(agent_lifecycle, "_get_project_agents", return_value=pa):
+            result = await start_command("integrate-pr", {"issue": "16"})
+
+        assert "error" in result
+        assert "already has an active agent" in result["error"]
+
+    async def test_check_issue_conflict_catches_db_duplicate(self) -> None:
+        """_check_issue_conflict should detect DB TaskRuns with alive PIDs."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session as real_get_session
+
+        pa = ProjectAgents()
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="16",
+                    role="developer",
+                    status="running",
+                    pid=12345,
+                    current_step="develop",
+                )
+                session.add(run)
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch(
+                "sova.dashboard.services.agent_recovery._is_process_alive",
+                return_value=True,
+            ),
+        ):
+            result = await _check_issue_conflict("16", pa)
+
+        assert result is not None
+        assert "already has an active agent" in result["error"]
+        assert "external" in result["error"]
+
+    async def test_check_issue_conflict_degrades_on_db_failure(self) -> None:
+        """_check_issue_conflict should return None (no conflict) if DB query fails."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+
+        pa = ProjectAgents()
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+            result = await _check_issue_conflict("16", pa)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# build_action_command
+# ---------------------------------------------------------------------------
+
+
+class TestBuildActionCommand:
+    def test_uses_issue_key_over_pr(self) -> None:
+        from sova.dashboard.services.handoff_service import build_action_command
+
+        result = build_action_command(
+            {
+                "mode": "agent",
+                "args": {"issue": "16", "pr": 67, "role": "developer"},
+            }
+        )
+        assert result["issue"] == "16"
+        assert result["pr_number"] == 67
+        assert result["role"] == "developer"
+
+    def test_falls_back_to_ticket_key(self) -> None:
+        from sova.dashboard.services.handoff_service import build_action_command
+
+        result = build_action_command(
+            {
+                "mode": "agent",
+                "args": {"ticket": "42", "role": "reviewer"},
+            }
+        )
+        assert result["issue"] == "42"
+
+    def test_falls_back_to_pr_as_issue(self) -> None:
+        from sova.dashboard.services.handoff_service import build_action_command
+
+        result = build_action_command(
+            {
+                "mode": "agent",
+                "args": {"pr": 99},
+            }
+        )
+        assert result["issue"] == "99"
+
 
 # ---------------------------------------------------------------------------
 # Auto-handoff orchestration
@@ -905,6 +1021,49 @@ class TestHandoffAPI:
         assert resp.status_code == 404
         data = resp.json()
         assert "not found" in data["detail"]
+
+    async def test_execute_agent_action_passes_pr_number(self, client: AsyncClient, tmp_path) -> None:
+        """Executing an agent-mode handoff action should pass pr_number to start_agent."""
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import control_service as cs
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    "id": "test-pr",
+                    "source": "reviewer",
+                    "status": "awaiting_action",
+                    "issue": "16",
+                    "pr_number": 67,
+                    "summary": "5 findings",
+                    "created_at": "2026-05-02T22:00:00Z",
+                    "next_actions": [
+                        {
+                            "id": "address_review",
+                            "label": "Address Review",
+                            "mode": "agent",
+                            "args": {"issue": "16", "pr": 67, "role": "developer"},
+                            "auto_execute": True,
+                        }
+                    ],
+                }
+            )
+        )
+
+        with patch.object(
+            cs, "start_agent", new_callable=AsyncMock, return_value={"status": "started", "run_id": 1, "pid": 123}
+        ) as mock_start:
+            resp = await client.post("/api/handoff/execute", json={"action_id": "address_review"})
+
+        assert resp.status_code == 200
+        mock_start.assert_awaited_once()
+        call_kwargs = mock_start.call_args
+        assert call_kwargs.kwargs["pr_number"] == 67
+        assert call_kwargs.args[0] == "16"
 
     async def test_agents_page_has_handoff_support(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")

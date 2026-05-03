@@ -564,6 +564,31 @@ async function startAgent() {
   btn.disabled = true;
   btn.textContent = 'Starting...';
 
+  try {
+    var hRes = await fetch(apiUrl('/handoff'));
+    if (hRes.ok) {
+      var hData = await hRes.json();
+      if (hData.has_handoff && hData.handoff) {
+        var hIssue = String(hData.handoff.issue || '').replace(/^#/, '').trim();
+        if (hIssue === issue && hData.handoff.status === 'awaiting_action') {
+          var useHandoff = confirm(
+            'Issue #' + issue + ' has a pending handoff:\n\n' +
+            (hData.handoff.summary || 'Action required') +
+            '\n\nOK = view handoff actions, Cancel = start fresh agent'
+          );
+          if (useHandoff) {
+            btn.disabled = false;
+            btn.textContent = 'Start';
+            checkStandaloneHandoff();
+            return;
+          }
+        } else if (hIssue === issue && hData.handoff.status === 'failed') {
+          showToast('Previous action for #' + issue + ' failed: ' + (hData.handoff.summary || ''), 'warning');
+        }
+      }
+    }
+  } catch (e) { /* proceed with start */ }
+
   var payload = {
     issue: issue,
     role: roleEl.value || null,

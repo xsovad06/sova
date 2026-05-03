@@ -127,8 +127,8 @@ def build_action_command(action: dict) -> dict:
     args = action.get("args", {})
 
     if mode == "agent":
-        ticket = args.get("ticket") or str(args.get("pr", ""))
-        return {"type": "agent", "issue": ticket, "role": args.get("role")}
+        ticket = args.get("issue") or args.get("ticket") or str(args.get("pr", ""))
+        return {"type": "agent", "issue": ticket, "role": args.get("role"), "pr_number": args.get("pr")}
 
     if mode == "claude-command":
         return {"type": "claude-command", "command": command, "args": args}

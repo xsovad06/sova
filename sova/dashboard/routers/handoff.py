@@ -48,6 +48,7 @@ async def execute_handoff_action(req: ExecuteActionRequest):
         result = await control_service.start_agent(
             exec_params.get("issue", ""),
             role=exec_params.get("role"),
+            pr_number=exec_params.get("pr_number"),
         )
     elif exec_params["type"] == "claude-command":
         result = await control_service.start_command(

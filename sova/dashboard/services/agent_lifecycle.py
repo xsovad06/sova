@@ -269,6 +269,52 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 # -- Agent lifecycle ----------------------------------------------------------
 
 
+async def _check_issue_conflict(issue: str, pa: ProjectAgents) -> dict | None:
+    """Check if an agent is already running for this issue (in-memory + DB).
+
+    Returns an error dict if a conflict exists, None if clear.
+    Must be called inside ``pa._lock``.
+    """
+    for existing in pa.agents.values():
+        if existing.issue == issue:
+            return {
+                "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
+                "existing_run_id": existing.run_id,
+            }
+
+    try:
+        from sqlalchemy import select
+
+        from sova.dashboard.services.agent_recovery import _is_process_alive
+        from sova.dashboard.services.work_service import _TERMINAL
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        in_memory_ids = set(pa.agents.keys())
+        async with await get_session(project_dir=pa.project_dir) as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(
+                    TaskRun.issue_number == issue,
+                    TaskRun.status.notin_(_TERMINAL),
+                    TaskRun.pid.isnot(None),
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+
+        for run in runs:
+            if run.id in in_memory_ids:
+                continue
+            if _is_process_alive(run.pid):
+                return {
+                    "error": f"Issue #{issue} already has an active agent (external run {run.id}, PID {run.pid})",
+                    "existing_run_id": run.id,
+                }
+    except Exception:
+        log.warning("issue_conflict_check.db_failed", issue=issue, exc_info=True)
+
+    return None
+
+
 async def start_agent(
     issue: str,
     *,
@@ -291,12 +337,9 @@ async def start_agent(
                 "running": len(pa.agents),
             }
 
-        for existing in pa.agents.values():
-            if existing.issue == issue:
-                return {
-                    "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
-                    "existing_run_id": existing.run_id,
-                }
+        conflict = await _check_issue_conflict(issue, pa)
+        if conflict:
+            return conflict
 
         prompt = f"sova run {issue}"
         if resume_run_id:
@@ -430,6 +473,8 @@ async def start_command(
 
     pa = _get_project_agents(slug)
 
+    issue = str((args or {}).get("issue", command))
+
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
             return {
@@ -437,13 +482,15 @@ async def start_command(
                 "running": len(pa.agents),
             }
 
+        conflict = await _check_issue_conflict(issue, pa)
+        if conflict:
+            return conflict
+
         cwd = pa.project_dir
         prompt = _resolve_command_prompt(command, args, cwd)
 
         gh_env = await _resolve_project_gh_env(cwd)
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
-
-        issue = str((args or {}).get("issue", command))
         role = f"command:{command}"
         run_id = await _create_task_run(issue, role, cwd, pid=process.pid)
         if run_id is None:
