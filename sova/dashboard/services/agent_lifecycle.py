@@ -564,17 +564,27 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         from sova.ipc.notifications import notify
 
         cfg = load_config(agent.project_dir)
+        role_label = agent.role.split(":")[-1].replace("-", " ").title()
+        project_name = agent.project_dir.name
         if exit_code != 0:
             notify(
                 cfg.notification,
-                f"SOVA -- #{agent.issue} failed",
-                f"Agent exited with code {exit_code}",
+                "SOVA",
+                f"{project_name} | Exit code {exit_code}",
+                subtitle=f"{role_label} failed #{agent.issue}",
+                group=f"sova-{agent.issue}",
             )
         else:
-            msg = f"Agent finished #{agent.issue}"
+            msg = project_name
             if cost:
-                msg += f" (${cost:.4f})"
-            notify(cfg.notification, f"SOVA -- #{agent.issue} done", msg)
+                msg += f" | ${cost:.4f}"
+            notify(
+                cfg.notification,
+                "SOVA",
+                msg,
+                subtitle=f"{role_label} finished #{agent.issue}",
+                group=f"sova-{agent.issue}",
+            )
     except Exception:
         log.debug("notify.failed", run_id=run_id, exc_info=True)
 

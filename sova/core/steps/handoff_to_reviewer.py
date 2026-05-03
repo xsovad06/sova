@@ -65,10 +65,13 @@ class HandoffToReviewerStep(BaseStep):
         except Exception:
             log.warning("step.handoff_to_reviewer.file_failed", exc_info=True)
 
+        project_name = ctx.project_dir.name
         notify(
             ctx.config.notification,
-            f"SOVA -- #{ctx.issue_number} ready for review",
-            f"PR #{ctx.pr_number} passed CI, handing off to Reviewer",
+            "SOVA",
+            f"{project_name} | PR #{ctx.pr_number} passed CI, handing to Reviewer",
+            subtitle=f"Developer finished #{ctx.issue_number}",
+            group=f"sova-{ctx.issue_number}",
         )
 
         return StepResult(

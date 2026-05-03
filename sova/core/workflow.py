@@ -164,10 +164,14 @@ class WorkflowEngine:
                 self._write_output(f"FAILED: {result.error}")
                 self._close_output()
 
+                role_label = self._ctx.role.capitalize()
+                project_name = self._ctx.project_dir.name
                 notify(
                     self._ctx.config.notification,
-                    f"SOVA -- #{self._ctx.issue_number} {result.final_status.value}",
-                    f"Step '{step.name}' failed: {result.error or 'Unknown error'}",
+                    "SOVA",
+                    f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
+                    subtitle=f"{role_label} failed #{self._ctx.issue_number}",
+                    group=f"sova-{self._ctx.issue_number}",
                 )
 
                 log.error(
@@ -195,10 +199,14 @@ class WorkflowEngine:
         await self._update_task_run_status(TaskStatus.DONE)
         await self._finalize_task_run()
 
+        role_label = self._ctx.role.capitalize()
+        project_name = self._ctx.project_dir.name
         notify(
             self._ctx.config.notification,
-            f"SOVA -- #{self._ctx.issue_number} done",
-            f"All steps completed (${result.total_cost_usd})",
+            "SOVA",
+            f"{project_name} | ${result.total_cost_usd}",
+            subtitle=f"{role_label} finished #{self._ctx.issue_number}",
+            group=f"sova-{self._ctx.issue_number}",
         )
 
         log.info("workflow.done", issue=self._ctx.issue_number, cost=str(result.total_cost_usd))

@@ -656,34 +656,61 @@ class TestProcessTracker:
 
 
 class TestDesktopNotification:
-    async def test_send_desktop_macos(self) -> None:
+    async def test_send_desktop_macos_terminal_notifier(self) -> None:
         from sova.ipc.notifications import send_desktop_notification
 
         with patch("sova.ipc.notifications.sys") as mock_sys:
             mock_sys.platform = "darwin"
-            with patch("sova.ipc.notifications.run") as mock_run:
-                mock_run.return_value = MagicMock(success=True)
-                await send_desktop_notification("Test Title", "Test body")
+            with patch("sova.ipc.notifications.shutil") as mock_shutil:
+                mock_shutil.which.return_value = "/opt/homebrew/bin/terminal-notifier"
+                with patch("sova.ipc.notifications.run") as mock_run:
+                    mock_run.return_value = MagicMock(success=True)
+                    await send_desktop_notification(
+                        "SOVA",
+                        "Test body",
+                        subtitle="Developer finished #42",
+                        group="sova-42",
+                    )
 
-                mock_run.assert_awaited_once()
-                call_args = mock_run.call_args[0]
-                assert "osascript" in call_args
-                assert "-l" in call_args
-                assert "JavaScript" in call_args
+                    mock_run.assert_awaited_once()
+                    call_args = mock_run.call_args[0]
+                    assert "terminal-notifier" in call_args
+                    assert "-subtitle" in call_args
+                    assert "Developer finished #42" in call_args
+                    assert "-group" in call_args
+                    assert "sova-42" in call_args
 
-    async def test_send_desktop_macos_escapes_special_chars(self) -> None:
+    async def test_send_desktop_macos_jxa_fallback(self) -> None:
         from sova.ipc.notifications import send_desktop_notification
 
         with patch("sova.ipc.notifications.sys") as mock_sys:
             mock_sys.platform = "darwin"
-            with patch("sova.ipc.notifications.run") as mock_run:
-                mock_run.return_value = MagicMock(success=True)
-                await send_desktop_notification('Title with "quotes"', 'Body with \\ and "quotes"')
+            with patch("sova.ipc.notifications.shutil") as mock_shutil:
+                mock_shutil.which.return_value = None
+                with patch("sova.ipc.notifications.run") as mock_run:
+                    mock_run.return_value = MagicMock(success=True)
+                    await send_desktop_notification("SOVA", "Test body")
 
-                mock_run.assert_awaited_once()
-                script_arg = mock_run.call_args[0][-1]
-                assert "displayNotification" in script_arg
-                assert '\\"quotes\\"' in script_arg
+                    mock_run.assert_awaited_once()
+                    call_args = mock_run.call_args[0]
+                    assert "osascript" in call_args
+                    assert "JavaScript" in call_args
+
+    async def test_send_desktop_macos_jxa_escapes_special_chars(self) -> None:
+        from sova.ipc.notifications import send_desktop_notification
+
+        with patch("sova.ipc.notifications.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch("sova.ipc.notifications.shutil") as mock_shutil:
+                mock_shutil.which.return_value = None
+                with patch("sova.ipc.notifications.run") as mock_run:
+                    mock_run.return_value = MagicMock(success=True)
+                    await send_desktop_notification('Title with "quotes"', 'Body with \\ and "quotes"')
+
+                    mock_run.assert_awaited_once()
+                    script_arg = mock_run.call_args[0][-1]
+                    assert "displayNotification" in script_arg
+                    assert '\\"quotes\\"' in script_arg
 
     async def test_send_desktop_linux(self) -> None:
         from sova.ipc.notifications import send_desktop_notification
@@ -742,7 +769,7 @@ class TestNotify:
             notify(config, "Title", "Body")
             # Let the background task run
             await asyncio.sleep(0)
-            mock_desktop.assert_awaited_once_with("Title", "Body")
+            mock_desktop.assert_awaited_once_with("Title", "Body", subtitle="", group="")
 
     async def test_notify_sends_slack_when_configured(self) -> None:
         from sova.ipc.notifications import notify
@@ -782,7 +809,7 @@ class TestNotify:
 
         call_order: list[str] = []
 
-        async def slow_desktop(title: str, message: str) -> None:
+        async def slow_desktop(title: str, message: str, **_: str) -> None:
             await asyncio.sleep(0.05)
             call_order.append("desktop_done")
 

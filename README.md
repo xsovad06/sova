@@ -51,6 +51,7 @@ Each agent is **ephemeral**: it spawns, does its work, writes a handoff file, an
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
 - [GitHub CLI](https://cli.github.com/) (`gh`) -- authenticated
 - `git`
+- `terminal-notifier` (macOS, optional) -- `brew install terminal-notifier` for rich desktop notifications with custom icon and sound
 
 ## Installation
 

@@ -75,10 +75,13 @@ class HandoffToUserStep(BaseStep):
         except Exception:
             log.warning("step.handoff_to_user.file_failed", exc_info=True)
 
+        project_name = ctx.project_dir.name
         notify(
             ctx.config.notification,
-            f"SOVA -- #{ctx.issue_number} ready for your review",
-            f"PR #{ctx.pr_number} reviewed and findings addressed. Integrate when ready.",
+            "SOVA",
+            f"{project_name} | PR #{ctx.pr_number} reviewed, ready for integration",
+            subtitle=f"Reviewer finished #{ctx.issue_number}",
+            group=f"sova-{ctx.issue_number}",
         )
 
         return StepResult(
