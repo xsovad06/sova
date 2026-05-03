@@ -7,10 +7,10 @@ tech stack detection, and sova.toml generation.
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 from sova.utils.logging import get_logger
+from sova.utils.shell import run
 
 log = get_logger(component="dashboard.setup")
 
@@ -81,7 +81,7 @@ def browse_directory(path: str) -> dict:
     return {"current": str(resolved), "entries": entries}
 
 
-def scan_project(project_path: str) -> dict:
+async def scan_project(project_path: str) -> dict:
     """Scan a project to detect tech stack, repo, and suggest config."""
     project = Path(project_path).expanduser().resolve()
     if not project.is_dir():
@@ -89,8 +89,8 @@ def scan_project(project_path: str) -> dict:
 
     stack = _detect_tech_stack(project)
     persona = _detect_persona(stack)
-    github_repo = _detect_github_repo(project)
-    base_branch = _detect_base_branch(project)
+    github_repo = await _detect_github_repo(project)
+    base_branch = await _detect_base_branch(project)
     test_cmd = _detect_cmd(project, "test", "test", "")
     lint_cmd = _detect_cmd(project, "lint", "lint", "")
     format_cmd = _detect_cmd(project, "format", "format", "")
@@ -235,37 +235,20 @@ def _detect_persona(stack: list[str]) -> str:
     return ""
 
 
-def _detect_github_repo(project: Path) -> str:
-    try:
-        r = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=str(project),
-        )
-        if r.returncode == 0:
-            m = re.search(r"github\.com[^:/]*[:/]([^/]+/[^/.]+)", r.stdout.strip())
-            if m:
-                return m.group(1)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+async def _detect_github_repo(project: Path) -> str:
+    result = await run("git", "remote", "get-url", "origin", cwd=project, timeout=5)
+    if result.success:
+        m = re.search(r"github\.com[^:/]*[:/]([^/]+/[^/.]+)", result.stdout.strip())
+        if m:
+            return m.group(1)
     return ""
 
 
-def _detect_base_branch(project: Path) -> str:
+async def _detect_base_branch(project: Path) -> str:
     for branch in ["main", "master", "develop", "dev"]:
-        try:
-            r = subprocess.run(
-                ["git", "rev-parse", "--verify", branch],
-                capture_output=True,
-                cwd=str(project),
-                timeout=5,
-            )
-            if r.returncode == 0:
-                return branch
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        result = await run("git", "rev-parse", "--verify", branch, cwd=project, timeout=5)
+        if result.success:
+            return branch
     return "main"
 
 

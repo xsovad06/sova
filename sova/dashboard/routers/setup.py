@@ -55,7 +55,7 @@ async def browse_directory(req: BrowseRequest):
 @router.post("/setup/scan")
 async def scan_project(req: ScanRequest):
     """Scan a project to detect tech stack and suggest configuration."""
-    return await asyncio.to_thread(setup_service.scan_project, req.project_path)
+    return await setup_service.scan_project(req.project_path)
 
 
 @router.post("/setup/install")
