@@ -45,6 +45,7 @@ Analyze every changed file for:
 - **Efficiency**: redundant computations, repeated file reads, duplicate API calls, missed concurrency
 - **Error handling**: are errors propagated correctly? Are failure modes tested? Silent failures?
 - **Simplicity**: is the solution more complex than necessary? Over-abstracted? Could be done in fewer lines?
+- **Scout rule**: are there pre-existing issues in the files you are reviewing? Failing tests, lint warnings, dead imports, obvious bugs adjacent to the changed lines? Fix them as part of this review. Keep scout fixes small and low-risk.
 
 ### Step 3: Score Each Finding
 

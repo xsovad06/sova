@@ -34,9 +34,15 @@ If tests fail:
 - Fix the code or tests as needed
 - Re-run until they pass
 
-### Step 4: Iterate
+### Step 4: Scout Check
 
-Repeat Steps 2-3 until both linter and tests pass completely.
+While fixing test or lint failures, scan each touched file for pre-existing
+issues: flaky test patterns, stale imports, dead code. Fix them alongside the
+failures. Keep scout fixes small and low-risk.
+
+### Step 5: Iterate
+
+Repeat Steps 2-4 until both linter and tests pass completely.
 
 ## Cross-References
 

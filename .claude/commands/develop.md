@@ -23,6 +23,7 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 4. **Consistency** -- Match existing codebase style exactly
 5. **Testability** -- Code MUST be testable; non-negotiable
 6. **Proper logging** -- Add meaningful logs for debugging and monitoring
+7. **Scout rule** -- Leave every file you touch better than you found it
 
 ## Workflow
 
@@ -50,7 +51,19 @@ Follow existing codebase conventions:
 - Keep business logic in the appropriate layer
 - Use existing utilities and helpers -- check before creating new ones
 
-### Step 4: Verify
+### Step 4: Scout Check
+
+For every file you touched, scan for pre-existing issues and fix them:
+- Failing or flaky tests in the same test file (e.g., tests reading real filesystem instead of using `tmp_path`)
+- Lint warnings or type errors in the same module
+- Obvious bugs adjacent to your changes (off-by-one, missing None checks)
+- Stale imports, dead code, or leftover debug prints in the same file
+
+Keep scout fixes small and low-risk. Do not refactor entire files -- just clean
+up what you see while you are already there. If a scout fix is non-trivial,
+note it for a separate task instead of doing it inline.
+
+### Step 5: Verify
 
 Run the project's linter and test suite (see CLAUDE.md for commands):
 ```bash
@@ -63,7 +76,7 @@ Run the project's linter and test suite (see CLAUDE.md for commands):
 
 If tests fail, fix and re-run (up to 3 attempts).
 
-### Step 5: Commit Your Work
+### Step 6: Commit Your Work
 
 Stage and commit all changes using the conventional commits format from AGENTS.md:
 ```bash
@@ -75,7 +88,7 @@ Closes #<issue_number>"
 
 Use the appropriate type (`feat`, `fix`, `refactor`, `test`, etc.) and scope for the change. Split into logical commits if the change spans multiple concerns (e.g., separate commits for new module, tests, config changes).
 
-### Step 6: Self-Check
+### Step 7: Self-Check
 
 Before declaring done:
 - [ ] All tests pass

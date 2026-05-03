@@ -38,7 +38,7 @@ Follow the `/simplify` workflow -- review all changed code for opportunities to 
 
 Follow the `/review` command workflow:
 
-1. Review all changed files for bugs, security, performance, test coverage, consistency, doc freshness.
+1. Review all changed files for bugs, security, performance, test coverage, consistency, doc freshness, and scout rule (fix pre-existing issues in touched files).
 2. Score each finding (1-10 priority). Address all findings (fix or acknowledge with justification).
 3. Run CI checks locally. Fix any failures before proceeding.
 4. Report findings in the standard review format.

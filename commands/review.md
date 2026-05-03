@@ -71,6 +71,11 @@ Review across these dimensions, in priority order. Reference the project's guide
 - If so, verify these docs are updated: README.md, CLAUDE.md, AGENTS.md, .claude/rules/*.md
 - Score stale docs as 4/10 minimum and auto-fix
 
+### Scout Rule (Medium)
+- Are there pre-existing issues in the touched files? Failing tests, lint warnings, dead imports, obvious bugs adjacent to the changed lines?
+- Fix them as part of this review -- leave every file better than you found it
+- Keep scout fixes small and low-risk. If a fix is non-trivial, note it for a separate task.
+
 ## 4. Score Each Finding
 
 For each issue found, assign a **fix value score from 1-10**:

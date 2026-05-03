@@ -38,9 +38,10 @@ Follow the `/develop` command workflow:
 
 1. **Write tests first** -- define expected behavior before implementation.
 2. **Implement the solution** -- follow existing codebase conventions.
-3. **Run the project's linter** (see CLAUDE.md for commands).
-4. **Run the project's tests** (see CLAUDE.md for commands).
-5. If tests fail, fix and re-run (up to 3 attempts).
+3. **Scout check** -- for every file touched, fix pre-existing issues you notice (failing tests, lint warnings, dead code, obvious bugs). Keep fixes small and low-risk.
+4. **Run the project's linter** (see CLAUDE.md for commands).
+5. **Run the project's tests** (see CLAUDE.md for commands).
+6. If tests fail, fix and re-run (up to 3 attempts).
 
 ### Phase 2: Self-Review
 

@@ -38,6 +38,7 @@ Debug an issue in the project.
 - Apply the minimal fix that addresses the root cause
 - Do not introduce workarounds -- fix the actual problem
 - If the fix touches multiple files, explain the connection
+- **Scout rule**: while in each file, fix any pre-existing issues you notice (lint warnings, dead imports, obvious bugs adjacent to your fix). Keep scout fixes small and low-risk.
 
 ### 5. Verify
 - Run ShellCheck on changed bash scripts

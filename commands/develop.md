@@ -24,6 +24,7 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 4. **Consistency** -- Match existing codebase style exactly
 5. **Testability** -- Code MUST be testable; non-negotiable
 6. **Proper logging** -- Add meaningful logs for debugging and monitoring
+7. **Scout rule** -- Leave every file you touch better than you found it
 
 ## Workflow
 
@@ -51,7 +52,19 @@ Follow existing codebase conventions:
 - Keep business logic in the appropriate layer (services, not controllers/views)
 - Use existing utilities and helpers -- check before creating new ones
 
-### Step 4: Verify
+### Step 4: Scout Check
+
+For every file you touched, scan for pre-existing issues and fix them:
+- Failing or flaky tests in the same test file
+- Lint warnings or type errors in the same module
+- Obvious bugs adjacent to your changes (off-by-one, missing None checks)
+- Stale imports, dead code, or leftover debug prints in the same file
+
+Keep scout fixes small and low-risk. Do not refactor entire files -- just clean
+up what you see while you are already there. If a scout fix is non-trivial,
+note it for a separate task instead of doing it inline.
+
+### Step 5: Verify
 
 Run the project's linter and test suite (see CLAUDE.md for commands):
 ```bash
