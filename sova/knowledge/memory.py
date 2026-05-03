@@ -10,6 +10,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
 
+_MUTABLE_FIELDS = frozenset({"title", "content", "category", "tags", "tier", "repo", "issue_number", "superseded_by"})
+
 
 async def store(
     *,
@@ -84,6 +86,10 @@ async def update(memory_id: int, **fields: object) -> Memory | None:
                 return None
 
             for key, value in fields.items():
+                if key not in _MUTABLE_FIELDS:
+                    raise ValueError(
+                        f"Cannot update field '{key}' on Memory (allowed: {', '.join(sorted(_MUTABLE_FIELDS))})"
+                    )
                 setattr(memory, key, value)
 
             log.info("knowledge.updated", memory_id=memory_id, fields=list(fields.keys()))

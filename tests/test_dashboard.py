@@ -795,6 +795,13 @@ class TestMemoryAPI:
 
 
 class TestHandoffAPI:
+    @pytest.fixture(autouse=True)
+    def _isolate_handoff(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import handoff_service
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
     async def test_get_handoff_none(self, client: AsyncClient) -> None:
         resp = await client.get("/api/handoff")
         assert resp.status_code == 200
@@ -804,10 +811,6 @@ class TestHandoffAPI:
     async def test_get_handoff_with_file(self, client: AsyncClient, tmp_path) -> None:
         import json
 
-        from sova.dashboard.services import handoff_service
-
-        # Write a handoff file directly
-        handoff_service.set_project_dir(tmp_path)
         control_dir = tmp_path / ".claude" / "agent-control"
         control_dir.mkdir(parents=True)
         handoff_data = {
@@ -844,9 +847,6 @@ class TestHandoffAPI:
     async def test_clear_handoff_with_file(self, client: AsyncClient, tmp_path) -> None:
         import json
 
-        from sova.dashboard.services import handoff_service
-
-        handoff_service.set_project_dir(tmp_path)
         control_dir = tmp_path / ".claude" / "agent-control"
         control_dir.mkdir(parents=True)
         (control_dir / "handoff.json").write_text(
@@ -883,9 +883,6 @@ class TestHandoffAPI:
     async def test_execute_action_not_found(self, client: AsyncClient, tmp_path) -> None:
         import json
 
-        from sova.dashboard.services import handoff_service
-
-        handoff_service.set_project_dir(tmp_path)
         control_dir = tmp_path / ".claude" / "agent-control"
         control_dir.mkdir(parents=True)
         (control_dir / "handoff.json").write_text(

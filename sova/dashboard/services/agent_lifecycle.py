@@ -215,10 +215,10 @@ async def get_unified_agents(slug: str | None = None) -> dict:
     try:
         from sqlalchemy import select
 
+        from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        _TERMINAL = {"done", "failed", "rejected", "interrupted"}
         async with await get_session(project_dir=pa.project_dir) as session:
             async with session.begin():
                 stmt = select(TaskRun).where(
