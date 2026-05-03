@@ -29,6 +29,7 @@ dashboard/.venv/
 # Claude Code (keep settings.json and commands/rules tracked)
 .claude/settings.local.json
 .claude/agent-memory/
+.claude/agent-control/
 .claude/sova.db
 .claude/worktrees/
 .claude/assets/

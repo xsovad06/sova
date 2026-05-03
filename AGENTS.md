@@ -12,7 +12,6 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `AGENTS.md` | Cross-cutting conventions for all AI tools (this file) |
 | `README.md` | Project overview, installation, usage |
 | `docs/VISION.md` | Product vision and roadmap |
-| `docs/REWRITE-PLAN.md` | SOVA rewrite plan with phase details |
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
@@ -51,10 +50,13 @@ project-automation-kit/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (403+ tests)
+  tests/                           # pytest suite (725+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
-    REWRITE-PLAN.md                # SOVA rewrite plan with phase details
+    HEALTH-AUDIT.md                # Technical health audit with linked issues
+    design-system.md               # Dashboard design system reference
+    handoff-protocol.md            # Agent handoff protocol
+    naming-journey.md              # How SOVA got its name
   assets/
     agent-icon.png                 # Notification icon
 ```

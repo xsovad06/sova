@@ -13,7 +13,7 @@ When the user asks to "start the next task", "what should we work on", or simila
 
 3. **Check dependencies**: read the issue body for "Dependencies" section. If a dependency is still open, skip to the next issue.
 
-4. **Before starting work**: read `docs/REWRITE-PLAN.md` for architectural context on the task's phase.
+4. **Before starting work**: read `.claude/rules/architecture.md` for architectural context.
 
 ## Issue State Management
 
@@ -23,12 +23,3 @@ SOVA agents own issue state on the tracker. When working on an issue:
 - **Completed**: move to "Done", close the issue
 - **Blocked**: post a comment explaining the blocker, do NOT close
 
-## Phase Awareness
-
-The SOVA rewrite is organized in phases. Each phase builds on the previous:
-- Phase 0: Foundation (COMPLETE)
-- Phase 1: Adapters + LLM + Git (#36, #37, #38) -- building blocks
-- Phase 2: Core Workflow + Roles (#35, #39, #40, #41) -- depends on Phase 1
-- Phase 3-6: See `docs/REWRITE-PLAN.md`
-
-Issues within the same phase can often be worked in parallel. Issues in later phases depend on earlier phases being complete.
