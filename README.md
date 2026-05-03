@@ -94,7 +94,7 @@ The web dashboard is the primary interface for controlling agents and monitoring
 
 <!-- screenshot: dashboard overview -->
 
-Pages include: Dashboard overview, Agents (multi-agent control), Work (issue-centric view), Run detail, Costs, Queue (batch operations), Logs, Settings, Memory, Setup wizard, and Style guide.
+Pages include: Dashboard overview, Agents (multi-agent control), Work (issue-centric view), Run detail, Costs, Queue (batch operations), Logs, Settings, Memory, and Setup wizard.
 
 ## Configuration
 
@@ -134,7 +134,7 @@ SOVA uses four specialized agent roles that form an enforced pipeline:
 3. **Developer** -- implements the solution using TDD, runs lint and tests, simplifies the code, self-reviews, creates a PR, and monitors CI
 4. **Reviewer** -- reviews the PR and posts findings; if issues are found, the Developer is automatically respawned to address them
 
-The Developer runs a 12-step pipeline with gate checks between every step -- each step must validate its output before the next one starts. Agents communicate through a JSON-based handoff protocol: each agent writes its state to a handoff file, and the dashboard or scheduler reads it to spawn the next agent.
+Each step in the pipeline validates its output before the next one starts, ensuring quality at every stage. Agents communicate through a JSON-based handoff protocol: each agent writes its state to a handoff file, and the dashboard or scheduler reads it to spawn the next agent.
 
 ## Task Sources
 
