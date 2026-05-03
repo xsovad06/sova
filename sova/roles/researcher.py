@@ -15,6 +15,12 @@ log = get_logger(component="role.researcher")
 
 
 class ResearcherRole(AgentRole):
+    """MVP stub -- produces a static research assessment without LLM analysis.
+
+    A future version will use LLM-powered codebase exploration to generate
+    meaningful research findings, dependency analysis, and implementation guidance.
+    """
+
     name = "researcher"
     description = "Investigate triaged issues and prepare them for development"
     allowed_input_states = frozenset({TaskState.TRIAGED})
@@ -30,6 +36,7 @@ class ResearcherRole(AgentRole):
         )
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
+        log.warning("researcher.stub", issue=ctx.issue_number, msg="Using MVP stub -- no LLM research performed")
         task = await ctx.adapter.get_task(ctx.issue_number)
 
         if not self.validate_preconditions(task, force=ctx.force):
@@ -58,7 +65,7 @@ class ResearcherRole(AgentRole):
         )
 
     def _build_research_comment(self, task: Task) -> str:
-        """Build a research assessment section to append to the issue body."""
+        """Build a research assessment section. MVP stub: produces static boilerplate."""
         return (
             f"## Research Assessment\n\n"
             f"**Issue**: {task.title}\n\n"

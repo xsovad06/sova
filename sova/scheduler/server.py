@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,6 +47,7 @@ class SOVAServer:
         self.port = port
         self._running = False
         self._watch_task: asyncio.Task[None] | None = None
+        self._start_time = time.monotonic()
 
     @property
     def is_running(self) -> bool:
@@ -94,6 +96,24 @@ class SOVAServer:
             }
 
         dashboard_app.include_router(scheduler_router)
+
+        @dashboard_app.get("/api/health")
+        async def health_check() -> dict:
+            uptime = time.monotonic() - server._start_time
+            agents_active = 0
+            try:
+                from sova.dashboard.services.control_service import _projects
+
+                for pa in _projects.values():
+                    agents_active += len(pa.agents)
+            except Exception:
+                pass
+            return {
+                "status": "ok",
+                "uptime_s": round(uptime, 1),
+                "scheduler_running": server._running,
+                "agents_active": agents_active,
+            }
 
         return dashboard_app
 
