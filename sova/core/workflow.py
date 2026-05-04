@@ -110,88 +110,89 @@ class WorkflowEngine:
         log.info("workflow.start", issue=self._ctx.issue_number, run_id=self._task_run_id)
 
         for step in self._steps:
-            # Budget check before each step
-            if self._ctx.is_budget_exceeded:
-                log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
+            if not await self._execute_step(step, result):
+                return result
+
+        await self._finalize(result)
+        return result
+
+    async def _execute_step(self, step: BaseStep, result: WorkflowResult) -> bool:
+        """Execute a single pipeline step. Returns False to abort the pipeline."""
+        if self._ctx.is_budget_exceeded:
+            log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
+            result.final_status = TaskStatus.PAUSED
+            result.error = f"Budget exceeded: ${self._ctx.cost_usd}"
+            self._write_output(f"PAUSED: {result.error}")
+            self._close_output()
+            await self._record_failure(step.name, "budget_exceeded", result.error)
+            await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
+            await self._sync_task_run_context()
+            return False
+
+        if await step.can_skip(self._ctx):
+            log.info("workflow.step.skip", step=step.name)
+            result.steps_skipped += 1
+            result.step_records.append(StepRecord(step_name=step.name, status="skipped"))
+            return True
+
+        await self._set_current_step(step.name)
+        self._write_output(f"\n--- Step: {step.name} ---")
+
+        record = await self._execute_with_retries(step)
+        result.step_records.append(record)
+
+        if record.result and record.result.summary:
+            self._write_output(record.result.summary)
+
+        if record.status == "failed":
+            result.steps_failed += 1
+            result.error = record.result.error if record.result else "Unknown error"
+
+            if record.gate and not record.gate.passed:
                 result.final_status = TaskStatus.PAUSED
-                result.error = f"Budget exceeded: ${self._ctx.cost_usd}"
-                self._write_output(f"PAUSED: {result.error}")
-                self._close_output()
-                await self._record_failure(
-                    step.name,
-                    "budget_exceeded",
-                    result.error,
-                )
-                await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
-                await self._sync_task_run_context()
-                return result
+                result.error = record.gate.reason
+                failure_type = "gate_check"
+            else:
+                result.final_status = TaskStatus.FAILED
+                failure_type = "exception"
 
-            # Check if step can be skipped
-            if await step.can_skip(self._ctx):
-                log.info("workflow.step.skip", step=step.name)
-                result.steps_skipped += 1
-                result.step_records.append(StepRecord(step_name=step.name, status="skipped"))
-                continue
-
-            # Update current step on the task run
-            await self._set_current_step(step.name)
-            self._write_output(f"\n--- Step: {step.name} ---")
-
-            # Execute with retries
-            record = await self._execute_with_retries(step)
-            result.step_records.append(record)
-
-            if record.result and record.result.summary:
-                self._write_output(record.result.summary)
-
-            if record.status == "failed":
-                result.steps_failed += 1
-                result.error = record.result.error if record.result else "Unknown error"
-
-                # Gate failure -> pause, execution failure -> fail
-                if record.gate and not record.gate.passed:
-                    result.final_status = TaskStatus.PAUSED
-                    result.error = record.gate.reason
-                    failure_type = "gate_check"
-                else:
-                    result.final_status = TaskStatus.FAILED
-                    failure_type = "exception"
-
-                await self._record_failure(step.name, failure_type, result.error or "Unknown error")
-                await self._update_task_run_status(result.final_status, error=result.error)
-                await self._sync_task_run_context()
-
-                self._write_output(f"FAILED: {result.error}")
-                self._close_output()
-
-                role_label = self._ctx.role.capitalize()
-                project_name = self._ctx.project_dir.name
-                notify(
-                    self._ctx.config.notification,
-                    "SOVA",
-                    f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
-                    subtitle=f"{role_label} failed #{self._ctx.issue_number}",
-                    group=f"sova-{self._ctx.issue_number}",
-                )
-
-                log.error(
-                    "workflow.step.failed",
-                    step=step.name,
-                    error=result.error,
-                    status=result.final_status,
-                )
-                return result
-
-            result.steps_completed += 1
-            result.total_cost_usd += record.result.cost_usd if record.result else Decimal("0")
+            await self._record_failure(step.name, failure_type, result.error or "Unknown error")
+            await self._update_task_run_status(result.final_status, error=result.error)
             await self._sync_task_run_context()
 
-            # Update the workflow status based on the step
-            step_status = _STEP_STATUS_MAP.get(step.name)
-            if step_status:
-                result.final_status = step_status
+            self._write_output(f"FAILED: {result.error}")
+            self._close_output()
 
-        # All steps completed successfully
+            role_label = self._ctx.role.capitalize()
+            project_name = self._ctx.project_dir.name
+            notify(
+                self._ctx.config.notification,
+                "SOVA",
+                f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
+                subtitle=f"{role_label} failed #{self._ctx.issue_number}",
+                group=f"sova-{self._ctx.issue_number}",
+            )
+
+            log.error(
+                "workflow.step.failed",
+                step=step.name,
+                error=result.error,
+                status=result.final_status,
+            )
+            return False
+
+        result.steps_completed += 1
+        result.total_cost_usd += record.result.cost_usd if record.result else Decimal("0")
+        await self._sync_task_run_context()
+
+        step_status = _STEP_STATUS_MAP.get(step.name)
+        if step_status:
+            result.final_status = step_status
+
+        return True
+
+    async def _finalize(self, result: WorkflowResult) -> None:
+        """Write final state after all steps complete successfully."""
         result.success = True
         result.final_status = TaskStatus.DONE
         self._write_output(f"\n=== Workflow completed: ${result.total_cost_usd} ===")
@@ -210,7 +211,6 @@ class WorkflowEngine:
         )
 
         log.info("workflow.done", issue=self._ctx.issue_number, cost=str(result.total_cost_usd))
-        return result
 
     async def _execute_with_retries(self, step: BaseStep) -> StepRecord:
         """Execute a step, retrying on failure up to max_retries."""
