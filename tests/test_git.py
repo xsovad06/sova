@@ -58,7 +58,7 @@ def _shell_fail(stderr: str = "error", returncode: int = 1) -> ShellResult:
 
 class TestGetCurrentBranch:
     async def test_returns_branch_name(self) -> None:
-        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="feat/my-feature\n")
 
             branch = await get_current_branch(cwd=Path("/repo"))
@@ -67,14 +67,14 @@ class TestGetCurrentBranch:
             mock_run.assert_called_once()
 
     async def test_strips_whitespace(self) -> None:
-        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="  main  \n")
 
             branch = await get_current_branch()
             assert branch == "main"
 
     async def test_raises_on_failure(self) -> None:
-        with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="not a git repo")
 
             with pytest.raises(RuntimeError, match="Failed to get current branch"):
@@ -83,7 +83,7 @@ class TestGetCurrentBranch:
 
 class TestCreateBranch:
     async def test_creates_branch_from_base(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await create_branch("feat/login", base="main", cwd=Path("/repo"))
@@ -94,7 +94,7 @@ class TestCreateBranch:
             assert any("feat/login" in args for args in calls)
 
     async def test_creates_branch_default_cwd(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await create_branch("fix/bug", base="main")
@@ -103,7 +103,7 @@ class TestCreateBranch:
 
 class TestSyncBranch:
     async def test_fetches_and_pulls(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await sync_branch("main", cwd=Path("/repo"))
@@ -114,7 +114,7 @@ class TestSyncBranch:
 
 class TestRebase:
     async def test_rebases_onto_base(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await rebase("main", cwd=Path("/repo"))
@@ -131,9 +131,9 @@ class TestRebase:
 
 class TestCommit:
     async def test_commits_with_message(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("feat: add login page", cwd=Path("/repo"))
@@ -144,9 +144,9 @@ class TestCommit:
             assert "feat: add login page" in commit_call[0]
 
     async def test_commits_specific_files(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test_app.py\n")
 
                 await commit("fix: typo", files=["src/app.py", "tests/test_app.py"], cwd=Path("/repo"))
@@ -157,9 +157,9 @@ class TestCommit:
             assert "src/app.py" in add_call[0]
 
     async def test_commits_all_when_no_files(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="")
 
                 await commit("chore: update", cwd=Path("/repo"))
@@ -171,27 +171,27 @@ class TestCommit:
             assert "-A" in add_call[0]
 
     async def test_warns_on_suspicious_staged_files(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout=".venv\n.env\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
                     await commit("chore: update", cwd=Path("/repo"))
 
     async def test_catches_suspicious_files_in_subdirectories(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/.env\nvendor/credentials.json\napp.py\n")
 
                 with pytest.raises(RuntimeError, match="Refusing to commit suspicious files"):
                     await commit("chore: update", cwd=Path("/repo"))
 
     async def test_no_error_on_clean_staged_files(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
-            with patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run_soft:
+            with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run_soft:
                 mock_run_soft.return_value = _shell_ok(stdout="src/app.py\ntests/test.py\n")
 
                 await commit("feat: add app", cwd=Path("/repo"))
@@ -203,7 +203,7 @@ class TestCommit:
 
 class TestPush:
     async def test_pushes_branch(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await push("feat/login", cwd=Path("/repo"))
@@ -213,7 +213,7 @@ class TestPush:
             assert "feat/login" in call_args
 
     async def test_pushes_with_force(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await push("feat/login", force=True, cwd=Path("/repo"))
@@ -222,7 +222,7 @@ class TestPush:
             assert "--force-with-lease" in call_args
 
     async def test_pushes_with_set_upstream(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run_checked", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await push("feat/login", set_upstream=True, cwd=Path("/repo"))
@@ -238,7 +238,7 @@ class TestPush:
 
 class TestCreatePR:
     async def test_creates_pr_returns_info(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="https://github.com/user/repo/pull/42\n")
 
             pr = await create_pr(
@@ -253,7 +253,7 @@ class TestCreatePR:
             assert pr.url == "https://github.com/user/repo/pull/42"
 
     async def test_creates_pr_raises_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="already exists")
 
             with pytest.raises(RuntimeError, match="Failed to create PR"):
@@ -268,7 +268,7 @@ class TestCreatePR:
 
 class TestAssignPR:
     async def test_assigns_pr_to_user(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok()
 
             await assign_pr(42, assignee="xsovad06", repo="user/repo")
@@ -280,7 +280,7 @@ class TestAssignPR:
             assert "xsovad06" in call_args
 
     async def test_assign_pr_logs_warning_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="not found")
 
             # Should not raise, just log
@@ -299,7 +299,7 @@ class TestFindPRForIssue:
                 }
             ]
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -320,7 +320,7 @@ class TestFindPRForIssue:
                 }
             ]
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -339,7 +339,7 @@ class TestFindPRForIssue:
                 }
             ]
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -347,7 +347,7 @@ class TestFindPRForIssue:
             assert result is None
 
     async def test_returns_none_when_no_pr_found(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="[]")
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -355,7 +355,7 @@ class TestFindPRForIssue:
             assert result is None
 
     async def test_returns_none_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="error")
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -379,7 +379,7 @@ class TestFindPRForIssue:
                 },
             ]
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
             result = await find_pr_for_issue("73", repo="user/repo")
@@ -400,7 +400,7 @@ class TestGetPRStatus:
                 "title": "feat: add login",
             }
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=pr_json)
 
             status = await get_pr_status(42, repo="user/repo")
@@ -411,7 +411,7 @@ class TestGetPRStatus:
             assert status.review_decision == "APPROVED"
 
     async def test_raises_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail()
 
             with pytest.raises(RuntimeError, match="Failed to get PR"):
@@ -434,7 +434,7 @@ class TestGetCIChecks:
                 },
             ]
         )
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=checks_json)
 
             checks = await get_ci_checks(42, repo="user/repo")
@@ -448,7 +448,7 @@ class TestGetCIChecks:
 
     async def test_pending_state_maps_to_in_progress(self) -> None:
         checks_json = json.dumps([{"name": "build", "state": "PENDING", "link": ""}])
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=checks_json)
 
             checks = await get_ci_checks(42, repo="user/repo")
@@ -458,14 +458,14 @@ class TestGetCIChecks:
             assert checks[0].conclusion is None
 
     async def test_returns_empty_on_no_checks(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="[]")
 
             checks = await get_ci_checks(42, repo="user/repo")
             assert checks == []
 
     async def test_returns_empty_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail()
 
             checks = await get_ci_checks(42, repo="user/repo")
@@ -816,7 +816,7 @@ diff --git a/foo.py b/foo.py
 
 class TestGetPrDiff:
     async def test_returns_diff(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout=SAMPLE_DIFF)
             result = await get_pr_diff(42, repo="user/repo", github_user="test")
 
@@ -827,7 +827,7 @@ class TestGetPrDiff:
         assert "42" in args
 
     async def test_raises_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="not found")
             with pytest.raises(RuntimeError, match="Failed to get diff"):
                 await get_pr_diff(42, repo="user/repo")
@@ -835,21 +835,21 @@ class TestGetPrDiff:
 
 class TestGetPrFiles:
     async def test_returns_file_list(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="foo.py\nbar.py\n")
             result = await get_pr_files(42, repo="user/repo")
 
         assert result == ["foo.py", "bar.py"]
 
     async def test_filters_empty_lines(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_ok(stdout="foo.py\n\nbar.py\n\n")
             result = await get_pr_files(42, repo="user/repo")
 
         assert result == ["foo.py", "bar.py"]
 
     async def test_raises_on_failure(self) -> None:
-        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail(stderr="not found")
             with pytest.raises(RuntimeError, match="Failed to get files"):
                 await get_pr_files(42, repo="user/repo")

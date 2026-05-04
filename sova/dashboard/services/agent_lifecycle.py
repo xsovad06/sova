@@ -1,39 +1,105 @@
-"""Agent process lifecycle -- start/stop/wait, status queries, pipeline progress.
+"""Agent process lifecycle -- start/stop/wait, slot management, DB persistence.
 
-Manages concurrent agent processes per project.
+Manages multiple concurrent agent processes per project.
 Uses sova.ipc.control.AgentProcess under the hood.
-Delegates DB persistence to agent_db and pool management to agent_pool.
+Creates TaskRun + CostRecord DB entries for persistence.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from sova.core.steps import get_address_review_step_names, get_developer_step_names
-from sova.dashboard.services.agent_db import (
-    _create_task_run,
-    _fetch_run_states,
-    _finalize_task_run,
-    _set_output_file_path,
-)
-from sova.dashboard.services.agent_pool import (
-    AgentState,
-    CompletedAgent,
-    ProjectAgents,
-    _get_project_agents,
-    _prune_completed,
-)
+from sova.dashboard.project_context import get_project_dir, get_project_slug
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.control import AgentProcess
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
 
+_DEFAULT_SLUG = "__default__"
+
 DEVELOPER_PIPELINE = get_developer_step_names()
 ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
+
+MAX_RECENTLY_COMPLETED = 5
+RECENTLY_COMPLETED_TTL = 60.0
+
+
+@dataclass
+class AgentState:
+    """Per-agent process state (one per running agent)."""
+
+    run_id: int
+    issue: str
+    role: str
+    process: AgentProcess
+    output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
+    output_writer: OutputWriter | None = None
+    reader_task: asyncio.Task | None = None
+    stderr_task: asyncio.Task | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    started_at_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    last_result_cost: float | None = None
+    project_dir: Path = field(default_factory=Path.cwd)
+
+
+@dataclass
+class CompletedAgent:
+    """Recently completed agent kept briefly for UI transition."""
+
+    run_id: int
+    issue: str
+    role: str
+    status: str
+    cost: float
+    completed_at: float = field(default_factory=time.monotonic)
+
+
+@dataclass
+class ProjectAgents:
+    """Per-project collection of running agents."""
+
+    agents: dict[int, AgentState] = field(default_factory=dict)
+    recently_completed: deque[CompletedAgent] = field(
+        default_factory=lambda: deque(maxlen=MAX_RECENTLY_COMPLETED),
+    )
+    max_concurrent: int = 3
+    project_dir: Path = field(default_factory=Path.cwd)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+_projects: dict[str, ProjectAgents] = {}
+_default_project_dir: Path | None = None
+
+
+def _get_project_agents(slug: str | None = None) -> ProjectAgents:
+    """Get or create agent collection for a project slug."""
+    if slug is None:
+        slug = get_project_slug() or _DEFAULT_SLUG
+
+    pa = _projects.get(slug)
+    if pa is None:
+        project_dir = get_project_dir()
+        if project_dir is None:
+            project_dir = _default_project_dir or Path.cwd()
+        pa = _projects.setdefault(slug, ProjectAgents(project_dir=project_dir.resolve()))
+
+    return pa
+
+
+def set_project_dir(path: Path) -> None:
+    """Set the default project directory (single-project mode)."""
+    global _default_project_dir
+    _default_project_dir = path
+    pa = _get_project_agents(_DEFAULT_SLUG)
+    pa.project_dir = path.resolve()
 
 
 # -- Status queries -----------------------------------------------------------
@@ -102,6 +168,35 @@ async def get_all_agents(slug: str | None = None) -> dict:
         "max_concurrent": pa.max_concurrent,
         "slots_available": max(0, pa.max_concurrent - len(pa.agents)),
     }
+
+
+async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
+    """Fetch current_step, status, and cost from the DB for running agents."""
+    if not run_ids:
+        return {}
+    try:
+        from sqlalchemy import select
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(TaskRun.id.in_(run_ids))
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+        return {
+            r.id: {
+                "current_step": r.current_step or "agent",
+                "status": r.status,
+                "cost_usd": float(r.total_cost_usd or 0),
+                "pr_number": r.pr_number,
+            }
+            for r in runs
+        }
+    except Exception:
+        log.debug("fetch_run_states.failed", exc_info=True)
+        return {}
 
 
 async def get_unified_agents(slug: str | None = None) -> dict:
@@ -426,6 +521,14 @@ async def start_command(
 # -- Completion handling ------------------------------------------------------
 
 
+def _prune_completed(pa: ProjectAgents, now: float | None = None) -> None:
+    """Remove expired entries from recently_completed."""
+    if now is None:
+        now = time.monotonic()
+    while pa.recently_completed and (now - pa.recently_completed[0].completed_at) > RECENTLY_COMPLETED_TTL:
+        pa.recently_completed.popleft()
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -524,6 +627,86 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
         log.info("issue.transitioned", issue=issue, state="in_progress")
     except Exception:
         log.warning("issue.transition_failed", issue=issue, exc_info=True)
+
+
+# -- DB persistence ----------------------------------------------------------
+
+
+async def _create_task_run(
+    issue: str, role: str, project_dir: Path, *, pid: int | None = None, pr_number: int | None = None
+) -> int | None:
+    """Create a TaskRun record and return its ID."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number=issue,
+                    role=role,
+                    status="running",
+                    current_step="agent",
+                    pid=pid,
+                    pr_number=pr_number,
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
+        log.info("task_run.created", run_id=run_id, issue=issue)
+        return run_id
+    except Exception:
+        log.warning("task_run.create_failed", exc_info=True)
+        return None
+
+
+async def _set_output_file_path(run_id: int, path: Path, project_dir: Path) -> None:
+    """Store the output file path on the TaskRun record."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run:
+                    task_run.output_file_path = str(path)
+    except Exception:
+        log.debug("output_file_path.set_failed", run_id=run_id, exc_info=True)
+
+
+async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:
+    """Update the TaskRun with final status and cost."""
+    try:
+        from sova.db.models import CostRecord, TaskRun
+        from sova.db.session import get_session
+
+        status = "done" if exit_code == 0 else "failed"
+        cost = Decimal(str(agent.last_result_cost)) if agent.last_result_cost else Decimal("0")
+
+        async with await get_session(project_dir=agent.project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run is None:
+                    return
+                task_run.status = status
+                task_run.total_cost_usd = cost
+                task_run.ended_at = datetime.now(timezone.utc)
+                if exit_code != 0:
+                    task_run.error_message = f"Process exited with code {exit_code}"
+
+                if agent.last_result_cost and agent.last_result_cost > 0:
+                    cost_record = CostRecord(
+                        task_run_id=run_id,
+                        phase="agent",
+                        issue=task_run.issue_number,
+                        model="claude",
+                        cost_usd=cost,
+                    )
+                    session.add(cost_record)
+        log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
+    except Exception:
+        log.warning("task_run.finalize_failed", exc_info=True)
 
 
 # -- Pipeline progress -------------------------------------------------------
