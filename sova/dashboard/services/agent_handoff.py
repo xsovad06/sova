@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sova.dashboard.services.agent_lifecycle import AgentState
+    from sova.dashboard.services.agent_pool import AgentState
 
 log = get_logger(component="dashboard.control.handoff")
 
