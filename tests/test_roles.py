@@ -135,7 +135,7 @@ class TestTriageRole:
 
         assert result.success
         assert result.output_state == TaskState.TRIAGED
-        adapter.transition_state.assert_awaited_with("42", TaskState.TRIAGED)
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.TRIAGED)
 
     async def test_execute_rejects_wrong_state(self) -> None:
         from sova.roles.triage import TriageRole
@@ -199,7 +199,7 @@ class TestResearcherRole:
 
         assert result.success
         assert result.output_state == TaskState.RESEARCHED
-        adapter.transition_state.assert_awaited_with("42", TaskState.RESEARCHED)
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
 
     async def test_rejects_backlog_state(self) -> None:
         from sova.roles.researcher import ResearcherRole
