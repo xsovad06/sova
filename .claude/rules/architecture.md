@@ -28,7 +28,7 @@ SOVA has four main components:
 - 12 pages: dashboard, agents, work, run_detail, costs, queue, logs, settings, memory, setup, home, style_guide
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
 - 13 API routers under `/api`: overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work
-- 16 services: run, cost, memory, control (facade), handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff
+- 18 services: run, cost, memory, control (facade), handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db
 - Old pages (overview, control, runs, tasks) redirect to new equivalents (dashboard, agents, work)
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup. Both `start_agent()` and `start_command()` call `_check_issue_conflict()` which rejects duplicates via two checks: in-memory (`pa.agents`) and DB (`TaskRun` with alive PID). The DB check catches CLI-spawned agents not tracked in-memory. The `max_concurrent` slot check alone doesn't prevent same-issue duplicates.
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
@@ -51,7 +51,7 @@ SOVA has four main components:
 
 - **`sova/adapters/`** -- TaskAdapter ABC + GitHub implementation (state via `agent:` labels + Projects V2 board), factory, per-project `gh` auth via `sova/utils/gh.py`
 - **`sova/llm/`** -- Claude CLI async wrapper (`client.py`), cost recording (`cost.py`), model routing. `--output-format json` returns `{result, total_cost_usd, usage, duration_ms, session_id}`. `--output-format stream-json` emits JSONL: `type: "assistant"` (content blocks), `type: "content_block_delta"` (streaming text), `type: "result"` (final cost/usage). Dashboard's `_parse_stream_line()` extracts readable text from these events.
-- **`sova/git/`** -- branch/commit/push/PR operations (`operations.py`), worktree lifecycle (`worktree.py`). Always wrap `json.loads(result.stdout)` in try/except when parsing `gh` CLI output -- even successful commands can return empty stdout in edge cases.
+- **`sova/git/`** -- branch/commit/push (`branch.py`), PR operations (`pr.py`), LLM rebase (`rebase.py`), worktree lifecycle (`worktree.py`). `operations.py` is a thin re-export facade. Always wrap `json.loads(result.stdout)` in try/except when parsing `gh` CLI output -- even successful commands can return empty stdout in edge cases.
 - **`sova/ipc/`** -- AgentProcess (spawn/stop/stream), AgentHandoff + DashboardHandoff models, notifications (desktop + Slack)
 - **`sova/knowledge/`** -- Memory CRUD + search + promote, tier loading, persona detection, review patterns
 - **`sova/commands/`** -- command distribution: catalog (discover + classify), templates (regex rendering), manifest (SHA-256 tracking), distribution (install/update/diff with conflict detection)

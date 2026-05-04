@@ -894,9 +894,9 @@ class TestHandoffToReviewerStep:
         step = HandoffToReviewerStep()
 
         with (
-            patch("sova.core.steps.handoff_to_reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.core.steps.handoff_to_reviewer.write_handoff_file") as mock_file,
-            patch("sova.core.steps.handoff_to_reviewer.notify"),
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps._handoff_helpers.write_handoff_file") as mock_file,
+            patch("sova.core.steps._handoff_helpers.notify"),
         ):
             result = await step.execute(ctx)
 
@@ -926,9 +926,9 @@ class TestHandoffToUserStep:
         step = HandoffToUserStep()
 
         with (
-            patch("sova.core.steps.handoff_to_user.write_handoff", new_callable=AsyncMock),
-            patch("sova.core.steps.handoff_to_user.write_handoff_file") as mock_file,
-            patch("sova.core.steps.handoff_to_user.notify"),
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps._handoff_helpers.write_handoff_file") as mock_file,
+            patch("sova.core.steps._handoff_helpers.notify"),
         ):
             result = await step.execute(ctx)
 
@@ -1653,7 +1653,7 @@ class TestRebaseWithConflictResolution:
     async def test_clean_rebase_no_conflicts(self) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
 
-        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
                 MagicMock(success=True, stdout=""),  # rebase (clean)
@@ -1668,8 +1668,8 @@ class TestRebaseWithConflictResolution:
         from sova.llm.models import LLMResult
 
         with (
-            patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.git.operations.invoke_command", new_callable=AsyncMock) as mock_llm,
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
@@ -1690,8 +1690,8 @@ class TestRebaseWithConflictResolution:
         from sova.git.operations import rebase_with_conflict_resolution
 
         with (
-            patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.git.operations.invoke_command", new_callable=AsyncMock) as mock_llm,
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
@@ -1709,7 +1709,7 @@ class TestRebaseWithConflictResolution:
     async def test_fetch_failure_returns_error(self) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
 
-        with patch("sova.git.operations.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=False, stderr="Could not resolve host")
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
 
