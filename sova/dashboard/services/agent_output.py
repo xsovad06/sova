@@ -7,7 +7,7 @@ import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sova.dashboard.services.agent_lifecycle import AgentState
+    from sova.dashboard.services.agent_pool import AgentState
 
 
 def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = None) -> list[str]:
@@ -17,7 +17,7 @@ def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = 
     Falls back to the persisted output file when the agent is not in memory.
     Otherwise returns output for the first (legacy single-agent compat).
     """
-    from sova.dashboard.services.agent_lifecycle import _get_project_agents
+    from sova.dashboard.services.agent_pool import _get_project_agents
     from sova.dashboard.services.output_service import read_lines
 
     pa = _get_project_agents(slug)
