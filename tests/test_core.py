@@ -1715,3 +1715,518 @@ class TestRebaseWithConflictResolution:
 
         assert not result.success
         assert "Fetch failed" in result.error
+
+
+# ---------------------------------------------------------------------------
+# SimplifyStep -- execute and validate_output
+# ---------------------------------------------------------------------------
+
+
+class TestSimplifyStep:
+    async def test_execute_calls_llm(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(
+                text="Simplified",
+                model="sonnet",
+                cost_usd=Decimal("0.03"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "Simplification pass completed" in result.summary
+        assert ctx.cost_usd == Decimal("0.03")
+        mock_invoke.assert_awaited_once()
+        assert mock_invoke.call_args[0][0] == "/simplify"
+
+    async def test_execute_handles_runtime_error(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.side_effect = RuntimeError("Claude CLI unavailable")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Claude CLI unavailable" in result.error
+
+    async def test_validate_output_passes_with_unstaged_changes(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" src/app.py | 5 +++++\n"),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # log
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_passes_with_commits_ahead(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout="abc123 feat: something\n"),  # log
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_fails_when_all_reverted(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # log
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "reverted" in gate.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# SelfReviewStep -- execute and validate_output
+# ---------------------------------------------------------------------------
+
+
+class TestSelfReviewStep:
+    async def test_execute_calls_review_command(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SelfReviewStep()
+
+        with patch("sova.core.steps.self_review.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(
+                text="Reviewed",
+                model="sonnet",
+                cost_usd=Decimal("0.02"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "Self-review completed" in result.summary
+        assert ctx.cost_usd == Decimal("0.02")
+        mock_invoke.assert_awaited_once()
+        assert mock_invoke.call_args[0][0] == "/review"
+
+    async def test_execute_handles_runtime_error(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SelfReviewStep()
+
+        with patch("sova.core.steps.self_review.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.side_effect = RuntimeError("LLM failed")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "LLM failed" in result.error
+
+    async def test_validate_output_checks_untracked_files(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SelfReviewStep()
+
+        with patch("sova.utils.shell.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout="new_file.py\n"),  # untracked
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_fails_when_all_lost(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SelfReviewStep()
+
+        with patch("sova.utils.shell.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # untracked
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "lost" in gate.reason.lower()
+
+    async def test_can_skip_when_review_disabled(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        config = ProjectConfig()
+        config.review.enabled = False
+        ctx = _make_ctx(config=config)
+        step = SelfReviewStep()
+        assert await step.can_skip(ctx)
+
+    async def test_can_skip_when_completed(self) -> None:
+        from sova.core.steps.self_review import SelfReviewStep
+
+        ctx = _make_ctx(completed_steps=frozenset({"self_review"}))
+        step = SelfReviewStep()
+        assert await step.can_skip(ctx)
+
+
+# ---------------------------------------------------------------------------
+# DevelopStep -- execute path
+# ---------------------------------------------------------------------------
+
+
+class TestDevelopStepExecute:
+    async def test_execute_calls_develop_command(self) -> None:
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "8000 tokens" in result.summary
+        assert ctx.cost_usd == Decimal("1.50")
+        assert ctx.session_id == "sess-123"
+        mock_invoke.assert_awaited_once()
+        assert mock_invoke.call_args.kwargs["args"] == "42"
+
+    async def test_execute_handles_runtime_error(self) -> None:
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.side_effect = RuntimeError("Timeout")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Timeout" in result.error
+
+    def test_max_retries_is_one(self) -> None:
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        assert step.max_retries == 1
+
+
+# ---------------------------------------------------------------------------
+# PushStep -- execute path
+# ---------------------------------------------------------------------------
+
+
+class TestPushStepExecute:
+    async def test_execute_calls_git_push(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "feat/test" in result.summary
+        mock_push.assert_awaited_once_with(
+            "feat/test",
+            force=False,
+            set_upstream=True,
+            cwd=Path("/tmp/worktree"),
+        )
+
+    async def test_execute_force_with_lease_when_pr_exists(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"), pr_number=42)
+        step = PushStep()
+
+        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_push.assert_awaited_once_with(
+            "feat/test",
+            force=True,
+            set_upstream=True,
+            cwd=Path("/tmp/worktree"),
+        )
+
+    async def test_execute_handles_push_failure(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.git_ops.push", new_callable=AsyncMock) as mock_push:
+            mock_push.side_effect = RuntimeError("Permission denied")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Permission denied" in result.error
+
+    async def test_validate_output_passes_with_commits(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="3\n")
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_fails_on_command_failure(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.run") as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="")
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "Failed to count" in gate.reason
+
+    async def test_validate_output_fails_on_bad_output(self) -> None:
+        from sova.core.steps.push import PushStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
+        step = PushStep()
+
+        with patch("sova.core.steps.push.run") as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="not-a-number\n")
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "Unexpected rev-list" in gate.reason
+
+
+# ---------------------------------------------------------------------------
+# AddressReviewStep -- findings loading and execute
+# ---------------------------------------------------------------------------
+
+
+class TestAddressReviewStepExecute:
+    async def test_execute_loads_findings_from_file(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        findings = [
+            {"file": "foo.py", "line": 10, "severity": 7, "category": "bug", "description": "Null check"},
+        ]
+        mock_handoff = MagicMock()
+        mock_handoff.details = {"findings": findings}
+
+        with (
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="sonnet",
+                cost_usd=Decimal("0.05"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 review findings" in result.summary
+        assert ctx.cost_usd == Decimal("0.05")
+        prompt = mock_invoke.call_args[0][0]
+        assert "Null check" in prompt
+        assert "foo.py:10" in prompt
+
+    async def test_execute_falls_back_to_db(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx.resume_run_id = 99
+        step = AddressReviewStep()
+
+        db_findings = [
+            {"file": "bar.py", "severity": 5, "category": "style", "description": "Formatting"},
+        ]
+
+        with (
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=None),
+            patch("sova.core.steps.address_review.read_handoff", new_callable=AsyncMock) as mock_db,
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_db_handoff = MagicMock()
+            mock_db_handoff.pending_findings = db_findings
+            mock_db.return_value = mock_db_handoff
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="sonnet",
+                cost_usd=Decimal("0.04"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 review findings" in result.summary
+        prompt = mock_invoke.call_args[0][0]
+        assert "Formatting" in prompt
+
+    async def test_execute_handles_llm_failure(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
+        mock_handoff = MagicMock()
+        mock_handoff.details = {"findings": findings}
+
+        with (
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_invoke.side_effect = RuntimeError("LLM crashed")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "LLM crashed" in result.error
+
+    async def test_validate_output_passes_with_staged_changes(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        with patch("sova.core.steps.address_review.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=" bar.py | 3 +++\n"),  # staged
+                MagicMock(success=True, stdout=""),  # log
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_fails_with_no_changes(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        with patch("sova.core.steps.address_review.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # log
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "No changes" in gate.reason
+
+
+# ---------------------------------------------------------------------------
+# AddressReviewStep helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestAddressReviewHelpers:
+    def test_format_findings_prompt(self) -> None:
+        from sova.core.steps.address_review import _format_findings_prompt
+
+        findings = [
+            {
+                "file": "a.py",
+                "line": 5,
+                "severity": 7,
+                "category": "bug",
+                "description": "Null ref",
+                "suggestion": "Add check",
+            },
+            {"file": "b.py", "severity": 3, "category": "style", "description": "Whitespace"},
+        ]
+        prompt = _format_findings_prompt(findings)
+        assert "a.py:5" in prompt
+        assert "Null ref" in prompt
+        assert "Add check" in prompt
+        assert "b.py" in prompt
+        assert "Whitespace" in prompt
+        assert "1." in prompt
+        assert "2." in prompt
+
+    def test_load_review_findings_from_handoff(self) -> None:
+        from sova.core.steps.address_review import _load_review_findings
+
+        mock_handoff = MagicMock()
+        mock_handoff.details = {"findings": [{"file": "x.py"}]}
+
+        with patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff):
+            findings = _load_review_findings(Path("/tmp"))
+
+        assert len(findings) == 1
+
+    def test_load_review_findings_returns_empty_when_no_handoff(self) -> None:
+        from sova.core.steps.address_review import _load_review_findings
+
+        with patch("sova.core.steps.address_review.read_handoff_file", return_value=None):
+            findings = _load_review_findings(Path("/tmp"))
+
+        assert findings == []
+
+    async def test_load_review_findings_from_db(self) -> None:
+        from sova.core.steps.address_review import _load_review_findings_from_db
+
+        mock_handoff = MagicMock()
+        mock_handoff.pending_findings = [{"file": "y.py"}]
+
+        with patch("sova.core.steps.address_review.read_handoff", new_callable=AsyncMock, return_value=mock_handoff):
+            findings = await _load_review_findings_from_db(99)
+
+        assert len(findings) == 1
+
+    async def test_load_review_findings_from_db_returns_empty_on_none_id(self) -> None:
+        from sova.core.steps.address_review import _load_review_findings_from_db
+
+        findings = await _load_review_findings_from_db(None)
+        assert findings == []
