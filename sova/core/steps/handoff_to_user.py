@@ -22,6 +22,7 @@ class HandoffToUserStep(BaseStep):
             role="developer",
             phase="address_review",
             summary=f"PR #{ctx.pr_number} reviewed and findings addressed -- ready for human review",
+            agent_summary=f"Review findings addressed for PR #{ctx.pr_number}, ready for human review",
             next_action="integrate",
             needs_human=True,
             human_message=f"PR #{ctx.pr_number} has been reviewed and findings addressed. Ready for your review.",

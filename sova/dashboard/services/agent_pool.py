@@ -11,9 +11,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.dashboard.project_context import get_project_dir, get_project_slug
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.dashboard.services.output_service import OutputWriter
+    from sova.ipc.control import AgentProcess
 
 log = get_logger(component="dashboard.pool")
 
@@ -30,9 +35,9 @@ class AgentState:
     run_id: int
     issue: str
     role: str
-    process: "AgentProcess"  # noqa: F821 -- forward ref to avoid import cycle
+    process: AgentProcess
     output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
-    output_writer: "OutputWriter | None" = None  # noqa: F821
+    output_writer: OutputWriter | None = None
     reader_task: asyncio.Task | None = None
     stderr_task: asyncio.Task | None = None
     started_at: float = field(default_factory=time.monotonic)

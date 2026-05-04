@@ -28,6 +28,7 @@ async def write_step_handoff(
     notification_message: str,
     notification_subtitle: str,
     result_summary: str,
+    agent_summary: str | None = None,
     needs_human: bool = False,
     human_message: str | None = None,
 ) -> StepResult:
@@ -35,7 +36,7 @@ async def write_step_handoff(
     agent_handoff = AgentHandoff(
         role=role,
         phase=phase,
-        summary=summary,
+        summary=agent_summary or summary,
         next_action=next_action,
         needs_human=needs_human,
         human_message=human_message or "",

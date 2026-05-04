@@ -22,6 +22,9 @@ class HandoffToReviewerStep(BaseStep):
             role="developer",
             phase="develop",
             summary=f"PR #{ctx.pr_number} ready for review (CI passed)",
+            agent_summary=(
+                f"Development complete for issue #{ctx.issue_number}, PR #{ctx.pr_number} created with passing CI"
+            ),
             next_action="review",
             actions=[
                 HandoffAction(
