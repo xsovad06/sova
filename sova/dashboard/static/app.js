@@ -482,11 +482,33 @@ function _clearGlobalBatch() {
 }
 
 /* ============================================================
-   8. INITIALIZATION
+   8. COLLAPSIBLE SIDEBAR
+   ============================================================ */
+
+function initSidebarCollapse() {
+  var btn = document.getElementById('sidebar-toggle');
+  if (!btn) return;
+  btn.addEventListener('click', toggleSidebar);
+}
+
+function toggleSidebar() {
+  var isCollapsed = document.body.dataset.sidebarCollapsed === 'true';
+  if (isCollapsed) {
+    delete document.body.dataset.sidebarCollapsed;
+    localStorage.removeItem('sova-sidebar-collapsed');
+  } else {
+    document.body.dataset.sidebarCollapsed = 'true';
+    localStorage.setItem('sova-sidebar-collapsed', '1');
+  }
+}
+
+/* ============================================================
+   9. INITIALIZATION
    ============================================================ */
 
 initColors();
 _initGithubRepo();
+initSidebarCollapse();
 if (document.getElementById('activity-dot')) {
   initBrowserNotifications();
   startSidebarPolling();
@@ -494,7 +516,7 @@ if (document.getElementById('activity-dot')) {
 initGlobalBatch();
 
 /* ============================================================
-   9. ROLE COLORS
+   10. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
@@ -537,7 +559,7 @@ function _commandToRole(role) {
 }
 
 /* ============================================================
-   10. STEP PIPELINE BAR
+   11. STEP PIPELINE BAR
    ============================================================ */
 
 var PIPELINE_STEPS = [
@@ -591,7 +613,7 @@ function formatElapsed(seconds) {
 }
 
 /* ============================================================
-   11. RUNS TABLE (shared)
+   12. RUNS TABLE (shared)
    ============================================================ */
 
 function renderRunsTable(runs, targetId) {
