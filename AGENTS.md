@@ -23,23 +23,23 @@ project-automation-kit/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, project, pr, admin, memory, migrate)
-    core/                          # Workflow engine, steps, state machine, context
+      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server)
+    core/                          # Workflow engine, steps, state machine, context, output writer
     roles/                         # Agent roles (triage, researcher, developer, reviewer, dispatcher)
-    adapters/                      # Task source plugins (github, jira, linear, manual)
+    adapters/                      # Task source plugins (github; jira, linear, manual planned)
     llm/                           # Claude CLI wrapper, cost tracking
-    git/                           # Git operations, worktree management
+    git/                           # Git operations (branch, pr, rebase), worktree management
     ipc/                           # Inter-process: handoff protocol, process control, notifications
     knowledge/                     # Memory CRUD, tier loading, personas, review patterns
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # API routes (overview, runs, costs, control, handoff, memory)
-      services/                    # Business logic (run, cost, memory, control, handoff)
+      routers/                     # 13 API routers (overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work)
+      services/                    # 19 services (run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     commands/                      # Command distribution (catalog, templates, manifest, distribution)
-    config/                        # Pydantic Settings + TOML config
+    config/                        # Pydantic Settings + TOML config + project registry + request context
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
   commands/                        # 22 standardized commands (markdown with category frontmatter)
@@ -50,10 +50,9 @@ project-automation-kit/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (725+ tests)
+  tests/                           # pytest suite (760+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
-    HEALTH-AUDIT.md                # Technical health audit with linked issues
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name

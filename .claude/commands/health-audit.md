@@ -44,13 +44,12 @@ development, self-review, PR creation, CI monitoring, and continuous learning.
   server (dashboard + scheduler).
 - **Deployment**: systemd + launchd service files, `sova server start/stop/status`.
 - **Key files**: `AGENTS.md` (conventions), `.claude/rules/architecture.md`
-  (component overview), `docs/REWRITE-PLAN.md` (phase history), `docs/VISION.md`
-  (roadmap).
+  (component overview), `docs/VISION.md` (roadmap).
 
 ## Procedure
 
 1. Read `AGENTS.md`, `CLAUDE.md`, and all `.claude/rules/*.md` for conventions.
-2. Read `docs/REWRITE-PLAN.md` and `docs/VISION.md` for architectural context.
+2. Read `docs/VISION.md` for architectural context and roadmap.
 3. Walk each module under `sova/`: core, roles, adapters, llm, git, ipc, knowledge,
    scheduler, dashboard, commands, config, db, cli, utils.
 4. If a focus area is specified, go deeper on that area; otherwise cover all modules.

@@ -41,6 +41,9 @@ project-automation-kit/
     AGENTS.md                    # Cross-AI-tool guidance
   docs/
     VISION.md                    # This file
+    design-system.md             # Dashboard design system reference
+    handoff-protocol.md          # Agent handoff protocol
+    naming-journey.md            # How SOVA got its name
 ```
 
 ## The Two Modes
@@ -195,7 +198,7 @@ sova status
 
 ## Migration Path
 
-### Phase 1: Merge Repos & Standardize Knowledge [IN PROGRESS]
+### Phase 1: Merge Repos & Standardize Knowledge [DONE]
 - [DONE] Merge Project-instructions commands into unified library (consolidated to 19)
 - [DONE] Reconcile overlapping commands (develop-full wraps develop, etc.)
 - [DONE] Convert all JIRA references to GitHub Issues
@@ -259,7 +262,7 @@ The current implementation handles the routing and config isolation. Key areas t
 
 1. **Home page as command center** — show cross-project summary: running agents, pending checkpoints, total daily cost, recent activity across all projects. Not just a link list.
 
-2. **Process isolation** — each project needs independent process state (PID, output buffer, notifications). Currently `process_service.py` has a single global `_process`. Needs a dict keyed by project slug.
+2. **Process isolation** — each project needs independent process state (PID, output buffer, notifications). Currently `agent_lifecycle.py` uses a `_projects` dict keyed by project slug with per-project `_ProjectAgents` instances. Further isolation (separate process groups, resource limits) is planned.
 
 3. **Cross-project cost dashboard** — aggregate view: "How much have I spent today across all projects?" with breakdown by project.
 

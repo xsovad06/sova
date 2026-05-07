@@ -43,18 +43,18 @@ Check the "Dependencies" section. If a dependency issue is still open, mark it a
 Present the recommended task with:
 - Why it's next (priority order, no blockers, phase sequencing)
 - Brief summary of what it involves (from issue body)
-- Link to the relevant section in `docs/REWRITE-PLAN.md`
+- Link to the relevant section in `docs/VISION.md`
 - Estimated scope (from issue acceptance criteria count)
 
 ### 5. When the User Selects
 
-- Read `docs/REWRITE-PLAN.md` for architectural context
+- Read `.claude/rules/architecture.md` and `docs/VISION.md` for architectural context
 - Read the full issue body for implementation details
 - Suggest: "Run `/develop-full <ISSUE_NUMBER>` to start working"
 
 ## Cross-References
 
-- **Architecture & plan**: `docs/REWRITE-PLAN.md`
+- **Architecture & plan**: `.claude/rules/architecture.md`, `docs/VISION.md`
 - **After selecting a task**: Run `/develop-full <ISSUE_NUMBER>`
 - **Daily overview**: Run `/standup`
 
