@@ -1771,7 +1771,7 @@ class TestWorkServiceDirect:
         result = await get_work_history(session, limit=2)
         assert len(result) == 2
 
-    async def test_get_work_history_limit_capped_at_200(self, session: AsyncSession) -> None:
+    async def test_get_work_history_accepts_large_limit(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_history
 
         now = datetime.now(timezone.utc)
@@ -1779,7 +1779,7 @@ class TestWorkServiceDirect:
             session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
 
         result = await get_work_history(session, limit=999)
-        assert len(result) <= 200
+        assert len(result) == 1
 
     async def test_get_work_summary(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_summary
