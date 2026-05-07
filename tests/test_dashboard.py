@@ -1711,3 +1711,379 @@ class TestSetupAPI:
         assert resp.status_code == 404
         data = resp.json()
         assert "Directory not found" in data["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Work Service -- direct service tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkServiceDirect:
+    """Direct tests for work_service functions, bypassing the API layer."""
+
+    async def test_get_work_history_all_statuses(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="2", role="dev", status="failed", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="3", role="dev", status="interrupted", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="4", role="dev", status="developing"))
+
+        result = await get_work_history(session)
+        statuses = {r["status"] for r in result}
+        assert statuses == {"done", "failed", "interrupted"}
+        assert all(r["issue_number"] != "4" for r in result)
+
+    async def test_get_work_history_status_filter(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="2", role="dev", status="failed", started_at=now, ended_at=now))
+
+        result = await get_work_history(session, status="done")
+        assert len(result) == 1
+        assert result[0]["status"] == "done"
+
+    async def test_get_work_history_role_filter(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="developer", status="done", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="2", role="triage", status="done", started_at=now, ended_at=now))
+
+        result = await get_work_history(session, role="triage")
+        assert len(result) == 1
+        assert result[0]["role"] == "triage"
+
+    async def test_get_work_history_limit_capped(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            for i in range(5):
+                session.add(TaskRun(issue_number=str(i), role="dev", status="done", started_at=now, ended_at=now))
+
+        result = await get_work_history(session, limit=2)
+        assert len(result) == 2
+
+    async def test_get_work_history_accepts_large_limit(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
+
+        result = await get_work_history(session, limit=999)
+        assert len(result) == 1
+
+    async def test_get_work_summary(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_summary
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="2", role="dev", status="failed", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="3", role="dev", status="developing", started_at=now))
+
+        summary = await get_work_summary(session)
+        assert summary["total"] == 3
+        assert summary["done"] == 1
+        assert summary["failed"] == 1
+        assert summary["active"] == 1
+
+    async def test_mark_run_failed(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import mark_run_failed
+
+        async with session.begin():
+            run = TaskRun(issue_number="1", role="dev", status="developing")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        result = await mark_run_failed(session, run_id, "Manually stopped")
+        assert result is not None
+        assert result["status"] == "failed"
+        assert result["error_message"] == "Manually stopped"
+
+    async def test_mark_run_failed_rejects_terminal(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import mark_run_failed
+
+        async with session.begin():
+            run = TaskRun(issue_number="1", role="dev", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        result = await mark_run_failed(session, run_id)
+        assert result is not None
+        assert "error" in result
+        assert "already done" in result["error"]
+
+    async def test_mark_run_failed_returns_none_for_missing(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import mark_run_failed
+
+        result = await mark_run_failed(session, 999)
+        assert result is None
+
+    async def test_list_runs_status_filter(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import list_runs
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now))
+            session.add(TaskRun(issue_number="2", role="dev", status="running", started_at=now))
+
+        result = await list_runs(session, status="running")
+        assert len(result) == 1
+        assert result[0]["status"] == "running"
+
+    async def test_get_runs_for_issue(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_runs_for_issue
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="42", role="dev", status="done", started_at=now))
+            session.add(TaskRun(issue_number="42", role="reviewer", status="done", started_at=now))
+            session.add(TaskRun(issue_number="99", role="dev", status="done", started_at=now))
+
+        result = await get_runs_for_issue(session, "#42")
+        assert len(result) == 2
+        assert all(r["issue_number"] == "42" for r in result)
+
+    async def test_terminal_set_includes_interrupted(self) -> None:
+        from sova.dashboard.services.work_service import _TERMINAL
+
+        assert "interrupted" in _TERMINAL
+        assert "done" in _TERMINAL
+        assert "failed" in _TERMINAL
+        assert "rejected" in _TERMINAL
+        assert "developing" not in _TERMINAL
+
+
+# ---------------------------------------------------------------------------
+# Agent Recovery -- direct service tests
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRecoveryDirect:
+    """Direct tests for agent_recovery functions."""
+
+    async def test_recover_stale_runs_dead_pid(self) -> None:
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="77",
+                role="developer",
+                status="running",
+                pid=999999,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+        assert interrupted[0]["issue"] == "77"
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+            assert updated.ended_at is not None
+            assert "restarted" in updated.error_message.lower()
+
+    async def test_recover_stale_runs_nil_pid(self) -> None:
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="78", role="dev", status="running", pid=None)
+            session.add(run)
+
+        interrupted = await recover_stale_runs()
+        assert len(interrupted) == 1
+
+    async def test_recover_stale_runs_skips_alive(self) -> None:
+        import os
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="79",
+                role="dev",
+                status="running",
+                pid=os.getpid(),
+            )
+            session.add(run)
+
+        interrupted = await recover_stale_runs()
+        assert len(interrupted) == 0
+
+    async def test_dismiss_interrupted_runs(self) -> None:
+        from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
+
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="80", role="dev", status="interrupted", pid=99999))
+            session.add(TaskRun(issue_number="81", role="dev", status="interrupted", pid=99998))
+            session.add(TaskRun(issue_number="82", role="dev", status="done"))
+
+        count = await dismiss_interrupted_runs()
+        assert count == 2
+
+        session2 = await get_session()
+        async with session2.begin():
+            from sqlalchemy import select
+
+            stmt = select(TaskRun).where(TaskRun.status == "interrupted")
+            result = await session2.execute(stmt)
+            remaining = result.scalars().all()
+            assert len(remaining) == 0
+
+
+# ---------------------------------------------------------------------------
+# Output service -- OutputWriter and read_lines
+# ---------------------------------------------------------------------------
+
+
+class TestOutputService:
+    """Tests for the output persistence layer."""
+
+    def test_output_writer_creates_file(self, tmp_path) -> None:
+        from sova.core.output import OutputWriter
+
+        writer = OutputWriter(tmp_path, run_id=1)
+        assert writer.path.exists()
+        writer.close()
+
+    def test_output_writer_write_and_read(self, tmp_path) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        writer = OutputWriter(tmp_path, run_id=2)
+        writer.write_line("Hello, world")
+        writer.write_line("Second line")
+        writer.close()
+
+        lines, total = read_lines(tmp_path, run_id=2)
+        assert total == 2
+        assert lines == ["Hello, world", "Second line"]
+
+    def test_output_writer_read_with_offset(self, tmp_path) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        writer = OutputWriter(tmp_path, run_id=3)
+        writer.write_line("Line 1")
+        writer.write_line("Line 2")
+        writer.write_line("Line 3")
+        writer.close()
+
+        lines, total = read_lines(tmp_path, run_id=3, since=1)
+        assert total == 3
+        assert lines == ["Line 2", "Line 3"]
+
+    def test_read_lines_missing_file(self, tmp_path) -> None:
+        from sova.core.output import read_lines
+
+        lines, total = read_lines(tmp_path, run_id=999)
+        assert lines == []
+        assert total == 0
+
+    def test_output_writer_strips_trailing_newlines(self, tmp_path) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        writer = OutputWriter(tmp_path, run_id=4)
+        writer.write_line("Line with newline\n")
+        writer.close()
+
+        lines, total = read_lines(tmp_path, run_id=4)
+        assert total == 1
+        assert lines == ["Line with newline"]
+
+    def test_output_path(self, tmp_path) -> None:
+        from sova.core.output import output_path
+
+        path = output_path(tmp_path, run_id=42)
+        assert path.name == "42.log"
+        assert ".claude/agent-output" in str(path)
+
+
+# ---------------------------------------------------------------------------
+# Agent Output -- stream-json parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseStreamLine:
+    """Tests for _parse_stream_line in agent_output.py."""
+
+    def _agent(self):
+        from unittest.mock import MagicMock
+
+        a = MagicMock()
+        a.last_result_cost = None
+        return a
+
+    def test_empty_line(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        assert _parse_stream_line("", self._agent()) == ""
+        assert _parse_stream_line("   ", self._agent()) == ""
+
+    def test_plain_text_passthrough(self) -> None:
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        assert _parse_stream_line("not json", self._agent()) == "not json"
+
+    def test_assistant_message(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        line = json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Hello"}]},
+            }
+        )
+        assert _parse_stream_line(line, self._agent()) == "Hello"
+
+    def test_content_block_delta(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        line = json.dumps(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "world"},
+            }
+        )
+        assert _parse_stream_line(line, self._agent()) == "world"
+
+    def test_result_captures_cost(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        agent = self._agent()
+        line = json.dumps({"type": "result", "total_cost_usd": 1.23})
+        result = _parse_stream_line(line, agent)
+        assert "$1.23" in result
+        assert agent.last_result_cost == 1.23
+
+    def test_unknown_type_returns_empty(self) -> None:
+        import json
+
+        from sova.dashboard.services.agent_output import _parse_stream_line
+
+        line = json.dumps({"type": "system", "data": {}})
+        assert _parse_stream_line(line, self._agent()) == ""
