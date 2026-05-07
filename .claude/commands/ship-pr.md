@@ -42,10 +42,26 @@ git checkout <HEAD_BRANCH>
 git rebase origin/<BASE_BRANCH>
 ```
 
-If there are merge conflicts:
+If there are merge conflicts, attempt to resolve them before giving up:
+
+1. Identify the conflicting files (`git diff --name-only --diff-filter=U`).
+2. For each conflicted file, read the full file, understand both sides of each conflict marker (`<<<<<<<` / `=======` / `>>>>>>>`), and choose the correct resolution (or merge both sides). Write the resolved content back and stage with `git add`.
+3. After resolving all files in the current rebase step, continue the rebase:
+   ```bash
+   GIT_EDITOR=true git rebase --continue
+   ```
+4. If more conflicts appear on subsequent commits, repeat steps 1-3 (up to 3 rebase steps total).
+5. After successful resolution, verify no conflict markers remain in the resolved files:
+   ```bash
+   grep -rn "<<<<<<< " <resolved_files>
+   ```
+   If any markers remain, abort the rebase (`git rebase --abort`) and write a failed handoff.
+
+If conflict resolution fails after 3 attempts, or if the conflicts are too complex to resolve confidently:
+- Run `git rebase --abort` to restore a clean state
 - Write a handoff with status `failed`, listing the conflicting files
-- Include a "Resolve conflicts" action that opens the worktree for manual resolution
-- Stop -- do not attempt to auto-resolve conflicts
+- Include "Resolve conflicts" and "Retry" actions
+- Stop
 
 ### 3. Push
 
