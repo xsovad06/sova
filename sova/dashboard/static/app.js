@@ -495,9 +495,11 @@ function toggleSidebar() {
   var isCollapsed = document.body.dataset.sidebarCollapsed === 'true';
   if (isCollapsed) {
     delete document.body.dataset.sidebarCollapsed;
+    document.documentElement.style.removeProperty('--sidebar-width');
     localStorage.removeItem('sova-sidebar-collapsed');
   } else {
     document.body.dataset.sidebarCollapsed = 'true';
+    document.documentElement.style.setProperty('--sidebar-width', '64px');
     localStorage.setItem('sova-sidebar-collapsed', '1');
   }
 }

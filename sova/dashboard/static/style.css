@@ -91,7 +91,6 @@
 
   /* --- Layout tokens --- */
   --sidebar-width: 256px;
-  --sidebar-collapsed-width: 64px;
 }
 
 /* ============================================================
@@ -351,16 +350,20 @@
 }
 
 body[data-sidebar-collapsed="true"] {
-  --sidebar-width: var(--sidebar-collapsed-width);
+  --sidebar-width: 64px;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-label,
 body[data-sidebar-collapsed="true"] .sidebar-logo-text {
   opacity: 0;
   width: 0;
+  min-width: 0;
   margin: 0;
+  padding: 0;
+  flex: 0 0 0px;
   transition: opacity 100ms ease, width 100ms ease;
   pointer-events: none;
+  overflow: hidden;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-hide {
@@ -371,8 +374,12 @@ body[data-sidebar-collapsed="true"] .sidebar-collapse-icon {
   transform: rotate(180deg);
 }
 
+body[data-sidebar-collapsed="true"] .sidebar {
+  overflow: hidden;
+}
+
 body[data-sidebar-collapsed="true"] .sidebar-logo-section {
-  padding: 0.75rem 0.5rem;
+  padding: 0.75rem 0.5rem !important;
   justify-content: center;
 }
 
@@ -381,13 +388,13 @@ body[data-sidebar-collapsed="true"] .sidebar-logo-link {
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-nav-link {
-  padding-left: 0;
-  padding-right: 0;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
   justify-content: center;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-icon-wrap {
-  margin-right: 0;
+  margin-right: 0 !important;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-toggle-btn {
