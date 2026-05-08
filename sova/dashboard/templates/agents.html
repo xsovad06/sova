@@ -68,7 +68,7 @@
     </div>
     <div id="handoff-panel-actions" class="flex flex-wrap gap-2"></div>
     <div class="mt-3 border-t border-gray-700/30 pt-3">
-      <button onclick="dismissHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+      <button onclick="dismissHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss this handoff">
         Dismiss
       </button>
     </div>
@@ -87,7 +87,7 @@
 <div id="log-viewer" class="hidden bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">
   <div class="flex items-center border-b border-gray-700/50">
     <div id="log-tabs" class="flex flex-1 overflow-x-auto"></div>
-    <button onclick="closeLogViewer()" class="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors">Close</button>
+    <button onclick="closeLogViewer()" class="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors" data-tooltip="Close log viewer">Close</button>
   </div>
   <div id="log-content" class="p-4 font-mono text-xs text-gray-300 max-h-[500px] overflow-y-auto whitespace-pre-wrap"></div>
 </div>
@@ -280,23 +280,28 @@ function renderPrActionsPanel(pr, issueNumber) {
   var actionsHtml = '';
   if (readyToIntegrate) {
     actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-4 py-2 rounded text-sm font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30 transition-colors">' +
+      'class="px-4 py-2 rounded text-sm font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30 transition-colors" ' +
+      'data-tooltip="Rebase, push, merge, and clean up">' +
       'Integrate PR</button>';
     actionsHtml += '<button onclick="runCommand(\'approve-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors">' +
+      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
+      'data-tooltip="Merge without full integration">' +
       'Merge Only</button>';
   } else if (pr.state === 'OPEN' && pr.review_decision === 'CHANGES_REQUESTED') {
     actionsHtml += '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors">' +
+      'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
+      'data-tooltip="Send agent to address review feedback">' +
       'Address Review</button>';
   } else if (pr.state === 'OPEN') {
     actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors">' +
+      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
+      'data-tooltip="Rebase, push, merge, and clean up">' +
       'Integrate PR</button>';
   }
   if (pr.state === 'MERGED') {
     actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors">' +
+      'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors" ' +
+      'data-tooltip="Run post-merge cleanup tasks">' +
       'Post-Merge Cleanup</button>';
   }
   buttons.innerHTML = actionsHtml;
@@ -430,11 +435,11 @@ function renderAgentCard(agent, completed) {
     '<div class="mb-3">' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
-      '<button onclick="viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors">' +
+      '<button onclick="viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
       (agent.source !== 'external'
-        ? '<button onclick="stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors">Stop</button>'
+        ? '<button onclick="stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors" data-tooltip="Stop this agent">Stop</button>'
         : '') +
     '</div>' +
   '</div>';
@@ -451,7 +456,7 @@ function renderCompletedCard(agent) {
 
   var rerunBtn = agent.status === 'failed'
     ? '<button onclick="rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
-        'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors">Re-run</button>'
+        'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>'
     : '';
 
   return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all">' +
@@ -659,7 +664,7 @@ async function checkHandoffForAgents(agents) {
                        action.style === 'danger' ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' :
                        'bg-accent/20 text-accent hover:bg-accent/30';
         return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
-          'class="px-3 py-1.5 rounded text-xs transition-colors ' + btnStyle + '" title="' + escapeHtml(action.description || '') + '">' +
+          'class="px-3 py-1.5 rounded text-xs transition-colors ' + btnStyle + '" data-tooltip="' + escapeHtml(action.description || '') + '">' +
           escapeHtml(action.label) + '</button>';
       }).join(' ');
 
@@ -769,7 +774,7 @@ async function checkInterrupted() {
           '<span class="text-sm font-medium text-accent-yellow">Interrupted Runs</span>' +
           '<span class="text-xs text-gray-500">Dashboard was restarted while these were running</span>' +
         '</div>' +
-        '<button onclick="dismissInterrupted()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors">Dismiss all</button>' +
+        '<button onclick="dismissInterrupted()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors" data-tooltip="Clear interrupted run alerts">Dismiss all</button>' +
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {

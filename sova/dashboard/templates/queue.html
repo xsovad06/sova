@@ -21,16 +21,16 @@
       <div class="w-px h-5 bg-gray-700"></div>
       <button id="bulk-triage-btn" onclick="executeBulkAction('triage')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled>Triage</button>
+        disabled data-tooltip="Run triage on selected issues">Triage</button>
       <button id="bulk-harden-btn" onclick="executeBulkAction('harden')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled>Harden</button>
+        disabled data-tooltip="Run spec hardening on selected issues">Harden</button>
       <button id="bulk-run-btn" onclick="executeBulkAction('run')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled>Run</button>
+        disabled data-tooltip="Start agents for selected issues">Run</button>
     </div>
     <div class="flex items-center gap-3">
-      <button onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
+      <button onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors" data-tooltip="Clear selection">
         Deselect
       </button>
     </div>
@@ -97,8 +97,10 @@ function renderStartButton(item) {
     return '<button disabled class="px-3 py-1.5 rounded text-xs bg-gray-700/30 text-gray-600 cursor-not-allowed">Running</button>';
   }
   var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
+  var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start agent for this issue';
   return '<button onclick="startFromQueue(\'' + escapeHtml(item.issue) + '\', event)" ' +
-    'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">' +
+    'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
+    'data-tooltip="' + tooltip + '">' +
     label + '</button>';
 }
 

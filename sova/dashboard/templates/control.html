@@ -11,7 +11,8 @@
   </div>
   <span id="status-pid" class="text-xs text-gray-500"></span>
   <div class="ml-auto flex items-center gap-2">
-    <button id="stop-btn" onclick="stopAgent()" class="hidden text-xs px-3 py-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors">
+    <button id="stop-btn" onclick="stopAgent()" class="hidden text-xs px-3 py-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors"
+      data-tooltip="Send SIGTERM to running agent">
       Stop Agent
     </button>
   </div>
@@ -28,7 +29,7 @@
       <div class="flex items-center gap-2">
         <span id="handoff-issue" class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple"></span>
         <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent/20 text-accent"></span>
-        <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Dismiss handoff">
+        <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss handoff">
           Dismiss
         </button>
       </div>
@@ -58,7 +59,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-green"></span>
         <h3 class="text-sm font-medium text-accent-green">Workflow Complete</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss completion">
         Dismiss
       </button>
     </div>
@@ -77,7 +78,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-red"></span>
         <h3 class="text-sm font-medium text-accent-red">Workflow Failed</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss failure">
         Dismiss
       </button>
     </div>
@@ -99,7 +100,7 @@
       </div>
       <div class="flex items-center gap-3">
         <span id="complete-cost" class="text-xs text-gray-500"></span>
-        <button onclick="dismissComplete()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Dismiss</button>
+        <button onclick="dismissComplete()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss">Dismiss</button>
       </div>
     </div>
     <div class="px-4 py-3 border-t border-gray-700/50">
@@ -147,7 +148,7 @@
     <h3 class="text-sm font-medium text-gray-400">Agent Output</h3>
     <div class="flex items-center gap-3">
       <span class="text-xs text-gray-600" id="output-count"></span>
-      <button onclick="clearOutput()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Clear</button>
+      <button onclick="clearOutput()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Clear output display">Clear</button>
     </div>
   </div>
   <div class="p-4 max-h-[600px] overflow-y-auto text-sm leading-relaxed" id="agent-output">
@@ -368,7 +369,7 @@ function renderActionButtons(actions, targetEl, variant) {
     if (variant === 'full') {
       return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
         'class="flex flex-col items-start px-4 py-3 rounded-lg transition-colors ' + style.btn + ' min-w-[140px]" ' +
-        'title="' + escapeHtml(action.description) + '">' +
+        'data-tooltip="' + escapeHtml(action.description) + '">' +
         '<div class="flex items-center gap-2 mb-1">' +
         '<span class="w-1.5 h-1.5 rounded-full ' + style.dot + '"></span>' +
         '<span class="text-sm font-medium">' + escapeHtml(action.label) + '</span>' +
@@ -378,7 +379,7 @@ function renderActionButtons(actions, targetEl, variant) {
     }
     return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
       'class="px-3 py-1.5 rounded text-xs transition-colors ' + style.btn + '" ' +
-      'title="' + escapeHtml(action.description) + '">' +
+      'data-tooltip="' + escapeHtml(action.description) + '">' +
       escapeHtml(action.label) + '</button>';
   }).join('');
 }

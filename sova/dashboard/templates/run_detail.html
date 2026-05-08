@@ -44,11 +44,14 @@
 <!-- Tab bar -->
 <div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
   <button onclick="switchDetailTab('steps')" id="dtab-steps"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white">Steps</button>
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white"
+    data-tooltip="Step-by-step execution timeline" data-tooltip-pos="bottom">Steps</button>
   <button onclick="switchDetailTab('output')" id="dtab-output"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300">Output</button>
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
+    data-tooltip="Raw agent output" data-tooltip-pos="bottom">Output</button>
   <button onclick="switchDetailTab('error')" id="dtab-error"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300 hidden">Error</button>
+    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300 hidden"
+    data-tooltip="Error details" data-tooltip-pos="bottom">Error</button>
 </div>
 
 <!-- Steps tab -->
@@ -77,10 +80,12 @@
 
 <!-- Actions -->
 <div id="actions-section" class="mt-2 flex items-center gap-3">
-  <button id="btn-resume" onclick="resumeRun()" class="hidden px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
+  <button id="btn-resume" onclick="resumeRun()" class="hidden px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors"
+    data-tooltip="Resume from where it stopped">
     Resume
   </button>
-  <button id="btn-mark-failed" onclick="markFailed()" class="hidden px-4 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors">
+  <button id="btn-mark-failed" onclick="markFailed()" class="hidden px-4 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors"
+    data-tooltip="Manually mark this run as failed">
     Mark as Failed
   </button>
 </div>

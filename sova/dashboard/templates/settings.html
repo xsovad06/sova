@@ -58,7 +58,7 @@ async function loadConfig() {
         '<td class="px-4 py-2 text-xs font-mono text-gray-400">' + escapeHtml(key) + '</td>' +
         '<td class="px-4 py-2 text-xs">' +
           '<span class="config-val text-gray-300" data-key="' + escapeHtml(key) + '">' + escapeHtml(displayVal) + '</span>' +
-          '<button onclick="editConfig(\'' + escapeHtml(key) + '\', this)" class="ml-2 text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">edit</button>' +
+          '<button onclick="editConfig(\'' + escapeHtml(key) + '\', this)" class="ml-2 text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity" data-tooltip="Edit this value">edit</button>' +
         '</td>' +
       '</tr>';
     }).join('');
