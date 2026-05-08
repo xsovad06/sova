@@ -489,18 +489,24 @@ function initSidebarCollapse() {
   var btn = document.getElementById('sidebar-toggle');
   if (!btn) return;
   btn.addEventListener('click', toggleSidebar);
+  if (document.body.dataset.sidebarCollapsed === 'true') {
+    btn.setAttribute('data-tooltip', 'Expand');
+  }
 }
 
 function toggleSidebar() {
   var isCollapsed = document.body.dataset.sidebarCollapsed === 'true';
+  var btn = document.getElementById('sidebar-toggle');
   if (isCollapsed) {
     delete document.body.dataset.sidebarCollapsed;
     document.documentElement.style.removeProperty('--sidebar-width');
     localStorage.removeItem('sova-sidebar-collapsed');
+    if (btn) btn.setAttribute('data-tooltip', 'Collapse');
   } else {
     document.body.dataset.sidebarCollapsed = 'true';
     document.documentElement.style.setProperty('--sidebar-width', '64px');
     localStorage.setItem('sova-sidebar-collapsed', '1');
+    if (btn) btn.setAttribute('data-tooltip', 'Expand');
   }
 }
 
