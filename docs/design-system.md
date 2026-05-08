@@ -180,6 +180,45 @@ Auto-dismiss after 6 seconds, max 3 visible, stacked top-right.
 Fire via `_addNotification()` when tab is unfocused. Uses the Web Notification API
 with SOVA favicon as icon. Permission is requested via a banner on first visit.
 
+## Tooltips
+
+Pure CSS tooltips using `::after` pseudo-elements. No JavaScript required.
+
+### Usage
+
+Add `data-tooltip="text"` to any element:
+
+```html
+<button data-tooltip="Save changes">Save</button>
+```
+
+### Position Variants
+
+Control position with `data-tooltip-pos` (default: `top`):
+
+| Value | Position | When to use |
+|-------|----------|-------------|
+| `top` (default) | Above element | Most buttons |
+| `bottom` | Below element | Top-of-page buttons, tab bars |
+| `left` | Left of element | Right-aligned buttons |
+| `right` | Right of element | Sidebar items |
+
+```html
+<button data-tooltip="Filter" data-tooltip-pos="bottom">ALL</button>
+```
+
+### Sidebar Behavior
+
+Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS -- any `[data-tooltip]` inside `.sidebar` follows this rule.
+
+### Disabled Buttons
+
+Tooltips are hidden on `disabled` or `aria-disabled="true"` elements.
+
+### Styling
+
+Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-text` color, `0.75rem` font, 150ms fade transition. Defined in `style.css` Section 6.
+
 ## Layout Tokens
 
 | Token | Value | Usage |

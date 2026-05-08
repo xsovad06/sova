@@ -260,6 +260,37 @@
   </div>
 </section>
 
+<!-- 12. Tooltips -->
+<section class="mb-10">
+  <h3 class="text-lg font-semibold mb-4">Tooltips</h3>
+  <div class="sova-card">
+    <div class="sova-card-body space-y-6">
+      <div>
+        <span class="text-xs text-gray-500 uppercase tracking-wide block mb-3">Position Variants</span>
+        <div class="flex flex-wrap gap-6 items-center justify-center py-8">
+          <button class="sova-btn sova-btn-primary" data-tooltip="Tooltip on top (default)">Top</button>
+          <button class="sova-btn sova-btn-success" data-tooltip="Tooltip on bottom" data-tooltip-pos="bottom">Bottom</button>
+          <button class="sova-btn sova-btn-warning" data-tooltip="Tooltip on left" data-tooltip-pos="left">Left</button>
+          <button class="sova-btn sova-btn-danger" data-tooltip="Tooltip on right" data-tooltip-pos="right">Right</button>
+        </div>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <span class="text-xs text-gray-500 uppercase tracking-wide block mb-3">Disabled State</span>
+        <div class="flex gap-4 items-center">
+          <button class="sova-btn sova-btn-primary" data-tooltip="This tooltip shows" disabled>Disabled (no tooltip)</button>
+        </div>
+      </div>
+      <div class="border-t border-gray-700/30 pt-4">
+        <p class="text-xs text-gray-500">
+          Usage: add <code class="text-accent bg-surface px-1 py-0.5 rounded text-xs">data-tooltip="text"</code> to any element.
+          Position: <code class="text-accent bg-surface px-1 py-0.5 rounded text-xs">data-tooltip-pos="top|bottom|left|right"</code> (default: top).
+          Sidebar tooltips only appear when collapsed.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
 {% endblock %}
 
 {% block scripts %}
