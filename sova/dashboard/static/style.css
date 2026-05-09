@@ -307,7 +307,9 @@
 
 .sidebar-label {
   opacity: 1;
-  transition: opacity 150ms ease 150ms;
+  max-width: 150px;
+  min-width: 0;
+  transition: max-width 300ms ease, opacity 150ms ease 150ms, margin 300ms ease;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -322,7 +324,9 @@
 
 .sidebar-logo-text {
   opacity: 1;
-  transition: opacity 150ms ease 150ms, width 300ms ease, margin 300ms ease;
+  max-width: 150px;
+  min-width: 0;
+  transition: max-width 300ms ease, opacity 150ms ease 150ms, margin 300ms ease;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -356,12 +360,10 @@ body[data-sidebar-collapsed="true"] {
 body[data-sidebar-collapsed="true"] .sidebar-label,
 body[data-sidebar-collapsed="true"] .sidebar-logo-text {
   opacity: 0;
-  width: 0;
-  min-width: 0;
+  max-width: 0;
   margin: 0;
   padding: 0;
-  flex: 0 0 0px;
-  transition: opacity 100ms ease, width 100ms ease;
+  transition: max-width 300ms ease, opacity 150ms ease, margin 300ms ease;
   pointer-events: none;
   overflow: hidden;
 }
@@ -374,44 +376,17 @@ body[data-sidebar-collapsed="true"] .sidebar-collapse-icon {
   transform: rotate(180deg);
 }
 
-body[data-sidebar-collapsed="true"] .sidebar {
-  overflow: hidden;
-}
-
 body[data-sidebar-collapsed="true"] .sidebar-logo-section {
   padding: 0.75rem 0.5rem !important;
-  justify-content: center;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-logo-link {
   gap: 0;
 }
 
-body[data-sidebar-collapsed="true"] .sidebar-nav-link {
-  padding-left: 0 !important;
-  padding-right: 0 !important;
-  justify-content: center;
-}
-
-body[data-sidebar-collapsed="true"] .sidebar-icon-wrap {
-  margin-right: 0 !important;
-}
-
-body[data-sidebar-collapsed="true"] .sidebar-toggle-btn {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
 body[data-sidebar-collapsed="true"] .sidebar-divider {
   margin-left: 1rem;
   margin-right: 1rem;
-}
-
-body[data-sidebar-collapsed="true"] .sidebar-footer {
-  justify-content: center;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
 }
 
 /* Sidebar tooltips: only visible when collapsed (inherits styling from Section 6) */
