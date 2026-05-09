@@ -99,6 +99,7 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
     from sova.roles.reviewer import ReviewerRole
+    from sova.utils.gh import resolve_linked_issue
 
     resolved_dir = project_dir or Path.cwd()
     config = load_config(resolved_dir)
@@ -109,11 +110,20 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
 
     console.print(f"[bold]Reviewing PR #{pr}...[/bold]")
 
+    issue_number = await resolve_linked_issue(
+        pr,
+        repo=config.github_repo,
+        github_user=config.github_user,
+    )
+    if not issue_number:
+        console.print(f"[yellow]Could not resolve linked issue from PR #{pr}, using PR number.[/yellow]")
+        issue_number = str(pr)
+
     ctx = ExecutionContext(
         project_dir=resolved_dir,
         config=config,
         adapter=adapter,
-        issue_number=str(pr),
+        issue_number=issue_number,
         role="reviewer",
         pr_number=pr,
     )

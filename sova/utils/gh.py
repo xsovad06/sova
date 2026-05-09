@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -38,3 +40,48 @@ async def resolve_gh_env(github_user: str | None) -> dict[str, str] | None:
         return None
 
     return {**os.environ, "GH_TOKEN": token}
+
+
+_CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+
+
+async def resolve_linked_issue(
+    pr_number: int,
+    *,
+    repo: str,
+    github_user: str | None = None,
+) -> str | None:
+    """Extract the linked issue number from a PR body (e.g. 'Closes #26').
+
+    Returns the issue number as a string, or None if no link is found.
+    """
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "body",
+        env=env,
+    )
+    if not result.success:
+        log.warning("gh.pr_view_failed", pr=pr_number, stderr=result.stderr[:200])
+        return None
+
+    try:
+        body = json.loads(result.stdout).get("body", "")
+    except (json.JSONDecodeError, TypeError):
+        log.warning("gh.pr_body_parse_failed", pr=pr_number)
+        return None
+
+    match = _CLOSES_RE.search(body)
+    if match:
+        issue_num = match.group(1)
+        log.info("gh.resolved_linked_issue", pr=pr_number, issue=issue_num)
+        return issue_num
+
+    log.warning("gh.no_linked_issue", pr=pr_number)
+    return None
