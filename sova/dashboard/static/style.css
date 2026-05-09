@@ -389,21 +389,6 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   margin-right: 1rem;
 }
 
-/* Sidebar tooltips: only visible when collapsed (inherits styling from Section 6) */
-.sidebar [data-tooltip]::after {
-  display: none;
-}
-
-body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
-  display: block;
-  bottom: auto;
-  left: 100%;
-  top: 50%;
-  transform: translateY(-50%);
-  margin-bottom: 0;
-  margin-left: 0.5rem;
-}
-
 /* ============================================================
    6. REUSABLE TOOLTIPS
    ============================================================ */
@@ -462,6 +447,21 @@ body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
 
 /* Position: right */
 [data-tooltip][data-tooltip-pos="right"]::after {
+  bottom: auto;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-bottom: 0;
+  margin-left: 0.5rem;
+}
+
+/* Sidebar tooltips: only visible when collapsed */
+.sidebar [data-tooltip]::after {
+  display: none;
+}
+
+body[data-sidebar-collapsed="true"] .sidebar [data-tooltip]::after {
+  display: block;
   bottom: auto;
   left: 100%;
   top: 50%;
