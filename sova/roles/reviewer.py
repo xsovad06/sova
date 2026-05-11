@@ -286,6 +286,33 @@ class ReviewerRole(AgentRole):
         # Write handoff
         await self._write_handoff(ctx, review)
 
+        # Extract learnings from this review
+        try:
+            from sova.knowledge.extraction import extract_memories
+
+            await extract_memories(
+                role="reviewer",
+                issue_number=ctx.issue_number,
+                repo=ctx.repo,
+                task_title=task.title,
+                files_changed=[],
+                step_summaries=[f"review: {len(review.findings)} findings"],
+                review_findings=[
+                    {
+                        "file": f.file,
+                        "line": f.line,
+                        "severity": f.severity,
+                        "category": f.category,
+                        "description": f.description,
+                        "suggestion": f.suggestion,
+                    }
+                    for f in review.findings
+                ],
+                cwd=ctx.working_dir,
+            )
+        except Exception:
+            log.warning("reviewer.extract_memory_failed", exc_info=True)
+
         total_count = len(review.findings)
         log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
 

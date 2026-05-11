@@ -972,6 +972,7 @@ class TestStepRegistry:
             "push",
             "create_pr",
             "monitor_ci",
+            "extract_memory",
             "handoff_to_reviewer",
         ]
 
@@ -986,6 +987,7 @@ class TestStepRegistry:
             "commit",
             "validate",
             "push",
+            "extract_memory",
             "handoff_to_user",
         ]
 

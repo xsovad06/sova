@@ -12,6 +12,7 @@ from sova.core.steps.commit import CommitStep
 from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
 from sova.core.steps.develop import DevelopStep
+from sova.core.steps.extract_memory import ExtractMemoryStep
 from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.handoff_to_user import HandoffToUserStep
 from sova.core.steps.monitor_ci import MonitorCIStep
@@ -41,6 +42,7 @@ def get_developer_steps() -> list[BaseStep]:
         PushStep(),
         CreatePRStep(),
         MonitorCIStep(),
+        ExtractMemoryStep(),
         HandoffToReviewerStep(),
     ]
 
@@ -57,6 +59,7 @@ def get_address_review_steps() -> list[BaseStep]:
         CommitStep(),
         ValidateStep(),
         PushStep(),
+        ExtractMemoryStep(),
         HandoffToUserStep(),
     ]
 

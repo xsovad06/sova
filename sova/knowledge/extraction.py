@@ -1,0 +1,284 @@
+"""Automatic memory extraction from agent runs.
+
+Extracts reusable learnings from an agent's completed run context via a
+single LLM call (Haiku). Stores results to the Memory DB table with
+deduplication and confirmation counter tracking.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+
+from sova.knowledge import memory
+from sova.llm.client import invoke
+from sova.utils.logging import get_logger
+
+log = get_logger(component="knowledge.extraction")
+
+_VALID_CATEGORIES = frozenset({"learning", "review_pattern", "common_mistake", "task_insight"})
+_CONFIRMATION_RE = re.compile(r"\[confirmed:\s*(\d+)\]")
+_PROMOTION_THRESHOLD = 3
+
+
+@dataclass
+class ExtractedMemory:
+    """A single learning extracted by the LLM."""
+
+    category: str
+    title: str
+    content: str
+    tags: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractionResult:
+    """Summary of an extraction run."""
+
+    memories_stored: int = 0
+    memories_skipped: int = 0
+    memories_confirmed: int = 0
+    cost_usd: Decimal = Decimal("0")
+    error: str | None = None
+
+
+async def extract_memories(
+    *,
+    role: str,
+    issue_number: str,
+    repo: str,
+    task_title: str,
+    files_changed: list[str],
+    step_summaries: list[str],
+    review_findings: list[dict] | None = None,
+    cwd: Path | str,
+) -> ExtractionResult:
+    """Extract reusable learnings from a completed agent run.
+
+    Makes a single Haiku LLM call to analyze the run context, then stores
+    any novel learnings to the Memory DB. Non-fatal: never raises.
+    """
+    result = ExtractionResult()
+
+    try:
+        prompt = _build_extraction_prompt(
+            role=role,
+            task_title=task_title,
+            files_changed=files_changed,
+            step_summaries=step_summaries,
+            review_findings=review_findings,
+        )
+
+        llm_result = await invoke(prompt, model="haiku", cwd=cwd, timeout=60)
+        result.cost_usd = llm_result.cost_usd
+
+        memories = _parse_extraction_response(llm_result.text)
+        if not memories:
+            log.info("extraction.no_learnings", role=role, issue=issue_number)
+            return result
+
+        for mem in memories:
+            outcome = await _deduplicate_and_store(mem, repo=repo, issue_number=issue_number)
+            if outcome == "stored":
+                result.memories_stored += 1
+            elif outcome == "confirmed":
+                result.memories_confirmed += 1
+            else:
+                result.memories_skipped += 1
+
+        log.info(
+            "extraction.done",
+            role=role,
+            issue=issue_number,
+            stored=result.memories_stored,
+            confirmed=result.memories_confirmed,
+            skipped=result.memories_skipped,
+        )
+
+    except Exception as exc:
+        result.error = str(exc)
+        log.warning("extraction.failed", role=role, issue=issue_number, exc_info=True)
+
+    return result
+
+
+def _build_extraction_prompt(
+    *,
+    role: str,
+    task_title: str,
+    files_changed: list[str],
+    step_summaries: list[str],
+    review_findings: list[dict] | None = None,
+) -> str:
+    """Build the LLM prompt for knowledge extraction."""
+    files_section = "\n".join(f"- {f}" for f in files_changed[:30]) if files_changed else "- (none)"
+    steps_section = "\n".join(f"- {s}" for s in step_summaries) if step_summaries else "- (none)"
+
+    findings_section = ""
+    if review_findings:
+        findings_lines = []
+        for f in review_findings[:20]:
+            loc = f"{f.get('file', '?')}:{f.get('line', '?')}"
+            findings_lines.append(
+                f"- [{f.get('severity', '?')}/10] [{f.get('category', '?')}] {loc}: {f.get('description', '')}"
+            )
+        findings_section = f"\n\n## Review Findings\n{chr(10).join(findings_lines)}"
+
+    return f"""You are a knowledge extraction assistant for an autonomous software development agent. \
+Analyze the following completed agent run and extract 0-5 reusable learnings.
+
+## Run Context
+- Role: {role}
+- Task: {task_title}
+- Files changed:
+{files_section}
+- Pipeline steps:
+{steps_section}{findings_section}
+
+## Categories
+- learning: Framework, ORM, library, or domain patterns discovered during development
+- review_pattern: Code quality patterns worth applying to future PRs
+- common_mistake: Errors encountered and corrected that should be checked pre-emptively
+- task_insight: Codebase structure, complexity, or approach insights for future similar tasks
+
+## Rules
+- Return ONLY learnings that are reusable across future tasks in this project
+- Skip routine operations (commit, push, CI pass) unless something novel happened
+- Each learning must be actionable -- a future agent reading it should know exactly what to do
+- Include the WHY, not just the WHAT
+- Do NOT include task-specific details (issue numbers, branch names, PR numbers)
+- Return an empty array if nothing novel was discovered -- most routine runs produce zero learnings
+
+## Output Format
+Return ONLY a JSON array (no markdown fences, no extra text):
+[
+  {{
+    "category": "learning|review_pattern|common_mistake|task_insight",
+    "title": "Short descriptive title (max 100 chars)",
+    "content": "Actionable description of the pattern and why it matters",
+    "tags": ["relevant", "tags"]
+  }}
+]
+
+Return [] if nothing worth remembering."""
+
+
+def _parse_extraction_response(text: str) -> list[ExtractedMemory]:
+    """Parse LLM JSON response into ExtractedMemory objects."""
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            try:
+                data = json.loads(text[start:end])
+            except json.JSONDecodeError:
+                log.warning("extraction.parse_failed", text_preview=text[:200])
+                return []
+        else:
+            log.warning("extraction.parse_failed", text_preview=text[:200])
+            return []
+
+    if not isinstance(data, list):
+        log.warning("extraction.not_array", type=type(data).__name__)
+        return []
+
+    memories = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        category = item.get("category", "learning")
+        if category not in _VALID_CATEGORIES:
+            category = "learning"
+
+        title = item.get("title", "").strip()
+        content = item.get("content", "").strip()
+        if not title or not content:
+            continue
+
+        memories.append(
+            ExtractedMemory(
+                category=category,
+                title=title[:200],
+                content=content,
+                tags=item.get("tags", []),
+            )
+        )
+
+    return memories[:5]
+
+
+async def _deduplicate_and_store(
+    mem: ExtractedMemory,
+    *,
+    repo: str,
+    issue_number: str,
+) -> str:
+    """Check for duplicates, bump confirmation counters, or store new.
+
+    Returns "stored", "confirmed", or "skipped".
+    """
+    existing = await memory.search(category=mem.category, query=mem.title[:50])
+
+    for existing_mem in existing:
+        if _titles_match(existing_mem.title, mem.title):
+            counter = _parse_confirmation_counter(existing_mem.content)
+            new_counter = counter + 1
+
+            new_content = _CONFIRMATION_RE.sub(f"[confirmed: {new_counter}]", existing_mem.content)
+            if not _CONFIRMATION_RE.search(existing_mem.content):
+                new_content = f"{existing_mem.content}\n\n[confirmed: {new_counter}]"
+
+            await memory.update(existing_mem.id, content=new_content)
+
+            if new_counter >= _PROMOTION_THRESHOLD:
+                await memory.promote(existing_mem.id, "shared")
+                log.info("extraction.promoted", memory_id=existing_mem.id, counter=new_counter)
+
+            return "confirmed"
+
+    content_with_counter = f"{mem.content}\n\n[confirmed: 0]"
+    await memory.store(
+        category=mem.category,
+        title=mem.title,
+        content=content_with_counter,
+        tags=mem.tags,
+        repo=repo,
+        issue_number=issue_number,
+    )
+    return "stored"
+
+
+def _titles_match(existing: str, new: str) -> bool:
+    """Check if two titles refer to the same pattern."""
+    existing_lower = existing.lower().strip()
+    new_lower = new.lower().strip()
+
+    if existing_lower == new_lower:
+        return True
+
+    shorter = min(existing_lower, new_lower, key=len)
+    longer = max(existing_lower, new_lower, key=len)
+    if len(shorter) >= 20 and shorter in longer:
+        return True
+
+    return False
+
+
+def _parse_confirmation_counter(content: str) -> int:
+    """Extract the [confirmed: N] counter from memory content."""
+    match = _CONFIRMATION_RE.search(content)
+    return int(match.group(1)) if match else 0
