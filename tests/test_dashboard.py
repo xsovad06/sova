@@ -765,10 +765,12 @@ class TestAutoHandoff:
             patch.object(
                 agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_start,
+            patch("sova.dashboard.services.handoff_service.clear_handoff") as mock_clear,
         ):
             await _process_auto_handoff(agent)
 
         mock_start.assert_awaited_once_with("42", role="reviewer", pr_number=10, slug=None)
+        mock_clear.assert_called_once()
 
     async def test_auto_handoff_skips_non_auto_actions(self) -> None:
         """_process_auto_handoff should not trigger actions without auto_execute."""
@@ -850,10 +852,12 @@ class TestAutoHandoff:
             patch.object(
                 agent_lifecycle, "start_command", new_callable=AsyncMock, return_value={"status": "started"}
             ) as mock_cmd,
+            patch("sova.dashboard.services.handoff_service.clear_handoff") as mock_clear,
         ):
             await _process_auto_handoff(agent)
 
         mock_cmd.assert_awaited_once_with("integrate-pr", {"issue": "42", "pr": 10}, slug=None)
+        mock_clear.assert_called_once()
 
     async def test_auto_handoff_no_handoff_file(self) -> None:
         """_process_auto_handoff should handle missing handoff gracefully."""

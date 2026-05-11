@@ -20,7 +20,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
     hands off to Reviewer automatically after CI passes).
     """
     try:
-        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services import agent_lifecycle, handoff_service
         from sova.ipc.handoff import read_handoff_file
 
         handoff = read_handoff_file(agent.project_dir)
@@ -38,6 +38,8 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 mode=action.mode,
                 issue=handoff.issue,
             )
+
+            handoff_service.clear_handoff(agent.project_dir)
 
             if action.mode == "agent":
                 args = action.args or {}
