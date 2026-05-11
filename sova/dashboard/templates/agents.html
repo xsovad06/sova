@@ -278,6 +278,10 @@ function renderPrActionsPanel(pr, issueNumber) {
 
   // Action buttons based on PR state
   var actionsHtml = '';
+  var addressBtn = '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+    'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
+    'data-tooltip="Send agent to address review feedback">' +
+    'Address Review</button>';
   if (readyToIntegrate) {
     actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
       'class="px-4 py-2 rounded text-sm font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30 transition-colors" ' +
@@ -287,16 +291,14 @@ function renderPrActionsPanel(pr, issueNumber) {
       'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
       'data-tooltip="Merge without full integration">' +
       'Merge Only</button>';
-  } else if (pr.state === 'OPEN' && pr.review_decision === 'CHANGES_REQUESTED') {
-    actionsHtml += '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
-      'data-tooltip="Send agent to address review feedback">' +
-      'Address Review</button>';
   } else if (pr.state === 'OPEN') {
     actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
       'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
       'data-tooltip="Rebase, push, merge, and clean up">' +
       'Integrate PR</button>';
+  }
+  if (pr.state === 'OPEN') {
+    actionsHtml += addressBtn;
   }
   if (pr.state === 'MERGED') {
     actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
@@ -478,10 +480,8 @@ function renderCompletedCard(agent) {
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
-  var rerunBtn = agent.status === 'failed'
-    ? '<button onclick="rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
-        'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>'
-    : '';
+  var rerunBtn = '<button onclick="rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
+    'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>';
 
   return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all">' +
     '<div class="flex items-center justify-between">' +
