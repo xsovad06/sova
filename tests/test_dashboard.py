@@ -1898,7 +1898,7 @@ class TestAgentRecoveryDirect:
             updated = await session2.get(TaskRun, run_id)
             assert updated.status == "interrupted"
             assert updated.ended_at is not None
-            assert "restarted" in updated.error_message.lower()
+            assert "stale run recovered" in updated.error_message.lower()
 
     async def test_recover_stale_runs_nil_pid(self) -> None:
         from sova.dashboard.services.agent_recovery import recover_stale_runs
@@ -1949,6 +1949,89 @@ class TestAgentRecoveryDirect:
             result = await session2.execute(stmt)
             remaining = result.scalars().all()
             assert len(remaining) == 0
+
+    async def test_recover_stale_runs_catches_pending_status(self) -> None:
+        """recover_stale_runs should catch runs stuck in non-running non-terminal states."""
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="83", role="dev", status="pending", pid=999999)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+        assert len(interrupted) == 1
+        assert interrupted[0]["issue"] == "83"
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+            assert "pending" in updated.error_message
+
+    async def test_check_issue_conflict_auto_recovers_dead_pid(self) -> None:
+        """_check_issue_conflict should mark dead-PID DB runs as interrupted."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+        from sova.db.session import get_session as real_get_session
+
+        pa = ProjectAgents()
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="84", role="developer", status="running", pid=999999)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _check_issue_conflict("84", pa)
+
+        assert result is None
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                updated = await session.get(TaskRun, run_id)
+                assert updated.status == "interrupted"
+                assert updated.error_message is not None
+
+    async def test_check_issue_conflict_force_skips_live_external(self) -> None:
+        """_check_issue_conflict with force=True should skip live external agents."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, _check_issue_conflict
+        from sova.db.session import get_session as real_get_session
+
+        pa = ProjectAgents()
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="85", role="developer", status="running", pid=12345)
+                session.add(run)
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.dashboard.services.agent_recovery._is_process_alive", return_value=True),
+        ):
+            result_no_force = await _check_issue_conflict("85", pa)
+            assert result_no_force is not None
+            assert "already has an active agent" in result_no_force["error"]
+
+            result_force = await _check_issue_conflict("85", pa, force=True)
+            assert result_force is None
 
 
 # ---------------------------------------------------------------------------

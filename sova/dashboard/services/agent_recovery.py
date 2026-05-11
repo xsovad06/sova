@@ -21,10 +21,11 @@ def _is_process_alive(pid: int) -> bool:
 
 
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
-    """Detect and mark stale 'running' TaskRuns on dashboard startup."""
+    """Detect and mark stale non-terminal TaskRuns on dashboard startup."""
     try:
         from sqlalchemy import select
 
+        from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
@@ -32,7 +33,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
-                stmt = select(TaskRun).where(TaskRun.status == "running")
+                stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL))
                 result = await session.execute(stmt)
                 stale_runs = result.scalars().all()
 
@@ -41,8 +42,9 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
                         continue
 
+                    was_status = run.status
                     run.status = "interrupted"
-                    run.error_message = "Dashboard restarted while agent was running"
+                    run.error_message = f"Stale run recovered on startup (was {was_status!r})"
                     run.ended_at = datetime.now(timezone.utc)
                     interrupted.append(
                         {
@@ -52,7 +54,13 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                             "pid": run.pid,
                         }
                     )
-                    log.warning("recovery.interrupted", run_id=run.id, issue=run.issue_number, pid=run.pid)
+                    log.warning(
+                        "recovery.interrupted",
+                        run_id=run.id,
+                        issue=run.issue_number,
+                        pid=run.pid,
+                        was_status=was_status,
+                    )
 
         if interrupted:
             log.info("recovery.complete", interrupted_count=len(interrupted))

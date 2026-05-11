@@ -174,14 +174,19 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 # -- Agent lifecycle ----------------------------------------------------------
 
 
-async def _check_issue_conflict(issue: str, pa: ProjectAgents) -> dict | None:
+async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = False) -> dict | None:
     """Check if an agent is already running for this issue (in-memory + DB).
 
     Returns an error dict if a conflict exists, None if clear.
+    When *force* is True, stale (dead-PID) DB runs are marked interrupted
+    and live conflicts are skipped so the caller can proceed.
     Must be called inside ``pa._lock``.
     """
     for existing in pa.agents.values():
         if existing.issue == issue:
+            if force:
+                log.info("issue_conflict.force_skipped", issue=issue, run_id=existing.run_id)
+                continue
             return {
                 "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
                 "existing_run_id": existing.run_id,
@@ -206,14 +211,19 @@ async def _check_issue_conflict(issue: str, pa: ProjectAgents) -> dict | None:
                 result = await session.execute(stmt)
                 runs = result.scalars().all()
 
-        for run in runs:
-            if run.id in in_memory_ids:
-                continue
-            if _is_process_alive(run.pid):
-                return {
-                    "error": f"Issue #{issue} already has an active agent (external run {run.id}, PID {run.pid})",
-                    "existing_run_id": run.id,
-                }
+                for run in runs:
+                    if run.id in in_memory_ids:
+                        continue
+                    if _is_process_alive(run.pid):
+                        if force:
+                            log.info("issue_conflict.force_skipped_external", issue=issue, run_id=run.id, pid=run.pid)
+                            continue
+                        msg = f"Issue #{issue} already has an active agent (external run {run.id}, PID {run.pid})"
+                        return {"error": msg, "existing_run_id": run.id}
+                    run.status = "interrupted"
+                    run.error_message = "Stale run: process no longer alive"
+                    run.ended_at = datetime.now(timezone.utc)
+                    log.warning("issue_conflict.auto_recovered", run_id=run.id, issue=issue, pid=run.pid)
     except Exception:
         log.warning("issue_conflict_check.db_failed", issue=issue, exc_info=True)
 
@@ -242,7 +252,7 @@ async def start_agent(
                 "running": len(pa.agents),
             }
 
-        conflict = await _check_issue_conflict(issue, pa)
+        conflict = await _check_issue_conflict(issue, pa, force=force)
         if conflict:
             return conflict
 
