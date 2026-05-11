@@ -371,6 +371,17 @@ document.addEventListener('click', function(e) {
 var logCursor = 0;
 var agentPollInterval = null;
 var logPollInterval = null;
+var lastAgentFingerprint = null;
+
+function agentFingerprint(data) {
+  var running = data.agents.map(function(a) {
+    return a.run_id + ':' + a.status + ':' + a.current_step + ':' + (a.cost_usd || 0) + ':' + (a.pr_number || '') + ':' + (a.source || '');
+  });
+  var completed = data.completed.map(function(a) {
+    return a.run_id + ':' + a.status + ':' + (a.cost_usd || 0) + ':' + (a.pr_number || '');
+  });
+  return data.slots_available + '|' + running.join(',') + '|' + completed.join(',');
+}
 
 async function loadAgents() {
   try {
@@ -381,6 +392,19 @@ async function loadAgents() {
 
     slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots available';
     startBtn.disabled = data.slots_available <= 0;
+
+    var fp = agentFingerprint(data);
+    if (fp === lastAgentFingerprint) {
+      data.agents.forEach(function(agent) {
+        var el = document.getElementById('agent-card-' + agent.run_id);
+        if (el) {
+          var elapsedEl = el.querySelector('[data-field="elapsed"]');
+          if (elapsedEl) elapsedEl.textContent = formatElapsed(agent.elapsed_seconds);
+        }
+      });
+      return;
+    }
+    lastAgentFingerprint = fp;
 
     if (data.agents.length === 0 && data.completed.length === 0) {
       grid.innerHTML = '<div class="col-span-2 text-gray-500 text-sm py-8 text-center">No agents running</div>';
@@ -429,7 +453,7 @@ function renderAgentCard(agent, completed) {
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +
-        '<span class="text-gray-500">' + elapsed + '</span>' +
+        '<span class="text-gray-500" data-field="elapsed">' + elapsed + '</span>' +
       '</div>' +
     '</div>' +
     '<div class="mb-3">' + pipeline + '</div>' +
