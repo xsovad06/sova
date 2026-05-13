@@ -72,7 +72,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
     ```
     Only request re-review for bots whose comments were actually addressed.
 
-12. **Update memory**: Append lessons learned to `.claude/agent-memory/review-feedback.md`.
+12. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
 13. **Print summary**:
     - Table: | Comment | Source | Score | Action |

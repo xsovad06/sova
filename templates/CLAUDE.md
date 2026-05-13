@@ -58,11 +58,8 @@
 - `.claude/commands/*.md` — Workflow commands and deep domain skills
 
 ### Tier 2: Agent memory (persists across tasks, gitignored)
-- `.claude/agent-memory/MEMORY.md` — Quick reference for learned patterns
-- `.claude/agent-memory/learnings.md` — Framework gotchas, debugging insights
-- `.claude/agent-memory/review-feedback.md` — Patterns from PR reviews
-- `.claude/agent-memory/common-mistakes.md` — Recurring errors to avoid
-- `.claude/agent-memory/task-history.md` — Completed task log
+- `.claude/agent-memory/MEMORY.md` — Index file
+- `.claude/agent-memory/cookbook.md` — Topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: Session memory (auto-managed by Claude Code)
 - `~/.claude/projects/.../memory/MEMORY.md` — User preferences, project state

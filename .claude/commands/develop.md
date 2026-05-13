@@ -32,9 +32,7 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 1. Read the project's CLAUDE.md and AGENTS.md for conventions
 2. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
-   - `.claude/agent-memory/learnings.md`
-   - `.claude/agent-memory/review-feedback.md`
-   - `.claude/agent-memory/common-mistakes.md`
+   - `.claude/agent-memory/cookbook.md`
 3. Identify which module(s) this work touches and read relevant source code
 4. Understand the existing patterns before writing any code
 

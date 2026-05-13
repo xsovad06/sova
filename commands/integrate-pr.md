@@ -150,12 +150,11 @@ If there were substantive review comments (2+ inline comments or any CHANGES_REQ
    - **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
    - **Test coverage gaps** -- missing assertions, untested scenarios
 
-3. Update the agent memory files (only if they exist):
-   - Append new findings to `review-feedback.md` (skip duplicates)
-   - Add recurring mistakes to `common-mistakes.md`
-   - Log the PR in `task-history.md` with date, summary, and outcome
+3. Update `.claude/agent-memory/cookbook.md` (if it exists):
+   - Append new findings under the matching domain section (no duplicates)
+   - Add recurring mistakes to the "Common Mistakes" section with `[Nx]` count
 
-If there were no substantive review comments, still log the PR in `task-history.md` (if it exists).
+If there were no substantive review comments, skip the learning extraction.
 
 ### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
 
@@ -169,12 +168,11 @@ Only run this phase if `.claude/agent-memory/` exists in the project.
    
    Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
 
-3. **Add session learnings**: If new framework gotchas, testing patterns, or development insights emerged during this PR's development, append them to `.claude/agent-memory/learnings.md`.
+3. **Add session learnings**: If new framework gotchas, testing patterns, or development insights emerged during this PR's development, append them to `.claude/agent-memory/cookbook.md` under the matching domain section.
 
-4. **Check file sizes**: Ensure agent memory files stay within limits:
-   - `MEMORY.md` -- under 80 lines
-   - `learnings.md` -- under 150 lines (prune oldest if needed)
-   - `review-feedback.md` -- under 150 lines (prune oldest if needed)
+4. **Check file sizes**: Ensure agent memory stays within limits:
+   - `MEMORY.md` -- under 20 lines (index only)
+   - `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
 ### Phase 8: Report
 

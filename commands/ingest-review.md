@@ -25,21 +25,15 @@ Process review comments from a merged PR and update agent memory.
    - **Style preferences** -- formatting, naming, structural preferences
    - **Test coverage gaps** -- missing assertions, untested scenarios
 
-4. Read existing memory files:
-   - `.claude/agent-memory/review-feedback.md`
-   - `.claude/agent-memory/common-mistakes.md`
-   - `.claude/agent-memory/MEMORY.md`
+4. Read existing memory file:
+   - `.claude/agent-memory/cookbook.md`
 
-5. Update memory files:
-   - Append new findings to `review-feedback.md` under the appropriate section
-   - If a mistake has appeared before, add it to `common-mistakes.md`
+5. Update `.claude/agent-memory/cookbook.md`:
+   - Append new findings under the matching domain section (no duplicates)
+   - If a mistake has appeared before, add it to the "Common Mistakes" section with `[Nx]` count
    - If a finding is high-impact, add it to `MEMORY.md`
-   - Do NOT duplicate existing entries
 
-6. Log the PR in `.claude/agent-memory/task-history.md`:
-   - Ticket, date, summary, outcome
-
-7. Report what was learned and which files were updated.
+6. Report what was learned and which files were updated.
 
 ## Cross-References
 

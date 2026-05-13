@@ -46,8 +46,7 @@ Run this after a PR has been merged to clean up local state and capture learning
 6. **Capture learnings** from the PR review (run `/ingest-review` workflow):
    - Fetch PR review data
    - Extract lessons: patterns to follow, mistakes to avoid, style preferences, test coverage gaps
-   - Update `.claude/agent-memory/review-feedback.md`
-   - Update `.claude/agent-memory/task-history.md`
+   - Update `.claude/agent-memory/cookbook.md` (under matching domain section)
 
 7. **Report** what was cleaned up and what was learned.
 

@@ -19,11 +19,8 @@ Domain-specific guidelines loaded into every session. Primary destination for pa
 ### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
 
-- **`MEMORY.md`** -- Agent quick reference, project patterns, testing shortcuts
-- **`learnings.md`** -- Self-review findings (ORM gotchas, testing patterns, etc.)
-- **`review-feedback.md`** -- PR review lessons from automated and human reviewers
-- **`common-mistakes.md`** -- Recurring errors to check before submitting code
-- **`task-history.md`** -- Completed tasks log
+- **`MEMORY.md`** -- Index file
+- **`cookbook.md`** -- Topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
@@ -41,9 +38,7 @@ For each finding, determine the right destination:
 | Finding type | Destination |
 |---|---|
 | Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
-| ORM/framework gotchas learned during development | `.claude/agent-memory/learnings.md` |
-| PR review lessons (automated + human feedback) | `.claude/agent-memory/review-feedback.md` |
-| Recurring mistakes (same error 2+ times) | `.claude/agent-memory/common-mistakes.md` |
+| ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
@@ -74,9 +69,8 @@ Before writing anything:
 ### 5. Verify Sizes
 
 Agent memory files should stay concise:
-- `MEMORY.md` -- under 80 lines
-- `learnings.md` -- under 150 lines (prune oldest if needed)
-- `review-feedback.md` -- under 150 lines
+- `MEMORY.md` -- under 20 lines (index only)
+- `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
 If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `docs/*-guidelines.md` file and remove the agent-memory entry.
 

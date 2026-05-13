@@ -27,9 +27,7 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 4. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
 5. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
-   - `.claude/agent-memory/learnings.md`
-   - `.claude/agent-memory/review-feedback.md`
-   - `.claude/agent-memory/common-mistakes.md`
+   - `.claude/agent-memory/cookbook.md`
 6. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)

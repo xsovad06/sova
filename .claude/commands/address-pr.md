@@ -74,7 +74,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
     rm -f .claude/agent-control/handoff.json
     ```
 
-13. **Update memory**: Append lessons learned to `.claude/agent-memory/review-feedback.md`.
+13. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
 14. **Print summary**:
     - Table: | Source | File | Score | Action |

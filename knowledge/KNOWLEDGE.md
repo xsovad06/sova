@@ -136,11 +136,8 @@ The distinction: rules files are always loaded; commands are loaded only when in
 
 ```
 .claude/agent-memory/
-  MEMORY.md              # Quick reference -- project patterns, testing shortcuts
-  learnings.md           # Self-review findings (framework gotchas, patterns)
-  review-feedback.md     # Lessons from PR reviews (automated + human)
-  common-mistakes.md     # Recurring errors to check before submitting
-  task-history.md        # Completed tasks log (ticket, date, summary, outcome)
+  MEMORY.md              # Index file
+  cookbook.md             # Topical knowledge by domain, common mistakes with occurrence counts
   memory.db              # (Optional) SQLite FTS5 for fast memory search
   costs.jsonl            # (Optional) Per-task cost tracking
 ```
@@ -149,11 +146,8 @@ The distinction: rules files are always loaded; commands are loaded only when in
 
 | File | Content | Size Limit |
 |------|---------|------------|
-| `MEMORY.md` | Quick reference: key patterns, shortcuts, current project state | 80 lines |
-| `learnings.md` | Framework/ORM gotchas, testing tricks, debugging insights | 150 lines |
-| `review-feedback.md` | What reviewers flagged and why, grouped by category | 150 lines |
-| `common-mistakes.md` | Errors that appeared 2+ times, with prevention steps | 100 lines |
-| `task-history.md` | Log of completed tasks for context | 200 lines |
+| `MEMORY.md` | Index file pointing to cookbook.md | 20 lines |
+| `cookbook.md` | Topical knowledge by domain, common mistakes with `[Nx]` counts | 200 lines |
 
 ### Entry Format
 
@@ -176,9 +170,9 @@ One line per pattern, bold label, then the lesson:
 
 | Command | What It Writes | Target File |
 |---------|---------------|-------------|
-| `/extract-knowledge` | Session findings, patterns, gotchas | `learnings.md`, `MEMORY.md` |
-| `/ingest-review` | PR review lessons | `review-feedback.md`, `common-mistakes.md` |
-| `/after-merge` | Task completion + calls `/ingest-review` | `task-history.md` |
+| `/extract-knowledge` | Session findings, patterns, gotchas | `cookbook.md` |
+| `/ingest-review` | PR review lessons | `cookbook.md` |
+| `/after-merge` | Task completion + calls `/ingest-review` | `cookbook.md` |
 | `/develop-full` | Calls `/review` which calls `/extract-knowledge` | Via chain |
 
 ---
@@ -226,14 +220,14 @@ Session work --> /review --> findings scored 3+
 ```
 PR merged --> /ingest-review --> analyze review comments
                                        |
-                       +---------------+---------------+
-                       |               |               |
-               review-feedback.md  common-mistakes.md  task-history.md
-                       |
-              (if recurring pattern)
-                       |
-                       v
-              Promote to Tier 1
+                                       v
+                              cookbook.md (domain section
+                              + Common Mistakes section)
+                                       |
+                              (if recurring pattern)
+                                       |
+                                       v
+                              Promote to Tier 1
 ```
 
 ### Promotion Flow
@@ -268,15 +262,25 @@ mkdir -p /path/to/project/.claude/agent-memory
 cat > /path/to/project/.claude/agent-memory/MEMORY.md << 'EOF'
 # Agent Memory
 
-Quick reference for patterns learned during development.
+4-tier architecture: Tier 0 (~/.claude/shared-knowledge/), Tier 1 (.claude/rules/),
+Tier 2 (this dir), Tier 3 (auto-memory). New learnings go here, promoted to rules
+after confirmation.
+
+## Files
+
+- **cookbook.md** -- Topical knowledge by domain. Primary reference for development sessions.
 EOF
 
-touch /path/to/project/.claude/agent-memory/{learnings,review-feedback,common-mistakes,task-history}.md
+cat > /path/to/project/.claude/agent-memory/cookbook.md << 'EOF'
+# Agent Cookbook
 
-# Add headers
-for f in learnings review-feedback common-mistakes task-history; do
-  echo "# ${f//-/ }" > /path/to/project/.claude/agent-memory/$f.md
-done
+Actionable patterns discovered during development, organized by domain.
+Entries marked `[promoted]` live in Tier 1 -- kept here for traceability.
+
+## Common Mistakes (tracked by occurrence)
+
+No recurring mistakes tracked yet.
+EOF
 ```
 
 ### 3. Gitignore Tier 2
@@ -303,7 +307,7 @@ Agent memory files have size limits. When they grow too large:
 1. Identify patterns that have been promoted to Tier 1 -- remove from Tier 2
 2. Remove entries that turned out to be wrong or no longer relevant
 3. Merge similar entries
-4. Archive very old `task-history.md` entries
+4. Remove stale `[confirmed: 0]` entries (oldest first) when `cookbook.md` exceeds 200 lines
 
 ### Promotion Checklist
 

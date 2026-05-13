@@ -18,11 +18,8 @@ Domain-specific guidelines loaded into every session. Primary destination for pa
 ### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
 
-- **`MEMORY.md`** -- Agent quick reference, project patterns, testing shortcuts
-- **`learnings.md`** -- Self-review findings (ORM gotchas, testing patterns, etc.)
-- **`review-feedback.md`** -- PR review lessons from automated and human reviewers
-- **`common-mistakes.md`** -- Recurring errors to check before submitting code
-- **`task-history.md`** -- Completed tasks log
+- **`MEMORY.md`** -- Index file
+- **`cookbook.md`** -- Topical knowledge by domain, common mistakes with occurrence counts
 
 ### Tier 3: User auto-memory (`~/.claude/projects/.../memory/`)
 User preferences, workflow conventions, and project state.
@@ -40,9 +37,7 @@ For each finding, determine the right destination:
 | Finding type | Destination |
 |---|---|
 | Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
-| ORM/framework gotchas learned during development | `.claude/agent-memory/learnings.md` |
-| PR review lessons (automated + human feedback) | `.claude/agent-memory/review-feedback.md` |
-| Recurring mistakes (same error 2+ times) | `.claude/agent-memory/common-mistakes.md` |
+| ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
@@ -56,7 +51,7 @@ Before writing anything:
 
 ### 4. Confirm Existing Patterns
 
-Before writing new entries, scan `learnings.md` for patterns you **relied on or validated** this session. For each one, bump its confirmation counter:
+Before writing new entries, scan `cookbook.md` for patterns you **relied on or validated** this session. For each one, bump its confirmation counter:
 - `[confirmed: 0]` -> `[confirmed: 1]`
 - `[confirmed: 1]` -> `[confirmed: 2]` (now eligible for promotion)
 
@@ -89,10 +84,10 @@ Before writing new entries, scan `learnings.md` for patterns you **relied on or 
 
 ### 6. Promote Mature Patterns (Tier 2 -> Tier 1)
 
-Scan `learnings.md` for entries with `[confirmed: 2]` or higher. For each:
+Scan `cookbook.md` for entries with `[confirmed: 2]` or higher. For each:
 1. Move the pattern to the appropriate `.claude/rules/*.md` file (architecture.md, bash-patterns.md, or a new rules file if needed)
 2. Expand it into a full guideline with context and examples (Tier 1 entries are more detailed than Tier 2 one-liners)
-3. Remove the entry from `learnings.md`
+3. Replace the entry in `cookbook.md` with a `[promoted]` one-liner pointing to the target file
 4. Report the promotion in the summary
 
 This counter-based promotion is the ONLY mechanism for Tier 2 -> Tier 1 graduation. It works across sessions because the counter persists in the file.
@@ -100,9 +95,8 @@ This counter-based promotion is the ONLY mechanism for Tier 2 -> Tier 1 graduati
 ### 7. Verify Sizes
 
 Agent memory files should stay concise:
-- `MEMORY.md` -- under 80 lines
-- `learnings.md` -- under 150 lines (prune oldest with `[confirmed: 0]` first if needed)
-- `review-feedback.md` -- under 150 lines
+- `MEMORY.md` -- under 20 lines (index only)
+- `cookbook.md` -- under 200 lines (prune oldest with `[confirmed: 0]` first if needed)
 
 ### 8. Summary
 
