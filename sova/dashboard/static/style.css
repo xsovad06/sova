@@ -338,8 +338,9 @@
 .sidebar-toggle-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   width: 100%;
-  padding: 0.75rem 1.25rem;
+  padding: 1.25rem;
   font-size: 0.875rem;
   color: var(--ctp-overlay0);
   transition: color 150ms ease, background-color 150ms ease;
@@ -370,6 +371,11 @@ body[data-sidebar-collapsed="true"] .sidebar-logo-text {
 
 body[data-sidebar-collapsed="true"] .sidebar-hide {
   display: none;
+}
+
+body[data-sidebar-collapsed="true"] .notif-bell {
+  top: 0.625rem;
+  right: 0.25rem;
 }
 
 body[data-sidebar-collapsed="true"] .sidebar-collapse-icon {
