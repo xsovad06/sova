@@ -72,6 +72,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "status": db.get("status", "running"),
                 "pid": agent.process.pid,
                 "current_step": current_step,
+                "pipeline_variant": progress.get("pipeline_variant", "developer"),
                 "step_index": progress["step_index"],
                 "total_steps": progress["total_steps"],
                 "elapsed_seconds": round(elapsed),
@@ -152,6 +153,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                     "status": run.status,
                     "pid": run.pid,
                     "current_step": run.current_step or "agent",
+                    "pipeline_variant": progress.get("pipeline_variant", "developer"),
                     "step_index": progress["step_index"],
                     "total_steps": progress["total_steps"],
                     "elapsed_seconds": round(elapsed),
@@ -546,12 +548,23 @@ _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"}
 def get_step_progress(current_step: str | None) -> dict:
     """Compute step index from current_step name."""
     if current_step is None:
-        return {"step_index": -1, "total_steps": len(DEVELOPER_PIPELINE), "steps": DEVELOPER_PIPELINE}
+        return {
+            "step_index": -1,
+            "total_steps": len(DEVELOPER_PIPELINE),
+            "steps": DEVELOPER_PIPELINE,
+            "pipeline_variant": "developer",
+        }
 
-    pipeline = ADDRESS_REVIEW_PIPELINE if current_step in _ADDRESS_REVIEW_ONLY else DEVELOPER_PIPELINE
+    is_address_review = current_step in _ADDRESS_REVIEW_ONLY
+    pipeline = ADDRESS_REVIEW_PIPELINE if is_address_review else DEVELOPER_PIPELINE
 
     try:
         idx = pipeline.index(current_step)
     except ValueError:
         idx = -1
-    return {"step_index": idx, "total_steps": len(pipeline), "steps": pipeline}
+    return {
+        "step_index": idx,
+        "total_steps": len(pipeline),
+        "steps": pipeline,
+        "pipeline_variant": "address_review" if is_address_review else "developer",
+    }

@@ -123,7 +123,7 @@ async function loadRunDetail() {
 
     var colors = roleColor(run.role);
     var roleEl = document.getElementById('detail-role');
-    var displayRole = formatRole(run.role);
+    var displayRole = formatRole(run.role, run.pipeline_variant);
     roleEl.innerHTML = '<span class="px-2 py-1 rounded text-base ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(displayRole) + '</span>';
 
     var statusEl = document.getElementById('detail-status');

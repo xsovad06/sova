@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sova.dashboard.services.control_service import DEVELOPER_PIPELINE, get_step_progress
+from sova.dashboard.services.control_service import (
+    _ADDRESS_REVIEW_ONLY,
+    DEVELOPER_PIPELINE,
+    get_step_progress,
+)
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import iso_utc
 
@@ -41,6 +45,7 @@ async def get_active_work(session: AsyncSession) -> list[dict]:
                 "role": r.role,
                 "status": r.status,
                 "current_step": r.current_step,
+                "pipeline_variant": progress.get("pipeline_variant", "developer"),
                 "step_index": progress["step_index"],
                 "total_steps": progress["total_steps"],
                 "branch_name": r.branch_name,
@@ -100,6 +105,7 @@ async def get_work_history(
                 "role": r.role,
                 "status": r.status,
                 "current_step": r.current_step,
+                "pipeline_variant": _detect_variant(r.current_step),
                 "steps_completed": completed_steps or 0,
                 "steps_total": step_count or 0,
                 "total_steps_possible": len(DEVELOPER_PIPELINE),
@@ -126,10 +132,15 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     steps_result = await session.execute(steps_stmt)
     steps = steps_result.scalars().all()
 
+    variant = _detect_variant_from_steps(steps, run.current_step)
     progress = get_step_progress(run.current_step)
+    progress["pipeline_variant"] = variant
+
+    run_dict = _run_to_dict(run)
+    run_dict["pipeline_variant"] = variant
 
     return {
-        "run": _run_to_dict(run),
+        "run": run_dict,
         "steps": [_step_to_dict(s) for s in steps],
         "pipeline": progress,
     }
@@ -267,6 +278,7 @@ def _run_to_dict(run: TaskRun) -> dict:
         "role": run.role,
         "status": run.status,
         "current_step": run.current_step,
+        "pipeline_variant": _detect_variant(run.current_step),
         "branch_name": run.branch_name,
         "pr_number": run.pr_number,
         "total_cost_usd": float(run.total_cost_usd or 0),
@@ -276,6 +288,28 @@ def _run_to_dict(run: TaskRun) -> dict:
         "started_at": iso_utc(run.started_at),
         "ended_at": iso_utc(run.ended_at),
     }
+
+
+def _detect_variant(current_step: str | None) -> str:
+    """Detect pipeline variant from current step name.
+
+    For steps shared between both pipelines (commit, push, validate,
+    extract_memory), defaults to 'developer'. Use _detect_variant_from_steps()
+    for more reliable detection based on step execution history.
+    """
+    if current_step in _ADDRESS_REVIEW_ONLY:
+        return "address_review"
+    return "developer"
+
+
+def _detect_variant_from_steps(step_executions: list, current_step: str | None) -> str:
+    """Detect pipeline variant from step execution history (more reliable)."""
+    step_names = {s.step_name for s in step_executions}
+    if step_names & _ADDRESS_REVIEW_ONLY:
+        return "address_review"
+    if current_step in _ADDRESS_REVIEW_ONLY:
+        return "address_review"
+    return "developer"
 
 
 def _step_to_dict(step: StepExecution) -> dict:
