@@ -276,31 +276,38 @@ function renderPrActionsPanel(pr, issueNumber) {
 
   title.textContent = pr.title || '';
 
-  // Action buttons based on PR state
+  // Action buttons based on PR state (ordered chronologically: review -> integrate -> merge)
   var actionsHtml = '';
-  var addressBtn = '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-    'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
-    'data-tooltip="Send agent to address review feedback">' +
-    'Address Review</button>';
-  if (readyToIntegrate) {
-    actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-4 py-2 rounded text-sm font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30 transition-colors" ' +
-      'data-tooltip="Rebase, push, merge, and clean up">' +
-      'Integrate PR</button>';
-    actionsHtml += '<button onclick="runCommand(\'approve-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
-      'data-tooltip="Merge without full integration">' +
-      'Merge Only</button>';
-  } else if (pr.state === 'OPEN') {
-    actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-      'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
-      'data-tooltip="Rebase, push, merge, and clean up">' +
-      'Integrate PR</button>';
-  }
   if (pr.state === 'OPEN') {
-    actionsHtml += addressBtn;
-  }
-  if (pr.state === 'MERGED') {
+    var needsReview = !pr.review_decision || pr.review_decision === 'REVIEW_REQUIRED';
+    var changesRequested = pr.review_decision === 'CHANGES_REQUESTED';
+
+    if (needsReview) {
+      actionsHtml += '<button onclick="runCommand(\'review-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+        'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
+        'data-tooltip="Spawn reviewer agent to analyze this PR">' +
+        'Start Review</button>';
+    } else if (changesRequested) {
+      actionsHtml += '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+        'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
+        'data-tooltip="Send agent to address review feedback">' +
+        'Address Review</button>';
+    }
+
+    actionsHtml += '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+      'class="px-3 py-2 rounded text-sm ' + (readyToIntegrate
+        ? 'font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
+        : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30') + ' transition-colors" ' +
+      'data-tooltip="Rebase, push, merge, and clean up">' +
+      'Integrate PR</button>';
+
+    if (readyToIntegrate) {
+      actionsHtml += '<button onclick="runCommand(\'approve-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
+        'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
+        'data-tooltip="Merge without full integration">' +
+        'Merge Only</button>';
+    }
+  } else if (pr.state === 'MERGED') {
     actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
       'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors" ' +
       'data-tooltip="Run post-merge cleanup tasks">' +
