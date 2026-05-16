@@ -68,8 +68,10 @@ async def get_detail(run_id: int):
 
 @router.post("/work/{run_id}/mark-failed")
 async def mark_failed(run_id: int):
-    """Mark a non-terminal run as failed."""
-    from sova.dashboard.services import run_service
+    """Mark a non-terminal run as failed and kill the agent process."""
+    from sova.dashboard.services import control_service, run_service
+
+    await control_service.stop_agent(run_id=run_id)
 
     async with await get_session() as session:
         async with session.begin():
