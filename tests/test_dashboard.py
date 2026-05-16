@@ -1459,6 +1459,25 @@ class TestWorkAPI:
         data = resp.json()
         assert "detail" in data
 
+    async def test_work_mark_failed_stops_agent(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Mark-failed should call stop_agent before updating the DB."""
+        from unittest.mock import AsyncMock, patch
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(issue_number="99", role="developer", status="running", started_at=now)
+        session.add(run)
+        await session.flush()
+        run_id = run.id
+
+        with patch("sova.dashboard.services.control_service.stop_agent", new_callable=AsyncMock) as mock_stop:
+            mock_stop.return_value = {"status": "not_found"}
+            resp = await client.post(f"/api/work/{run_id}/mark-failed")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "failed"
+        mock_stop.assert_awaited_once_with(run_id=run_id)
+
     async def test_active_grouped_excludes_superseded_paused_runs(
         self, client: AsyncClient, session: AsyncSession
     ) -> None:
@@ -1902,6 +1921,44 @@ class TestWorkServiceDirect:
         assert "failed" in _TERMINAL
         assert "rejected" in _TERMINAL
         assert "developing" not in _TERMINAL
+
+
+# ---------------------------------------------------------------------------
+# Finalize guard -- terminal status not overwritten
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeTaskRunGuard:
+    """_finalize_task_run must not overwrite an already-terminal run."""
+
+    async def test_finalize_skips_already_failed_run(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="88",
+                role="developer",
+                status="failed",
+                error_message="Manually abandoned",
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.5
+        mock_agent.project_dir = None
+
+        await _finalize_task_run(run_id, exit_code=1, agent=mock_agent)
+
+        async with session.begin():
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "failed"
+            assert refreshed.error_message == "Manually abandoned"
 
 
 # ---------------------------------------------------------------------------
