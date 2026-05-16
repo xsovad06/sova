@@ -292,7 +292,8 @@ async def start_agent(
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
     asyncio.create_task(_wait_and_finalize(pa, agent))
-    asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
+    if (role or "developer") == "developer":
+        asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
 
     log.info("agent.started", issue=issue, pid=pid, run_id=run_id, cwd=str(cwd))
     return {"status": "started", "pid": pid, "run_id": run_id}
