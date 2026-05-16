@@ -180,14 +180,43 @@ function showToast(message, type, duration) {
    ============================================================ */
 
 var _notifItems = [];
-var _lastActivityState = null;
 var _lastHandoffState = null;
+var _notifiedRunIds = {};
+var _dismissedTimestamps = {};
+var _DISMISSED_STORAGE_KEY = 'sova_dismissed_runs';
+var _DISMISSED_TTL_MS = 120000;
+
+function _loadDismissedRuns() {
+  try {
+    var raw = localStorage.getItem(_DISMISSED_STORAGE_KEY);
+    if (!raw) return;
+    var map = JSON.parse(raw);
+    var now = Date.now();
+    Object.keys(map).forEach(function(k) {
+      if (now - map[k] < _DISMISSED_TTL_MS) {
+        _notifiedRunIds[k] = true;
+        _dismissedTimestamps[k] = map[k];
+      }
+    });
+  } catch (e) { /* ignore corrupt data */ }
+}
+
+function _saveDismissedRuns() {
+  try {
+    var now = Date.now();
+    Object.keys(_notifiedRunIds).forEach(function(k) {
+      if (!_dismissedTimestamps[k]) _dismissedTimestamps[k] = now;
+    });
+    localStorage.setItem(_DISMISSED_STORAGE_KEY, JSON.stringify(_dismissedTimestamps));
+  } catch (e) { /* ignore */ }
+}
 
 function _dotClass(color, animate) {
   return 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ' + color + ' border-2 border-sidebar' + (animate ? ' animate-pulse' : '');
 }
 
 function startSidebarPolling() {
+  _loadDismissedRuns();
   _pollActivity();
   _pollHandoff();
   setInterval(_pollActivity, 3000);
@@ -201,25 +230,30 @@ async function _pollActivity() {
     if (!dot) return;
 
     var running = data.agents && data.agents.length > 0;
-    if (running) {
-      dot.className = _dotClass('bg-accent', true);
-      if (_lastActivityState !== 'running') {
-        _lastActivityState = 'running';
+    dot.className = running
+      ? _dotClass('bg-accent', true)
+      : _dotClass('bg-accent-green', false);
+
+    var completed = data.completed || [];
+    var hadNew = false;
+    completed.forEach(function(agent) {
+      if (_notifiedRunIds[agent.run_id]) return;
+      _notifiedRunIds[agent.run_id] = true;
+      hadNew = true;
+
+      var label = agent.issue ? '#' + agent.issue : 'Agent';
+      var role = agent.role ? ' ' + agent.role.charAt(0).toUpperCase() + agent.role.slice(1) : '';
+      var pr = agent.pr_number ? ' (PR #' + agent.pr_number + ')' : '';
+
+      if (agent.status === 'failed' || agent.status === 'paused') {
+        var hint = agent.status === 'paused' ? 'needs attention' : 'check logs';
+        _addNotification(label + role + ' ' + agent.status + pr + ' -- ' + hint, 'warning');
+      } else {
+        var cost = agent.cost_usd ? ' $' + agent.cost_usd.toFixed(2) : '';
+        _addNotification(label + role + ' completed' + pr + cost, 'info');
       }
-    } else {
-      if (_lastActivityState === 'running') {
-        var completed = data.completed || [];
-        var latest = completed.length > 0 ? completed[completed.length - 1] : null;
-        if (latest && (latest.status === 'failed' || latest.status === 'paused')) {
-          var label = latest.issue ? '#' + latest.issue : 'Agent';
-          _addNotification(label + ' ' + latest.status + (latest.status === 'paused' ? ' -- needs attention' : ' -- check logs'), 'warning');
-        } else {
-          _addNotification('Agent completed', 'info');
-        }
-      }
-      dot.className = _dotClass('bg-accent-green', false);
-      _lastActivityState = 'idle';
-    }
+    });
+    if (hadNew) _saveDismissedRuns();
   } catch (e) {
     var dot = document.getElementById('activity-dot');
     if (dot) dot.className = _dotClass('bg-gray-500', false);
@@ -253,17 +287,20 @@ async function _pollHandoff() {
   } catch (e) { /* ignore */ }
 }
 
-function _addNotification(message, type) {
-  _notifItems.unshift({ message: message, type: type, time: new Date() });
+function _addNotification(message, type, details) {
+  var item = { message: message, type: type, time: new Date() };
+  if (details && details.length > 0) item.details = details;
+  _notifItems.unshift(item);
   if (_notifItems.length > 20) _notifItems.pop();
   _updateNotifBadge();
   _renderNotifList();
   showToast(message, type);
-  if (type === 'warning') {
-    sendBrowserNotification('SOVA -- Action Required', message);
-  } else {
-    sendBrowserNotification('SOVA', message);
+  var browserTitle = type === 'warning' ? 'SOVA -- Action Required' : 'SOVA';
+  var browserBody = message;
+  if (details && details.length > 0) {
+    browserBody += '\n' + details.map(function(d) { return d.text; }).join('\n');
   }
+  sendBrowserNotification(browserTitle, browserBody);
 }
 
 function _updateNotifBadge() {
@@ -292,8 +329,18 @@ function _renderNotifList() {
                       n.type === 'error'   ? 'border-l-accent-red' :
                                               'border-l-accent';
     var timeStr = n.time.toLocaleTimeString();
+    var detailsHtml = '';
+    if (n.details && n.details.length > 0) {
+      detailsHtml = '<div class="mt-1.5 space-y-0.5">' +
+        n.details.map(function(d) {
+          var color = d.failed ? 'text-accent-red' : 'text-gray-400';
+          return '<p class="text-xs ' + color + '">' + escapeHtml(d.text) + '</p>';
+        }).join('') +
+      '</div>';
+    }
     return '<div class="px-4 py-3 border-b border-gray-700/30 last:border-0 border-l-2 ' + borderColor + ' hover:bg-surface-hover/50 transition-colors">' +
       '<p class="text-sm text-gray-200">' + escapeHtml(n.message) + '</p>' +
+      detailsHtml +
       '<p class="text-xs text-gray-500 mt-1">' + timeStr + '</p>' +
     '</div>';
   }).join('');
@@ -306,6 +353,7 @@ function toggleNotifPanel() {
 
 function clearNotifBadge() {
   _notifItems = [];
+  _saveDismissedRuns();
   _updateNotifBadge();
   _renderNotifList();
 }
@@ -425,12 +473,18 @@ async function _pollGlobalBatch() {
       var runningText = runningIds ? ' ' + runningIds : '';
       progressText.textContent = data.completed + '/' + data.total + runningText;
     } else {
+      if (_globalBatchPollInterval) {
+        clearInterval(_globalBatchPollInterval);
+        _globalBatchPollInterval = null;
+      }
+
       var failed = data.failed || 0;
       var done = data.completed - failed;
-      var summary = done + ' done';
-      if (failed > 0) summary += ', ' + failed + ' failed';
+      var actionLabel = data.action.charAt(0).toUpperCase() + data.action.slice(1);
+
+      var summary = actionLabel + ': ' + done + '/' + data.total + ' succeeded';
       if (data.status === 'cancelled') summary += ' (cancelled)';
-      progressText.textContent = summary;
+      progressText.textContent = done + ' done' + (failed > 0 ? ', ' + failed + ' failed' : '');
 
       progressBar.style.width = '100%';
       if (failed > 0) {
@@ -441,9 +495,20 @@ async function _pollGlobalBatch() {
         progressBar.classList.add('bg-accent-green');
       }
 
-      var batchAction = data.action;
-      var msg = batchAction.charAt(0).toUpperCase() + batchAction.slice(1) + ': ' + summary;
-      _addNotification(msg, failed > 0 ? 'warning' : 'info');
+      var details = data.results
+        .filter(function(r) { return r.status !== 'pending' && r.status !== 'running'; })
+        .map(function(r) {
+          var prefix = '#' + r.issue_id;
+          if (r.status === 'failed') {
+            return { text: prefix + ' failed' + (r.detail ? ' -- ' + r.detail : ''), failed: true };
+          } else if (r.status === 'skipped') {
+            return { text: prefix + ' skipped' + (r.detail ? ' -- ' + r.detail : ''), failed: false };
+          } else {
+            return { text: prefix + (r.detail ? ' -- ' + r.detail : ' done'), failed: false };
+          }
+        });
+
+      _addNotification(summary, failed > 0 ? 'warning' : 'info', details);
 
       setTimeout(function() {
         _clearGlobalBatch();
@@ -550,12 +615,19 @@ function roleColor(role) {
   return ROLE_COLORS[key] || ROLE_COLORS.auto;
 }
 
-function formatRole(role) {
+function formatRole(role, pipelineVariant) {
   if (!role) return 'auto';
-  if (!role.startsWith('command:')) return role;
-  var cmd = role.slice('command:'.length).trim();
-  var name = cmd.split(/\s+/)[0].replace(/^\//, '');
-  return name;
+  var base;
+  if (!role.startsWith('command:')) {
+    base = role;
+  } else {
+    var cmd = role.slice('command:'.length).trim();
+    base = cmd.split(/\s+/)[0].replace(/^\//, '');
+  }
+  if (pipelineVariant === 'address_review' && role === 'developer') {
+    return base + ' - address pr';
+  }
+  return base;
 }
 
 function _commandToRole(role) {
