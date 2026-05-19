@@ -225,12 +225,18 @@ function renderPrActionsPanel(pr, issueNumber) {
 
   // Status dot and label
   var ciGreen = pr.ci_status === 'passed' || pr.ci_status === 'none';
-  var readyToIntegrate = pr.state === 'OPEN' && ciGreen && pr.is_mergeable && pr.review_decision !== 'CHANGES_REQUESTED';
+  var sovaBlocking = pr.sova_review && pr.sova_review.has_sova_review && pr.sova_review.verdict !== 'approve';
+  var readyToIntegrate = pr.state === 'OPEN' && ciGreen && pr.is_mergeable && pr.review_decision !== 'CHANGES_REQUESTED' && !sovaBlocking;
   if (readyToIntegrate) {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-green';
     label.className = 'text-sm font-medium text-accent-green';
     label.textContent = 'PR #' + pr.pr_number + ' -- Ready to Integrate';
     card.className = 'rounded-lg border border-accent-green/30 bg-accent-green/5 p-4';
+  } else if (pr.state === 'OPEN' && sovaBlocking) {
+    dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-red';
+    label.className = 'text-sm font-medium text-accent-red';
+    label.textContent = 'PR #' + pr.pr_number + ' -- Review: ' + pr.sova_review.verdict;
+    card.className = 'rounded-lg border border-accent-red/30 bg-accent-red/5 p-4';
   } else if (pr.state === 'OPEN' && pr.review_decision !== 'CHANGES_REQUESTED') {
     dot.className = 'w-2.5 h-2.5 rounded-full bg-accent-yellow';
     label.className = 'text-sm font-medium text-accent-yellow';
@@ -261,6 +267,12 @@ function renderPrActionsPanel(pr, issueNumber) {
   };
   var reviewLabel = pr.review_decision || 'no review';
   var reviewClass = reviewColors[pr.review_decision] || 'bg-gray-600/30 text-gray-400';
+  if (!pr.review_decision && pr.sova_review && pr.sova_review.has_sova_review) {
+    reviewLabel = 'sova: ' + pr.sova_review.verdict;
+    reviewClass = pr.sova_review.verdict === 'approve'
+      ? 'bg-accent-green/20 text-accent-green'
+      : 'bg-accent-red/20 text-accent-red';
+  }
   badgeHtml += '<span class="px-1.5 py-0.5 rounded text-xs ' + reviewClass + '">' + escapeHtml(reviewLabel.toLowerCase().replace(/_/g, ' ')) + '</span>';
 
   var ciColors = { passed: 'bg-accent-green/20 text-accent-green', failed: 'bg-accent-red/20 text-accent-red', pending: 'bg-accent-yellow/20 text-accent-yellow', none: 'bg-gray-600/30 text-gray-400' };
@@ -281,6 +293,16 @@ function renderPrActionsPanel(pr, issueNumber) {
   if (pr.state === 'OPEN') {
     var needsReview = !pr.review_decision || pr.review_decision === 'REVIEW_REQUIRED';
     var changesRequested = pr.review_decision === 'CHANGES_REQUESTED';
+
+    // SOVA review overrides empty GitHub review_decision
+    if (needsReview && pr.sova_review && pr.sova_review.has_sova_review) {
+      if (pr.sova_review.verdict === 'approve') {
+        needsReview = false;
+      } else {
+        needsReview = false;
+        changesRequested = true;
+      }
+    }
 
     if (needsReview) {
       actionsHtml += '<button onclick="runCommand(\'review-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
