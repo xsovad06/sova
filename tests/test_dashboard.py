@@ -1937,17 +1937,17 @@ class TestFinalizeTaskRunGuard:
         from sova.dashboard.services.agent_db import _finalize_task_run
         from sova.dashboard.services.agent_pool import AgentState
 
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(
-                issue_number="88",
-                role="developer",
-                status="failed",
-                error_message="Manually abandoned",
-            )
-            session.add(run)
-            await session.flush()
-            run_id = run.id
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="88",
+                    role="developer",
+                    status="failed",
+                    error_message="Manually abandoned",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
 
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 0.5
@@ -1955,10 +1955,11 @@ class TestFinalizeTaskRunGuard:
 
         await _finalize_task_run(run_id, exit_code=1, agent=mock_agent)
 
-        async with session.begin():
-            refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "failed"
-            assert refreshed.error_message == "Manually abandoned"
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "failed"
+                assert refreshed.error_message == "Manually abandoned"
 
 
 # ---------------------------------------------------------------------------

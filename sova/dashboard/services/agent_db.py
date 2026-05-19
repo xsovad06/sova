@@ -72,7 +72,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 task_run = await session.get(TaskRun, run_id)
                 if task_run is None:
                     return
-                if task_run.status in ("done", "failed", "interrupted"):
+                if task_run.status in ("done", "failed", "rejected", "interrupted"):
                     return
                 task_run.status = status
                 task_run.total_cost_usd = cost

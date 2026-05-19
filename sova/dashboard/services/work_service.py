@@ -78,6 +78,9 @@ async def get_work_history(
     result = await session.execute(stmt)
     runs = result.scalars().all()
 
+    run_ids = [r.id for r in runs]
+    steps_by_run = await _batch_step_names(session, run_ids)
+
     items = []
     for r in runs:
         step_count = await session.scalar(select(func.count(StepExecution.id)).where(StepExecution.task_run_id == r.id))
@@ -98,6 +101,9 @@ async def get_work_history(
                 ended = ended.replace(tzinfo=timezone.utc)
             duration_ms = int((ended - started).total_seconds() * 1000)
 
+        step_names = steps_by_run.get(r.id, set())
+        variant = "address_review" if step_names & _ADDRESS_REVIEW_ONLY else _detect_variant(r.current_step)
+
         items.append(
             {
                 "id": r.id,
@@ -105,7 +111,7 @@ async def get_work_history(
                 "role": r.role,
                 "status": r.status,
                 "current_step": r.current_step,
-                "pipeline_variant": _detect_variant(r.current_step),
+                "pipeline_variant": variant,
                 "steps_completed": completed_steps or 0,
                 "steps_total": step_count or 0,
                 "total_steps_possible": len(DEVELOPER_PIPELINE),
@@ -288,6 +294,18 @@ def _run_to_dict(run: TaskRun) -> dict:
         "started_at": iso_utc(run.started_at),
         "ended_at": iso_utc(run.ended_at),
     }
+
+
+async def _batch_step_names(session: AsyncSession, run_ids: list[int]) -> dict[int, set[str]]:
+    """Batch-fetch step names for variant detection across multiple runs."""
+    if not run_ids:
+        return {}
+    step_stmt = select(StepExecution.task_run_id, StepExecution.step_name).where(StepExecution.task_run_id.in_(run_ids))
+    rows = (await session.execute(step_stmt)).all()
+    result: dict[int, set[str]] = {}
+    for row in rows:
+        result.setdefault(row.task_run_id, set()).add(row.step_name)
+    return result
 
 
 def _detect_variant(current_step: str | None) -> str:
