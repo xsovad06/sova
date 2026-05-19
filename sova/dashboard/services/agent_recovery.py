@@ -106,6 +106,66 @@ async def dismiss_interrupted_runs() -> int:
         return 0
 
 
+async def get_sova_review_verdict(issue_number: str) -> dict:
+    """Query the DB for the most recent SOVA reviewer verdict on an issue.
+
+    Returns adapter-agnostic review state from SOVA's own TaskRun records,
+    independent of any platform-specific review mechanism (GitHub reviews, etc.).
+    """
+    from sqlalchemy import select
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    no_review: dict = {
+        "has_sova_review": False,
+        "verdict": None,
+        "finding_count": 0,
+        "reviewed_at": None,
+    }
+
+    try:
+        async with await get_session() as session:
+            stmt = (
+                select(TaskRun)
+                .where(
+                    TaskRun.issue_number == issue_number.lstrip("#").strip(),
+                    TaskRun.role.in_(["reviewer", "command:review-pr"]),
+                    TaskRun.status == "completed",
+                    TaskRun.handoff_json.isnot(None),
+                )
+                .order_by(TaskRun.ended_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            run = result.scalar_one_or_none()
+
+        if not run or not run.handoff_json:
+            return no_review
+
+        handoff = run.handoff_json
+        next_action = handoff.get("next_action", "")
+        findings = handoff.get("pending_findings", [])
+
+        if next_action == "approve":
+            verdict = "approve"
+        elif findings:
+            max_sev = max((f.get("severity", 0) for f in findings), default=0)
+            verdict = "block" if max_sev >= 7 else "revise"
+        else:
+            verdict = "approve"
+
+        return {
+            "has_sova_review": True,
+            "verdict": verdict,
+            "finding_count": len(findings),
+            "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
+        }
+    except Exception:
+        log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)
+        return no_review
+
+
 async def get_pr_status_for_issue(issue_number: str) -> dict:
     """Get PR status for an issue -- approval state, CI, mergeability."""
     from sova.config.loader import load_config
@@ -158,6 +218,8 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     except Exception:
         log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
 
+    sova_review = await get_sova_review_verdict(issue_number)
+
     return {
         "has_pr": True,
         "pr_number": status.number,
@@ -169,4 +231,5 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
         "url": status.url,
         "is_approved": status.is_approved,
         "is_mergeable": status.is_mergeable,
+        "sova_review": sova_review,
     }
