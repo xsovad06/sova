@@ -140,27 +140,27 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
             result = await session.execute(stmt)
             run = result.scalar_one_or_none()
 
-        if not run or not run.handoff_json:
-            return no_review
+            if not run or not run.handoff_json:
+                return no_review
 
-        handoff = run.handoff_json
-        next_action = handoff.get("next_action", "")
-        findings = handoff.get("pending_findings", [])
+            handoff = run.handoff_json
+            next_action = handoff.get("next_action", "")
+            findings = handoff.get("pending_findings", [])
 
-        if next_action == "approve":
-            verdict = "approve"
-        elif findings:
-            max_sev = max((f.get("severity", 0) for f in findings), default=0)
-            verdict = "block" if max_sev >= 7 else "revise"
-        else:
-            verdict = "approve"
+            if next_action == "approve":
+                verdict = "approve"
+            elif findings:
+                max_sev = max((f.get("severity", 0) for f in findings), default=0)
+                verdict = "block" if max_sev >= 7 else "revise"
+            else:
+                verdict = "approve"
 
-        return {
-            "has_sova_review": True,
-            "verdict": verdict,
-            "finding_count": len(findings),
-            "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
-        }
+            return {
+                "has_sova_review": True,
+                "verdict": verdict,
+                "finding_count": len(findings),
+                "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
+            }
     except Exception:
         log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)
         return no_review

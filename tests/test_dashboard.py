@@ -2130,6 +2130,132 @@ class TestAgentRecoveryDirect:
             result_force = await _check_issue_conflict("85", pa, force=True)
             assert result_force is None
 
+    async def test_sova_review_verdict_no_run(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        result = await get_sova_review_verdict("999")
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+
+    async def test_sova_review_verdict_approve(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="100",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("100")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+        assert result["reviewed_at"] is not None
+
+    async def test_sova_review_verdict_block(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="101",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [
+                            {"file": "a.py", "severity": 8, "description": "bug"},
+                            {"file": "b.py", "severity": 3, "description": "minor"},
+                        ],
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("101")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "block"
+        assert result["finding_count"] == 2
+
+    async def test_sova_review_verdict_revise(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="102",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [
+                            {"file": "c.py", "severity": 5, "description": "style"},
+                        ],
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("102")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+        assert result["finding_count"] == 1
+
+    async def test_sova_review_verdict_strips_hash(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="103",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("#103")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    async def test_sova_review_verdict_picks_latest(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="104",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={"next_action": "address_review", "pending_findings": [{"severity": 8}]},
+                    ended_at=now - timedelta(hours=1),
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="104",
+                    role="reviewer",
+                    status="completed",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=now,
+                )
+            )
+
+        result = await get_sova_review_verdict("104")
+        assert result["verdict"] == "approve"
+
 
 # ---------------------------------------------------------------------------
 # Output service -- OutputWriter and read_lines
