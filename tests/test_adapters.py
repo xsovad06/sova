@@ -341,6 +341,32 @@ class TestGitHubAdapter:
         assert "comment" in call_args
         assert "82" in call_args
 
+    # -- post_pr_review --
+
+    async def test_post_pr_review(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout='{"id": 123}')
+
+        comments = [{"path": "foo.py", "line": 10, "side": "RIGHT", "body": "Issue here"}]
+        await self.adapter.post_pr_review(82, "Summary", "COMMENT", comments)
+
+        call_args = mock_run.call_args[0]
+        assert "api" in call_args
+        assert "repos/user/repo/pulls/82/reviews" in call_args
+        assert "--method" in call_args
+        assert "POST" in call_args
+        assert "--input" in call_args
+        # Verify JSON was passed via stdin kwarg
+        stdin_data = mock_run.call_args[1].get("stdin", "")
+        assert "Summary" in stdin_data
+        assert "COMMENT" in stdin_data
+        assert "foo.py" in stdin_data
+
+    async def test_post_pr_review_raises_on_failure(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Validation Failed")
+
+        with pytest.raises(RuntimeError, match="Failed to post PR review"):
+            await self.adapter.post_pr_review(82, "body", "COMMENT", [])
+
     # -- get_state --
 
     async def test_get_state_from_labels(self, mock_run: AsyncMock) -> None:

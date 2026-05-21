@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from sova.git.diff import parse_diff_lines
 from sova.git.operations import (
     CheckConclusion,
     CheckStatus,
@@ -853,3 +854,106 @@ class TestGetPrFiles:
             mock_run.return_value = _shell_fail(stderr="not found")
             with pytest.raises(RuntimeError, match="Failed to get files"):
                 await get_pr_files(42, repo="user/repo")
+
+
+# ---------------------------------------------------------------------------
+# Diff line parser
+# ---------------------------------------------------------------------------
+
+
+class TestParseDiffLines:
+    def test_single_file_addition(self) -> None:
+        diff = (
+            "diff --git a/foo.py b/foo.py\n"
+            "new file mode 100644\n"
+            "index 0000000..abc1234\n"
+            "--- /dev/null\n"
+            "+++ b/foo.py\n"
+            "@@ -0,0 +1,3 @@\n"
+            "+line one\n"
+            "+line two\n"
+            "+line three\n"
+        )
+        result = parse_diff_lines(diff)
+        assert result == {"foo.py": {1, 2, 3}}
+
+    def test_modification_with_context(self) -> None:
+        diff = (
+            "diff --git a/bar.py b/bar.py\n"
+            "index abc..def 100644\n"
+            "--- a/bar.py\n"
+            "+++ b/bar.py\n"
+            "@@ -10,5 +10,6 @@ def func():\n"
+            "     unchanged\n"
+            "-    old line\n"
+            "+    new line\n"
+            "+    extra line\n"
+            "     context\n"
+            "     more context\n"
+        )
+        result = parse_diff_lines(diff)
+        # Line 10 = context, 11 = new line (replaces old), 12 = extra, 13-14 = context
+        assert result == {"bar.py": {10, 11, 12, 13, 14}}
+
+    def test_multi_file_diff(self) -> None:
+        diff = (
+            "diff --git a/a.py b/a.py\n"
+            "index 000..111 100644\n"
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " keep\n"
+            "+added\n"
+            " also keep\n"
+            "diff --git a/b.py b/b.py\n"
+            "index 222..333 100644\n"
+            "--- a/b.py\n"
+            "+++ b/b.py\n"
+            "@@ -5,3 +5,3 @@\n"
+            "     ctx\n"
+            "-    removed\n"
+            "+    replaced\n"
+            "     ctx2\n"
+        )
+        result = parse_diff_lines(diff)
+        assert result["a.py"] == {1, 2, 3}
+        assert result["b.py"] == {5, 6, 7}
+
+    def test_deleted_file(self) -> None:
+        diff = (
+            "diff --git a/gone.py b/gone.py\n"
+            "deleted file mode 100644\n"
+            "index abc..000 100644\n"
+            "--- a/gone.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,3 +0,0 @@\n"
+            "-line one\n"
+            "-line two\n"
+            "-line three\n"
+        )
+        result = parse_diff_lines(diff)
+        assert "gone.py" not in result
+
+    def test_empty_diff(self) -> None:
+        assert parse_diff_lines("") == {}
+
+    def test_multiple_hunks(self) -> None:
+        diff = (
+            "diff --git a/multi.py b/multi.py\n"
+            "index abc..def 100644\n"
+            "--- a/multi.py\n"
+            "+++ b/multi.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " ctx\n"
+            "+new at 2\n"
+            " ctx\n"
+            " ctx\n"
+            "@@ -20,3 +21,4 @@\n"
+            " ctx\n"
+            "+new at 22\n"
+            " ctx\n"
+            " ctx\n"
+        )
+        result = parse_diff_lines(diff)
+        assert 2 in result["multi.py"]
+        assert 22 in result["multi.py"]

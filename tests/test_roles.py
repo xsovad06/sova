@@ -414,6 +414,90 @@ class TestReviewerRole:
         assert not result.success
         assert "no pr" in result.error.lower()
 
+    async def test_execute_posts_inline_review_comments(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+
+        findings = [
+            {
+                "file": "foo.py",
+                "line": 2,
+                "severity": 7,
+                "category": "bug",
+                "description": "Bug here",
+                "suggestion": "Fix it",
+            }
+        ]
+        llm_resp = json.dumps({"findings": findings, "summary": "Found a bug"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        real_diff = (
+            "diff --git a/foo.py b/foo.py\n"
+            "index 000..111 100644\n"
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " line1\n"
+            "+new line\n"
+            " line3\n"
+            " line4\n"
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.post_pr_review.assert_called_once()
+        call_kwargs = adapter.post_pr_review.call_args
+        assert call_kwargs[1]["event"] == "COMMENT"
+        comments = call_kwargs[1]["comments"]
+        assert len(comments) == 1
+        assert comments[0]["path"] == "foo.py"
+        assert comments[0]["line"] == 2
+        adapter.post_pr_comment.assert_not_called()
+
+    async def test_execute_falls_back_to_comment_on_review_failure(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review.side_effect = RuntimeError("API failed")
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.post_pr_comment.assert_called_once()
+
     async def test_rejects_wrong_state(self) -> None:
         from sova.roles.reviewer import ReviewerRole
 
@@ -784,9 +868,9 @@ class TestReviewerLLMReview:
 
         assert result.success
         assert "2 findings" in result.summary
-        adapter.post_pr_comment.assert_awaited_once()
-        comment = adapter.post_pr_comment.call_args[0][1]
-        assert "Null check missing" in comment
+        adapter.post_pr_review.assert_awaited_once()
+        call_kwargs = adapter.post_pr_review.call_args[1]
+        assert "Null check missing" in call_kwargs["body"]
         assert ctx.cost_usd == Decimal("0.01")
 
     async def test_review_no_findings(self) -> None:
@@ -813,9 +897,10 @@ class TestReviewerLLMReview:
 
         assert result.success
         assert "0 findings" in result.summary
-        comment = adapter.post_pr_comment.call_args[0][1]
-        assert "No issues found" in comment
-        assert "LGTM" in comment
+        adapter.post_pr_review.assert_awaited_once()
+        body = adapter.post_pr_review.call_args[1]["body"]
+        assert "No issues found" in body
+        assert "LGTM" in body
 
     async def test_llm_failure_graceful_fallback(self) -> None:
         from unittest.mock import patch
@@ -836,8 +921,9 @@ class TestReviewerLLMReview:
             result = await role.execute(ctx)
 
         assert result.success
-        comment = adapter.post_pr_comment.call_args[0][1]
-        assert "manual review" in comment.lower()
+        adapter.post_pr_review.assert_awaited_once()
+        body = adapter.post_pr_review.call_args[1]["body"]
+        assert "manual review" in body.lower() or "no issues found" in body.lower()
 
     async def test_large_diff_chunking(self) -> None:
         from decimal import Decimal
