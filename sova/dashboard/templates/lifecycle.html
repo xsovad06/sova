@@ -1,0 +1,366 @@
+{% extends "base.html" %}
+{% block title %}Lifecycle #{{ issue_number }} - SOVA{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<div class="flex items-center gap-3 mb-6">
+  <a href="{{ prefix|default('') }}/work" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Work</a>
+  <h2 class="text-2xl font-semibold">Issue #{{ issue_number }}</h2>
+  <span id="lc-cost" class="text-sm text-accent-green ml-auto"></span>
+</div>
+
+<!-- Summary bar -->
+<div id="lc-summary" class="text-xs text-gray-500 mb-4 flex items-center gap-4 flex-wrap"></div>
+
+<!-- Phase Rail -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-6 mb-6">
+  <div id="phase-rail" class="flex items-center gap-1">
+    <p class="text-gray-500 text-sm">Loading lifecycle...</p>
+  </div>
+</div>
+
+<!-- Current Phase Detail -->
+<div id="phase-detail" class="bg-surface-card rounded-lg border border-gray-700/50 p-6 mb-6 hidden">
+  <h3 id="phase-detail-title" class="text-lg font-semibold mb-4"></h3>
+  <div id="phase-detail-content"></div>
+  <div id="phase-actions" class="flex items-center gap-3 mt-4"></div>
+</div>
+
+<!-- Phase History -->
+<div id="phase-history" class="space-y-3">
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PHASES = ['development', 'post_pr', 'review', 'address_review', 'integrate', 'post_merge'];
+var PHASE_LABELS = {
+  development: 'Development',
+  post_pr: 'Post-PR',
+  review: 'Review',
+  address_review: 'Address Review',
+  integrate: 'Integrate',
+  post_merge: 'Post-Merge',
+  done: 'Done',
+  abandoned: 'Abandoned',
+  failed: 'Failed'
+};
+
+var _lifecycleData = null;
+var _pollTimer = null;
+var _lastUpdated = null;
+
+function phaseStatusStyle(status) {
+  switch (status) {
+    case 'completed': return { bg: 'bg-accent-green', text: 'text-accent-green', ring: 'ring-accent-green/30' };
+    case 'active':    return { bg: 'bg-accent', text: 'text-accent', ring: 'ring-accent/30' };
+    case 'failed':    return { bg: 'bg-accent-red', text: 'text-accent-red', ring: 'ring-accent-red/30' };
+    case 'skipped':   return { bg: 'bg-gray-600', text: 'text-gray-500', ring: 'ring-gray-600/30' };
+    default:          return { bg: 'bg-gray-700', text: 'text-gray-500', ring: 'ring-gray-700/30' };
+  }
+}
+
+function getPhaseStatus(data, phase) {
+  if (!data || !data.phases) return 'pending';
+  var records = data.phases.filter(function(p) { return p.phase === phase; });
+  if (records.length === 0) return 'pending';
+  // Return the status of the latest record
+  var latest = records[records.length - 1];
+  return latest.status || 'pending';
+}
+
+function getPhaseRecord(data, phase) {
+  if (!data || !data.phases) return null;
+  var records = data.phases.filter(function(p) { return p.phase === phase; });
+  return records.length > 0 ? records[records.length - 1] : null;
+}
+
+function renderPhaseRail(data) {
+  var el = document.getElementById('phase-rail');
+  var html = '';
+
+  for (var i = 0; i < PHASES.length; i++) {
+    var phase = PHASES[i];
+    var status = getPhaseStatus(data, phase);
+    var isCurrent = data.current_phase === phase;
+    var style = phaseStatusStyle(isCurrent && status === 'pending' ? 'active' : status);
+
+    // Connector
+    if (i > 0) {
+      var connColor = status === 'completed' || status === 'skipped' ? 'bg-accent-green/40' : 'bg-gray-700';
+      html += '<div class="flex-1 h-0.5 ' + connColor + ' min-w-[20px] max-w-[60px]"></div>';
+    }
+
+    // Phase node
+    var pulse = isCurrent && (status === 'active' || status === 'pending') ? ' animate-pulse' : '';
+    var strikethrough = status === 'skipped' ? ' line-through' : '';
+    var cursor = 'cursor-pointer hover:ring-2 ' + style.ring;
+
+    html += '<div class="flex flex-col items-center gap-1.5 ' + cursor + '" onclick="selectPhase(\'' + phase + '\')">';
+    html += '<div class="w-8 h-8 rounded-full flex items-center justify-center ' + style.bg + '/20 border-2 border-current ' + style.text + pulse + '">';
+
+    if (status === 'completed') {
+      html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+    } else if (status === 'failed') {
+      html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
+    } else if (status === 'active' || isCurrent) {
+      html += '<div class="w-2.5 h-2.5 rounded-full ' + style.bg + '"></div>';
+    } else {
+      html += '<div class="w-2 h-2 rounded-full bg-gray-600"></div>';
+    }
+    html += '</div>';
+    html += '<span class="text-xs ' + style.text + strikethrough + ' whitespace-nowrap">' + PHASE_LABELS[phase] + '</span>';
+    html += '</div>';
+  }
+
+  // Terminal state indicator
+  if (data.current_phase === 'done' || data.current_phase === 'abandoned') {
+    var termStyle = data.current_phase === 'done' ? phaseStatusStyle('completed') : phaseStatusStyle('failed');
+    html += '<div class="flex-1 h-0.5 ' + (data.current_phase === 'done' ? 'bg-accent-green/40' : 'bg-gray-700') + ' min-w-[20px] max-w-[60px]"></div>';
+    html += '<div class="flex flex-col items-center gap-1.5">';
+    html += '<div class="w-8 h-8 rounded-full flex items-center justify-center ' + termStyle.bg + '/20 border-2 border-current ' + termStyle.text + '">';
+    if (data.current_phase === 'done') {
+      html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>';
+    } else {
+      html += '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
+    }
+    html += '</div>';
+    html += '<span class="text-xs ' + termStyle.text + '">' + PHASE_LABELS[data.current_phase] + '</span>';
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function selectPhase(phase) {
+  if (!_lifecycleData) return;
+  renderPhaseDetail(_lifecycleData, phase);
+}
+
+function renderPhaseDetail(data, phase) {
+  var el = document.getElementById('phase-detail');
+  var titleEl = document.getElementById('phase-detail-title');
+  var contentEl = document.getElementById('phase-detail-content');
+  var actionsEl = document.getElementById('phase-actions');
+
+  var record = getPhaseRecord(data, phase);
+  var status = getPhaseStatus(data, phase);
+  var isCurrent = data.current_phase === phase;
+  var style = phaseStatusStyle(status);
+
+  titleEl.innerHTML = PHASE_LABELS[phase] + ' <span class="text-sm font-normal ml-2 ' + style.text + '">(' + status + ')</span>';
+
+  var html = '';
+  if (record) {
+    html += '<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">';
+
+    if (record.task_run_id) {
+      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+      html += '<div><span class="text-gray-500">Run:</span> <a href="' + prefix + '/work/' + record.task_run_id + '" class="text-accent hover:underline">#' + record.task_run_id + '</a></div>';
+    }
+    if (record.cost_usd) {
+      html += '<div><span class="text-gray-500">Cost:</span> <span class="text-accent-green">$' + record.cost_usd.toFixed(4) + '</span></div>';
+    }
+    if (record.attempt > 1) {
+      html += '<div><span class="text-gray-500">Attempt:</span> ' + record.attempt + '</div>';
+    }
+    if (record.started_at) {
+      html += '<div><span class="text-gray-500">Started:</span> ' + new Date(record.started_at).toLocaleString() + '</div>';
+    }
+    html += '</div>';
+
+    if (record.error_message) {
+      html += '<div class="mt-3 p-3 rounded bg-accent-red/10 border border-accent-red/30 text-sm text-accent-red">' +
+        escapeHtml(record.error_message) + '</div>';
+    }
+  } else {
+    html += '<p class="text-gray-500 text-sm">This phase has not started yet.</p>';
+  }
+  contentEl.innerHTML = html;
+
+  // Actions
+  var actions = '';
+  var lifecycleId = data.id;
+
+  if (lifecycleId && !data.reconstructed) {
+    if (status === 'failed') {
+      actions += '<button onclick="restartPhase(\'' + phase + '\')" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Restart Phase</button>';
+    }
+    if (status !== 'completed' && status !== 'skipped') {
+      actions += '<button onclick="skipPhase(\'' + phase + '\')" class="px-3 py-1.5 text-xs bg-gray-700 text-gray-300 border border-gray-600 rounded hover:bg-gray-600 transition-colors">Skip Phase</button>';
+    }
+
+    // Force advance dropdown
+    var phaseIdx = PHASES.indexOf(phase);
+    if (phaseIdx < PHASES.length - 1 && (isCurrent || status === 'failed')) {
+      var nextPhases = PHASES.slice(phaseIdx + 1);
+      actions += '<select onchange="forceAdvance(this.value); this.selectedIndex=0;" class="px-3 py-1.5 text-xs bg-gray-700 text-gray-300 border border-gray-600 rounded hover:bg-gray-600">';
+      actions += '<option value="">Force advance to...</option>';
+      for (var j = 0; j < nextPhases.length; j++) {
+        actions += '<option value="' + nextPhases[j] + '">' + PHASE_LABELS[nextPhases[j]] + '</option>';
+      }
+      actions += '<option value="done">Done</option>';
+      actions += '</select>';
+    }
+
+    if (isCurrent) {
+      actions += '<button onclick="abandonLifecycle()" class="px-3 py-1.5 text-xs bg-accent-red/20 text-accent-red border border-accent-red/40 rounded hover:bg-accent-red/30 transition-colors ml-auto">Abandon</button>';
+    }
+  }
+  actionsEl.innerHTML = actions;
+  el.classList.remove('hidden');
+}
+
+function renderPhaseHistory(data) {
+  var el = document.getElementById('phase-history');
+  if (!data.phases || data.phases.length === 0) {
+    el.innerHTML = '';
+    return;
+  }
+
+  var html = '<h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Phase History</h3>';
+  html += '<div class="space-y-2">';
+
+  for (var i = data.phases.length - 1; i >= 0; i--) {
+    var p = data.phases[i];
+    var style = phaseStatusStyle(p.status);
+
+    html += '<div class="flex items-center gap-3 p-3 rounded bg-surface-card border border-gray-700/50">';
+    html += '<span class="w-2 h-2 rounded-full ' + style.bg + ' shrink-0"></span>';
+    html += '<span class="text-sm font-medium w-32">' + PHASE_LABELS[p.phase] + '</span>';
+    html += '<span class="text-xs ' + style.text + ' w-20">' + p.status + '</span>';
+
+    if (p.task_run_id) {
+      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+      html += '<a href="' + prefix + '/work/' + p.task_run_id + '" class="text-xs text-accent hover:underline">Run #' + p.task_run_id + '</a>';
+    }
+    if (p.cost_usd) {
+      html += '<span class="text-xs text-accent-green">$' + p.cost_usd.toFixed(4) + '</span>';
+    }
+    if (p.attempt > 1) {
+      html += '<span class="text-xs text-gray-500">Attempt ' + p.attempt + '</span>';
+    }
+    if (p.error_message) {
+      html += '<span class="text-xs text-accent-red truncate max-w-xs ml-auto" title="' + escapeHtml(p.error_message) + '">' + escapeHtml(p.error_message) + '</span>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderSummary(data) {
+  var el = document.getElementById('lc-summary');
+  var parts = [];
+
+  if (data.branch_name) parts.push('Branch: <span class="text-gray-300">' + escapeHtml(data.branch_name) + '</span>');
+  if (data.pr_number) parts.push('PR: ' + prLink(data.pr_number));
+  if (data.created_at) parts.push('Started: <span class="text-gray-300">' + new Date(data.created_at).toLocaleString() + '</span>');
+  if (data.reconstructed) parts.push('<span class="text-accent-yellow">(reconstructed from run history)</span>');
+
+  el.innerHTML = parts.join('<span class="text-gray-700 mx-2">|</span>');
+
+  var costEl = document.getElementById('lc-cost');
+  costEl.textContent = '$' + (data.total_cost_usd || 0).toFixed(4);
+}
+
+async function loadLifecycle() {
+  try {
+    var data = await fetchAPI(apiUrl('/lifecycle/issue/{{ issue_number }}'));
+    if (data.error) {
+      document.getElementById('phase-rail').innerHTML = '<p class="text-gray-500">' + escapeHtml(data.error) + '</p>';
+      return;
+    }
+    // Skip re-render if nothing changed
+    if (_lastUpdated && data.updated_at === _lastUpdated) return;
+    _lastUpdated = data.updated_at;
+
+    _lifecycleData = data;
+    renderPhaseRail(data);
+    renderSummary(data);
+    renderPhaseHistory(data);
+
+    // Auto-select current phase
+    if (PHASES.indexOf(data.current_phase) !== -1) {
+      renderPhaseDetail(data, data.current_phase);
+    } else if (data.phases && data.phases.length > 0) {
+      renderPhaseDetail(data, data.phases[data.phases.length - 1].phase);
+    }
+  } catch (e) {
+    console.error('Failed to load lifecycle:', e);
+    document.getElementById('phase-rail').innerHTML = '<p class="text-accent-red text-sm">Failed to load lifecycle data</p>';
+  }
+}
+
+// Phase action handlers
+async function restartPhase(phase) {
+  if (!_lifecycleData || !_lifecycleData.id) return;
+  try {
+    await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/phase/' + phase + '/restart'), { method: 'POST' });
+    _lastUpdated = null;
+    loadLifecycle();
+    showToast('Phase restart ready: ' + PHASE_LABELS[phase], 'info');
+  } catch (e) {
+    showToast('Failed to restart phase: ' + e.message, 'error');
+  }
+}
+
+async function skipPhase(phase) {
+  if (!_lifecycleData || !_lifecycleData.id) return;
+  if (!confirm('Skip ' + PHASE_LABELS[phase] + '?')) return;
+  try {
+    await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/phase/' + phase + '/skip'), { method: 'POST' });
+    _lastUpdated = null;
+    loadLifecycle();
+    showToast('Phase skipped: ' + PHASE_LABELS[phase], 'info');
+  } catch (e) {
+    showToast('Failed to skip phase: ' + e.message, 'error');
+  }
+}
+
+async function forceAdvance(toPhase) {
+  if (!_lifecycleData || !_lifecycleData.id || !toPhase) return;
+  if (!confirm('Force advance to ' + PHASE_LABELS[toPhase] + '?')) return;
+  try {
+    await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/advance'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_phase: toPhase })
+    });
+    _lastUpdated = null;
+    loadLifecycle();
+    showToast('Advanced to ' + PHASE_LABELS[toPhase], 'info');
+  } catch (e) {
+    showToast('Failed to advance: ' + e.message, 'error');
+  }
+}
+
+async function abandonLifecycle() {
+  if (!_lifecycleData || !_lifecycleData.id) return;
+  if (!confirm('Abandon this lifecycle? This cannot be undone.')) return;
+  try {
+    await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/abandon'), { method: 'POST' });
+    _lastUpdated = null;
+    loadLifecycle();
+    showToast('Lifecycle abandoned', 'warning');
+  } catch (e) {
+    showToast('Failed to abandon: ' + e.message, 'error');
+  }
+}
+
+// Initial load + polling
+loadLifecycle();
+_pollTimer = setInterval(loadLifecycle, 5000);
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    clearInterval(_pollTimer);
+    _pollTimer = null;
+  } else {
+    loadLifecycle();
+    _pollTimer = setInterval(loadLifecycle, 5000);
+  }
+});
+</script>
+{% endblock %}

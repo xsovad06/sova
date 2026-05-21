@@ -85,3 +85,45 @@ class InvalidTransitionError(Exception):
         self.current = current
         self.target = target
         super().__init__(f"Invalid transition: {current} -> {target}")
+
+
+# -- Issue Lifecycle Phases ---------------------------------------------------
+
+
+class LifecyclePhase(StrEnum):
+    """Phases in the full issue lifecycle (development through merge)."""
+
+    DEVELOPMENT = "development"
+    POST_PR = "post_pr"
+    REVIEW = "review"
+    ADDRESS_REVIEW = "address_review"
+    INTEGRATE = "integrate"
+    POST_MERGE = "post_merge"
+
+
+PHASE_ORDER: list[LifecyclePhase] = list(LifecyclePhase)
+
+PHASE_TRANSITIONS: dict[str, set[str]] = {
+    "development": {"post_pr"},
+    "post_pr": {"review"},
+    "review": {"address_review", "integrate"},
+    "address_review": {"integrate"},
+    "integrate": {"post_merge"},
+    "post_merge": set(),
+}
+
+
+class PhaseStatus(StrEnum):
+    """Status of a lifecycle phase."""
+
+    PENDING = "pending"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+PHASE_STATUS_TERMINAL = frozenset({PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.SKIPPED})
+
+# Terminal statuses for TaskRun records (shared across services)
+TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})

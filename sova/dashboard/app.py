@@ -26,6 +26,7 @@ from sova.dashboard.routers import (
     control,
     costs,
     handoff,
+    lifecycle,
     logs,
     memory,
     overview,
@@ -287,6 +288,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_memory(request: Request, slug: str):
         return _project_page(request, templates, slug, "memory.html", "memory")
 
+    @app.get("/p/{slug}/lifecycle/{issue_number}")
+    async def project_lifecycle(request: Request, slug: str, issue_number: int):
+        return _project_page(request, templates, slug, "lifecycle.html", "work", issue_number=issue_number)
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -382,6 +387,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def memory_page(request: Request):
         return templates.TemplateResponse(request, "memory.html", {"page": "memory"})
 
+    @app.get("/lifecycle/{issue_number}")
+    async def lifecycle_page(request: Request, issue_number: int):
+        return templates.TemplateResponse(request, "lifecycle.html", {"page": "work", "issue_number": issue_number})
+
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
@@ -402,3 +411,4 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(setup.router, prefix=prefix)
     app.include_router(agents.router, prefix=prefix)
     app.include_router(work.router, prefix=prefix)
+    app.include_router(lifecycle.router, prefix=prefix)
