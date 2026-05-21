@@ -27,6 +27,9 @@ from sova.git.branch import (
 from sova.git.branch import (
     sync_branch as sync_branch,
 )
+from sova.git.diff import (
+    parse_diff_lines as parse_diff_lines,
+)
 from sova.git.pr import (
     _GH_STATE_MAP as _GH_STATE_MAP,
 )

@@ -89,6 +89,16 @@ class TaskAdapter(ABC):
         """Post a comment on a pull request."""
 
     @abstractmethod
+    async def post_pr_review(
+        self,
+        pr_number: int,
+        body: str,
+        event: str,
+        comments: list[dict],
+    ) -> None:
+        """Post a review on a pull request with optional inline comments."""
+
+    @abstractmethod
     async def edit_body(self, task_id: str, body: str) -> None:
         """Update the issue body/description on the tracker."""
 
