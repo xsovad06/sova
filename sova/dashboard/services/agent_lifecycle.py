@@ -278,6 +278,9 @@ async def start_agent(
             await process.stop()
             return {"error": "Failed to create task run record"}
 
+        # Link to lifecycle
+        await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
+
         writer = OutputWriter(cwd, run_id)
         await _set_output_file_path(run_id, writer.path, cwd)
 
@@ -415,6 +418,9 @@ async def start_command(
             await process.stop()
             return {"error": "Failed to create task run record"}
 
+        # Link to lifecycle
+        await _link_run_to_lifecycle(run_id, issue, role, cwd)
+
         writer = OutputWriter(cwd, run_id)
         await _set_output_file_path(run_id, writer.path, cwd)
 
@@ -468,6 +474,9 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         agent.output_writer.close()
 
     await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
+
+    # Finalize lifecycle phase
+    await _finalize_lifecycle_phase(run_id, exit_code, agent.last_result_cost or 0.0, agent.project_dir)
 
     try:
         from sova.config.loader import load_config
@@ -568,3 +577,47 @@ def get_step_progress(current_step: str | None) -> dict:
         "steps": pipeline,
         "pipeline_variant": "address_review" if is_address_review else "developer",
     }
+
+
+# -- Lifecycle integration ----------------------------------------------------
+
+
+async def _link_run_to_lifecycle(
+    run_id: int,
+    issue: str,
+    role: str,
+    project_dir: Path,
+    *,
+    pr_number: int | None = None,
+) -> None:
+    """Link a newly created TaskRun to an IssueLifecycle."""
+    try:
+        from sova.dashboard.services.lifecycle_service import link_task_run_to_lifecycle
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                run = await session.get(TaskRun, run_id)
+                if run:
+                    await link_task_run_to_lifecycle(session, run)
+    except Exception:
+        log.warning("lifecycle.link_failed", run_id=run_id, issue=issue, exc_info=True)
+
+
+async def _finalize_lifecycle_phase(
+    run_id: int,
+    exit_code: int,
+    cost: float,
+    project_dir: Path,
+) -> None:
+    """Update lifecycle phase status after a run completes."""
+    try:
+        from sova.dashboard.services.lifecycle_service import finalize_phase_from_run
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                await finalize_phase_from_run(session, run_id, exit_code, cost)
+    except Exception:
+        log.warning("lifecycle.finalize_failed", run_id=run_id, exc_info=True)

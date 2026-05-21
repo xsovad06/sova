@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.control_service import (
     _ADDRESS_REVIEW_ONLY,
     DEVELOPER_PIPELINE,
@@ -19,7 +20,7 @@ from sova.dashboard.services.control_service import (
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import iso_utc
 
-_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})
+_TERMINAL = TASK_RUN_TERMINAL
 
 
 async def get_active_work(session: AsyncSession) -> list[dict]:

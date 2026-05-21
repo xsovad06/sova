@@ -34,8 +34,8 @@ project-automation-kit/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 13 API routers (overview, runs, costs, control, handoff, memory, logs, tasks, queue, settings, setup, agents, work)
-      services/                    # 19 services (run, cost, memory, control, handoff, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output)
+      routers/                     # 14 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work)
+      services/                    # 20 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     commands/                      # Command distribution (catalog, templates, manifest, distribution)

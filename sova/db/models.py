@@ -46,6 +46,8 @@ class TaskRun(Base):
         """Strip '#' prefix so '#67' and '67' are stored consistently."""
         return value.lstrip("#").strip() if value else value
 
+    lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"))
+
     __table_args__ = (
         Index("ix_task_runs_issue", "issue_number"),
         Index("ix_task_runs_status", "status"),
@@ -161,3 +163,60 @@ class TaskAssessmentRecord(Base):
         Index("ix_assessments_suitability", "suitability"),
         Index("ix_assessments_project_slug", "project_slug"),
     )
+
+
+class IssueLifecycle(Base):
+    """Spine connecting all TaskRuns for a single issue journey."""
+
+    __tablename__ = "issue_lifecycles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    issue_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    current_phase: Mapped[str] = mapped_column(String(30), nullable=False, default="development")
+    phase_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    branch_name: Mapped[str] = mapped_column(String(200), default="")
+    total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    phases: Mapped[list["LifecyclePhaseRecord"]] = relationship(
+        back_populates="lifecycle", order_by="LifecyclePhaseRecord.id"
+    )
+
+    @validates("issue_number")
+    def _normalize_issue_number(self, _key: str, value: str) -> str:
+        return value.lstrip("#").strip() if value else value
+
+    __table_args__ = (
+        Index("ix_issue_lifecycles_issue", "issue_number"),
+        Index("ix_issue_lifecycles_project", "project_slug"),
+    )
+
+
+class LifecyclePhaseRecord(Base):
+    """Tracks each phase execution within a lifecycle."""
+
+    __tablename__ = "lifecycle_phases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lifecycle_id: Mapped[int] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"), nullable=False)
+    phase: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("task_runs.id"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    lifecycle: Mapped["IssueLifecycle"] = relationship(back_populates="phases")
+
+    __table_args__ = (Index("ix_lifecycle_phases_lifecycle", "lifecycle_id"),)
