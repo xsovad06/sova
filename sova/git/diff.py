@@ -19,6 +19,10 @@ def parse_diff_lines(diff: str) -> dict[str, set[int]]:
     line_num = 0
 
     for raw_line in diff.splitlines():
+        if raw_line.startswith("diff --git "):
+            current_file = None
+            continue
+
         if raw_line.startswith("+++ b/"):
             current_file = raw_line[6:]
             result.setdefault(current_file, set())
@@ -42,12 +46,7 @@ def parse_diff_lines(diff: str) -> dict[str, set[int]]:
         elif raw_line.startswith("-"):
             pass
         elif not raw_line.startswith("\\"):
-            if (
-                _HUNK_RE.match(raw_line)
-                or raw_line.startswith("diff ")
-                or raw_line.startswith("index ")
-                or raw_line.startswith("--- ")
-            ):
+            if raw_line.startswith("index ") or raw_line.startswith("--- "):
                 continue
             result[current_file].add(line_num)
             line_num += 1

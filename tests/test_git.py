@@ -957,3 +957,26 @@ class TestParseDiffLines:
         result = parse_diff_lines(diff)
         assert 2 in result["multi.py"]
         assert 22 in result["multi.py"]
+
+    def test_new_file_metadata_does_not_leak_to_previous_file(self) -> None:
+        diff = (
+            "diff --git a/existing.py b/existing.py\n"
+            "index abc..def 100644\n"
+            "--- a/existing.py\n"
+            "+++ b/existing.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " keep\n"
+            "+added\n"
+            " also keep\n"
+            "diff --git a/brand_new.py b/brand_new.py\n"
+            "new file mode 100644\n"
+            "index 0000000..abc1234\n"
+            "--- /dev/null\n"
+            "+++ b/brand_new.py\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+line one\n"
+            "+line two\n"
+        )
+        result = parse_diff_lines(diff)
+        assert result["existing.py"] == {1, 2, 3}
+        assert result["brand_new.py"] == {1, 2}
