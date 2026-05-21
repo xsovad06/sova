@@ -188,6 +188,26 @@ class GitHubAdapter(TaskAdapter):
             body,
         )
 
+    async def post_pr_review(
+        self,
+        pr_number: int,
+        body: str,
+        event: str,
+        comments: list[dict],
+    ) -> None:
+        payload = json.dumps({"body": body, "event": event, "comments": comments})
+        result = await self._gh(
+            "api",
+            f"repos/{self.repo}/pulls/{pr_number}/reviews",
+            "--method",
+            "POST",
+            "--input",
+            "-",
+            stdin=payload,
+        )
+        if not result.success:
+            raise RuntimeError(f"Failed to post PR review on #{pr_number}: {result.stderr[:300]}")
+
     async def edit_body(self, task_id: str, body: str) -> None:
         await self._gh(
             "issue",
