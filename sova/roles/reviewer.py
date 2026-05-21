@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.git.diff import parse_diff_lines
 from sova.git.operations import find_pr_for_issue, get_pr_diff, get_pr_files
 from sova.ipc.handoff import AgentHandoff, DashboardHandoff, HandoffAction, write_handoff, write_handoff_file
 from sova.llm.client import invoke
@@ -219,6 +220,92 @@ def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_num
     return "\n".join(lines)
 
 
+def _format_inline_comment(finding: ReviewFinding) -> str:
+    """Format a single finding as an inline PR review comment."""
+    parts = [f"**[{finding.severity}/10] {finding.category}**: {finding.description}"]
+    if finding.suggestion:
+        parts.append(f"\n**Suggestion**: {finding.suggestion}")
+    return "\n".join(parts)
+
+
+def _format_review_body(
+    findings: list[ReviewFinding],
+    summary: str,
+    pr_number: int,
+    body_only: list[ReviewFinding],
+) -> str:
+    """Format the review body with summary table and any non-inline findings."""
+    lines = [f"## Code Review for PR #{pr_number}", ""]
+
+    if not findings:
+        if summary:
+            lines.extend([summary, ""])
+        lines.append("No issues found after thorough review.")
+        lines.extend(["", "---", "**Assessment**: LGTM -- no issues found, ready to merge"])
+        return "\n".join(lines)
+
+    if summary:
+        lines.extend([summary, ""])
+
+    lines.append(f"**{len(findings)} findings** ({len(findings) - len(body_only)} inline, {len(body_only)} in summary)")
+    lines.append("")
+
+    lines.append("| Sev | Category | File | Finding |")
+    lines.append("|-----|----------|------|---------|")
+    for f in sorted(findings, key=lambda x: x.severity, reverse=True):
+        loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
+        lines.append(f"| {f.severity}/10 | {f.category} | {loc} | {f.description} |")
+
+    if body_only:
+        lines.extend(["", "### Findings not on changed lines", ""])
+        for i, f in enumerate(sorted(body_only, key=lambda x: x.severity, reverse=True), 1):
+            loc = f"{f.file}:{f.line}" if f.line else f.file
+            lines.append(f"**{i}. [{f.severity}/10] [{f.category}] `{loc}`**")
+            lines.append("")
+            lines.append(f"  {f.description}")
+            if f.suggestion:
+                lines.append("")
+                lines.append(f"  **Fix**: {f.suggestion}")
+            lines.append("")
+
+    max_sev = max(f.severity for f in findings)
+    if max_sev >= 7:
+        assessment = "BLOCK -- critical issues must be fixed before merge"
+    else:
+        assessment = "REVISE -- actionable findings should be addressed"
+    lines.extend(["---", f"**Assessment**: {assessment}"])
+
+    return "\n".join(lines)
+
+
+def _build_review_comments(
+    findings: list[ReviewFinding],
+    diff_lines: dict[str, set[int]],
+) -> tuple[list[dict], list[ReviewFinding]]:
+    """Split findings into inline comments and body-only findings.
+
+    Returns (inline_comments, body_only_findings).
+    """
+    inline_comments: list[dict] = []
+    body_only: list[ReviewFinding] = []
+
+    for f in findings:
+        valid_lines = diff_lines.get(f.file, set())
+        if f.line and f.line in valid_lines:
+            inline_comments.append(
+                {
+                    "path": f.file,
+                    "line": f.line,
+                    "side": "RIGHT",
+                    "body": _format_inline_comment(f),
+                }
+            )
+        else:
+            body_only.append(f)
+
+    return inline_comments, body_only
+
+
 class ReviewerRole(AgentRole):
     name = "reviewer"
     description = "Review PRs and provide feedback"
@@ -279,9 +366,8 @@ class ReviewerRole(AgentRole):
         # Run LLM review (chunked if needed)
         review = await self._run_review(ctx, task, diff, files)
 
-        # Post review comment on the PR, not the issue
-        comment = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
-        await ctx.adapter.post_pr_comment(ctx.pr_number, comment)
+        # Post review with inline comments on specific lines
+        await self._post_review(ctx, review, diff)
 
         # Write handoff
         await self._write_handoff(ctx, review)
@@ -322,6 +408,26 @@ class ReviewerRole(AgentRole):
             output_state=TaskState.IN_REVIEW,
             findings=[f.description for f in review.findings],
         )
+
+    async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> None:
+        """Post review findings as inline PR review comments, with fallback."""
+        diff_lines = parse_diff_lines(diff)
+        inline_comments, body_only = _build_review_comments(review.findings, diff_lines)
+
+        body = _format_review_body(review.findings, review.summary, ctx.pr_number, body_only)
+
+        try:
+            await ctx.adapter.post_pr_review(
+                ctx.pr_number,
+                body=body,
+                event="COMMENT",
+                comments=inline_comments,
+            )
+            log.info("reviewer.posted_review", inline=len(inline_comments), body_only=len(body_only))
+        except Exception:
+            log.warning("reviewer.review_api_failed", exc_info=True)
+            fallback = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
+            await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
 
     async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
