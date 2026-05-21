@@ -30,6 +30,7 @@ async def run(
     timeout: float | None = 300,
     capture: bool = True,
     env: dict[str, str] | None = None,
+    stdin: str | None = None,
 ) -> ShellResult:
     """Run a command asynchronously and return the result.
 
@@ -39,22 +40,26 @@ async def run(
         timeout: Timeout in seconds (default 5 minutes).
         capture: Whether to capture stdout/stderr.
         env: Environment variables. None inherits parent env.
+        stdin: Optional string to pass as stdin to the process.
     """
     log.debug("shell.run", cmd=args, cwd=str(cwd) if cwd else None)
 
     stdout_pipe = asyncio.subprocess.PIPE if capture else None
     stderr_pipe = asyncio.subprocess.PIPE if capture else None
+    stdin_pipe = asyncio.subprocess.PIPE if stdin is not None else None
 
     proc = await asyncio.create_subprocess_exec(
         *args,
+        stdin=stdin_pipe,
         stdout=stdout_pipe,
         stderr=stderr_pipe,
         cwd=cwd,
         env=env,
     )
 
+    stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(input=stdin_bytes), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
