@@ -2146,7 +2146,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="100",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={"next_action": "approve", "pending_findings": []},
                     ended_at=datetime.now(timezone.utc),
                 )
@@ -2167,7 +2167,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="101",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={
                         "next_action": "address_review",
                         "pending_findings": [
@@ -2193,7 +2193,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="102",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={
                         "next_action": "address_review",
                         "pending_findings": [
@@ -2218,7 +2218,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="103",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={"next_action": "approve", "pending_findings": []},
                     ended_at=datetime.now(timezone.utc),
                 )
@@ -2238,7 +2238,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="104",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={"next_action": "address_review", "pending_findings": [{"severity": 8}]},
                     ended_at=now - timedelta(hours=1),
                 )
@@ -2247,7 +2247,7 @@ class TestAgentRecoveryDirect:
                 TaskRun(
                     issue_number="104",
                     role="reviewer",
-                    status="completed",
+                    status="done",
                     handoff_json={"next_action": "approve", "pending_findings": []},
                     ended_at=now,
                 )
