@@ -498,6 +498,56 @@ class TestReviewerRole:
         assert result.success
         adapter.post_pr_comment.assert_called_once()
 
+    async def test_adapter_body_only_retry_prevents_comment_fallback(self) -> None:
+        """When adapter retries body-only review successfully, post_pr_comment is NOT called."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        call_count = 0
+
+        async def review_succeeds_on_retry(pr_number, body, event, comments):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1 and comments:
+                raise RuntimeError("Inline comments failed")
+
+        adapter.post_pr_review = AsyncMock(side_effect=review_succeeds_on_retry)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+
+        findings = [{"file": "foo.py", "line": 5, "severity": 6, "category": "bug", "description": "Issue"}]
+        llm_resp = json.dumps({"findings": findings, "summary": "Found issue"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        real_diff = (
+            "diff --git a/foo.py b/foo.py\n"
+            "index 000..111 100644\n"
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " line1\n"
+            "+new line\n"
+            " line3\n"
+            " line4\n"
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.post_pr_comment.assert_not_called()
+
     async def test_rejects_wrong_state(self) -> None:
         from sova.roles.reviewer import ReviewerRole
 

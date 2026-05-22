@@ -205,6 +205,23 @@ class GitHubAdapter(TaskAdapter):
             "-",
             stdin=payload,
         )
+        if not result.success and comments:
+            log.warning(
+                "post_pr_review.inline_failed_retrying_body_only",
+                pr=pr_number,
+                comment_count=len(comments),
+                stderr=result.stderr[:200],
+            )
+            body_payload = json.dumps({"body": body, "event": event, "comments": []})
+            result = await self._gh(
+                "api",
+                f"repos/{self.repo}/pulls/{pr_number}/reviews",
+                "--method",
+                "POST",
+                "--input",
+                "-",
+                stdin=body_payload,
+            )
         if not result.success:
             raise RuntimeError(f"Failed to post PR review on #{pr_number}: {result.stderr[:300]}")
 

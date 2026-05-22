@@ -424,10 +424,25 @@ class ReviewerRole(AgentRole):
                 comments=inline_comments,
             )
             log.info("reviewer.posted_review", inline=len(inline_comments), body_only=len(body_only))
+            return
         except Exception:
-            log.warning("reviewer.review_api_failed", exc_info=True)
-            fallback = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
-            await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
+            if inline_comments:
+                log.warning("reviewer.inline_review_failed", exc_info=True)
+                try:
+                    await ctx.adapter.post_pr_review(
+                        ctx.pr_number,
+                        body=body,
+                        event="COMMENT",
+                        comments=[],
+                    )
+                    log.info("reviewer.posted_review_body_only", finding_count=len(review.findings))
+                    return
+                except Exception:
+                    log.warning("reviewer.body_only_review_failed", exc_info=True)
+            else:
+                log.warning("reviewer.review_api_failed", exc_info=True)
+        fallback = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
+        await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
 
     async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
