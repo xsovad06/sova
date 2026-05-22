@@ -63,7 +63,7 @@ async def get_all_agents(slug: str | None = None) -> dict:
         elapsed = now - agent.started_at
         db = db_states.get(agent.run_id, {})
         current_step = db.get("current_step", "agent")
-        progress = get_step_progress(current_step)
+        progress = get_step_progress(current_step, role=agent.role, pr_number=db.get("pr_number"))
         agents.append(
             {
                 "run_id": agent.run_id,
@@ -140,7 +140,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                 continue
             if not _is_process_alive(run.pid):
                 continue
-            progress = get_step_progress(run.current_step)
+            progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
             started = run.started_at or now
             if started.tzinfo is None:
                 started = started.replace(tzinfo=timezone.utc)
@@ -554,18 +554,25 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
 _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
 
 
-def get_step_progress(current_step: str | None) -> dict:
-    """Compute step index from current_step name."""
+def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
+    """Compute step index from current_step name.
+
+    When role and pr_number are provided, uses them to reliably detect
+    address-review runs even on shared steps or during initialization.
+    """
+    is_address_review = (role == "developer" and pr_number is not None) or (
+        current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
+    )
+    pipeline = ADDRESS_REVIEW_PIPELINE if is_address_review else DEVELOPER_PIPELINE
+    variant = "address_review" if is_address_review else "developer"
+
     if current_step is None:
         return {
             "step_index": -1,
-            "total_steps": len(DEVELOPER_PIPELINE),
-            "steps": DEVELOPER_PIPELINE,
-            "pipeline_variant": "developer",
+            "total_steps": len(pipeline),
+            "steps": pipeline,
+            "pipeline_variant": variant,
         }
-
-    is_address_review = current_step in _ADDRESS_REVIEW_ONLY
-    pipeline = ADDRESS_REVIEW_PIPELINE if is_address_review else DEVELOPER_PIPELINE
 
     try:
         idx = pipeline.index(current_step)
@@ -575,7 +582,7 @@ def get_step_progress(current_step: str | None) -> dict:
         "step_index": idx,
         "total_steps": len(pipeline),
         "steps": pipeline,
-        "pipeline_variant": "address_review" if is_address_review else "developer",
+        "pipeline_variant": variant,
     }
 
 
