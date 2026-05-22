@@ -143,8 +143,9 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     steps_result = await session.execute(steps_stmt)
     steps = steps_result.scalars().all()
 
-    variant = _detect_variant_from_steps(steps, run.current_step)
+    variant_from_steps = _detect_variant_from_steps(steps, run.current_step)
     progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+    variant = variant_from_steps if variant_from_steps == "address_review" else progress["pipeline_variant"]
     progress["pipeline_variant"] = variant
 
     run_dict = _run_to_dict(run)
@@ -316,11 +317,11 @@ async def _batch_step_names(session: AsyncSession, run_ids: list[int]) -> dict[i
 def _detect_variant(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> str:
     """Detect pipeline variant from current step name and spawn context.
 
-    When role='developer' and pr_number is set, reliably identifies
-    address-review runs even on shared steps. Falls back to step-name
-    heuristic otherwise.
+    Uses role+pr_number only when current_step is None or "agent" (the
+    dashboard outer-process sentinel). WorkflowEngine TaskRuns acquire
+    pr_number mid-pipeline, so gating avoids false positives.
     """
-    if role == "developer" and pr_number is not None:
+    if current_step in (None, "agent") and role == "developer" and pr_number is not None:
         return "address_review"
     if current_step in _ADDRESS_REVIEW_ONLY:
         return "address_review"

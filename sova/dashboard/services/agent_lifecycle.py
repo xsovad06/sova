@@ -557,10 +557,13 @@ _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"}
 def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
     """Compute step index from current_step name.
 
-    When role and pr_number are provided, uses them to reliably detect
-    address-review runs even on shared steps or during initialization.
+    Uses role+pr_number only when current_step is None or "agent" (the
+    dashboard outer-process TaskRun sentinel). WorkflowEngine TaskRuns
+    progress through real step names and acquire pr_number mid-pipeline
+    via _sync_task_run_context, so gating on current_step avoids false
+    positives for developer runs that created a PR.
     """
-    is_address_review = (role == "developer" and pr_number is not None) or (
+    is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
         current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
     )
     pipeline = ADDRESS_REVIEW_PIPELINE if is_address_review else DEVELOPER_PIPELINE
