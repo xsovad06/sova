@@ -131,7 +131,7 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
                 .where(
                     TaskRun.issue_number == issue_number.lstrip("#").strip(),
                     TaskRun.role.in_(["reviewer", "command:review-pr"]),
-                    TaskRun.status == "completed",
+                    TaskRun.status == "done",
                     TaskRun.handoff_json.isnot(None),
                 )
                 .order_by(TaskRun.ended_at.desc())
