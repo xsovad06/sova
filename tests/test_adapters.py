@@ -361,11 +361,14 @@ class TestGitHubAdapter:
         assert "COMMENT" in stdin_data
         assert "foo.py" in stdin_data
 
-    async def test_post_pr_review_raises_on_failure_no_comments(self, mock_run: AsyncMock) -> None:
+    async def test_post_pr_review_fails_immediately_without_comments(self, mock_run: AsyncMock) -> None:
+        """When no inline comments, don't retry -- fail immediately."""
         mock_run.return_value = _shell_result(returncode=1, stderr="Validation Failed")
 
         with pytest.raises(RuntimeError, match="Failed to post PR review"):
             await self.adapter.post_pr_review(82, "body", "COMMENT", [])
+
+        assert mock_run.call_count == 1
 
     async def test_post_pr_review_retries_without_comments_on_failure(self, mock_run: AsyncMock) -> None:
         """When inline comments cause a 422, retry with body-only review."""
@@ -396,15 +399,6 @@ class TestGitHubAdapter:
             await self.adapter.post_pr_review(82, "body", "COMMENT", comments)
 
         assert mock_run.call_count == 2
-
-    async def test_post_pr_review_no_retry_without_comments(self, mock_run: AsyncMock) -> None:
-        """When no inline comments, don't retry -- fail immediately."""
-        mock_run.return_value = _shell_result(returncode=1, stderr="API error")
-
-        with pytest.raises(RuntimeError):
-            await self.adapter.post_pr_review(82, "body", "COMMENT", [])
-
-        assert mock_run.call_count == 1
 
     # -- get_state --
 

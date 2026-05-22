@@ -498,8 +498,8 @@ class TestReviewerRole:
         assert result.success
         adapter.post_pr_comment.assert_called_once()
 
-    async def test_adapter_body_only_retry_prevents_comment_fallback(self) -> None:
-        """When adapter retries body-only review successfully, post_pr_comment is NOT called."""
+    async def test_reviewer_retries_body_only_before_comment_fallback(self) -> None:
+        """When post_pr_review fails with inline comments, reviewer retries without them."""
         import json
         from decimal import Decimal
         from unittest.mock import patch
@@ -510,17 +510,17 @@ class TestReviewerRole:
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         call_count = 0
 
-        async def review_succeeds_on_retry(pr_number, body, event, comments):
+        async def fail_with_inline_succeed_without(pr_number, body, event, comments):
             nonlocal call_count
             call_count += 1
-            if call_count == 1 and comments:
+            if comments:
                 raise RuntimeError("Inline comments failed")
 
-        adapter.post_pr_review = AsyncMock(side_effect=review_succeeds_on_retry)
+        adapter.post_pr_review = AsyncMock(side_effect=fail_with_inline_succeed_without)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
         role = ReviewerRole()
 
-        findings = [{"file": "foo.py", "line": 5, "severity": 6, "category": "bug", "description": "Issue"}]
+        findings = [{"file": "foo.py", "line": 2, "severity": 6, "category": "bug", "description": "Issue"}]
         llm_resp = json.dumps({"findings": findings, "summary": "Found issue"})
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
@@ -546,6 +546,9 @@ class TestReviewerRole:
             result = await role.execute(ctx)
 
         assert result.success
+        assert call_count == 2
+        second_call = adapter.post_pr_review.call_args_list[1]
+        assert second_call[1]["comments"] == []
         adapter.post_pr_comment.assert_not_called()
 
     async def test_rejects_wrong_state(self) -> None:
