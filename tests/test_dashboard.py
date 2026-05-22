@@ -2258,6 +2258,64 @@ class TestAgentRecoveryDirect:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline variant detection -- get_step_progress
+# ---------------------------------------------------------------------------
+
+
+class TestStepProgress:
+    """Tests for get_step_progress pipeline variant detection."""
+
+    def test_developer_pipeline_default(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("develop")
+        assert result["pipeline_variant"] == "developer"
+        assert result["step_index"] == 3
+
+    def test_address_review_from_step(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("rebase")
+        assert result["pipeline_variant"] == "address_review"
+        assert result["step_index"] == 0
+
+    def test_none_step_defaults_to_developer(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None)
+        assert result["pipeline_variant"] == "developer"
+        assert result["step_index"] == -1
+
+    def test_none_step_with_pr_number_is_address_review(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="developer", pr_number=147)
+        assert result["pipeline_variant"] == "address_review"
+        assert result["step_index"] == -1
+        assert result["total_steps"] == 7
+
+    def test_shared_step_with_pr_number_is_address_review(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("commit", role="developer", pr_number=147)
+        assert result["pipeline_variant"] == "address_review"
+        assert result["step_index"] == 2
+
+    def test_shared_step_without_pr_number_is_developer(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("commit")
+        assert result["pipeline_variant"] == "developer"
+        assert result["step_index"] == 6
+
+    def test_reviewer_role_with_pr_number_is_not_address_review(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("commit", role="reviewer", pr_number=147)
+        assert result["pipeline_variant"] == "developer"
+
+
+# ---------------------------------------------------------------------------
 # Output service -- OutputWriter and read_lines
 # ---------------------------------------------------------------------------
 

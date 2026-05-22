@@ -37,7 +37,7 @@ async def get_active_work(session: AsyncSession) -> list[dict]:
             started = started.replace(tzinfo=timezone.utc)
 
         elapsed = now - started
-        progress = get_step_progress(r.current_step)
+        progress = get_step_progress(r.current_step, role=r.role, pr_number=r.pr_number)
 
         items.append(
             {
@@ -103,7 +103,11 @@ async def get_work_history(
             duration_ms = int((ended - started).total_seconds() * 1000)
 
         step_names = steps_by_run.get(r.id, set())
-        variant = "address_review" if step_names & _ADDRESS_REVIEW_ONLY else _detect_variant(r.current_step)
+        variant = (
+            "address_review"
+            if step_names & _ADDRESS_REVIEW_ONLY
+            else _detect_variant(r.current_step, role=r.role, pr_number=r.pr_number)
+        )
 
         items.append(
             {
@@ -140,7 +144,7 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     steps = steps_result.scalars().all()
 
     variant = _detect_variant_from_steps(steps, run.current_step)
-    progress = get_step_progress(run.current_step)
+    progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
     progress["pipeline_variant"] = variant
 
     run_dict = _run_to_dict(run)
@@ -285,7 +289,7 @@ def _run_to_dict(run: TaskRun) -> dict:
         "role": run.role,
         "status": run.status,
         "current_step": run.current_step,
-        "pipeline_variant": _detect_variant(run.current_step),
+        "pipeline_variant": _detect_variant(run.current_step, role=run.role, pr_number=run.pr_number),
         "branch_name": run.branch_name,
         "pr_number": run.pr_number,
         "total_cost_usd": float(run.total_cost_usd or 0),
@@ -309,13 +313,15 @@ async def _batch_step_names(session: AsyncSession, run_ids: list[int]) -> dict[i
     return result
 
 
-def _detect_variant(current_step: str | None) -> str:
-    """Detect pipeline variant from current step name.
+def _detect_variant(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> str:
+    """Detect pipeline variant from current step name and spawn context.
 
-    For steps shared between both pipelines (commit, push, validate,
-    extract_memory), defaults to 'developer'. Use _detect_variant_from_steps()
-    for more reliable detection based on step execution history.
+    When role='developer' and pr_number is set, reliably identifies
+    address-review runs even on shared steps. Falls back to step-name
+    heuristic otherwise.
     """
+    if role == "developer" and pr_number is not None:
+        return "address_review"
     if current_step in _ADDRESS_REVIEW_ONLY:
         return "address_review"
     return "developer"
