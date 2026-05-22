@@ -2294,12 +2294,20 @@ class TestStepProgress:
         assert result["step_index"] == -1
         assert result["total_steps"] == 7
 
-    def test_shared_step_with_pr_number_is_address_review(self) -> None:
+    def test_agent_step_with_pr_number_is_address_review(self) -> None:
+        """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("agent", role="developer", pr_number=147)
+        assert result["pipeline_variant"] == "address_review"
+
+    def test_shared_step_with_pr_number_is_developer(self) -> None:
+        """WorkflowEngine TaskRun on shared step with pr_number acquired mid-pipeline."""
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         result = get_step_progress("commit", role="developer", pr_number=147)
-        assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 2
+        assert result["pipeline_variant"] == "developer"
+        assert result["step_index"] == 6
 
     def test_shared_step_without_pr_number_is_developer(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -2307,6 +2315,14 @@ class TestStepProgress:
         result = get_step_progress("commit")
         assert result["pipeline_variant"] == "developer"
         assert result["step_index"] == 6
+
+    def test_workflow_engine_post_create_pr_is_developer(self) -> None:
+        """WorkflowEngine TaskRun after CreatePRStep must not be mislabeled."""
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        for step in ("monitor_ci", "extract_memory", "handoff_to_reviewer"):
+            result = get_step_progress(step, role="developer", pr_number=147)
+            assert result["pipeline_variant"] == "developer", f"step={step} should be developer"
 
     def test_reviewer_role_with_pr_number_is_not_address_review(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
