@@ -1,49 +1,59 @@
 # SOVA -- Vision Document
 
-> **Status**: Vision / Pre-implementation
+> **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-04-16
+> **Last updated**: 2026-05-25
 
 ## What This Becomes
 
 The original agent and Project-instructions repositories merged into a single **SOVA** (Software Orchestration Via Agents) -- a standalone application that any software project can install to gain autonomous AI-assisted development capabilities out of the box.
 
-It is not just a script collection. It is a **product** with a UI, setup wizard, and runtime dashboard.
+It is not just a script collection. It is a **product** with a CLI, web dashboard, scheduler daemon, and setup wizard.
 
 ## Core Idea
 
 A unified repository that ships:
 
-1. **Autonomous Agent** (the orchestrator) -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes
-2. **Standardized Skills/Commands** -- a general-purpose command library (develop, test, review, pr, etc.) that works on any project without customization
-3. **Project Integration Kit** -- generates project-specific instructions, guardrails, and configuration through a guided setup process
-4. **Dashboard App** -- a web UI for monitoring, configuration, and the setup wizard
+1. **Autonomous Agent** (the orchestrator) -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes. Role-based pipeline: Triage -> Researcher -> Developer -> Reviewer, with autonomous Developer-Reviewer chaining.
+2. **Standardized Skills/Commands** -- 22 general-purpose commands (develop, test, review, pr, etc.) that work on any project without customization.
+3. **Project Integration Kit** -- generates project-specific instructions, guardrails, and configuration through a guided setup process.
+4. **Dashboard App** -- FastAPI web UI with 13 pages for monitoring, agent control, lifecycle tracking, and configuration.
+5. **Scheduler Daemon** -- watch loop with priority-based task scanning, parallel agent execution, and combined server mode.
 
 ## Architecture
 
 ```
 project-automation-kit/
-  sova/                          # Python package
-    cli/                         # Typer CLI (sova run, sova triage, etc.)
-    core/                        # Workflow engine, steps, state machine
-    roles/                       # Agent roles (triage, researcher, developer, reviewer)
-    adapters/                    # Task source plugins (github, jira, linear, manual)
-    dashboard/                   # FastAPI web UI
-    scheduler/                   # Watch loop, parallel executor, server daemon
-    ...
-  commands/                      # 22 standardized commands (markdown)
-  invariants/                    # Pluggable pre-push constraint checks
-  personas/                      # Framework-specific guidance (Django, FastAPI, Odoo)
+  sova/                            # Python package (14 modules)
+    cli/                           # Typer CLI (18 subcommands)
+    core/                          # Workflow engine, 16 step implementations, state machine
+    roles/                         # Agent roles (triage, researcher, developer, reviewer)
+    adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
+    dashboard/                     # FastAPI web UI (14 routers, 20 services, 21 templates)
+    scheduler/                     # Watch loop, parallel executor, server daemon
+    llm/                           # Claude CLI async wrapper, cost tracking
+    git/                           # Branch, PR, rebase (with LLM conflict resolution), worktree
+    ipc/                           # Agent process control, handoff protocol, notifications
+    knowledge/                     # Memory CRUD, tier loading, persona detection, extraction
+    commands/                      # Command distribution (catalog, templates, manifest)
+    config/                        # Pydantic Settings v2 + TOML config + project registry
+    db/                            # SQLAlchemy 2.0 async ORM (9 models), Alembic migrations
+    utils/                         # Logging, shell, formatting
+  commands/                        # 22 standardized commands (markdown with frontmatter)
+  invariants/                      # Pluggable pre-push constraint checks (bash)
+  personas/                        # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
-    KNOWLEDGE.md                 # Standardized 4-tier knowledge management system
+    KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/
-    CLAUDE.md                    # Starter config for Claude Code
-    AGENTS.md                    # Cross-AI-tool guidance
+    CLAUDE.md                      # Starter config for Claude Code
+    AGENTS.md                      # Cross-AI-tool guidance
   docs/
-    VISION.md                    # This file
-    design-system.md             # Dashboard design system reference
-    handoff-protocol.md          # Agent handoff protocol
-    naming-journey.md            # How SOVA got its name
+    VISION.md                      # This file
+    design-system.md               # Dashboard design system reference
+    handoff-protocol.md            # Agent handoff protocol
+    naming-journey.md              # How SOVA got its name
+  tests/                           # pytest suite (858 test functions)
+  deploy/                          # systemd + launchd service files
 ```
 
 ## The Two Modes
@@ -100,7 +110,7 @@ The wizard (CLI or UI) walks the user through these decisions:
 - **Lint requirement**: Auto-fix or just report?
 
 ### Knowledge Management
-- **Knowledge tier setup**: Initialize the standardized 4-tier system (see KNOWLEDGE.md in Project-instructions)
+- **Knowledge tier setup**: Initialize the standardized 4-tier system (see KNOWLEDGE.md)
 - **Rules files**: Which `.claude/rules/*.md` to seed? (architecture, patterns, testing, ui, models)
 - **Agent memory**: Initialize `.claude/agent-memory/` with template files?
 - **Shared knowledge**: Enable cross-project knowledge at `~/.claude/shared-knowledge/`?
@@ -114,59 +124,66 @@ The wizard (CLI or UI) walks the user through these decisions:
 - **Desktop notifications**: On completion, failure, review needed?
 - **Slack integration**: Post to channel on PR creation?
 
+## Agent Pipeline
+
+### Developer Pipeline (13 steps)
+Sync -> Assess -> CreateWorktree -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> MonitorCI -> ExtractMemory -> HandoffToReviewer
+
+### Address-Review Pipeline (7 steps)
+Rebase -> AddressReview -> Commit -> Validate -> Push -> ExtractMemory -> HandoffToUser
+
+### Role Chaining
+Developer -> Reviewer -> Developer runs autonomously via `HandoffAction.auto_execute`. The Developer writes a handoff to the Reviewer (auto-spawn), the Reviewer writes back to the Developer if findings exist (auto-spawn) or to the user if clean (manual "Integrate PR" button). Issues stay `IN_REVIEW` until the human merges.
+
 ## Dashboard App
 
-Extends the existing FastAPI dashboard with:
+FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 
-### Setup Tab (New)
-- Project onboarding wizard (step-by-step form)
-- Project list (all installed projects with status)
-- Re-run setup / update configuration
+### Pages (13 active)
+- **Home**: project list (command center) for multi-project installations
+- **Dashboard**: overview with agent strip, pipeline progress, recent activity
+- **Agents**: multi-agent control panel (start/stop, status, handoff actions)
+- **Work**: issue-centric view linking issues to their TaskRuns and lifecycle
+- **Run Detail**: per-run step pipeline, logs, cost breakdown
+- **Lifecycle**: issue lifecycle rail (development -> post_pr -> review -> address_review -> integrate -> post_merge)
+- **Costs**: per-task and per-model cost tracking
+- **Queue**: batch operations (triage/harden multiple issues), progress bar
+- **Logs**: real-time agent output streaming
+- **Memory**: knowledge base browser (memories, patterns, extractions)
+- **Settings**: runtime configuration management
+- **Setup**: project onboarding wizard with directory browser
+- **Style Guide**: design system reference with live component examples
 
-### Monitoring Tab (Existing, Enhanced)
-- Active agents (per project)
-- Task queue and history
-- Cost tracking (per project, per task, per phase)
-- Knowledge stats (learnings, patterns, memory size)
+### API
+14 routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work.
 
-### Settings Tab (New)
-- Global preferences (model, budget defaults)
-- Per-project overrides
-- Invariant management (enable/disable/add custom)
-- Persona management
+20 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more.
 
 ## Task Source Abstraction
 
-The agent currently hardcodes GitHub Issues. This must become pluggable:
+The agent uses a pluggable adapter pattern for task sources:
 
 ```toml
 # In sova.toml:
 [task_source]
-type = "github"          # github | jira | odoo | linear | manual
+type = "github"          # github | jira | linear | manual (planned)
 ```
 
-Adapter interface:
-- `list_tasks()` -- List available tasks (filtered by milestone/sprint/priority)
-- `get_task(id)` -- Get task details (title, description, labels, assignee)
-- `set_status(id, status)` -- Update task status (in-progress, done)
-- `link_pr(id, pr_url)` -- Associate PR with task
+### TaskAdapter ABC (12 async methods)
+- `list_tasks()` -- list available tasks (filtered by state/labels)
+- `get_task(id)` -- get task details (title, description, labels, assignee)
+- `get_state(id)` -- get current task state from labels
+- `transition_state(id, state)` -- update task state (labels + board move)
+- `assign(id, user)` -- assign task to user
+- `add_label(id, label)` / `remove_label(id, label)` -- label management
+- `post_comment(id, body)` -- post issue comment
+- `post_pr_comment(pr, body)` -- post PR comment
+- `post_pr_review(pr, body, event, comments)` -- post formal PR review
+- `edit_body(id, body)` -- edit issue body
+- `link_pr(id, pr_url)` -- associate PR with task
 
-GitHub adapter exists. JIRA, Odoo (via MCP), and Linear adapters to be built.
-
-## Command Reconciliation
-
-**Status: DONE** (completed 2026-04-16)
-
-The Project-instructions command library and agent commands have been unified:
-- **22 standardized commands** live in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
-- Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
-- Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
-- Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
-- JIRA references replaced with GitHub Issues (`gh` CLI) throughout
-- Commands ported from the original agent to the template: debug, new-feature, status
-- Old `jira.md` replaced by generic `issue.md`
-- `request-review.md` removed (unnecessary)
-- Project-specific commands (e.g., architecture-overview, import-patterns, design, review-pr with Koda personality) stay in the target project alongside the generic ones
+**Implemented**: GitHub (full, including Projects V2 board integration).
+**Planned**: JIRA, Linear, Odoo (via MCP).
 
 ## Persona System
 
@@ -174,18 +191,28 @@ Auto-detect project type and load relevant guidance:
 
 | Detection Signal | Persona | Guidance | Status |
 |-----------------|---------|----------|--------|
-| `manage.py` + Django in requirements | `django.md` | Models, views, services, migrations | Ready |
-| `fastapi` in requirements | `fastapi.md` | Routers, Pydantic, async patterns | Ready |
-| `__manifest__.py` pattern | `odoo.md` | ORM, XML views, TransactionCase | Ready |
+| `manage.py` + Django in requirements | `django.md` | Models, views, services, migrations | Done |
+| `fastapi` in requirements | `fastapi.md` | Routers, Pydantic, async patterns | Done |
+| `__manifest__.py` pattern | `odoo.md` | ORM, XML views, TransactionCase | Done |
 | `go.mod` | `go-service.md` | Interfaces, error handling, testing | Planned |
 | `package.json` + React | `react.md` | Components, hooks, testing | Planned |
 | `Cargo.toml` | `rust.md` | Ownership, traits, error handling | Planned |
 
 Users can also create custom personas or override detection.
 
+## Command System
+
+**Status: DONE** (22 standardized commands)
+
+The command library is unified and portable across projects:
+- 22 standardized commands in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
+- Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
+- Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
+- Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
+- Command distribution system (`sova commands install/update/diff`) handles reconciliation with SHA-256 manifest tracking
+
 ## Installation
 
-### Install
 ```bash
 pip install -e .
 
@@ -193,44 +220,9 @@ pip install -e .
 sova install /path/to/project
 sova run 42
 sova dashboard
+sova server start
 sova status
 ```
-
-## Migration Path
-
-### Phase 1: Merge Repos & Standardize Knowledge [DONE]
-- [DONE] Merge Project-instructions commands into unified library (consolidated to 19)
-- [DONE] Reconcile overlapping commands (develop-full wraps develop, etc.)
-- [DONE] Convert all JIRA references to GitHub Issues
-- [DONE] Standardize AGENTS.md + CLAUDE.md cooperation model
-- [DONE] Define 4-tier knowledge management system (KNOWLEDGE.md)
-- [DONE] First integration: Income Processor project (AGENTS.md, slimmed CLAUDE.md, all commands tracked)
-- [DONE] Rename internal references from gwym-agent to sova
-- [DONE] Copy KNOWLEDGE.md into the kit (`knowledge/KNOWLEDGE.md`)
-- [DONE] Copy PORTING.md into the kit (`docs/PORTING.md`)
-- [DONE] Merge Project-instructions repo: all commands, templates, knowledge docs
-- [DONE] Merge AGENTS.md template (PAK template structure + PI's Domain Guidelines, Knowledge System, Agentic Workflow Commands)
-- [DONE] Merge CLAUDE.md template (PAK template structure + PI's Behavioral Preferences, detailed Knowledge tiers)
-
-### Phase 2: Task Source Abstraction
-- Extract GitHub adapter from orchestrator
-- Build JIRA adapter (commands use `gh` by default, JIRA needs adapter)
-- Build Odoo adapter (MCP server already exists)
-
-### Phase 3: Setup Wizard
-- CLI wizard (interactive prompts)
-- Generates conf, invariants, CLAUDE.md/AGENTS.md from templates + user answers
-
-### Phase 4: Dashboard UI
-- [DONE] Extend existing FastAPI dashboard
-- [DONE] Add Setup tab with project onboarding + directory browser
-- [DONE] Add Settings tab for runtime config
-- [DONE] Multi-project support: `/p/{slug}/` routing, project registry, contextvars-based per-request config
-
-### Phase 5: Deploy to All Projects
-- Income Processor -- [DONE] agent + unified commands + AGENTS.md + 4-tier knowledge
-- ave-monorepo -- already has agent, update commands + AGENTS.md integration
-- odoo-dev -- fresh install with Odoo persona + Odoo task adapter
 
 ## Multi-Project Workflow
 
@@ -241,13 +233,13 @@ SOVA manages agents across multiple projects from a single dashboard instance.
 ```
 sova dashboard                   # One instance, one port (8111)
 # Open browser tabs:
-#   localhost:8111/               → project list (command center)
-#   localhost:8111/p/income-processor/  → agent for Income Processor
-#   localhost:8111/p/ave-monorepo/      → agent for Ave Monorepo
-#   localhost:8111/setup          → onboard new projects
+#   localhost:8111/               -> project list (command center)
+#   localhost:8111/p/income-processor/  -> agent for Income Processor
+#   localhost:8111/p/ave-monorepo/      -> agent for Ave Monorepo
+#   localhost:8111/setup          -> onboard new projects
 ```
 
-Each browser tab is a fully independent workspace — its own agent status, costs, logs, control panel. Tabs don't interfere with each other because config resolution is per-request (Python contextvars), not global state.
+Each browser tab is a fully independent workspace -- its own agent status, costs, logs, control panel. Tabs don't interfere with each other because config resolution is per-request (Python contextvars), not global state.
 
 ### Architecture
 
@@ -256,34 +248,59 @@ Each browser tab is a fully independent workspace — its own agent status, cost
 - **Per-request config**: middleware reads slug from URL, sets `contextvars.ContextVar` with the project's `.claude/` data directory; all service calls resolve paths dynamically
 - **Registration**: automatic on `sova install` or dashboard Setup; manual via `POST /api/projects/register`
 
-### What's Next
+### Evolving Areas
 
-The current implementation handles the routing and config isolation. Key areas to evolve:
+1. **Home page as command center** -- cross-project summary: running agents, pending checkpoints, total daily cost, recent activity across all projects. Currently a project list; expanding to a full overview.
+2. **Process isolation** -- each project has independent process state via `_ProjectAgents` dict in `agent_lifecycle.py`. Further isolation (separate process groups, resource limits) is possible.
+3. **Cross-project cost dashboard** -- aggregate view: "How much have I spent today across all projects?" with breakdown by project.
+4. **Quick actions from home** -- start/stop agents, see checkpoint alerts, jump to control page from the project list.
 
-1. **Home page as command center** — show cross-project summary: running agents, pending checkpoints, total daily cost, recent activity across all projects. Not just a link list.
+## Completed Milestones
 
-2. **Process isolation** — each project needs independent process state (PID, output buffer, notifications). Currently `agent_lifecycle.py` uses a `_projects` dict keyed by project slug with per-project `_ProjectAgents` instances. Further isolation (separate process groups, resource limits) is planned.
+| Phase | What | Key Deliverables |
+|-------|------|-----------------|
+| Phase 0 | Foundation | pyproject.toml, config, DB, utils, CLI skeleton, 21 tests |
+| Phase 1 | Adapters + LLM + Git | GitHub adapter, Claude CLI wrapper, git operations, 106 tests |
+| Phase 2 | Core Workflow + Roles | WorkflowEngine, state machine, 4 roles, IPC, knowledge, 291 tests |
+| Phase 3 | CLI + Triage | 18 CLI subcommands, triage workflow, 318 tests |
+| Phase 4 | Dashboard | FastAPI app factory, services, routers, templates, 370 tests |
+| Phase 5 | Scheduler + Server | WatchLoop, ParallelExecutor, SOVAServer, systemd/launchd, 403 tests |
+| Phase 6 | Cutover | Removed ~5,500 lines bash, migration commands, 503 tests |
+| Post-phase | Hardening | Handoff actions, multi-project, batch ops, design system, lifecycle, 858 tests |
 
-3. **Cross-project cost dashboard** — aggregate view: "How much have I spent today across all projects?" with breakdown by project.
+## Release Roadmap (P3: v0.1 Public Release)
 
-4. **Quick actions from home** — start/stop agents, see checkpoint alerts, jump to control page — all from the project list without navigating first.
+Target: coordinate with GWYM launch (October 2026).
 
-5. **Auto-discovery** -- optionally scan common directories (`~/projects/`, `~/Documents/`) for SOVA-installed projects and suggest registration.
+| # | Task | Status |
+|---|------|--------|
+| #19 | Choose license | Done (Apache 2.0) |
+| #23 | CI pipeline | Done |
+| #16 | Polish README | Done |
+| #6 | Measure velocity (SOVA vs manual) | Open |
+| #18 | Deploy to 2+ non-GWYM projects | Open |
+| #20 | Tag v0.1.0 release | Open |
+| #22 | Make repository public | Open |
+| #21 | Write launch blog post | Open |
 
-### Phase 6: Intelligence and Autonomy
-- Intelligent model routing -- dynamically select Opus/Sonnet/Haiku based on task complexity and phase
-- Agent self-assessment -- periodic analysis of approval rates, time-to-merge, cost patterns; auto-tune config
-- Team knowledge sharing -- sync generalizable learnings (review feedback, codebase patterns) across SOVA installations
-- VM deployment / always-on mode -- systemd service, notification abstraction (email/webhook), hybrid laptop+VM operation
-- Task complexity dispatcher -- classify tickets by complexity, route simple tasks to lightweight agent configs
+## Future Roadmap (P4+)
 
-See `docs/IDEAS-FROM-MORNING-AGENT.md` for detailed descriptions and current status of each idea.
+| # | Feature | Description |
+|---|---------|-------------|
+| #33 | VM deployment + always-on mode | systemd service hardening, notification abstraction, hybrid laptop+VM |
+| #32 | Team knowledge sharing | sync generalizable learnings across SOVA installations |
+| #51 | Visual role builder | dashboard page for composing custom agent roles as workflow DAGs |
+| #24 | Evaluate monetization | Q1 2027 decision: open-core vs hosted vs consulting |
+| -- | Additional adapters | JIRA, Linear, Odoo task source adapters |
+| -- | Additional personas | Go, React, Rust framework guidance |
+| -- | Intelligent model routing | dynamically select Opus/Sonnet/Haiku based on task complexity |
 
 ## Design Principles
 
-1. **Works out of the box** -- General commands must be good enough without customization
-2. **Progressive enhancement** -- Setup wizard adds project-specific quality, but is optional
-3. **Single source of truth** -- One repo, one install, updates propagate to all projects
-4. **Config over code** -- Project differences live in config files, not in forked scripts
-5. **Learn and improve** -- Agent memory, review ingestion, and knowledge extraction create a flywheel
-6. **User in control** -- Every destructive or visible action respects user preferences (push, PR, commit format)
+1. **Works out of the box** -- general commands must be good enough without customization
+2. **Progressive enhancement** -- setup wizard adds project-specific quality, but is optional
+3. **Single source of truth** -- one repo, one install, updates propagate to all projects
+4. **Config over code** -- project differences live in config files, not in forked scripts
+5. **Learn and improve** -- agent memory, review ingestion, and knowledge extraction create a flywheel
+6. **User in control** -- every destructive or visible action respects user preferences (push, PR, commit format)
+7. **Ephemeral agents** -- spawn, work, write handoff, die. No persistent sessions. Dashboard provides the interactive bridge.
