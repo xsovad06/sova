@@ -49,6 +49,13 @@ _PRIORITY_LABEL_ORDER: dict[str, int] = {
 }
 
 
+def _milestone_badge(milestone: str) -> str:
+    """Extract short badge label from milestone title (e.g. 'P3: v0.1 ...' -> 'P3')."""
+    if not milestone:
+        return "--"
+    return milestone.split(":")[0].strip()[:8]
+
+
 def _extract_label_priority(labels: list[str]) -> int:
     """Extract numeric priority from priority: labels. Lower = higher priority."""
     for label in labels:
@@ -104,7 +111,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "title": t.title,
                 "state": t.state.value,
                 "priority": priority,
-                "priority_label": f"P{priority}",
+                "priority_label": _milestone_badge(t.milestone),
                 "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
                 "labels": t.labels,
                 "url": t.url,

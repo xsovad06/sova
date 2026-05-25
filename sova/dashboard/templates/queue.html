@@ -40,11 +40,10 @@
 
 {% block scripts %}
 <script>
-var priorityStyles = {
-  P0: { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
-  P1: { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
-  P2: { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
-  P3: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
+var milestoneStyles = {
+  P3: { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
+  P4: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
+  '--': { badge: 'bg-gray-700/20 text-gray-500', border: 'border-gray-700/30' },
 };
 
 var stateLabels = {
@@ -222,7 +221,7 @@ async function loadQueue() {
     selectAllWrapper.style.display = 'flex';
 
     container.innerHTML = '<div class="space-y-3">' + data.queue.map(function(item) {
-      var style = priorityStyles[item.priority_label] || priorityStyles.P3;
+      var style = milestoneStyles[item.priority_label] || milestoneStyles['--'];
       var stateText = stateLabels[item.state] || item.state;
       var isSelected = !!selectedItems[item.issue];
 
