@@ -1255,6 +1255,36 @@ class TestTasksAPI:
         assert b"select-all" in resp.content
 
 
+class TestMilestoneBadge:
+    """Tests for _milestone_badge helper in queue_service."""
+
+    def test_empty_string_returns_dash(self) -> None:
+        from sova.dashboard.services.queue_service import _milestone_badge
+
+        assert _milestone_badge("") == "--"
+
+    def test_standard_milestone(self) -> None:
+        from sova.dashboard.services.queue_service import _milestone_badge
+
+        assert _milestone_badge("P3: v0.1 Public Release") == "P3"
+
+    def test_milestone_no_colon(self) -> None:
+        from sova.dashboard.services.queue_service import _milestone_badge
+
+        assert _milestone_badge("Beta") == "Beta"
+
+    def test_long_prefix_truncated(self) -> None:
+        from sova.dashboard.services.queue_service import _milestone_badge
+
+        assert _milestone_badge("VeryLongPrefix: something") == "VeryLong"
+        assert len(_milestone_badge("VeryLongPrefix: something")) <= 8
+
+    def test_whitespace_around_prefix(self) -> None:
+        from sova.dashboard.services.queue_service import _milestone_badge
+
+        assert _milestone_badge("  P4  : future work") == "P4"
+
+
 class TestBatchAPI:
     """Tests for the batch queue API endpoints."""
 
