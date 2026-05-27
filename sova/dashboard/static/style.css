@@ -461,6 +461,29 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   margin-left: 0.5rem;
 }
 
+/* ============================================================
+   7. SETTINGS ACCORDION
+   ============================================================ */
+
+.sova-settings-group .sova-card-header {
+  border-bottom: none;
+}
+
+.sova-settings-group .sova-card-header:hover {
+  background: rgb(var(--ctp-surface0-rgb) / 0.3);
+}
+
+.sova-settings-body {
+  overflow: hidden;
+  transition: max-height 250ms ease;
+  border-top: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+}
+
+.sova-settings-body[style*="max-height: 0px"],
+.sova-settings-body[style*="max-height:0px"] {
+  border-top-color: transparent;
+}
+
 /* Sidebar tooltips: only visible when collapsed */
 .sidebar [data-tooltip]::after {
   display: none;
