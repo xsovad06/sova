@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import settings_service
+from sova.dashboard.settings_meta import get_grouped_config
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["settings"])
@@ -20,12 +21,24 @@ class ConfigUpdateRequest(BaseModel):
 
 @router.get("/settings/config")
 async def get_config():
-    """Get the current project configuration."""
+    """Get the current project configuration (flat, for backward compat)."""
     try:
         project_dir = get_project_dir()
         return {"config": settings_service.get_config(project_dir)}
     except Exception:
         log.warning("settings.config.get.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch configuration")
+
+
+@router.get("/settings/config/grouped")
+async def get_config_grouped():
+    """Get configuration organized into labeled groups with descriptions."""
+    try:
+        project_dir = get_project_dir()
+        flat = settings_service.get_config(project_dir)
+        return {"groups": get_grouped_config(flat)}
+    except Exception:
+        log.warning("settings.config.grouped.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch configuration")
 
 
