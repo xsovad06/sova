@@ -382,6 +382,60 @@ def test_detect_persona_ruby(tmp_path: Path) -> None:
     assert detect_persona(tmp_path) == "ruby"
 
 
+def test_detect_persona_fastapi(tmp_path: Path) -> None:
+    """detect_persona() returns 'fastapi' when fastapi is in requirements."""
+    (tmp_path / "pyproject.toml").write_text('[project]\ndependencies = ["fastapi>=0.100"]\n')
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "fastapi"
+
+
+def test_detect_persona_fastapi_in_nested_setup(tmp_path: Path) -> None:
+    """detect_persona() finds fastapi in a nested setup.py (monorepo layout)."""
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 120\n")
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "setup.py").write_text('install_requires=["fastapi>=0.104"]\n')
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "fastapi"
+
+
+def test_detect_persona_odoo(tmp_path: Path) -> None:
+    """detect_persona() returns 'odoo' for __manifest__.py with Odoo keys."""
+    mod_dir = tmp_path / "my_module"
+    mod_dir.mkdir()
+    (mod_dir / "__manifest__.py").write_text("{'name': 'Test', 'installable': True, 'depends': ['base']}")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "odoo"
+
+
+def test_detect_persona_odoo_requires_odoo_keys(tmp_path: Path) -> None:
+    """__manifest__.py without Odoo-specific keys does not trigger Odoo detection."""
+    mod_dir = tmp_path / "my_module"
+    mod_dir.mkdir()
+    (mod_dir / "__manifest__.py").write_text("{'name': 'Test'}")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'test'\n")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "python"
+
+
+def test_detect_persona_django_over_fastapi(tmp_path: Path) -> None:
+    """Django detection takes priority over FastAPI when both present."""
+    (tmp_path / "manage.py").write_text("#!/usr/bin/env python")
+    (tmp_path / "requirements.txt").write_text("django>=4.2\nfastapi\n")
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "django"
+
+
 def test_detect_persona_no_match(tmp_path: Path) -> None:
     """detect_persona() returns None when no markers found."""
     from sova.knowledge.personas import detect_persona
