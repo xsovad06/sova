@@ -17,8 +17,13 @@ def _has_file(project_dir: Path, name: str) -> bool:
 
 
 def _requirements_mention(project_dir: Path, keyword: str) -> bool:
-    """Check if any requirements-style file mentions a keyword."""
-    for name in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg"):
+    """Check if any requirements-style file mentions a keyword.
+
+    Scans root-level requirements files, pyproject.toml, and also checks
+    nested setup.py files (e.g. app/setup.py in monorepos).
+    """
+    candidates = ["requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg"]
+    for name in candidates:
         path = project_dir / name
         if path.is_file():
             try:
@@ -26,17 +31,53 @@ def _requirements_mention(project_dir: Path, keyword: str) -> bool:
                     return True
             except OSError:
                 continue
+    # Check one level deep for monorepo layouts (e.g. app/setup.py)
+    try:
+        children = list(project_dir.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.is_dir() and not child.name.startswith("."):
+            for name in ("setup.py", "requirements.txt"):
+                path = child / name
+                if path.is_file():
+                    try:
+                        if keyword in path.read_text(encoding="utf-8").lower():
+                            return True
+                    except OSError:
+                        continue
+    return False
+
+
+def _has_odoo_manifest(project_dir: Path) -> bool:
+    """Check if the project contains an Odoo-style __manifest__.py."""
+    for manifest in project_dir.rglob("__manifest__.py"):
+        try:
+            content = manifest.read_text(encoding="utf-8").lower()
+            if "installable" in content or "'depends'" in content or '"depends"' in content:
+                return True
+        except OSError:
+            continue
     return False
 
 
 def detect_persona(project_dir: Path) -> str | None:
     """Scan project directory for marker files and detect tech stack.
 
-    Returns the persona name (e.g., "django", "node", "python") or None.
+    Returns the persona name (e.g., "django", "fastapi", "python") or None.
+    Detection order: specific frameworks first, generic language fallbacks last.
     """
     # Django: manage.py + "django" in requirements
     if _has_file(project_dir, "manage.py") and _requirements_mention(project_dir, "django"):
         return "django"
+
+    # Odoo: __manifest__.py with Odoo-style keys
+    if _has_odoo_manifest(project_dir):
+        return "odoo"
+
+    # FastAPI: "fastapi" in any requirements file (including nested)
+    if _requirements_mention(project_dir, "fastapi"):
+        return "fastapi"
 
     # Node / frontend
     if _has_file(project_dir, "package.json"):
@@ -50,7 +91,7 @@ def detect_persona(project_dir: Path) -> str | None:
     if _has_file(project_dir, "Cargo.toml"):
         return "rust"
 
-    # Python (generic -- after Django check)
+    # Python (generic -- after framework-specific checks)
     if _has_file(project_dir, "pyproject.toml") or _has_file(project_dir, "setup.py"):
         return "python"
 
