@@ -1718,6 +1718,32 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         assert b"Settings" in resp.content
 
+    async def test_get_config_grouped(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/config/grouped")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "groups" in data
+        groups = data["groups"]
+        assert isinstance(groups, list)
+        if groups:
+            g = groups[0]
+            assert "id" in g
+            assert "label" in g
+            assert "settings" in g
+            assert isinstance(g["settings"], list)
+            if g["settings"]:
+                s = g["settings"][0]
+                assert "key" in s
+                assert "label" in s
+                assert "value" in s or "value" in s
+
+    async def test_grouped_config_has_descriptions(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/settings/config/grouped")
+        data = resp.json()
+        groups = data["groups"]
+        has_description = any(s.get("description") for g in groups for s in g["settings"])
+        assert has_description, "At least some settings should have descriptions"
+
 
 class TestSetupAPI:
     async def test_browse_home(self, client: AsyncClient) -> None:
