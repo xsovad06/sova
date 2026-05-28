@@ -87,7 +87,7 @@ function renderSettingRow(s) {
     '</td>' +
     '<td class="px-4 py-3 align-top">' +
       '<div class="flex items-center gap-2">' +
-        '<span class="config-val flex-1" data-key="' + escapeHtml(s.key) + '">' + valHtml + '</span>' +
+        '<span class="config-val flex-1" data-key="' + escapeHtml(s.key) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
         '<button onclick="editConfig(\'' + escapeHtml(s.key) + '\', this)" ' +
           'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" ' +
           'data-tooltip="Edit">' +
@@ -124,6 +124,14 @@ async function loadConfig() {
       return;
     }
 
+    // Remember which groups are expanded before rebuilding DOM
+    var expanded = [];
+    document.querySelectorAll('.sova-settings-body').forEach(function(body) {
+      if (body.style.maxHeight && body.style.maxHeight !== '0px') {
+        expanded.push(body.id.replace('group-body-', ''));
+      }
+    });
+
     container.innerHTML = groups.map(function(group) {
       var rows = group.settings.map(renderSettingRow).join('');
       var count = group.settings.length;
@@ -146,10 +154,9 @@ async function loadConfig() {
       '</div>';
     }).join('');
 
-    // Auto-expand first group
-    if (groups.length > 0) {
-      toggleGroup(groups[0].id);
-    }
+    // Restore previously expanded groups, or auto-expand first on initial load
+    var toExpand = expanded.length > 0 ? expanded : [groups[0].id];
+    toExpand.forEach(function(id) { toggleGroup(id); });
   } catch (e) {
     console.error('Failed to load config:', e);
     document.getElementById('config-groups').innerHTML =
@@ -160,8 +167,14 @@ async function loadConfig() {
 function editConfig(key, btn) {
   var row = btn.closest('tr');
   var span = row.querySelector('.config-val');
-  var currentVal = span.textContent.trim();
-  if (currentVal === 'not set') currentVal = '';
+  var currentVal;
+  if (span.dataset.raw) {
+    var raw = JSON.parse(span.dataset.raw);
+    currentVal = (typeof raw === 'string') ? raw : JSON.stringify(raw);
+  } else {
+    currentVal = span.textContent.trim();
+  }
+  if (currentVal === 'null' || currentVal === 'not set') currentVal = '';
 
   var input = document.createElement('input');
   input.type = 'text';
