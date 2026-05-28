@@ -1735,7 +1735,8 @@ class TestSettingsAPI:
                 s = g["settings"][0]
                 assert "key" in s
                 assert "label" in s
-                assert "value" in s or "value" in s
+                assert "value" in s
+                assert "value_type" in s
 
     async def test_grouped_config_has_descriptions(self, client: AsyncClient) -> None:
         resp = await client.get("/api/settings/config/grouped")

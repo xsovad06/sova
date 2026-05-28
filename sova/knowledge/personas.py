@@ -5,6 +5,7 @@ Detects tech stack from marker files and loads persona guidance documents.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from sova.utils.logging import get_logger
@@ -49,15 +50,21 @@ def _requirements_mention(project_dir: Path, keyword: str) -> bool:
     return False
 
 
+_WALK_SKIP = {".git", "node_modules", ".venv", "__pycache__", ".tox", ".mypy_cache", ".nox", ".eggs"}
+
+
 def _has_odoo_manifest(project_dir: Path) -> bool:
     """Check if the project contains an Odoo-style __manifest__.py."""
-    for manifest in project_dir.rglob("__manifest__.py"):
-        try:
-            content = manifest.read_text(encoding="utf-8").lower()
-            if "installable" in content or "'depends'" in content or '"depends"' in content:
-                return True
-        except OSError:
-            continue
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d not in _WALK_SKIP and not d.startswith(".")]
+        if "__manifest__.py" in files:
+            manifest = Path(root) / "__manifest__.py"
+            try:
+                content = manifest.read_text(encoding="utf-8").lower()
+                if "installable" in content or "'depends'" in content or '"depends"' in content:
+                    return True
+            except OSError:
+                continue
     return False
 
 
