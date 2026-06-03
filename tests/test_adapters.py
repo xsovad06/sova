@@ -485,30 +485,69 @@ class TestGitHubAdapterAuth:
 class TestAdapterFactory:
     def test_create_github_adapter(self) -> None:
         from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig
 
-        adapter = create_adapter(adapter_type="github", repo="user/repo")
+        config = ProjectConfig(github_repo="user/repo")
+        adapter = create_adapter(config)
         assert isinstance(adapter, GitHubAdapter)
         assert adapter.project_number == 0
 
     def test_create_github_adapter_with_user(self) -> None:
         from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig
 
-        adapter = create_adapter(adapter_type="github", repo="user/repo", github_user="xsovad06")
+        config = ProjectConfig(github_repo="user/repo", github_user="testuser")
+        adapter = create_adapter(config)
         assert isinstance(adapter, GitHubAdapter)
-        assert adapter.github_user == "xsovad06"
+        assert adapter.github_user == "testuser"
 
     def test_create_github_adapter_with_project_number(self) -> None:
         from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
 
-        adapter = create_adapter(adapter_type="github", repo="user/repo", project_number=1)
+        config = ProjectConfig(
+            github_repo="user/repo",
+            task_source=TaskSourceConfig(github_project_number=1),
+        )
+        adapter = create_adapter(config)
         assert isinstance(adapter, GitHubAdapter)
         assert adapter.project_number == 1
 
+    def test_create_jira_adapter(self) -> None:
+        from sova.adapters import create_adapter
+        from sova.adapters.jira import JiraAdapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_base_url="https://test.atlassian.net",
+                jira_email="test@example.com",
+                jira_api_token="token",
+                jira_project_key="TEST",
+            ),
+        )
+        adapter = create_adapter(config)
+        assert isinstance(adapter, JiraAdapter)
+        assert adapter.project_key == "TEST"
+
+    def test_create_jira_adapter_missing_config_raises(self) -> None:
+        from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
+
+        config = ProjectConfig(task_source=TaskSourceConfig(type="jira"))
+        with pytest.raises(ValueError, match="jira_base_url"):
+            create_adapter(config)
+
     def test_create_unknown_adapter_raises(self) -> None:
         from sova.adapters import create_adapter
+        from sova.config.models import ProjectConfig, TaskSourceConfig
 
+        ts = TaskSourceConfig()
+        ts.type = "unknown"  # type: ignore[assignment]
+        config = ProjectConfig(task_source=ts)
         with pytest.raises(ValueError, match="Unknown adapter type"):
-            create_adapter(adapter_type="unknown", repo="user/repo")
+            create_adapter(config)
 
 
 # ---------------------------------------------------------------------------

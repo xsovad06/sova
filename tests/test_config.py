@@ -346,10 +346,14 @@ class TestFieldConstraints:
         cfg = TriageConfig(min_confidence=1.0)
         assert cfg.min_confidence == 1.0
 
-    @pytest.mark.parametrize("bad_type", ["jira", "linear", "manual", "unknown"])
-    def test_task_source_rejects_non_github_type(self, bad_type: str) -> None:
+    @pytest.mark.parametrize("bad_type", ["linear", "manual", "unknown"])
+    def test_task_source_rejects_unsupported_type(self, bad_type: str) -> None:
         with pytest.raises(ValidationError):
             TaskSourceConfig(type=bad_type)
+
+    def test_task_source_accepts_jira_type(self) -> None:
+        cfg = TaskSourceConfig(type="jira")
+        assert cfg.type == "jira"
 
     def test_defaults_still_accepted(self) -> None:
         """All constrained models accept their default values."""

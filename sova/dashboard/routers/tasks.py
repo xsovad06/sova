@@ -34,8 +34,7 @@ async def list_issues():
         from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
-        ts = cfg.task_source
-        adapter = create_adapter(ts.type, cfg.github_repo, cfg.github_user, ts.github_project_number)
+        adapter = create_adapter(cfg)
         tasks = await adapter.list_tasks()
 
         issues = [

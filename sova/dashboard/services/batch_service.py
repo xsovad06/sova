@@ -162,8 +162,7 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
 
         await init_db(project_dir)
         config = load_config(project_dir)
-        ts = config.task_source
-        adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
+        adapter = create_adapter(config)
         role = TriageRole()
 
         sem = asyncio.Semaphore(job.max_concurrency)
@@ -246,8 +245,7 @@ async def _run_batch_harden(
 
         await init_db(project_dir)
         config = load_config(project_dir)
-        ts = config.task_source
-        adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
+        adapter = create_adapter(config)
 
         all_open = await adapter.list_tasks(TaskFilters(state="open"))
         project_docs = _load_project_docs(project_dir)
