@@ -121,6 +121,12 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
     if run_migrations:
         _backup_db(url)
         await _run_migrations(_engine)
+        if _get_db_path_from_url(url) is not None:
+            # Alembic's synchronous DDL via run_sync can leave aiosqlite
+            # connections with a stale schema cache. Dispose the pool so
+            # subsequent queries get fresh connections. Skip for in-memory
+            # DBs which lose data on dispose.
+            await _engine.dispose()
     else:
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -137,11 +143,13 @@ async def init_db_for_project(project_dir: Path) -> None:
         connect_args["check_same_thread"] = False
 
     engine = create_async_engine(url, connect_args=connect_args)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     _backup_db(url)
     await _run_migrations(engine)
+    if _get_db_path_from_url(url) is not None:
+        await engine.dispose()
 
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     _engines[url] = (engine, factory)
 
 
