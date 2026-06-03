@@ -1,4 +1,4 @@
-# PAK Agent Memory
+# SOVA Agent Memory
 
 High-level patterns and conventions learned from development sessions.
 This file is loaded at the start of each agent session.
