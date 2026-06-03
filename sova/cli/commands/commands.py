@@ -12,6 +12,7 @@ from rich.table import Table
 from sova.commands.catalog import get_canonical_dir
 from sova.commands.distribution import diff_commands, list_commands, update_commands
 from sova.config.loader import load_config
+from sova.config.registry import list_projects
 
 app = typer.Typer(
     name="commands",
@@ -101,3 +102,58 @@ def update_cmd(
         for name in result.conflicts:
             console.print(f"  ! {name} -- locally modified, source also changed")
         console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
+
+
+@app.command(name="sync")
+def sync_cmd(
+    include_autonomous: Annotated[bool, typer.Option("--autonomous", help="Include autonomous agent commands.")] = True,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite customized commands.")] = False,
+) -> None:
+    """Sync commands across all registered projects."""
+    projects = list_projects()
+    if not projects:
+        console.print("[yellow]No projects registered. Run 'sova install' first.[/yellow]")
+        return
+
+    canonical_dir = get_canonical_dir()
+    total_updated = 0
+    total_skipped = 0
+    all_conflicts: list[tuple[str, str]] = []
+
+    for slug, path_str in projects.items():
+        project_dir = Path(path_str)
+        if not project_dir.is_dir():
+            console.print(f"  [red]{slug}[/red]: directory not found ({path_str})")
+            continue
+
+        target_dir = project_dir / ".claude" / "commands"
+        try:
+            cfg = load_config(project_dir)
+        except Exception:
+            console.print(f"  [red]{slug}[/red]: failed to load config")
+            continue
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        result = update_commands(
+            canonical_dir,
+            target_dir,
+            cfg,
+            include_autonomous=include_autonomous,
+            force=force,
+        )
+
+        total_updated += result.updated
+        total_skipped += result.skipped
+        for name in result.conflicts:
+            all_conflicts.append((slug, name))
+
+        status = f"[green]+{result.updated}[/green]" if result.updated else "[dim]+0[/dim]"
+        console.print(f"  {slug}: {status} updated, {result.skipped} unchanged")
+
+    console.print(
+        f"\n[bold]Summary[/bold]: {total_updated} updated, {total_skipped} unchanged across {len(projects)} project(s)"
+    )
+    if all_conflicts:
+        console.print(f"[yellow]Conflicts ({len(all_conflicts)}):[/yellow]")
+        for slug, name in all_conflicts:
+            console.print(f"  ! {slug}/{name}")

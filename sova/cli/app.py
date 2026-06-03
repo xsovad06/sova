@@ -12,6 +12,7 @@ from rich.table import Table
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.commands import app as commands_app
+from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
 from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.migrate import app as migrate_app
@@ -52,6 +53,7 @@ app.command(name="learn-from-pr")(learn_from_pr)
 app.command(name="status")(status)
 app.command(name="costs")(costs)
 app.command(name="cleanup")(cleanup)
+app.command(name="doctor")(doctor)
 
 # Memory (subcommand group)
 app.add_typer(memory_app)
