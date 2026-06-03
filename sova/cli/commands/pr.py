@@ -105,8 +105,7 @@ async def _review_pr(*, pr: int, project_dir: Path | None) -> None:
     config = load_config(resolved_dir)
     await init_db(resolved_dir)
 
-    ts = config.task_source
-    adapter = create_adapter(ts.type, config.github_repo, config.github_user, ts.github_project_number)
+    adapter = create_adapter(config)
 
     console.print(f"[bold]Reviewing PR #{pr}...[/bold]")
 

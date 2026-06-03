@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class TaskSourceConfig(BaseSettings):
     """Task source configuration."""
 
-    type: Literal["github"] = "github"
+    type: Literal["github", "jira"] = "github"
     config: str = ""
 
     # GitHub Issues filtering
@@ -23,9 +23,12 @@ class TaskSourceConfig(BaseSettings):
     # GitHub Projects V2 board integration (0 = disabled)
     github_project_number: int = 0
 
-    # JIRA
+    # Jira Cloud
     jira_base_url: str = ""
     jira_email: str = ""
+    jira_api_token: str = Field("", repr=False)
+    jira_project_key: str = ""
+    jira_state_transitions: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
 

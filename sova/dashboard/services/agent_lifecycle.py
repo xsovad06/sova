@@ -540,8 +540,7 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
         from sova.config.loader import load_config
 
         cfg = load_config(project_dir)
-        ts = cfg.task_source
-        adapter = create_adapter(ts.type, cfg.github_repo, cfg.github_user, ts.github_project_number)
+        adapter = create_adapter(cfg)
         await adapter.transition_state(issue, TaskState.IN_PROGRESS)
         log.info("issue.transitioned", issue=issue, state="in_progress")
     except Exception:

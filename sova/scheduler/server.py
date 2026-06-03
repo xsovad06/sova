@@ -132,12 +132,7 @@ class SOVAServer:
         from sova.scheduler.parallel import ParallelExecutor
         from sova.scheduler.watch import WatchLoop
 
-        adapter = create_adapter(
-            self._config.task_source.type,
-            self._config.github_repo,
-            self._config.github_user,
-            self._config.task_source.github_project_number,
-        )
+        adapter = create_adapter(self._config)
         executor = ParallelExecutor(
             config=self._config,
             project_dir=self._project_dir,
