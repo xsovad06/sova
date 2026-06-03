@@ -59,24 +59,37 @@ Score each review comment, address all of them (fix or acknowledge with justific
    Example: `fix(ai): address review findings from PR #82`
    The scope comes from the area of code changed. Do NOT use generic messages like `feat: issue #N`.
 
-10. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
+10. **Rearrange commits**: run the `/rearrange-commits` workflow to squash the fix commit into the original feature commits. The PR should read as clean feature development with no review-fix artifacts.
+
+11. **Push and wait for CI**:
+    ```bash
+    git push --force-with-lease
+    ```
+    After pushing, poll CI until it completes (max 10 minutes):
+    ```bash
+    gh run list --branch $(git branch --show-current) --limit 1 --json databaseId,status,conclusion
+    ```
+    If CI fails, analyze the failure, fix, amend the commit, and re-push (max 2 retries).
+    If CI passes, continue. If still pending after max wait, report status and continue anyway.
+
+12. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
     - Fixed: `Fixed: [what changed].` or `Added [what].`
     - Acknowledged (not fixed): `Acknowledged -- [justification: false positive / not applicable / needs human input].`
     - No filler words, no 'Great catch!', no emojis.
 
-11. **Resolve each thread** using GraphQL (for PR review comments only):
+13. **Resolve each thread** using GraphQL (for PR review comments only):
     ```bash
     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
     ```
 
-12. **Clear the handoff** after addressing all findings:
+14. **Clear the handoff** after addressing all findings:
     ```bash
     rm -f .claude/agent-control/handoff.json
     ```
 
-13. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
+15. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
-14. **Print summary**:
+16. **Print summary**:
     - Table: | Source | File | Score | Action |
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
 
