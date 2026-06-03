@@ -32,8 +32,8 @@ git config core.hooksPath .githooks
 ## Starting a Session
 
 ```bash
-# At session start, always switch to correct GitHub account
-gh auth switch --user xsovad06
+# Verify you are authenticated as the correct GitHub user (must match github_user in sova.toml)
+gh auth status
 ```
 
 Ticket workflow (branch naming, PR linking, etc.) is in AGENTS.md under "Development Workflow".

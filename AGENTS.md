@@ -42,7 +42,7 @@ project-automation-kit/
     config/                        # Pydantic Settings + TOML config + project registry + request context
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
-  commands/                        # 22 standardized commands (markdown with category frontmatter)
+  commands/                        # 25 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
@@ -64,7 +64,7 @@ project-automation-kit/
 
 This project uses **GitHub Issues** with a project board.
 
-- **GitHub account**: always `xsovad06` (email: `sovicka99@gmail.com`)
+- **GitHub account**: use the `github_user` configured in `sova.toml` (verify with `gh auth status`)
 - **Issue templates**: `.github/ISSUE_TEMPLATE/` (bug.md, feature.md, task.md)
 - **Labels**: `type:` (feature/task/infra/bug), `priority:` (critical/high/medium/low), `area:` (agent/dashboard/commands/personas/invariants/knowledge/docs), `agent:` (triaged/researched/ready/in-progress/in-review/needs-spec/needs-research/human-only)
 
@@ -127,7 +127,7 @@ Examples:
 - `docs(readme): update installation instructions`
 
 ### Pull Requests
-- Always assign PRs to `xsovad06`
+- Always assign PRs to the user configured as `github_user` in `sova.toml`
 - Link to issue via `Closes #<number>` in PR body
 - Never include "Generated with Claude Code" or similar AI branding in PR descriptions
 - Include a Test Plan section
