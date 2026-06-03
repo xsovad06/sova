@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "commands": {
+    "address-pr.md": {
+      "hash": "b393f5ffadb93fa3",
+      "managed": true
+    },
+    "after-merge.md": {
+      "hash": "07c34c4c3d4a8580",
+      "managed": true
+    },
+    "agent-readiness.md": {
+      "hash": "92cec04bf271a9a8",
+      "managed": true
+    },
+    "debug.md": {
+      "hash": "0f9900ef78040ad9",
+      "managed": true
+    },
+    "develop-explain.md": {
+      "hash": "582831c87d953133",
+      "managed": true
+    },
+    "develop-full.md": {
+      "hash": "bdc3463a6834339f",
+      "managed": true
+    },
+    "develop.md": {
+      "hash": "cc9a75e2339b0874",
+      "managed": true
+    },
+    "extract-knowledge.md": {
+      "hash": "d026722c277b503a",
+      "managed": true
+    },
+    "find-task.md": {
+      "hash": "adead29b3d98b155",
+      "managed": true
+    },
+    "health-audit.md": {
+      "hash": "7c72c570562c0593",
+      "managed": true
+    },
+    "ingest-review.md": {
+      "hash": "cb5ed61d1b664491",
+      "managed": true
+    },
+    "integrate-pr.md": {
+      "hash": "bad385146ee691ff",
+      "managed": true
+    },
+    "issue.md": {
+      "hash": "1f3660a93793f6fa",
+      "managed": true
+    },
+    "new-feature.md": {
+      "hash": "c470a5ff6a395d9d",
+      "managed": true
+    },
+    "optimize-knowledge.md": {
+      "hash": "c33c88c1f512a397",
+      "managed": true
+    },
+    "pr.md": {
+      "hash": "abfe06adb1e59db4",
+      "managed": true
+    },
+    "rearrange-commits.md": {
+      "hash": "8a6e7691f3a50323",
+      "managed": true
+    },
+    "review-full.md": {
+      "hash": "3c140497d547606e",
+      "managed": true
+    },
+    "review-pr.md": {
+      "hash": "b1e69924913f24ad",
+      "managed": true
+    },
+    "review.md": {
+      "hash": "cb78aa4d595c4540",
+      "managed": true
+    },
+    "ship.md": {
+      "hash": "77c71bbe0b5fdf08",
+      "managed": true
+    },
+    "standup.md": {
+      "hash": "8d867d479a61a8f2",
+      "managed": true
+    },
+    "status.md": {
+      "hash": "9b9f7efac8cf460d",
+      "managed": true
+    },
+    "test.md": {
+      "hash": "9a1678d31b0c6a94",
+      "managed": true
+    },
+    "update-docs.md": {
+      "hash": "ec0a1427f7b28a1f",
+      "managed": true
+    }
+  }
+}
