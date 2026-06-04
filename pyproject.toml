@@ -8,6 +8,17 @@ requires-python = ">=3.12"
 authors = [
     { name = "Damian Sova", email = "sovicka99@gmail.com" },
 ]
+keywords = ["ai", "automation", "agents", "github", "cli", "developer-tools", "code-review", "tdd"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
 dependencies = [
     "typer[all]>=0.12",
     "fastapi>=0.115",
@@ -25,6 +36,11 @@ dependencies = [
     "markdown>=3.5",
     "tomlkit>=0.13",
 ]
+
+[project.urls]
+Repository = "https://github.com/xsovad06/project-automation-kit"
+Issues = "https://github.com/xsovad06/project-automation-kit/issues"
+Documentation = "https://github.com/xsovad06/project-automation-kit/blob/main/README.md"
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.30"]

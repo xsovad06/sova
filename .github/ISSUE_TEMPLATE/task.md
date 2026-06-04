@@ -3,7 +3,7 @@ name: Task
 about: Implementation task or sub-task
 title: ''
 labels: 'type: task'
-assignees: 'xsovad06'
+
 ---
 
 ## Objective

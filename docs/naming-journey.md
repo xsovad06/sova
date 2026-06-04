@@ -29,7 +29,7 @@ Four alternatives were proposed:
 **Coda** won. Phase 0 was built under this name. The package was `coda/`, the CLI was `coda`, the config was `coda.toml`.
 
 ## Chapter 5: The Acronym Spark
-While looking at the docstring `"""Coda -- an autonomous AI development crew."""`, a thought struck: what about acronyms? Like GWYM (Grow With Your Money) for another project.
+While looking at the docstring `"""Coda -- an autonomous AI development crew."""`, a thought struck: what about acronyms? The approach had worked well for another project.
 
 Ideas flowed:
 - **CADL** -- "Code All Day Long"

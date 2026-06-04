@@ -3,7 +3,7 @@ name: Bug Report
 about: Something isn't working
 title: ''
 labels: 'type: bug'
-assignees: 'xsovad06'
+
 ---
 
 ## Current Behavior

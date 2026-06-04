@@ -3,7 +3,7 @@ name: Feature
 about: New feature or capability
 title: ''
 labels: 'type: feature'
-assignees: 'xsovad06'
+
 ---
 
 ## Objective

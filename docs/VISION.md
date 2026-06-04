@@ -234,8 +234,8 @@ SOVA manages agents across multiple projects from a single dashboard instance.
 sova dashboard                   # One instance, one port (8111)
 # Open browser tabs:
 #   localhost:8111/               -> project list (command center)
-#   localhost:8111/p/income-processor/  -> agent for Income Processor
-#   localhost:8111/p/ave-monorepo/      -> agent for Ave Monorepo
+#   localhost:8111/p/my-backend/        -> agent for My Backend
+#   localhost:8111/p/my-frontend/       -> agent for My Frontend
 #   localhost:8111/setup          -> onboard new projects
 ```
 
@@ -270,7 +270,7 @@ Each browser tab is a fully independent workspace -- its own agent status, costs
 
 ## Release Roadmap (P3: v0.1 Public Release)
 
-Target: coordinate with GWYM launch (October 2026).
+Target: October 2026.
 
 | # | Task | Status |
 |---|------|--------|
@@ -278,7 +278,7 @@ Target: coordinate with GWYM launch (October 2026).
 | #23 | CI pipeline | Done |
 | #16 | Polish README | Done |
 | #6 | Measure velocity (SOVA vs manual) | Open |
-| #18 | Deploy to 2+ non-GWYM projects | Open |
+| #18 | Deploy to 2+ external projects | Open |
 | #20 | Tag v0.1.0 release | Open |
 | #22 | Make repository public | Open |
 | #21 | Write launch blog post | Open |
