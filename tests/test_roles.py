@@ -189,13 +189,37 @@ class TestResearcherRole:
         assert role.output_state == TaskState.RESEARCHED
 
     async def test_execute_moves_to_researched(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
-        result = await role.execute(ctx)
+        llm_resp = json.dumps(
+            {
+                "affected_files": [{"path": "src/main.py", "action": "modify", "reason": "Update logic"}],
+                "data_model_changes": None,
+                "api_changes": None,
+                "dependencies": [],
+                "edge_cases": ["empty input"],
+                "suggested_approach": ["Step 1: Read code", "Step 2: Implement"],
+                "ui_notes": None,
+                "estimated_complexity": "simple",
+                "assessment": {"suitability": "ready", "confidence": 0.85, "reasoning": "Clear task"},
+            }
+        )
+        llm_result = LLMResult(text=llm_resp, model="opus", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value="src/main.py"),
+        ):
+            result = await role.execute(ctx)
 
         assert result.success
         assert result.output_state == TaskState.RESEARCHED
@@ -213,17 +237,464 @@ class TestResearcherRole:
         assert not result.success
 
     async def test_appends_research_to_body(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
         from sova.roles.researcher import ResearcherRole
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         role = ResearcherRole()
 
-        await role.execute(ctx)
+        llm_resp = json.dumps(
+            {
+                "affected_files": [{"path": "a.py", "action": "modify", "reason": "Fix bug"}],
+                "data_model_changes": None,
+                "api_changes": None,
+                "dependencies": [],
+                "edge_cases": [],
+                "suggested_approach": ["Step 1: Fix"],
+                "ui_notes": None,
+                "estimated_complexity": "simple",
+                "assessment": {"suitability": "ready", "confidence": 0.8, "reasoning": "OK"},
+            }
+        )
+        llm_result = LLMResult(text=llm_resp, model="opus", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value="a.py"),
+        ):
+            await role.execute(ctx)
 
         adapter.edit_body.assert_awaited_once()
         updated_body = adapter.edit_body.call_args[0][1]
-        assert "research" in updated_body.lower()
+        assert "## Research" in updated_body
+
+
+# ---------------------------------------------------------------------------
+# Researcher role -- LLM research
+# ---------------------------------------------------------------------------
+
+
+class TestResearcherLLMResearch:
+    """Tests for the LLM-powered ResearcherRole implementation."""
+
+    def _llm_response(
+        self,
+        *,
+        affected_files: list[dict] | None = None,
+        data_model_changes: str | None = None,
+        api_changes: str | None = None,
+        dependencies: list[dict] | None = None,
+        edge_cases: list[str] | None = None,
+        suggested_approach: list[str] | None = None,
+        ui_notes: str | None = None,
+        complexity: str = "moderate",
+        confidence: float = 0.8,
+        reasoning: str = "Analysis complete",
+    ) -> str:
+        import json
+
+        return json.dumps(
+            {
+                "affected_files": affected_files or [{"path": "src/main.py", "action": "modify", "reason": "Update"}],
+                "data_model_changes": data_model_changes,
+                "api_changes": api_changes,
+                "dependencies": dependencies or [],
+                "edge_cases": edge_cases or ["edge case 1"],
+                "suggested_approach": suggested_approach or ["Step 1: Implement"],
+                "ui_notes": ui_notes,
+                "estimated_complexity": complexity,
+                "assessment": {"suitability": "ready", "confidence": confidence, "reasoning": reasoning},
+            }
+        )
+
+    async def test_successful_research_with_affected_files(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        affected = [
+            {"path": "sova/core/engine.py", "action": "modify", "reason": "Add new method"},
+            {"path": "sova/core/models.py", "action": "create", "reason": "New data model"},
+        ]
+        llm_result = LLMResult(
+            text=self._llm_response(affected_files=affected),
+            model="opus",
+            cost_usd=Decimal("0.05"),
+        )
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value="sova/core/engine.py"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "sova/core/engine.py" in updated_body
+        assert "sova/core/models.py" in updated_body
+        assert "(modify)" in updated_body
+        assert "(create)" in updated_body
+
+    async def test_llm_failure_falls_back_to_stub(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, side_effect=RuntimeError("LLM down")),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert result.output_state == TaskState.RESEARCHED
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "## Research" in updated_body
+        assert "Automated research unavailable" in updated_body
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
+
+    async def test_llm_malformed_json_falls_back_to_stub(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(text="This is not JSON at all", model="opus", cost_usd=Decimal("0.02"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "Automated research unavailable" in updated_body
+
+    async def test_cost_tracking(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(
+            text=self._llm_response(),
+            model="opus",
+            cost_usd=Decimal("0.08"),
+        )
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            await role.execute(ctx)
+
+        assert ctx.cost_usd == Decimal("0.08")
+
+    async def test_empty_body_still_researches(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(id="42", title="Test", body="", state=TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(text=self._llm_response(), model="opus", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        prompt = mock_invoke.call_args[0][0]
+        assert "(no description)" in prompt
+
+    async def test_budget_allocation(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(text=self._llm_response(), model="opus", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke,
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            await role.execute(ctx)
+
+        call_kwargs = mock_invoke.call_args[1]
+        expected_budget = ctx.config.agent.max_budget / 5
+        assert call_kwargs["max_budget_usd"] == expected_budget
+
+    async def test_research_section_omits_null_subsections(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(
+            text=self._llm_response(data_model_changes=None, api_changes=None, ui_notes=None),
+            model="opus",
+            cost_usd=Decimal("0"),
+        )
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            await role.execute(ctx)
+
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "### Data Model Changes" not in updated_body
+        assert "### API Changes" not in updated_body
+        assert "### UI Notes" not in updated_body
+        assert "### Affected Files" in updated_body
+        assert "### Suggested Approach" in updated_body
+
+    async def test_force_bypasses_state_check_with_llm(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(role="researcher", state=TaskState.BACKLOG, adapter=adapter, force=True)
+        role = ResearcherRole()
+
+        llm_result = LLMResult(text=self._llm_response(), model="opus", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert result.output_state == TaskState.RESEARCHED
+
+    async def test_research_includes_dependencies_section(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        deps = [{"path": "sova/utils/shell.py", "what": "run()", "how": "Use for subprocess calls"}]
+        llm_result = LLMResult(
+            text=self._llm_response(dependencies=deps),
+            model="opus",
+            cost_usd=Decimal("0"),
+        )
+
+        with (
+            patch("sova.roles.researcher.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.researcher._get_source_tree", new_callable=AsyncMock, return_value=""),
+        ):
+            await role.execute(ctx)
+
+        updated_body = adapter.edit_body.call_args[0][1]
+        assert "### Dependencies" in updated_body
+        assert "sova/utils/shell.py" in updated_body
+
+
+# ---------------------------------------------------------------------------
+# Researcher -- parsing
+# ---------------------------------------------------------------------------
+
+
+class TestResearcherParsing:
+    """Tests for researcher pure parsing functions."""
+
+    def test_parse_valid_json(self) -> None:
+        import json
+
+        from sova.roles.researcher import _parse_research_response
+
+        data = {
+            "affected_files": [{"path": "a.py", "action": "modify", "reason": "Update"}],
+            "suggested_approach": ["Step 1"],
+            "estimated_complexity": "simple",
+        }
+        result = _parse_research_response(json.dumps(data))
+        assert result is not None
+        assert result["estimated_complexity"] == "simple"
+        assert len(result["affected_files"]) == 1
+
+    def test_parse_with_markdown_fences(self) -> None:
+        import json
+
+        from sova.roles.researcher import _parse_research_response
+
+        data = {
+            "affected_files": [],
+            "suggested_approach": ["Do it"],
+            "estimated_complexity": "trivial",
+        }
+        text = f"```json\n{json.dumps(data)}\n```"
+        result = _parse_research_response(text)
+        assert result is not None
+        assert result["estimated_complexity"] == "trivial"
+
+    def test_parse_invalid_json_returns_none(self) -> None:
+        from sova.roles.researcher import _parse_research_response
+
+        assert _parse_research_response("not json at all") is None
+
+    def test_parse_missing_required_keys_returns_none(self) -> None:
+        import json
+
+        from sova.roles.researcher import _parse_research_response
+
+        data = {"affected_files": [], "some_other_key": "value"}
+        assert _parse_research_response(json.dumps(data)) is None
+
+    def test_parse_json_embedded_in_text(self) -> None:
+        import json
+
+        from sova.roles.researcher import _parse_research_response
+
+        data = {
+            "affected_files": [{"path": "x.py", "action": "modify", "reason": "R"}],
+            "suggested_approach": ["Step 1"],
+            "estimated_complexity": "moderate",
+        }
+        text = f"Here is the analysis: {json.dumps(data)} -- done"
+        result = _parse_research_response(text)
+        assert result is not None
+        assert len(result["affected_files"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Researcher -- context gathering
+# ---------------------------------------------------------------------------
+
+
+class TestResearcherContext:
+    """Tests for researcher context-gathering helpers."""
+
+    def test_gather_project_context_reads_files(self, tmp_path: Path) -> None:
+        from sova.roles.researcher import _gather_project_context
+
+        (tmp_path / "CLAUDE.md").write_text("# Claude\nProject docs", encoding="utf-8")
+        (tmp_path / "AGENTS.md").write_text("# Agents\nAgent guidance", encoding="utf-8")
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "architecture.md").write_text("# Architecture", encoding="utf-8")
+
+        result = _gather_project_context(tmp_path)
+        assert "CLAUDE.md" in result
+        assert "Project docs" in result
+        assert "AGENTS.md" in result
+        assert "Architecture" in result
+
+    def test_gather_project_context_missing_files(self, tmp_path: Path) -> None:
+        from sova.roles.researcher import _gather_project_context
+
+        result = _gather_project_context(tmp_path)
+        assert result == ""
+
+    def test_gather_project_context_caps_long_files(self, tmp_path: Path) -> None:
+        from sova.roles.researcher import _MAX_FILE_LINES, _gather_project_context
+
+        long_content = "\n".join(f"line {i}" for i in range(_MAX_FILE_LINES + 50))
+        (tmp_path / "CLAUDE.md").write_text(long_content, encoding="utf-8")
+
+        result = _gather_project_context(tmp_path)
+        assert "truncated" in result
+        assert "50 lines omitted" in result
+
+    async def test_get_source_tree_filters_excluded(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.researcher import _get_source_tree
+        from sova.utils.shell import ShellResult
+
+        git_output = "src/main.py\nsrc/__pycache__/mod.cpython.pyc\nnode_modules/pkg/index.js\nsrc/util.py\n"
+        mock_result = ShellResult(returncode=0, stdout=git_output, stderr="")
+
+        with patch("sova.roles.researcher.run", new_callable=AsyncMock, return_value=mock_result):
+            result = await _get_source_tree(Path("/tmp/project"))
+
+        assert "src/main.py" in result
+        assert "src/util.py" in result
+        assert "__pycache__" not in result
+        assert "node_modules" not in result
+
+    async def test_get_source_tree_handles_git_failure(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.researcher import _get_source_tree
+        from sova.utils.shell import ShellResult
+
+        mock_result = ShellResult(returncode=128, stdout="", stderr="not a git repo")
+
+        with patch("sova.roles.researcher.run", new_callable=AsyncMock, return_value=mock_result):
+            result = await _get_source_tree(Path("/tmp/not-a-repo"))
+
+        assert result == ""
+
+    async def test_get_source_tree_caps_output(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.researcher import _MAX_SOURCE_TREE_LINES, _get_source_tree
+        from sova.utils.shell import ShellResult
+
+        lines = "\n".join(f"src/file_{i}.py" for i in range(_MAX_SOURCE_TREE_LINES + 100))
+        mock_result = ShellResult(returncode=0, stdout=lines, stderr="")
+
+        with patch("sova.roles.researcher.run", new_callable=AsyncMock, return_value=mock_result):
+            result = await _get_source_tree(Path("/tmp/project"))
+
+        result_lines = result.strip().splitlines()
+        assert len(result_lines) == _MAX_SOURCE_TREE_LINES + 1
+        assert "more files" in result_lines[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -858,15 +1329,73 @@ class TestAssessTask:
         assert assessment.suitability == "needs_spec"
         assert len(assessment.missing_context) > 0
 
-    async def test_researcher_assess(self) -> None:
+    async def test_researcher_assess_default(self) -> None:
         from sova.roles.researcher import ResearcherRole
 
         role = ResearcherRole()
-        task = Task(id="1", title="Test", state=TaskState.TRIAGED)
+        task = Task(id="1", title="Test", body="Some issue description", state=TaskState.TRIAGED)
         assessment = await role.assess_task(task)
 
         assert assessment.suitability == "needs_research"
         assert assessment.suggested_role == "researcher"
+
+    async def test_researcher_assess_empty_body(self) -> None:
+        from sova.roles.researcher import ResearcherRole
+
+        role = ResearcherRole()
+        task = Task(id="1", title="Test", body="", state=TaskState.TRIAGED)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "needs_spec"
+        assert assessment.confidence == 0.8
+        assert len(assessment.missing_context) > 0
+
+    async def test_researcher_assess_already_researched(self) -> None:
+        from sova.roles.researcher import ResearcherRole
+
+        role = ResearcherRole()
+        task = Task(
+            id="1",
+            title="Test",
+            body="Some description\n\n## Research\n\nAlready done",
+            state=TaskState.TRIAGED,
+        )
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.suggested_role == "developer"
+        assert assessment.confidence == 0.9
+
+    async def test_researcher_assess_human_only(self) -> None:
+        from sova.roles.researcher import ResearcherRole
+
+        role = ResearcherRole()
+        task = Task(
+            id="1",
+            title="Test",
+            body="Sensitive issue",
+            state=TaskState.TRIAGED,
+            labels=["agent:human-only"],
+        )
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "human_only"
+        assert assessment.confidence == 0.85
+
+    async def test_researcher_assess_human_only_overrides_research_section(self) -> None:
+        from sova.roles.researcher import ResearcherRole
+
+        role = ResearcherRole()
+        task = Task(
+            id="1",
+            title="Test",
+            body="Some description\n\n## Research\n\nAlready done",
+            state=TaskState.TRIAGED,
+            labels=["agent:human-only"],
+        )
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "human_only"
 
     async def test_developer_assess(self) -> None:
         from sova.roles.developer import DeveloperRole
