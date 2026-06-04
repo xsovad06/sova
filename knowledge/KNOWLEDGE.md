@@ -42,10 +42,10 @@ Tier 3: Session Memory (~/.claude/projects/.../memory/)
 
 ```
 ~/.claude/shared-knowledge/
-  patterns.md          # Universal development patterns
-  review-lessons.md    # Code review patterns that apply everywhere
-  git-workflows.md     # Git/GitHub workflow knowledge
-  debugging.md         # Cross-project debugging techniques
+  patterns.md                    # Universal development patterns
+  git-workflows.md               # Git/GitHub workflow knowledge
+  proactive-experimentation.md   # When and how to test changes proactively
+  scout-rule.md                  # Leave-it-better-than-you-found-it patterns
 ```
 
 ### What Belongs Here
@@ -80,8 +80,8 @@ project-root/
   .claude/
     rules/                        # Modular knowledge files
       architecture.md             # App structure, key paths, decisions
-      patterns.md                 # Framework/language gotchas and lessons
-      testing.md                  # Test framework, fixtures, conventions
+      bash-patterns.md            # Shell scripting conventions and gotchas
+      workflow.md                 # Development workflow and task finding
       [domain].md                 # Additional domain-specific knowledge
     commands/                     # Workflow commands (on-demand skills)
       develop.md
@@ -138,8 +138,6 @@ The distinction: rules files are always loaded; commands are loaded only when in
 .claude/agent-memory/
   MEMORY.md              # Index file
   cookbook.md             # Topical knowledge by domain, common mistakes with occurrence counts
-  memory.db              # (Optional) SQLite FTS5 for fast memory search
-  costs.jsonl            # (Optional) Per-task cost tracking
 ```
 
 ### File Roles
@@ -294,7 +292,7 @@ Add to `.gitignore`:
 
 ```bash
 mkdir -p ~/.claude/shared-knowledge
-touch ~/.claude/shared-knowledge/{patterns,review-lessons,git-workflows,debugging}.md
+touch ~/.claude/shared-knowledge/{patterns,git-workflows,proactive-experimentation,scout-rule}.md
 ```
 
 ---

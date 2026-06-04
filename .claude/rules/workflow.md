@@ -15,6 +15,10 @@ When the user asks to "start the next task", "what should we work on", or simila
 
 4. **Before starting work**: read `.claude/rules/architecture.md` for architectural context.
 
+## Git Safety Before Commits
+
+- **Verify branch identity before committing or resetting**: always check `git branch --show-current` before committing or running `git reset --soft`. If a feature branch was already merged and you're on main, commits land on main and `reset --soft` detaches from `origin/main`. Run `git log main..HEAD --oneline` to confirm you're ahead of main on the intended branch. Fix: create a branch at HEAD, reset main back, switch to the new branch.
+
 ## Issue State Management
 
 SOVA agents own issue state on the tracker. When working on an issue:
