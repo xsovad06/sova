@@ -92,8 +92,12 @@ class WorkflowEngine:
 
     async def run(self) -> WorkflowResult:
         """Execute all steps in order, respecting gates and retries."""
-        self._task_run_id = await self._create_task_run()
-        self._ctx.task_run_id = self._task_run_id
+        if self._ctx.task_run_id is not None:
+            self._task_run_id = self._ctx.task_run_id
+            await self._adopt_task_run()
+        else:
+            self._task_run_id = await self._create_task_run()
+            self._ctx.task_run_id = self._task_run_id
 
         self._output_writer = OutputWriter(self._ctx.project_dir, self._task_run_id)
         await self._set_output_file_path(str(self._output_writer.path))
@@ -287,6 +291,21 @@ class WorkflowEngine:
                 session.add(task_run)
                 await session.flush()
                 return task_run.id
+
+    async def _adopt_task_run(self) -> None:
+        """Adopt an existing TaskRun created by the dashboard.
+
+        Clears the "agent" sentinel and sets status to PENDING so the
+        engine can progress through real step names. Preserves the PID
+        field (the dashboard uses the subprocess PID for process management).
+        """
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, self._task_run_id)
+                if task_run:
+                    task_run.status = TaskStatus.PENDING.value
+                    task_run.current_step = None
+                    task_run.resumed_from_id = self._ctx.resume_run_id
 
     async def _set_current_step(self, step_name: str) -> None:
         """Update the current_step field on the TaskRun."""
