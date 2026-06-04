@@ -639,6 +639,41 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         mock_transition.assert_not_called()
 
+    async def test_start_agent_skips_in_progress_for_address_review(self) -> None:
+        """Developer spawned with pr_number (address-review) must not transition to in_progress."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("80", role="developer", pr_number=88)
+
+        assert result["status"] == "started"
+        mock_transition.assert_not_called()
+
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
         from unittest.mock import MagicMock, patch
