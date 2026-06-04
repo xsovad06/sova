@@ -171,6 +171,9 @@ Examples:
 
 This repo has Claude Code commands in `.claude/commands/`:
 
+### Planning
+- `/spec` -- produce a structured spec document for an issue; approving it guides `/develop`
+
 ### Core Development
 - `/develop` -- implement a feature or fix (TDD approach)
 - `/develop-full` -- full workflow: TDD, lint, test, self-review, commit organization
