@@ -557,7 +557,7 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
         cfg = load_config(project_dir)
         max_budget = cfg.agent.max_issue_budget
 
-        async with await get_session() as session:
+        async with await get_session(project_dir=project_dir) as session:
             lifecycle = await get_lifecycle_for_issue(session, issue)
             if lifecycle is None:
                 return None

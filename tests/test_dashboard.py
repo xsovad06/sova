@@ -2216,9 +2216,11 @@ class TestIssueBudgetCheck:
 
     async def test_blocks_over_budget_issue(self) -> None:
         from pathlib import Path
+        from unittest.mock import patch
 
         from sova.dashboard.services.agent_lifecycle import _check_issue_budget
         from sova.db.models import IssueLifecycle
+        from sova.db.session import get_session as real_get_session
 
         async with await get_session() as session:
             async with session.begin():
@@ -2229,7 +2231,13 @@ class TestIssueBudgetCheck:
                 )
                 session.add(lifecycle)
 
-        result = await _check_issue_budget("200", Path.cwd())
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _check_issue_budget("200", Path.cwd())
 
         assert result is not None
         assert "error" in result
@@ -2238,9 +2246,11 @@ class TestIssueBudgetCheck:
 
     async def test_allows_under_budget_issue(self) -> None:
         from pathlib import Path
+        from unittest.mock import patch
 
         from sova.dashboard.services.agent_lifecycle import _check_issue_budget
         from sova.db.models import IssueLifecycle
+        from sova.db.session import get_session as real_get_session
 
         async with await get_session() as session:
             async with session.begin():
@@ -2251,17 +2261,31 @@ class TestIssueBudgetCheck:
                 )
                 session.add(lifecycle)
 
-        result = await _check_issue_budget("201", Path.cwd())
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _check_issue_budget("201", Path.cwd())
 
         assert result is None
 
     async def test_allows_no_lifecycle(self) -> None:
         """No prior lifecycle for the issue -- first run, always allowed."""
         from pathlib import Path
+        from unittest.mock import patch
 
         from sova.dashboard.services.agent_lifecycle import _check_issue_budget
+        from sova.db.session import get_session as real_get_session
 
-        result = await _check_issue_budget("999", Path.cwd())
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
+            result = await _check_issue_budget("999", Path.cwd())
         assert result is None
 
 

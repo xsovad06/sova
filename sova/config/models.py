@@ -38,6 +38,7 @@ class AgentConfig(BaseSettings):
 
     model: str = "opus"
     max_budget: Decimal = Field(Decimal("10.00"), gt=0)
+    max_issue_budget: Decimal = Field(Decimal("50.00"), gt=0)
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
 
