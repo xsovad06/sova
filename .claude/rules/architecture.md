@@ -88,7 +88,7 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Worktree isolation**: each task gets its own git worktree (parallel-safe)
 - **Adapter pattern for task sources**: swap GitHub/JIRA/Linear without touching core
 - **Mandatory pipeline**: Triage -> Researcher -> Developer (enforced by Gate 3); `--force` bypasses
-- **Split pipelines at role boundaries**: each role has its own step pipeline (developer: 13 steps, address-review: 7 steps). A single monolithic pipeline that crosses role boundaries (develop + review + address in one sequence) breaks agent isolation and prevents independent lifecycles. The role detects which pipeline variant to run from issue state + context (IN_REVIEW with pr_number = address-review mode).
+- **Split pipelines at role boundaries**: each role has its own step pipeline (developer: 13 steps, address-review: 7 steps). A single monolithic pipeline that crosses role boundaries (develop + review + address in one sequence) breaks agent isolation and prevents independent lifecycles. The role detects which pipeline variant to run from `ctx.pr_number` alone (set by handoff). Issue state (`task.state`) is NOT used for variant detection because the dashboard may race it to `in_progress` before the role reads it.
 - **Issue state ownership is human**: agents never auto-move issues to DONE. Issues stay IN_REVIEW until the human merges via `/integrate-pr` or `/approve-merge`. The agent prepares the PR; the human approves and merges.
 - **Handoff protocol**: JSON-based inter-agent state passing via file + DB
 - **Short-lived agent model**: agents run, write handoff, exit; dashboard provides the interactive bridge

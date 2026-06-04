@@ -51,8 +51,10 @@ class DeveloperRole(AgentRole):
                 f"or use --force to bypass.",
             )
 
-        # Address-review mode: respawned to fix reviewer findings
-        if task.state == TaskState.IN_REVIEW and ctx.pr_number:
+        # Address-review mode: respawned to fix reviewer findings.
+        # Use pr_number (set by handoff) as primary signal -- task.state is
+        # unreliable because the dashboard may transition it before we read it.
+        if ctx.pr_number:
             return await self._execute_address_review(ctx)
 
         return await self._execute_development(ctx)

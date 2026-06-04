@@ -312,6 +312,43 @@ class TestDeveloperRole:
         assert result.success
         adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
 
+    async def test_execute_routes_to_address_review_when_pr_number_set(self) -> None:
+        """pr_number alone should route to address-review pipeline, regardless of issue state."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.IN_PROGRESS)
+        ctx = _make_ctx(role="developer", state=TaskState.IN_PROGRESS, adapter=adapter, pr_number=88)
+        role = DeveloperRole()
+
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert result.output_state == TaskState.IN_REVIEW
+        adapter.transition_state.assert_not_called()
+
+    async def test_execute_routes_to_development_without_pr_number(self) -> None:
+        """Without pr_number, developer should run the full development pipeline."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.RESEARCHED)
+        ctx = _make_ctx(role="developer", state=TaskState.RESEARCHED, adapter=adapter)
+        role = DeveloperRole()
+
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert result.success
+        adapter.transition_state.assert_called_once_with("42", TaskState.IN_PROGRESS)
+
     def test_get_steps_returns_developer_pipeline(self) -> None:
         from sova.roles.developer import DeveloperRole
 
