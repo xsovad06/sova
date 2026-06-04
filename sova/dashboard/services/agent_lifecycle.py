@@ -16,8 +16,10 @@ from sova.core.steps import get_address_review_step_names, get_developer_step_na
 from sova.dashboard.services.agent_db import (
     _create_task_run,
     _fetch_run_states,
+    _finalize_orphaned_run,
     _finalize_task_run,
     _set_output_file_path,
+    _update_task_run_pid,
 )
 from sova.dashboard.services.agent_pool import (
     AgentState,
@@ -258,7 +260,18 @@ async def start_agent(
         if conflict:
             return conflict
 
-        prompt = f"sova run {issue}"
+        cwd = pa.project_dir
+
+        if not force:
+            budget_error = await _check_issue_budget(issue, cwd)
+            if budget_error:
+                return budget_error
+
+        run_id = await _create_task_run(issue, role or "developer", cwd, pr_number=pr_number)
+        if run_id is None:
+            return {"error": "Failed to create task run record"}
+
+        prompt = f"sova run {issue} --run-id {run_id}"
         if resume_run_id:
             prompt += f" --resume {resume_run_id}"
         if role:
@@ -268,15 +281,14 @@ async def start_agent(
         if pr_number:
             prompt += f" --pr {pr_number}"
 
-        cwd = pa.project_dir
         gh_env = await _resolve_project_gh_env(cwd)
-        process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
+        try:
+            process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
+        except Exception:
+            await _finalize_orphaned_run(run_id, cwd)
+            return {"error": "Failed to spawn agent process"}
         pid = process.pid
-
-        run_id = await _create_task_run(issue, role or "developer", cwd, pid=pid, pr_number=pr_number)
-        if run_id is None:
-            await process.stop()
-            return {"error": "Failed to create task run record"}
+        await _update_task_run_pid(run_id, pid, cwd)
 
         # Link to lifecycle
         await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
@@ -527,6 +539,43 @@ async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
     except Exception:
         log.debug("gh_env.resolve_failed", exc_info=True)
         return None
+
+
+# -- Budget checks -----------------------------------------------------------
+
+
+async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
+    """Check if the issue has exceeded its cumulative budget across all runs.
+
+    Returns an error dict if over budget, None if clear.
+    """
+    try:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.lifecycle_service import get_lifecycle_for_issue
+        from sova.db.session import get_session
+
+        cfg = load_config(project_dir)
+        max_budget = cfg.agent.max_issue_budget
+
+        async with await get_session() as session:
+            lifecycle = await get_lifecycle_for_issue(session, issue)
+            if lifecycle is None:
+                return None
+
+            if lifecycle.total_cost_usd >= max_budget:
+                return {
+                    "error": (
+                        f"Issue #{issue} has exceeded the per-issue budget "
+                        f"(${lifecycle.total_cost_usd:.2f} / ${max_budget:.2f}). "
+                        f"Use --force to bypass."
+                    ),
+                    "total_cost_usd": float(lifecycle.total_cost_usd),
+                    "max_issue_budget": float(max_budget),
+                }
+    except Exception:
+        log.warning("issue_budget_check.failed", issue=issue, exc_info=True)
+
+    return None
 
 
 # -- Tracker state transitions -----------------------------------------------

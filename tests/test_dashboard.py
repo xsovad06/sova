@@ -674,6 +674,66 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         mock_transition.assert_not_called()
 
+    async def test_start_agent_includes_run_id_in_prompt(self) -> None:
+        """Prompt must include --run-id so the subprocess reuses the dashboard TaskRun."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch(
+                "sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process
+            ) as mock_spawn,
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99")
+
+        assert result["status"] == "started"
+        prompt_arg = mock_spawn.call_args.kwargs.get("prompt") or mock_spawn.call_args[1].get("prompt", "")
+        assert "--run-id 7" in prompt_arg
+
+    async def test_start_agent_cleans_up_on_spawn_failure(self) -> None:
+        """If process spawn fails, the pre-created TaskRun should be marked failed."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, side_effect=OSError("spawn failed")),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=8),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
+        ):
+            result = await start_agent("100")
+
+        assert "error" in result
+        mock_orphan.assert_awaited_once_with(8, pa.project_dir)
+
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
         from unittest.mock import MagicMock, patch
@@ -2052,6 +2112,157 @@ class TestFinalizeTaskRunGuard:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.status == "failed"
                 assert refreshed.error_message == "Manually abandoned"
+
+    async def test_finalize_skips_done_run(self) -> None:
+        """Already-done runs must not be overwritten (even with different exit code)."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="91",
+                    role="developer",
+                    status="done",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0
+        mock_agent.project_dir = None
+
+        await _finalize_task_run(run_id, exit_code=1, agent=mock_agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "done"
+                assert refreshed.error_message is None
+
+    async def test_finalize_skips_paused_run(self) -> None:
+        """WorkflowEngine may set status to 'paused' (budget exceeded); dashboard must not overwrite."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="89",
+                    role="developer",
+                    status="paused",
+                    error_message="Budget exceeded: $10.50",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 10.5
+        mock_agent.project_dir = None
+
+        await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "paused"
+                assert refreshed.error_message == "Budget exceeded: $10.50"
+
+    async def test_finalize_still_updates_cost_on_terminal(self) -> None:
+        """Even when status is terminal, stream cost should be written (more accurate)."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="90",
+                    role="developer",
+                    status="done",
+                    total_cost_usd=Decimal("5.00"),
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 7.50
+        mock_agent.project_dir = None
+
+        await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "done"
+                assert float(refreshed.total_cost_usd) == 7.50
+
+
+# ---------------------------------------------------------------------------
+# Per-issue budget check
+# ---------------------------------------------------------------------------
+
+
+class TestIssueBudgetCheck:
+    """_check_issue_budget must block spawns when cumulative cost exceeds limit."""
+
+    async def test_blocks_over_budget_issue(self) -> None:
+        from pathlib import Path
+
+        from sova.dashboard.services.agent_lifecycle import _check_issue_budget
+        from sova.db.models import IssueLifecycle
+
+        async with await get_session() as session:
+            async with session.begin():
+                lifecycle = IssueLifecycle(
+                    issue_number="200",
+                    current_phase="development",
+                    total_cost_usd=Decimal("55.00"),
+                )
+                session.add(lifecycle)
+
+        result = await _check_issue_budget("200", Path.cwd())
+
+        assert result is not None
+        assert "error" in result
+        assert "exceeded" in result["error"]
+        assert result["total_cost_usd"] == 55.0
+
+    async def test_allows_under_budget_issue(self) -> None:
+        from pathlib import Path
+
+        from sova.dashboard.services.agent_lifecycle import _check_issue_budget
+        from sova.db.models import IssueLifecycle
+
+        async with await get_session() as session:
+            async with session.begin():
+                lifecycle = IssueLifecycle(
+                    issue_number="201",
+                    current_phase="development",
+                    total_cost_usd=Decimal("5.00"),
+                )
+                session.add(lifecycle)
+
+        result = await _check_issue_budget("201", Path.cwd())
+
+        assert result is None
+
+    async def test_allows_no_lifecycle(self) -> None:
+        """No prior lifecycle for the issue -- first run, always allowed."""
+        from pathlib import Path
+
+        from sova.dashboard.services.agent_lifecycle import _check_issue_budget
+
+        result = await _check_issue_budget("999", Path.cwd())
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
