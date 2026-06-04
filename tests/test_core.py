@@ -390,6 +390,74 @@ class TestWorkflowEngine:
         assert result.step_records[0].step_name == "dummy"
         assert result.step_records[0].status == "completed"
 
+    async def test_adopt_existing_task_run(self) -> None:
+        """When ctx.task_run_id is set, the engine should reuse it instead of creating a new one."""
+        async with await get_session() as session:
+            async with session.begin():
+                existing = TaskRun(
+                    issue_number="42",
+                    role="developer",
+                    status="running",
+                    current_step="agent",
+                    pid=99999,
+                )
+                session.add(existing)
+                await session.flush()
+                existing_id = existing.id
+
+        ctx = _make_ctx(task_run_id=existing_id)
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.task_run_id == existing_id
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, existing_id)
+            assert task_run.pid == 99999  # PID preserved from dashboard
+            assert task_run.current_step != "agent"
+
+    async def test_adopt_does_not_create_extra_task_run(self) -> None:
+        """Adopting must not create a second TaskRun for the same issue."""
+        async with await get_session() as session:
+            async with session.begin():
+                existing = TaskRun(
+                    issue_number="42",
+                    role="developer",
+                    status="running",
+                    current_step="agent",
+                    pid=88888,
+                )
+                session.add(existing)
+                await session.flush()
+                existing_id = existing.id
+
+        ctx = _make_ctx(task_run_id=existing_id)
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        await engine.run()
+
+        async with await get_session() as session:
+            from sqlalchemy import func
+
+            count = (await session.execute(select(func.count(TaskRun.id)).where(TaskRun.issue_number == "42"))).scalar()
+            assert count == 1
+
+    async def test_no_run_id_creates_new_task_run(self) -> None:
+        """Without task_run_id, the engine should create its own TaskRun (backward compat)."""
+        ctx = _make_ctx()
+        assert ctx.task_run_id is None
+
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert ctx.task_run_id is not None
+        assert result.task_run_id == ctx.task_run_id
+
 
 # ---------------------------------------------------------------------------
 # Step implementations (unit tests for individual steps)
