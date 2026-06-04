@@ -58,6 +58,10 @@ class CreatePRStep(BaseStep):
             log.info("step.create_pr.existing_found", pr=existing.number)
             ctx.pr_number = existing.number
             ctx.pr_url = existing.url
+            try:
+                await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
+            except Exception:
+                log.warning("step.create_pr.tracker_update_failed", exc_info=True)
             return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
 
         task_title = ctx.task.title if ctx.task else ctx.branch_name
@@ -84,13 +88,13 @@ class CreatePRStep(BaseStep):
                         repo=ctx.repo,
                         github_user=ctx.config.github_user,
                     )
-                except Exception as exc:
-                    log.warning("step.create_pr.assign_failed", error=str(exc))
+                except Exception:
+                    log.warning("step.create_pr.assign_failed", exc_info=True)
 
             try:
                 await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
-            except Exception as exc:
-                log.warning("step.create_pr.tracker_update_failed", error=str(exc))
+            except Exception:
+                log.warning("step.create_pr.tracker_update_failed", exc_info=True)
 
             return StepResult(success=True, summary=f"Created PR #{pr_info.number}")
         except RuntimeError as exc:

@@ -874,7 +874,8 @@ class TestCreatePRStep:
 
         mock_find.return_value = MagicMock(number=55, url="https://github.com/x/y/pull/55")
 
-        ctx = _make_ctx(branch_name="feat/issue-42")
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
@@ -882,6 +883,20 @@ class TestCreatePRStep:
         assert "Adopted existing PR #55" in result.summary
         assert ctx.pr_number == 55
         assert ctx.pr_url == "https://github.com/x/y/pull/55"
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_execute_transitions_to_in_review_on_adopt(self, mock_find) -> None:
+        """Adopting an existing PR must still transition issue to IN_REVIEW."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_find.return_value = MagicMock(number=55, url="https://github.com/x/y/pull/55")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.IN_REVIEW)
 
 
 class TestHandoffToReviewerStep:
