@@ -58,8 +58,48 @@ async def _set_output_file_path(run_id: int, path: Path, project_dir: Path) -> N
         log.debug("output_file_path.set_failed", run_id=run_id, exc_info=True)
 
 
+async def _update_task_run_pid(run_id: int, pid: int, project_dir: Path) -> None:
+    """Set the PID on an existing TaskRun after process spawn."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run:
+                    task_run.pid = pid
+    except Exception:
+        log.warning("task_run.pid_update_failed", run_id=run_id, exc_info=True)
+
+
+async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
+    """Mark a TaskRun as failed when the process never started."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run:
+                    task_run.status = "failed"
+                    task_run.error_message = "Process spawn failed"
+                    task_run.ended_at = datetime.now(timezone.utc)
+    except Exception:
+        log.warning("task_run.orphan_cleanup_failed", run_id=run_id, exc_info=True)
+
+
+_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
+
+
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:
-    """Update the TaskRun with final status and cost."""
+    """Update the TaskRun with final status and cost.
+
+    Status is only updated if not already terminal (the WorkflowEngine may
+    have set it first). Cost is always updated from the stream output since
+    it includes Claude Code's own overhead.
+    """
     try:
         from sova.db.models import CostRecord, TaskRun
         from sova.db.session import get_session
@@ -72,10 +112,15 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 task_run = await session.get(TaskRun, run_id)
                 if task_run is None:
                     return
-                if task_run.status in ("done", "failed", "rejected", "interrupted"):
+
+                if cost > 0:
+                    task_run.total_cost_usd = cost
+
+                if task_run.status in _TERMINAL_STATUSES:
+                    log.info("task_run.already_terminal", run_id=run_id, status=task_run.status)
                     return
+
                 task_run.status = status
-                task_run.total_cost_usd = cost
                 task_run.ended_at = datetime.now(timezone.utc)
                 if exit_code != 0:
                     task_run.error_message = f"Process exited with code {exit_code}"
