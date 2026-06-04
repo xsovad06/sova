@@ -29,12 +29,13 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 
 ### Step 1: Understand the Context
 
-1. Read the project's CLAUDE.md and AGENTS.md for conventions
-2. Read agent memory files if they exist:
+1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `$ARGUMENTS` if it's a number). If a spec exists with `Status: approved`, read it and follow its implementation plan as the primary guide for this task. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration.
+2. Read the project's CLAUDE.md and AGENTS.md for conventions
+3. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/cookbook.md`
-3. Identify which module(s) this work touches and read relevant source code
-4. Understand the existing patterns before writing any code
+4. Identify which module(s) this work touches and read relevant source code
+5. Understand the existing patterns before writing any code
 
 ### Step 2: Write Tests First (TDD)
 
