@@ -6,16 +6,7 @@
       "Write(*)",
       "Edit(*)",
       "WebFetch(domain:github.com)",
-      "Read(//Users/damian.sova/.claude/projects/**)",
-      "Read(//Users/damian.sova/**)",
-      "WebSearch",
-      "Edit(/Users/damian.sova/Documents/Private/Programming/Project-automation-kit/.claude/rules/architecture.md)",
-      "Bash(mkdir *)",
-      "Write(/Users/damian.sova/Documents/Private/Programming/Project-automation-kit/.claude/agent-control/handoff.json)",
-      "Edit(/Users/damian.sova/.claude/shared-knowledge/patterns.md)",
-      "Bash(rm *)",
-      "Edit(/Users/damian.sova/Documents/Private/Programming/Project-automation-kit/.claude/commands/address-pr.md)",
-      "Write(/Users/damian.sova/Documents/Private/Programming/Project-automation-kit/.claude/commands/verify-local.md)"
+      "WebSearch"
     ]
   }
 }
