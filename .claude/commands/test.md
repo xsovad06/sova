@@ -21,7 +21,7 @@ Run the project's lint command (see CLAUDE.md for the exact command).
 
 For bash scripts:
 ```bash
-shellcheck pak agent/*.sh agent/adapters/*.sh invariants/*.sh
+shellcheck invariants/*.sh
 ```
 
 If linter fails:

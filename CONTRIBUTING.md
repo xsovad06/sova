@@ -16,8 +16,8 @@ Thank you for your interest in contributing to SOVA. This guide covers the devel
 ### Getting Started
 
 ```bash
-git clone https://github.com/xsovad06/project-automation-kit.git
-cd project-automation-kit
+git clone https://github.com/xsovad06/sova.git
+cd sova
 pip install -e ".[dev]"
 git config core.hooksPath .githooks
 ```
@@ -83,7 +83,7 @@ Examples:
 
 ## Reporting Issues
 
-Use the [issue templates](https://github.com/xsovad06/project-automation-kit/issues/new/choose) for:
+Use the [issue templates](https://github.com/xsovad06/sova/issues/new/choose) for:
 - **Bug reports**: include steps to reproduce, expected vs actual behavior
 - **Feature requests**: describe the objective and acceptance criteria
 - **Tasks**: for implementation work with clear scope
@@ -97,4 +97,4 @@ Use the [issue templates](https://github.com/xsovad06/project-automation-kit/iss
 
 ## Questions?
 
-File an [issue](https://github.com/xsovad06/project-automation-kit/issues).
+File an [issue](https://github.com/xsovad06/sova/issues).

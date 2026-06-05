@@ -116,13 +116,10 @@ github_repo = "user/repo"
 
 
 def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
-    """Legacy .conf files are no longer loaded; defaults are returned instead.
-
-    Users should migrate via `sova migrate config`.
-    """
+    """Legacy .conf files are no longer loaded; defaults are returned instead."""
     conf_dir = tmp_path / ".claude" / "scripts"
     conf_dir.mkdir(parents=True)
-    conf_file = conf_dir / "pak-agent.conf"
+    conf_file = conf_dir / "old-config.conf"
     conf_file.write_text('GITHUB_REPO="owner/myproject"\n')
 
     cfg = load_config(tmp_path)

@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `migrate`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -61,7 +61,6 @@ SOVA has four main components:
 
 ## Config System
 - **SOVA config**: `sova.toml` per project (Pydantic Settings, env var overrides via `SOVA_` prefix)
-- **Migration**: `sova migrate config` converts legacy `pak-agent.conf` to `sova.toml`
 - **DB URL**: `SOVA_DATABASE_URL` env var for PostgreSQL; defaults to `.claude/sova.db` (SQLite)
 - **Budget limits**: `agent.max_budget` ($10 default) limits per-run cost; `agent.max_issue_budget` ($50 default) limits cumulative cost across all runs for an issue. Per-issue budget is checked in `start_agent()` before spawning; `--force` bypasses it. Per-run budget is checked at step boundaries in `WorkflowEngine`.
 

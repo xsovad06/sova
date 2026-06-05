@@ -52,7 +52,7 @@ Extract:
 ### 1c. Milestones
 
 ```bash
-gh api repos/xsovad06/project-automation-kit/milestones --jq '.[] | {title, state, open_issues, closed_issues}'
+gh api repos/xsovad06/sova/milestones --jq '.[] | {title, state, open_issues, closed_issues}'
 ```
 
 Flag milestones that have 0 open issues but are still in "open" state.

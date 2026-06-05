@@ -19,7 +19,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 ## Project Structure
 
 ```
-project-automation-kit/
+sova/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
@@ -118,7 +118,7 @@ This project uses **GitHub Issues** with a project board.
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
-Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`, `migrate`.
+Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`.
 
 Examples:
 - `feat(adapters): add Linear task source adapter`

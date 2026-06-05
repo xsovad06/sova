@@ -38,9 +38,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/xsovad06/project-automation-kit"
-Issues = "https://github.com/xsovad06/project-automation-kit/issues"
-Documentation = "https://github.com/xsovad06/project-automation-kit/blob/main/README.md"
+Repository = "https://github.com/xsovad06/sova"
+Issues = "https://github.com/xsovad06/sova/issues"
+Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.30"]

@@ -23,7 +23,7 @@ A unified repository that ships:
 ## Architecture
 
 ```
-project-automation-kit/
+sova/
   sova/                            # Python package (14 modules)
     cli/                           # Typer CLI (18 subcommands)
     core/                          # Workflow engine, 16 step implementations, state machine

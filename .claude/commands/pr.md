@@ -112,7 +112,7 @@ Create a pull request for the current branch using the project's standard PR tem
 
 8. **Run preflight CI checks locally** before pushing:
    - Determine which checks apply based on changed files (`git diff origin/main...HEAD --stat`):
-     * If any `.sh` files changed: `shellcheck pak agent/*.sh agent/adapters/*.sh invariants/*.sh`
+     * If any `.sh` files changed: `shellcheck invariants/*.sh`
      * Run the project's lint and test commands (see CLAUDE.md for commands)
    - **Fix any failures before proceeding.** Do NOT push code that fails CI.
    - If fixes are needed, commit them and re-run the failing checks.

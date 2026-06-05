@@ -4,7 +4,7 @@
   <img src="assets/branding/sova-logo.jpg" alt="SOVA Logo" width="200">
 </p>
 
-[![CI](https://github.com/xsovad06/project-automation-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/xsovad06/project-automation-kit/actions/workflows/ci.yml)
+[![CI](https://github.com/xsovad06/sova/actions/workflows/ci.yml/badge.svg)](https://github.com/xsovad06/sova/actions/workflows/ci.yml)
 
 ## What is SOVA?
 
@@ -59,8 +59,8 @@ Each transition is enforced by gate checks. The Developer refuses issues that ha
 ## Installation
 
 ```bash
-git clone https://github.com/xsovad06/project-automation-kit.git
-cd project-automation-kit
+git clone https://github.com/xsovad06/sova.git
+cd sova
 pip install --user -e .
 ```
 
@@ -136,7 +136,7 @@ Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA
 | **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search <query>`, `sova memory prune` |
 | **Commands** | `sova commands list\|diff\|update` |
-| **Maintenance** | `sova cleanup`, `sova migrate config\|costs` |
+| **Maintenance** | `sova cleanup` |
 
 Run `sova --help` for the full list.
 

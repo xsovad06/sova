@@ -1,6 +1,6 @@
 [Unit]
 Description=SOVA Server (Dashboard + Scheduler)
-Documentation=https://github.com/xsovad06/project-automation-kit
+Documentation=https://github.com/xsovad06/sova
 After=network.target
 
 [Service]

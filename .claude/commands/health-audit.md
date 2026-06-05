@@ -239,7 +239,7 @@ with a dependency diagram showing execution order.
 For each task group from Phase B, create a GitHub issue:
 
 ```bash
-gh issue create --repo xsovad06/project-automation-kit \
+gh issue create --repo xsovad06/sova \
   --title "<type>(scope): <group description>" \
   --body "$(cat <<'EOF'
 ## Objective

@@ -1,7 +1,7 @@
 # SOVA -- Project Configuration (self-hosted)
 
 [project]
-github_repo = "xsovad06/project-automation-kit"
+github_repo = "xsovad06/sova"
 github_user = "xsovad06"
 base_branch = "main"
 test_cmd = "make test"

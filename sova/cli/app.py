@@ -15,7 +15,6 @@ from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
 from sova.cli.commands.memory import app as memory_app
-from sova.cli.commands.migrate import app as migrate_app
 from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_pr
 from sova.cli.commands.project import install, setup
 from sova.cli.commands.run import parallel, run_issue, watch
@@ -60,9 +59,6 @@ app.add_typer(memory_app)
 
 # Commands (subcommand group)
 app.add_typer(commands_app)
-
-# Migrate (subcommand group)
-app.add_typer(migrate_app)
 
 # Server (subcommand group)
 app.add_typer(server_app)
