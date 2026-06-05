@@ -158,6 +158,10 @@ class ProjectConfig(BaseSettings):
 
     # Knowledge
     shared_knowledge_dir: str = "~/.claude/shared-knowledge"
+    shared_knowledge_categories: list[str] = Field(
+        default_factory=lambda: ["review_pattern", "common_mistake", "codebase_pattern", "ci_pattern"],
+    )
+    ignored_shared_hashes: list[str] = Field(default_factory=list)
     invariants_dir: str = ""
     max_parallel_agents: int = 2
 
