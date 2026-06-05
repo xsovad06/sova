@@ -3,7 +3,7 @@
 {% block content %}
 <h2 class="text-2xl font-semibold mb-6">Agent Memory</h2>
 
-<!-- Search -->
+<!-- Search + Filters + Actions -->
 <div class="flex items-center gap-3 mb-4">
   <input type="text" id="memory-search" placeholder="Search memories..."
          class="bg-surface-card text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5 w-64"
@@ -13,9 +13,22 @@
     <option value="learning">Learning</option>
     <option value="pattern">Pattern</option>
     <option value="review_finding">Review finding</option>
+    <option value="review_pattern">Review pattern</option>
+    <option value="common_mistake">Common mistake</option>
+    <option value="codebase_pattern">Codebase pattern</option>
+    <option value="ci_pattern">CI pattern</option>
     <option value="debugging">Debugging</option>
   </select>
+  <select id="tier-filter" onchange="loadMemories()" class="bg-surface-card text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-1.5">
+    <option value="">All tiers</option>
+    <option value="project">Project</option>
+    <option value="shared">Shared</option>
+  </select>
   <span class="text-xs text-gray-500" id="memory-count">-- entries</span>
+  <div class="ml-auto flex gap-2">
+    <button id="btn-export" onclick="exportMemories()" class="text-xs px-3 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Export</button>
+    <button id="btn-import" onclick="importMemories()" class="text-xs px-3 py-1.5 rounded bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors">Import</button>
+  </div>
 </div>
 
 <!-- Memory list -->
@@ -35,9 +48,11 @@ function debounceSearch() {
 async function loadMemories() {
   const q = document.getElementById('memory-search').value.trim();
   const category = document.getElementById('category-filter').value;
+  const tier = document.getElementById('tier-filter').value;
   let url = apiUrl('/memory?limit=100');
   if (q) url += '&q=' + encodeURIComponent(q);
   if (category) url += '&category=' + encodeURIComponent(category);
+  if (tier) url += '&tier=' + encodeURIComponent(tier);
 
   try {
     const data = await fetchAPI(url);
@@ -65,6 +80,43 @@ async function loadMemories() {
     `).join('');
   } catch (e) {
     console.error('Failed to load memories:', e);
+  }
+}
+
+async function exportMemories() {
+  const btn = document.getElementById('btn-export');
+  btn.disabled = true;
+  try {
+    const data = await fetchAPI(apiUrl('/memory/export'), {method: 'POST'});
+    if (typeof showToast === 'function') {
+      showToast(`Exported ${data.exported} entries (${data.skipped} skipped)`, 'success');
+    }
+  } catch (e) {
+    console.error('Export failed:', e);
+    if (typeof showToast === 'function') {
+      showToast('Export failed: ' + e.message, 'error');
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function importMemories() {
+  const btn = document.getElementById('btn-import');
+  btn.disabled = true;
+  try {
+    const data = await fetchAPI(apiUrl('/memory/import'), {method: 'POST'});
+    if (typeof showToast === 'function') {
+      showToast(`Imported ${data.imported} entries (${data.skipped} skipped, ${data.ignored} ignored)`, 'success');
+    }
+    loadMemories();
+  } catch (e) {
+    console.error('Import failed:', e);
+    if (typeof showToast === 'function') {
+      showToast('Import failed: ' + e.message, 'error');
+    }
+  } finally {
+    btn.disabled = false;
   }
 }
 

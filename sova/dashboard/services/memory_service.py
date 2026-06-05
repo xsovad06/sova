@@ -14,6 +14,7 @@ async def list_memories(
     *,
     query: str | None = None,
     category: str | None = None,
+    tier: str | None = None,
     limit: int = 100,
 ) -> tuple[list[dict], int]:
     """List memory entries with optional search.
@@ -33,6 +34,8 @@ async def list_memories(
         )
     if category:
         stmt = stmt.where(Memory.category == category)
+    if tier:
+        stmt = stmt.where(Memory.tier == tier)
 
     # Count before applying limit
     count_stmt = select(func.count()).select_from(stmt.subquery())
