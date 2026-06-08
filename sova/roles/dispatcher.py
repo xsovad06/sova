@@ -27,6 +27,8 @@ _ROLES: dict[str, type[AgentRole]] = {
     "reviewer": ReviewerRole,
 }
 
+BUILTIN_ROLE_NAMES: frozenset[str] = frozenset(_ROLES.keys())
+
 # Maps tracker states to the role that should handle them
 _STATE_TO_ROLE: dict[TaskState, str] = {
     TaskState.BACKLOG: "triage",
@@ -71,6 +73,42 @@ def list_roles() -> list[AgentRole]:
     return [cls() for cls in _ROLES.values()]
 
 
+async def get_role_async(name: str, *, config: RolesConfig | None = None) -> AgentRole:
+    """Get a role by name, falling back to DB lookup for custom roles.
+
+    Raises ValueError if the role name is not found in built-ins or DB.
+    """
+    # Resolve nickname
+    if config and name in config.nicknames:
+        name = config.nicknames[name]
+
+    role_cls = _ROLES.get(name)
+    if role_cls is not None:
+        return role_cls()
+
+    # Fall back to DB lookup for custom roles
+    from sqlalchemy import select
+
+    from sova.db.models import WorkflowDefinition
+    from sova.db.session import get_session
+    from sova.roles.custom import CustomRole
+
+    try:
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = select(WorkflowDefinition).where(WorkflowDefinition.name == name)
+                result = await session.execute(stmt)
+                definition = result.scalar_one_or_none()
+                if definition is not None:
+                    return CustomRole(definition)
+    except Exception:
+        log.warning("dispatcher.custom_lookup_failed", name=name, exc_info=True)
+        raise
+
+    available = ", ".join(sorted(_ROLES.keys()))
+    raise ValueError(f"Unknown role: {name!r}. Available built-in: {available}")
+
+
 async def dispatch(
     ctx: ExecutionContext,
     *,
@@ -85,7 +123,7 @@ async def dispatch(
     Returns the role used and its execution result.
     """
     if role_name:
-        role = get_role(role_name, config=config)
+        role = await get_role_async(role_name, config=config)
     else:
         # Auto-select based on tracker state
         state = await ctx.adapter.get_state(ctx.issue_number)
