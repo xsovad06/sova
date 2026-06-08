@@ -24,8 +24,8 @@ sova/
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
       commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server)
-    core/                          # Workflow engine, steps, state machine, context, output writer
-    roles/                         # Agent roles (triage, researcher, developer, reviewer, dispatcher)
+    core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
+    roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)
     llm/                           # Claude CLI wrapper, cost tracking
     git/                           # Git operations (branch, pr, rebase), worktree management
@@ -34,8 +34,8 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 14 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work)
-      services/                    # 20 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output)
+      routers/                     # 15 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles)
+      services/                    # 21 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output, role)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     commands/                      # Command distribution (catalog, templates, manifest, distribution)
