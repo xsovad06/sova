@@ -87,7 +87,7 @@ async def _triage(
 
     results = []
     for task in tasks:
-        assessment = await role.assess_task(task)
+        assessment = role.heuristic_assess(task, triage_cfg)
 
         if triage_cfg.mode != "dry_run":
             if triage_cfg.auto_label:

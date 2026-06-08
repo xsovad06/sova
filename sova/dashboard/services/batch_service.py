@@ -183,8 +183,8 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                         item.detail = f"State {task.state.value} not eligible for triage"
                         return
 
-                    assessment = await role.assess_task(task)
                     triage_cfg = config.triage
+                    assessment = role.heuristic_assess(task, triage_cfg)
 
                     if triage_cfg.mode == "dry_run":
                         item.status = "done"
@@ -301,7 +301,7 @@ async def _run_batch_harden(
                             enriched_task = replace(task, body=enriched_body)
                             role = TriageRole()
                             triage_cfg = config.triage
-                            assessment = await role.assess_task(enriched_task)
+                            assessment = role.heuristic_assess(enriched_task, triage_cfg)
                             if triage_cfg.auto_label:
                                 label = role.resolve_label(assessment.suitability, triage_cfg)
                                 if label:

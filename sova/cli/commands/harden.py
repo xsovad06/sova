@@ -106,10 +106,9 @@ async def _harden(
             try:
                 enriched_task = replace(task, body=enriched_body)
                 role = TriageRole()
-                assessment = await role.assess_task(enriched_task)
-                triage_verdict = assessment.suitability
-
                 triage_cfg = config.triage
+                assessment = role.heuristic_assess(enriched_task, triage_cfg)
+                triage_verdict = assessment.suitability
                 if triage_cfg.auto_label:
                     label = role.resolve_label(assessment.suitability, triage_cfg)
                     if label:
