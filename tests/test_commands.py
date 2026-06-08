@@ -126,6 +126,53 @@ class TestCatalog:
         assert len(groups["core"]) == 1
         assert groups["core"][0].name == "develop"
 
+    def test_parse_inputs_outputs(self, tmp_path: Path) -> None:
+        """discover() parses inputs and outputs from YAML list frontmatter."""
+        from sova.commands.catalog import discover
+
+        (tmp_path / "cmd.md").write_text(
+            "---\n"
+            "name: cmd\n"
+            "description: Test command\n"
+            "user-invocable: true\n"
+            "category: core\n"
+            "inputs:\n"
+            "  - issue_number\n"
+            "  - branch_name\n"
+            "outputs:\n"
+            "  - files_changed\n"
+            "  - test_results\n"
+            "---\n"
+            "\nContent.\n"
+        )
+        commands = discover(tmp_path)
+        assert len(commands) == 1
+        assert commands[0].inputs == ["issue_number", "branch_name"]
+        assert commands[0].outputs == ["files_changed", "test_results"]
+
+    def test_parse_empty_inputs_outputs(self, tmp_path: Path) -> None:
+        """discover() handles commands without inputs/outputs gracefully."""
+        from sova.commands.catalog import discover
+
+        (tmp_path / "cmd.md").write_text(
+            "---\nname: cmd\ndescription: No IO\nuser-invocable: true\ncategory: core\n---\nContent.\n"
+        )
+        commands = discover(tmp_path)
+        assert len(commands) == 1
+        assert commands[0].inputs == []
+        assert commands[0].outputs == []
+
+    def test_parse_yaml_simple_lists(self) -> None:
+        """_parse_yaml_simple handles mixed scalar and list values."""
+        from sova.commands.catalog import _parse_yaml_simple
+
+        text = "name: test\ndescription: A test\ninputs:\n  - a\n  - b\noutputs:\n  - c\ncategory: core"
+        result = _parse_yaml_simple(text)
+        assert result["name"] == "test"
+        assert result["inputs"] == ["a", "b"]
+        assert result["outputs"] == ["c"]
+        assert result["category"] == "core"
+
 
 # ---------------------------------------------------------------------------
 # templates.py -- template rendering

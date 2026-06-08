@@ -3094,3 +3094,176 @@ class TestTomlConfigGeneration:
         cfg = TomlConfig(max_budget="25.00")
         content = generate_sova_toml(cfg)
         assert 'max_budget = "25.00"' in content
+
+
+# ---------------------------------------------------------------------------
+# Roles API
+# ---------------------------------------------------------------------------
+
+
+class TestRolesAPI:
+    async def test_list_roles(self, client):
+        """GET /api/roles returns built-in roles."""
+        resp = await client.get("/api/roles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "roles" in data
+        names = {r["name"] for r in data["roles"]}
+        assert "developer" in names
+        assert "triage" in names
+
+    async def test_list_commands(self, client):
+        """GET /api/roles/commands returns discovered commands."""
+        resp = await client.get("/api/roles/commands")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "commands" in data
+        assert len(data["commands"]) > 0
+        # At least one command should have inputs/outputs
+        names = {c["name"] for c in data["commands"]}
+        assert "develop" in names
+
+    async def test_get_builtin_role(self, client):
+        """GET /api/roles/developer returns the built-in developer role."""
+        resp = await client.get("/api/roles/developer")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "developer"
+        assert data["is_builtin"] is True
+        assert "graph_json" in data
+
+    async def test_create_custom_role(self, client):
+        """POST /api/roles creates a custom role."""
+        graph = {
+            "nodes": [{"id": "n1", "command": "develop", "label": "Dev", "position": {"x": 0, "y": 0}, "params": {}}],
+            "edges": [],
+        }
+        resp = await client.post(
+            "/api/roles",
+            json={
+                "name": "my-workflow",
+                "description": "Test workflow",
+                "graph_json": graph,
+                "input_states": ["researched"],
+                "output_state": "in_review",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "my-workflow"
+        assert data["is_builtin"] is False
+
+    async def test_create_rejects_builtin_name(self, client):
+        """POST /api/roles rejects built-in role names."""
+        resp = await client.post(
+            "/api/roles",
+            json={
+                "name": "developer",
+                "graph_json": {"nodes": [{"id": "n1", "command": "test"}], "edges": []},
+            },
+        )
+        assert resp.status_code == 409
+
+    async def test_create_rejects_invalid_dag(self, client):
+        """POST /api/roles rejects DAGs with cycles."""
+        graph = {
+            "nodes": [{"id": "a", "command": "x"}, {"id": "b", "command": "y"}],
+            "edges": [{"id": "e1", "source": "a", "target": "b"}, {"id": "e2", "source": "b", "target": "a"}],
+        }
+        resp = await client.post(
+            "/api/roles",
+            json={
+                "name": "bad-role",
+                "graph_json": graph,
+            },
+        )
+        assert resp.status_code == 400
+        data = resp.json()
+        detail = data["detail"]
+        assert "validation_errors" in detail
+
+    async def test_update_custom_role(self, client):
+        """PUT /api/roles/{name} updates a custom role."""
+        # Create first
+        graph = {
+            "nodes": [{"id": "n1", "command": "develop", "label": "Dev", "position": {"x": 0, "y": 0}, "params": {}}],
+            "edges": [],
+        }
+        await client.post(
+            "/api/roles",
+            json={
+                "name": "editable",
+                "graph_json": graph,
+            },
+        )
+
+        # Update
+        resp = await client.put(
+            "/api/roles/editable",
+            json={
+                "description": "Updated description",
+            },
+        )
+        data = resp.json()
+        assert data.get("description") == "Updated description"
+
+    async def test_update_rejects_builtin(self, client):
+        """PUT /api/roles/developer rejects updates to built-in roles."""
+        resp = await client.put(
+            "/api/roles/developer",
+            json={
+                "description": "Hacked",
+            },
+        )
+        assert resp.status_code == 404
+
+    async def test_delete_custom_role(self, client):
+        """DELETE /api/roles/{name} removes custom roles."""
+        graph = {
+            "nodes": [{"id": "n1", "command": "test", "label": "T", "position": {"x": 0, "y": 0}, "params": {}}],
+            "edges": [],
+        }
+        await client.post(
+            "/api/roles",
+            json={
+                "name": "deletable",
+                "graph_json": graph,
+            },
+        )
+
+        resp = await client.delete("/api/roles/deletable")
+        data = resp.json()
+        assert data["status"] == "deleted"
+
+    async def test_delete_rejects_builtin(self, client):
+        """DELETE /api/roles/developer rejects deleting built-in roles."""
+        resp = await client.delete("/api/roles/developer")
+        assert resp.status_code == 404
+
+    async def test_validate_dag(self, client):
+        """POST /api/roles/{name}/validate validates DAG structure."""
+        graph = {
+            "nodes": [{"id": "a", "command": "develop"}, {"id": "b", "command": "test"}],
+            "edges": [{"id": "e1", "source": "a", "target": "b"}],
+        }
+        resp = await client.post("/api/roles/test/validate", json={"graph_json": graph})
+        data = resp.json()
+        assert data["valid"] is True
+        assert data["errors"] == []
+
+    async def test_validate_dag_with_errors(self, client):
+        """POST /api/roles/{name}/validate returns errors for invalid DAGs."""
+        resp = await client.post("/api/roles/test/validate", json={"graph_json": {"nodes": [], "edges": []}})
+        data = resp.json()
+        assert data["valid"] is False
+        assert len(data["errors"]) > 0
+
+    async def test_roles_page_renders(self, client):
+        """GET /roles renders the roles list page."""
+        resp = await client.get("/roles")
+        assert resp.status_code == 200
+
+    async def test_role_editor_page_renders(self, client):
+        """GET /roles/{name} renders the role editor page."""
+        resp = await client.get("/roles/developer")
+        assert resp.status_code == 200
