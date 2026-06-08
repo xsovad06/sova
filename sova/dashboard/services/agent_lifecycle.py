@@ -302,6 +302,7 @@ async def start_agent(
             role=role or "developer",
             process=process,
             output_writer=writer,
+            pr_number=pr_number,
             project_dir=cwd,
         )
         pa.agents[run_id] = agent
@@ -422,10 +423,13 @@ async def start_command(
         cwd = pa.project_dir
         prompt = _resolve_command_prompt(command, args, cwd)
 
+        raw_pr = (args or {}).get("pr")
+        pr_number = int(raw_pr) if raw_pr is not None else None
+
         gh_env = await _resolve_project_gh_env(cwd)
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
         role = f"command:{command}"
-        run_id = await _create_task_run(issue, role, cwd, pid=process.pid)
+        run_id = await _create_task_run(issue, role, cwd, pid=process.pid, pr_number=pr_number)
         if run_id is None:
             await process.stop()
             return {"error": "Failed to create task run record"}
@@ -442,6 +446,7 @@ async def start_command(
             role=role,
             process=process,
             output_writer=writer,
+            pr_number=pr_number,
             project_dir=cwd,
         )
         pa.agents[run_id] = agent
@@ -456,6 +461,31 @@ async def start_command(
 
 # -- Completion handling ------------------------------------------------------
 
+_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge", "ship-pr"})
+
+
+async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path | None) -> bool:
+    """Check if a PR was merged on GitHub despite the agent process failing.
+
+    Used by _wait_and_finalize to avoid marking integration runs as "failed"
+    when the merge succeeded but post-merge cleanup crashed.
+    """
+    if pr_number is None:
+        return False
+    try:
+        from sova.config.loader import load_config
+        from sova.git.pr import get_pr_status
+
+        cfg = load_config(project_dir)
+        repo = cfg.github_repo
+        if not repo:
+            return False
+        status = await get_pr_status(pr_number, repo=repo, github_user=cfg.github_user)
+        return status.state == "MERGED"
+    except Exception:
+        log.debug("check_pr_merged.failed", pr_number=pr_number, exc_info=True)
+        return False
+
 
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
@@ -468,6 +498,20 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     run_id = agent.run_id
 
     status = "done" if exit_code == 0 else "failed"
+
+    if exit_code != 0 and agent.pr_number is not None:
+        cmd_name = agent.role.removeprefix("command:").removeprefix("/").split()[0]
+        if cmd_name in _MERGE_ROLES:
+            if await _check_pr_merged_on_failure(agent.pr_number, agent.project_dir):
+                log.info(
+                    "finalize.merge_succeeded_despite_crash",
+                    run_id=run_id,
+                    pr=agent.pr_number,
+                    exit_code=exit_code,
+                )
+                status = "done"
+                exit_code = 0
+
     cost = agent.last_result_cost or 0.0
 
     async with pa._lock:
