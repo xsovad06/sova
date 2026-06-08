@@ -98,7 +98,7 @@ End with questions the user should be able to answer:
 ## Cross-References
 
 - **Ready to implement?** Run `/develop` or `/develop-full` with the chosen approach
-- **Need to understand the codebase first?** Check the project's AGENTS.md and `docs/*-guidelines.md`
+- **Need to understand the codebase first?** Check the project's AGENTS.md and `.claude/rules/*.md`
 
 ## Rules
 

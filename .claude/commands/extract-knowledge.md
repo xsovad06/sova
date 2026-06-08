@@ -10,12 +10,15 @@ Review this session's work and extract reusable knowledge into the project's kno
 
 ## Knowledge Architecture
 
-This project uses a three-tier knowledge system:
+This project uses a four-tier knowledge system:
 
-### Tier 1: `docs/*-guidelines.md` (canonical, always loaded via CLAUDE.md)
-Domain-specific guidelines loaded into every session. Primary destination for patterns that apply to all contributors (human and agent).
+### Tier 0: `~/.claude/shared-knowledge/` (cross-project, shared across all repos)
+Universal patterns confirmed across 2+ projects. Git workflows, review heuristics, debugging techniques. Not project-specific.
 
-### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
+### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
+Project-specific conventions loaded into every session. Primary destination for patterns that apply to all contributors (human and agent). Files: `architecture.md`, `bash-patterns.md`, `workflow.md`.
+
+### Tier 2: `.claude/agent-memory/` (agent learnings, gitignored)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
 
 - **`MEMORY.md`** -- Index file
@@ -36,7 +39,7 @@ For each finding, determine the right destination:
 
 | Finding type | Destination |
 |---|---|
-| Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
+| Domain-specific patterns (security, performance, etc.) | `.claude/rules/*.md` |
 | ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
