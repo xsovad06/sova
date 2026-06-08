@@ -114,6 +114,7 @@ async def _run_migrations(engine) -> None:
             await conn.run_sync(Base.metadata.create_all)
         try:
             async with engine.begin() as conn:
+                await conn.run_sync(lambda c: c.execute(text("DROP TABLE IF EXISTS alembic_version")))
                 await conn.run_sync(_do_stamp)
         except Exception:
             log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
