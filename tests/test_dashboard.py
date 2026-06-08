@@ -2207,6 +2207,133 @@ class TestFinalizeTaskRunGuard:
 
 
 # ---------------------------------------------------------------------------
+# Merge-aware finalization
+# ---------------------------------------------------------------------------
+
+
+class TestMergeAwareFinalization:
+    """_check_pr_merged_on_failure should detect merged PRs for integration commands."""
+
+    async def test_detects_merged_pr(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="MERGED")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is True
+
+    async def test_returns_false_for_open_pr(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        mock_status = MagicMock(state="OPEN")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is False
+
+    async def test_returns_false_on_gh_failure(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
+
+        mock_cfg = MagicMock(github_repo="owner/repo", github_user="user")
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.git.pr.get_pr_status", new_callable=AsyncMock, side_effect=RuntimeError("not found")),
+        ):
+            assert await _check_pr_merged_on_failure(pr_number=88, project_dir=None) is False
+
+    async def test_returns_false_when_no_pr(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
+
+        assert await _check_pr_merged_on_failure(pr_number=None, project_dir=None) is False
+
+    async def test_start_command_passes_pr_number_to_task_run(self) -> None:
+        """start_command should extract pr from args and pass to _create_task_run."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99) as mock_create,
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            pa.project_dir.__truediv__ = MagicMock(return_value=MagicMock(is_file=MagicMock(return_value=False)))
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_command(
+                "integrate-pr",
+                args={"issue": "32", "pr": 88},
+            )
+
+        assert "error" not in result
+        mock_create.assert_awaited_once()
+        assert mock_create.call_args.kwargs.get("pr_number") == 88
+
+    async def test_wait_and_finalize_overrides_failed_to_done_when_pr_merged(self) -> None:
+        """_wait_and_finalize should mark status 'done' when integration cmd fails but PR is merged."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, CompletedAgent, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=1)
+
+        agent = AgentState(
+            run_id=42,
+            issue="99",
+            role="command:integrate-pr",
+            process=mock_process,
+            pr_number=88,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[42] = agent
+
+        with (
+            patch.object(agent_lifecycle, "_check_pr_merged_on_failure", new_callable=AsyncMock, return_value=True),
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock) as mock_finalize,
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert len(pa.recently_completed) == 1
+        completed: CompletedAgent = pa.recently_completed[0]
+        assert completed.status == "done"
+        assert completed.run_id == 42
+
+        mock_finalize.assert_awaited_once()
+        assert mock_finalize.call_args.kwargs["exit_code"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Per-issue budget check
 # ---------------------------------------------------------------------------
 

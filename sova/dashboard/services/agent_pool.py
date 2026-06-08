@@ -43,6 +43,7 @@ class AgentState:
     started_at: float = field(default_factory=time.monotonic)
     started_at_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_result_cost: float | None = None
+    pr_number: int | None = None
     project_dir: Path = field(default_factory=Path.cwd)
 
 
