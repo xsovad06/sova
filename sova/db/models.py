@@ -50,6 +50,7 @@ class TaskRun(Base):
         return value.lstrip("#").strip() if value else value
 
     lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"))
+    workflow_definition_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("workflow_definitions.id"))
 
     __table_args__ = (
         Index("ix_task_runs_issue", "issue_number"),
@@ -223,3 +224,43 @@ class LifecyclePhaseRecord(Base):
     lifecycle: Mapped["IssueLifecycle"] = relationship(back_populates="phases")
 
     __table_args__ = (Index("ix_lifecycle_phases_lifecycle", "lifecycle_id"),)
+
+
+class WorkflowDefinition(Base):
+    """A saved command DAG defining a custom role."""
+
+    __tablename__ = "workflow_definitions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    graph_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    input_states: Mapped[list] = mapped_column(JSON, default=list)
+    output_state: Mapped[str] = mapped_column(String(50), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (Index("ix_workflow_definitions_name", "name"),)
+
+
+class CommandContract(Base):
+    """Input/output schema for a command (enables DAG validation)."""
+
+    __tablename__ = "command_contracts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    command_name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    outputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    estimated_cost_usd: Mapped[float] = mapped_column(Numeric(10, 4), default=0.0)
+    estimated_duration_s: Mapped[int] = mapped_column(Integer, default=60)
+    idempotent: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_retries: Mapped[int] = mapped_column(Integer, default=0)
+
+    __table_args__ = (Index("ix_command_contracts_name", "command_name"),)
