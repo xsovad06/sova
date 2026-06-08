@@ -62,6 +62,7 @@ _NESTED_SECTIONS = (
     "triage",
     "roles",
     "notification",
+    "external_reviews",
 )
 
 

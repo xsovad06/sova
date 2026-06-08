@@ -148,6 +148,34 @@ class RolesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_ROLES_")
 
 
+class SonarCloudConfig(BaseSettings):
+    """SonarCloud-specific configuration."""
+
+    project_key: str = ""
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_SONARCLOUD_")
+
+
+class CodeRabbitConfig(BaseSettings):
+    """CodeRabbit-specific configuration (uses gh CLI auth)."""
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_CODERABBIT_")
+
+
+class ExternalReviewsConfig(BaseSettings):
+    """External review tool integration for the developer pipeline."""
+
+    enabled: bool = False
+    tools: list[str] = Field(default_factory=list)
+    poll_interval: int = Field(30, gt=0)
+    timeout: int = Field(15, gt=0)
+
+    sonarcloud: SonarCloudConfig = Field(default_factory=SonarCloudConfig)
+    coderabbit: CodeRabbitConfig = Field(default_factory=CodeRabbitConfig)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_EXTERNAL_REVIEWS_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -192,6 +220,7 @@ class ProjectConfig(BaseSettings):
     roles: RolesConfig = Field(default_factory=RolesConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

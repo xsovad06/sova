@@ -1054,6 +1054,8 @@ class TestStepRegistry:
             "validate",
             "push",
             "create_pr",
+            "wait_for_external_reviews",
+            "address_external_findings",
             "monitor_ci",
             "extract_memory",
             "handoff_to_reviewer",
