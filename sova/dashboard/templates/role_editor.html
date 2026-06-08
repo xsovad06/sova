@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Role Editor - SOVA{% endblock %}
+{% block content %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+
+<div id="editor-root" data-role-name="{{ role_name }}">
+  <!-- Top bar -->
+  <div class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-3">
+      <a href="{{ prefix|default('') }}/roles" class="text-sm text-gray-400 hover:text-gray-200 transition-colors">&larr; Back</a>
+      <h2 class="text-xl font-semibold" id="role-title">Loading...</h2>
+      <span id="builtin-badge" class="hidden text-[10px] px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Read-only</span>
+    </div>
+    <div class="flex items-center gap-2" id="action-buttons">
+      <button onclick="validateDAG()" class="text-sm px-3 py-1.5 rounded bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">Validate</button>
+      <button onclick="saveRole()" id="btn-save" class="hidden text-sm px-3 py-1.5 rounded bg-accent text-white hover:bg-accent/80 transition-colors">Save</button>
+    </div>
+  </div>
+
+  <!-- Main layout -->
+  <div class="flex gap-4" style="height: calc(100vh - 160px);">
+    <!-- Left: Command palette -->
+    <div id="command-palette" class="w-56 shrink-0 bg-surface-card rounded-lg border border-gray-700/50 overflow-y-auto">
+      <div class="p-3 border-b border-gray-700/50">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Commands</p>
+      </div>
+      <div id="command-list" class="p-2 space-y-1">
+        <p class="text-xs text-gray-500 p-2">Loading...</p>
+      </div>
+    </div>
+
+    <!-- Center: Canvas -->
+    <div class="flex-1 bg-surface-card rounded-lg border border-gray-700/50 relative">
+      <div id="cy" class="w-full h-full"></div>
+    </div>
+
+    <!-- Right: Properties panel -->
+    <div id="props-panel" class="w-64 shrink-0 bg-surface-card rounded-lg border border-gray-700/50 overflow-y-auto">
+      <div class="p-3 border-b border-gray-700/50">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Properties</p>
+      </div>
+      <div id="props-content" class="p-3">
+        <p class="text-xs text-gray-500">Select a node or edge</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Validation messages -->
+  <div id="validation-bar" class="hidden mt-3 p-3 rounded-lg border text-sm"></div>
+</div>
+
+<script src="{{ prefix|default('') }}/static/role-editor.js"></script>
+{% endblock %}
