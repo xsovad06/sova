@@ -80,6 +80,13 @@ async def _doctor(project: Path | None) -> None:
         checks.append(("terminal-notifier", bool(tn_path), f"(optional) {detail}", False))
 
     project_dir = (project or Path.cwd()).resolve()
+
+    hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
+    hooks_path = hooks_result.stdout.strip() if hooks_result.success else ""
+    hooks_ok = hooks_path == ".githooks"
+    hooks_detail = hooks_path if hooks_ok else "not set -- run: make setup"
+    checks.append(("git hooks", hooks_ok, hooks_detail, False))
+
     toml_path = project_dir / "sova.toml"
     toml_exists = toml_path.exists()
     checks.append(("sova.toml", toml_exists, str(toml_path) if toml_exists else f"not found at {toml_path}", False))

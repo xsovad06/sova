@@ -8,8 +8,10 @@
 - [ ] Documentation update
 - [ ] Infrastructure / CI
 
-## Test Plan
-<!-- How did you verify this works? -->
+## Checklist
+- [ ] Branch follows naming convention (`feat/`, `fix/`, `refactor/`)
+- [ ] Commit messages use [Conventional Commits](https://www.conventionalcommits.org/) format
+- [ ] No `Co-Authored-By` or AI branding in commits
 - [ ] `make check` passes
 - [ ] New/updated tests cover the change
 - [ ] Manual verification (describe below)
