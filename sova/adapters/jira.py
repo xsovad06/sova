@@ -40,12 +40,19 @@ class JiraAdapter(TaskAdapter):
         email: str,
         api_token: str,
         project_key: str,
+        component: str = "",
+        jql_filter: str = "",
         state_transitions: dict[str, str] | None = None,
     ) -> None:
+        # jql_filter is appended verbatim to queries -- callers own validation.
+        # component is sanitized; jql_filter is not because it may contain
+        # operators, functions, and nested clauses that sanitization would break.
         super().__init__(repo="", github_user="")
         self.base_url = base_url.rstrip("/")
         self.email = email
         self.project_key = project_key
+        self.component = component
+        self.jql_filter = jql_filter
         self._state_transitions = state_transitions or {}
 
         credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
@@ -87,17 +94,23 @@ class JiraAdapter(TaskAdapter):
         elif filters.state == "closed":
             jql_parts.append("statusCategory = Done")
 
+        if self.component:
+            jql_parts.append(f'component = "{self._sanitize_jql_value(self.component)}"')
+
+        if self.jql_filter:
+            jql_parts.append(f"({self.jql_filter})")
+
         if filters.labels:
             for label in filters.labels:
                 jql_parts.append(f'labels = "{self._sanitize_jql_value(label)}"')
 
         jql = " AND ".join(jql_parts)
-        response = await self._http.get(
-            "/search",
-            params={
+        response = await self._http.post(
+            "/search/jql",
+            json={
                 "jql": jql,
                 "maxResults": 50,
-                "fields": "summary,description,status,labels,assignee,fixVersions,key",
+                "fields": ["summary", "description", "status", "labels", "assignee", "fixVersions", "key"],
             },
         )
         if response.status_code != 200:

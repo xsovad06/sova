@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import respx
 from httpx import Response
@@ -162,26 +164,60 @@ class TestListTasks:
     @respx.mock
     async def test_list_open_tasks(self) -> None:
         adapter = _adapter()
-        route = respx.get(
-            "https://test.atlassian.net/rest/api/3/search",
+        route = respx.post(
+            "https://test.atlassian.net/rest/api/3/search/jql",
         ).mock(
             return_value=Response(200, json={"issues": [_issue_json(), _issue_json(key="TEST-43")]}),
         )
         tasks = await adapter.list_tasks(TaskFilters(state="open"))
         assert len(tasks) == 2
         assert route.called
-        url_str = str(route.calls[0].request.url)
-        assert "statusCategory" in url_str
-        assert "Done" in url_str
+        body = json.loads(route.calls[0].request.content)
+        assert "statusCategory" in body["jql"]
+        assert "Done" in body["jql"]
 
     @respx.mock
     async def test_list_tasks_api_error(self) -> None:
         adapter = _adapter()
-        respx.get("https://test.atlassian.net/rest/api/3/search").mock(
+        respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
             return_value=Response(500, text="Server error"),
         )
         tasks = await adapter.list_tasks()
         assert tasks == []
+
+
+class TestListTasksFiltering:
+    @respx.mock
+    async def test_component_filter_in_jql(self) -> None:
+        adapter = JiraAdapter(
+            base_url="https://test.atlassian.net",
+            email="test@example.com",
+            api_token="test-token",
+            project_key="TEST",
+            component="RBAC",
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=Response(200, json={"issues": []}),
+        )
+        await adapter.list_tasks(TaskFilters(state="open"))
+        body = json.loads(route.calls[0].request.content)
+        assert 'component = "RBAC"' in body["jql"]
+
+    @respx.mock
+    async def test_jql_filter_appended(self) -> None:
+        adapter = JiraAdapter(
+            base_url="https://test.atlassian.net",
+            email="test@example.com",
+            api_token="test-token",
+            project_key="TEST",
+            jql_filter="assignee = currentUser()",
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=Response(200, json={"issues": []}),
+        )
+        await adapter.list_tasks(TaskFilters(state="open"))
+        body = json.loads(route.calls[0].request.content)
+        assert "(assignee = currentUser())" in body["jql"]
 
 
 class TestGetTask:

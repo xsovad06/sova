@@ -28,6 +28,8 @@ class TaskSourceConfig(BaseSettings):
     jira_email: str = ""
     jira_api_token: str = Field("", repr=False)
     jira_project_key: str = ""
+    jira_component: str = ""
+    jira_jql_filter: str = ""
     jira_state_transitions: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
@@ -104,6 +106,11 @@ class TriageConfig(BaseSettings):
 
     auto_label: bool = True
     min_confidence: float = Field(0.7, ge=0, le=1)
+
+    mode: Literal["full", "comment", "dry_run"] = "full"
+    write_body: bool = True
+    write_transition: bool = True
+    labels: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 
