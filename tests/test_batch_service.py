@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -237,7 +237,7 @@ class TestBatchTriage:
         mock_role = mock_role_cls.return_value
         mock_assessment = AsyncMock()
         mock_assessment.suitability = "ready"
-        mock_role.assess_task = AsyncMock(return_value=mock_assessment)
+        mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment comment"
@@ -255,7 +255,7 @@ class TestBatchTriage:
 
         assert job.status == "done"
         assert all(r.status == "done" for r in job.results)
-        assert mock_role.assess_task.call_count == 2
+        assert mock_role.heuristic_assess.call_count == 2
         assert adapter.add_label.call_count == 2
         assert adapter.transition_state.call_count == 2
 
@@ -284,7 +284,7 @@ class TestBatchTriage:
         await _run_batch_triage(job, Path("/tmp"))
 
         assert job.results[0].status == "skipped"
-        mock_role_cls.return_value.assess_task.assert_not_called()
+        mock_role_cls.return_value.heuristic_assess.assert_not_called()
 
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
     @patch("sova.config.loader.load_config")
@@ -302,7 +302,7 @@ class TestBatchTriage:
         mock_role = mock_role_cls.return_value
         mock_assessment = AsyncMock()
         mock_assessment.suitability = "ready"
-        mock_role.assess_task.return_value = mock_assessment
+        mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment"
@@ -407,7 +407,9 @@ class TestBatchConcurrency:
         mock_assessment = AsyncMock()
         mock_assessment.suitability = "ready"
 
-        async def _tracking_assess(task):
+        task_list = [Task(id=str(i), title=f"Task {i}", body="Body", state=TaskState.BACKLOG) for i in range(1, 5)]
+
+        async def _tracking_get_task(issue_id):
             nonlocal max_concurrent, current_concurrent
             async with lock:
                 current_concurrent += 1
@@ -416,10 +418,12 @@ class TestBatchConcurrency:
             await asyncio.sleep(0.01)
             async with lock:
                 current_concurrent -= 1
-            return mock_assessment
+            return next((t for t in task_list if t.id == issue_id), task_list[0])
+
+        adapter.get_task = AsyncMock(side_effect=_tracking_get_task)
 
         mock_role = mock_role_cls.return_value
-        mock_role.assess_task = _tracking_assess
+        mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
         mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
         mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
         mock_role._build_assessment_comment.return_value = "Assessment"

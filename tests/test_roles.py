@@ -1569,6 +1569,87 @@ class TestTriageExecuteConfig:
         adapter.transition_state.assert_not_called()
 
 
+class TestTriageSkipPatterns:
+    """Tests for title-prefix and label-based skip patterns in heuristic triage."""
+
+    def _make_task(self, title: str = "Fix login bug", body: str = "Some description", labels: list[str] | None = None):
+        from unittest.mock import MagicMock
+
+        return MagicMock(id="42", title=title, body=body, labels=labels or [], state="backlog")
+
+    def test_skip_title_prefix_qe(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_title_prefixes=["[QE]", "[Spike]"])
+        task = self._make_task(title="[QE] [SUB] Verify RBAC permissions")
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability == "human_only"
+        assert "title prefix" in assessment.reasoning.lower()
+
+    def test_skip_title_prefix_case_insensitive(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_title_prefixes=["[qe]"])
+        task = self._make_task(title="[QE] Check something")
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability == "human_only"
+
+    def test_skip_label_post_mvp(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_labels=["post-mvp", "QE"])
+        task = self._make_task(labels=["post-mvp", "some-other-label"])
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability == "human_only"
+        assert "label" in assessment.reasoning.lower()
+
+    def test_skip_label_case_insensitive(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_labels=["qe"])
+        task = self._make_task(labels=["QE"])
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability == "human_only"
+
+    def test_no_skip_when_no_match(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_title_prefixes=["[QE]"], skip_labels=["post-mvp"])
+        task = self._make_task(title="Fix RBAC permission check", body="Detailed description with context", labels=[])
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability != "human_only"
+
+    def test_no_skip_when_empty_config(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig()
+        task = self._make_task(title="[QE] Something", labels=["post-mvp"])
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability != "human_only"
+
+    def test_skip_multiple_labels_any_match(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(skip_labels=["form", "form-501"])
+        task = self._make_task(labels=["form-501"])
+        assessment = role.heuristic_assess(task, cfg)
+        assert assessment.suitability == "human_only"
+
+
 # ---------------------------------------------------------------------------
 # ReviewerRole -- LLM-based review
 # ---------------------------------------------------------------------------
