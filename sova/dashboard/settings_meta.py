@@ -109,6 +109,14 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("task_source.jira_base_url", "JIRA base URL", "Base URL for JIRA API calls", "task_source"),
     SettingMeta("task_source.jira_email", "JIRA email", "Email for JIRA authentication", "task_source"),
+    SettingMeta("task_source.jira_project_key", "JIRA project key", "Jira project key (e.g. RHCLOUD)", "task_source"),
+    SettingMeta("task_source.jira_component", "JIRA component", "Filter issues by Jira component name", "task_source"),
+    SettingMeta(
+        "task_source.jira_jql_filter",
+        "JIRA JQL filter",
+        "Additional JQL clause appended to queries (e.g. assignee = currentUser())",
+        "task_source",
+    ),
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
@@ -206,7 +214,27 @@ _REGISTRY: list[SettingMeta] = [
     ),
     # -- Triage --
     SettingMeta(
-        "triage.auto_label", "Auto-label", "Automatically apply agent: labels during triage", "triage", "boolean"
+        "triage.mode",
+        "Triage mode",
+        "How triage writes results: full (label + body + transition), comment (post comment), dry_run (assess only)",
+        "triage",
+    ),
+    SettingMeta(
+        "triage.auto_label", "Auto-label", "Automatically apply suitability labels during triage", "triage", "boolean"
+    ),
+    SettingMeta(
+        "triage.write_body",
+        "Write to body",
+        "Append assessment text to the issue description (in full mode)",
+        "triage",
+        "boolean",
+    ),
+    SettingMeta(
+        "triage.write_transition",
+        "Trigger transitions",
+        "Move issues to TRIAGED state after assessment",
+        "triage",
+        "boolean",
     ),
     SettingMeta(
         "triage.min_confidence",
@@ -214,6 +242,13 @@ _REGISTRY: list[SettingMeta] = [
         "Minimum confidence threshold (0-1) for auto-triage decisions",
         "triage",
         "number",
+    ),
+    SettingMeta(
+        "triage.labels",
+        "Custom labels",
+        "Map suitability outcomes to custom label names (empty value = skip labeling for that outcome)",
+        "triage",
+        "object",
     ),
     # -- Roles --
     SettingMeta(

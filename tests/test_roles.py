@@ -1476,6 +1476,98 @@ class TestTriageLabelApplication:
         }
         assert role.SUITABILITY_LABELS == expected
 
+    def test_resolve_label_default(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig()
+        assert role.resolve_label("ready", cfg) == "agent:ready"
+
+    def test_resolve_label_custom_override(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(labels={"ready": "team:approved"})
+        assert role.resolve_label("ready", cfg) == "team:approved"
+
+    def test_resolve_label_empty_string_skips(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig(labels={"ready": ""})
+        assert role.resolve_label("ready", cfg) is None
+
+    def test_resolve_label_unknown_suitability(self) -> None:
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        cfg = TriageConfig()
+        assert role.resolve_label("unknown_value", cfg) is None
+
+
+class TestTriageExecuteConfig:
+    async def test_dry_run_mode_writes_nothing(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        ctx = MagicMock()
+        ctx.issue_number = "42"
+        ctx.force = False
+        ctx.config.triage = TriageConfig(mode="dry_run")
+
+        adapter = AsyncMock()
+        adapter.get_task.return_value = MagicMock(
+            id="42",
+            title="Test",
+            body="test body",
+            labels=[],
+            state="backlog",
+        )
+        ctx.adapter = adapter
+
+        result = await role.execute(ctx)
+        assert result.success
+        assert "dry run" in result.summary
+        adapter.add_label.assert_not_called()
+        adapter.edit_body.assert_not_called()
+        adapter.post_comment.assert_not_called()
+        adapter.transition_state.assert_not_called()
+
+    async def test_write_body_false_skips_body_edit(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.config.models import TriageConfig
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        ctx = MagicMock()
+        ctx.issue_number = "42"
+        ctx.force = False
+        ctx.config.triage = TriageConfig(mode="full", write_body=False, auto_label=False, write_transition=False)
+
+        adapter = AsyncMock()
+        adapter.get_task.return_value = MagicMock(
+            id="42",
+            title="Test",
+            body="test body",
+            labels=[],
+            state="backlog",
+        )
+        ctx.adapter = adapter
+
+        result = await role.execute(ctx)
+        assert result.success
+        adapter.edit_body.assert_not_called()
+        adapter.add_label.assert_not_called()
+        adapter.transition_state.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # ReviewerRole -- LLM-based review

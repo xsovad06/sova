@@ -184,15 +184,27 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                         return
 
                     assessment = await role.assess_task(task)
+                    triage_cfg = config.triage
 
-                    label_name = role.SUITABILITY_LABELS[assessment.suitability]
-                    await adapter.add_label(task.id, label_name)
+                    if triage_cfg.mode == "dry_run":
+                        item.status = "done"
+                        item.detail = f"Suitability: {assessment.suitability} (dry run)"
+                        log.info("batch.triage.dry_run", issue=item.issue_id, suitability=assessment.suitability)
+                        return
+
+                    if triage_cfg.auto_label:
+                        label_name = role.resolve_label(assessment.suitability, triage_cfg)
+                        if label_name:
+                            await adapter.add_label(task.id, label_name)
 
                     assessment_section = role._build_assessment_comment(task, assessment)
-                    updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
-                    await adapter.edit_body(task.id, updated_body)
+                    if triage_cfg.mode == "comment":
+                        await adapter.post_comment(task.id, assessment_section)
+                    elif triage_cfg.write_body:
+                        updated_body = (task.body or "").rstrip() + "\n\n" + assessment_section
+                        await adapter.edit_body(task.id, updated_body)
 
-                    if task.state in role.allowed_input_states:
+                    if triage_cfg.write_transition and task.state in role.allowed_input_states:
                         await adapter.transition_state(task.id, TaskState.TRIAGED)
 
                     item.status = "done"
@@ -288,9 +300,12 @@ async def _run_batch_harden(
                         try:
                             enriched_task = replace(task, body=enriched_body)
                             role = TriageRole()
+                            triage_cfg = config.triage
                             assessment = await role.assess_task(enriched_task)
-                            label = role.SUITABILITY_LABELS[assessment.suitability]
-                            await adapter.add_label(task.id, label)
+                            if triage_cfg.auto_label:
+                                label = role.resolve_label(assessment.suitability, triage_cfg)
+                                if label:
+                                    await adapter.add_label(task.id, label)
                             triage_detail = f", re-triaged: {assessment.suitability}"
                         except Exception:
                             triage_detail = ", re-triage failed"
