@@ -3,6 +3,10 @@ name: issue
 description: Fetch and analyze a task from the project tracker.
 user-invocable: true
 category: management
+inputs:
+  - issue_number
+outputs:
+  - issue_analysis
 ---
 
 # Issue

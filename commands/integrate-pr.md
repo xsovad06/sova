@@ -3,6 +3,10 @@ name: integrate-pr
 description: Full integration pipeline -- rebase, CI, merge, cleanup, learn. One click from approved PR to done.
 user-invocable: true
 category: pr
+inputs:
+  - pr_number
+outputs:
+  - merge_result
 ---
 
 # Integrate PR

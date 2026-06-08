@@ -3,6 +3,10 @@ name: update-docs
 description: Update all project documentation to match current code state. Portable across projects.
 user-invocable: true
 category: core
+inputs:
+  - project_dir
+outputs:
+  - docs_updated
 ---
 
 # Update Documentation

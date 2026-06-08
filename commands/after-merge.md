@@ -3,6 +3,11 @@ name: after-merge
 description: Post-merge cleanup -- sync main, delete branch, clean worktrees, update issue status, capture learnings.
 user-invocable: true
 category: pr
+inputs:
+  - pr_number
+  - branch_name
+outputs:
+  - cleanup_done
 ---
 
 # After Merge Cleanup

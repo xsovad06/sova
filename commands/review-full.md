@@ -3,6 +3,11 @@ name: review-full
 description: Full pre-push pipeline -- simplify changed code, review as senior engineer, organize commits. Run before /pr.
 user-invocable: true
 category: core
+inputs:
+  - scope
+outputs:
+  - review_score
+  - findings
 ---
 
 # Full Review Pipeline
