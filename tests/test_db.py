@@ -257,3 +257,71 @@ async def test_filter_assessments_by_project_slug() -> None:
         result = await session.execute(select(TaskAssessmentRecord).where(TaskAssessmentRecord.project_slug == "alpha"))
         alpha = result.scalars().all()
         assert len(alpha) == 2
+
+
+# ---------------------------------------------------------------------------
+# Migration fallback self-healing
+# ---------------------------------------------------------------------------
+
+
+class TestMigrationFallback:
+    """_run_migrations fallback should self-heal corrupted alembic_version."""
+
+    async def test_bogus_version_self_heals_on_fallback(self, tmp_path) -> None:
+        """A bogus alembic_version should be dropped during fallback so stamp succeeds."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "test.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        # First run: create tables and stamp at head
+        await _run_migrations(engine)
+
+        # Corrupt: set a bogus version_num
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE alembic_version SET version_num = 'bogus_xyz'"))
+
+        # Second run: should fallback and self-heal
+        await _run_migrations(engine)
+
+        # Verify: alembic_version should have the real head, not 'bogus_xyz'
+        async with engine.connect() as conn:
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        assert row is not None
+        assert row[0] != "bogus_xyz"
+
+        await engine.dispose()
+
+    async def test_empty_alembic_version_self_heals(self, tmp_path) -> None:
+        """An empty alembic_version table (case 4) should be dropped and re-stamped."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "test.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)
+
+        # Corrupt: empty the version table
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM alembic_version"))
+
+        await _run_migrations(engine)
+
+        async with engine.connect() as conn:
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+        assert row is not None
+        assert row[0] != ""
+
+        await engine.dispose()
