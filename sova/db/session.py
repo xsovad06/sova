@@ -7,11 +7,12 @@ Backs up SQLite databases before running migrations.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base
@@ -65,23 +66,31 @@ def _backup_db(url: str) -> Path | None:
 async def _run_migrations(engine) -> None:
     """Run Alembic migrations programmatically.
 
-    Handles three cases:
+    Handles four cases:
     1. Fresh DB (no tables): run all migrations from scratch
     2. Existing DB without alembic_version: stamp at current head (pre-Alembic DB)
     3. Existing DB with alembic_version: upgrade to head
+    4. Corrupted alembic_version (empty): drop it and run fresh
 
-    Uses Alembic's MigrationContext directly to avoid event loop conflicts.
+    Falls back to create_all + stamp if Alembic migration fails.
     """
     from alembic import command
     from alembic.config import Config
 
     alembic_cfg = Config(str(Path(__file__).parent / "alembic.ini"))
-    alembic_cfg.attributes["connection"] = None
 
     async with engine.connect() as conn:
         table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
-        has_tables = bool(table_names)
         has_alembic = "alembic_version" in table_names
+
+    if has_alembic:
+        async with engine.begin() as conn:
+            row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
+            if row is None:
+                await conn.run_sync(lambda c: c.execute(text("DROP TABLE alembic_version")))
+                has_alembic = False
+
+    has_tables = bool(set(table_names) - {"alembic_version"}) if not has_alembic else bool(table_names)
 
     def _do_upgrade(sync_conn):
         alembic_cfg.attributes["connection"] = sync_conn
@@ -91,12 +100,23 @@ async def _run_migrations(engine) -> None:
         alembic_cfg.attributes["connection"] = sync_conn
         command.stamp(alembic_cfg, "head")
 
-    if has_tables and not has_alembic:
+    try:
+        if has_tables and not has_alembic:
+            async with engine.begin() as conn:
+                await conn.run_sync(_do_stamp)
+        else:
+            async with engine.begin() as conn:
+                await conn.run_sync(_do_upgrade)
+    except Exception:
+        log = logging.getLogger("sova.db")
+        log.warning("Alembic migration failed, falling back to create_all", exc_info=True)
         async with engine.begin() as conn:
-            await conn.run_sync(_do_stamp)
-    else:
-        async with engine.begin() as conn:
-            await conn.run_sync(_do_upgrade)
+            await conn.run_sync(Base.metadata.create_all)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(_do_stamp)
+        except Exception:
+            log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
 
 
 async def init_db(project_dir: Path | None = None, *, run_migrations: bool = True) -> None:
