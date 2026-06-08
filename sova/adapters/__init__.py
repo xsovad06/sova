@@ -50,6 +50,8 @@ def create_adapter(config: ProjectConfig) -> TaskAdapter:
             email=ts.jira_email,
             api_token=ts.jira_api_token,
             project_key=ts.jira_project_key,
+            component=ts.jira_component,
+            jql_filter=ts.jira_jql_filter,
             state_transitions=ts.jira_state_transitions or None,
         )
 

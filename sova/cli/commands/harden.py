@@ -106,11 +106,13 @@ async def _harden(
             try:
                 enriched_task = replace(task, body=enriched_body)
                 role = TriageRole()
-                assessment = await role.assess_task(enriched_task)
+                triage_cfg = config.triage
+                assessment = role.heuristic_assess(enriched_task, triage_cfg)
                 triage_verdict = assessment.suitability
-
-                label = role.SUITABILITY_LABELS[assessment.suitability]
-                await adapter.add_label(task.id, label)
+                if triage_cfg.auto_label:
+                    label = role.resolve_label(assessment.suitability, triage_cfg)
+                    if label:
+                        await adapter.add_label(task.id, label)
                 console.print(f"[green]  Re-triaged: {triage_verdict}[/green]")
             except Exception as exc:
                 console.print(f"[yellow]  Re-triage failed: {exc}[/yellow]")

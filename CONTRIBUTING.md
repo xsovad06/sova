@@ -9,29 +9,67 @@ Thank you for your interest in contributing to SOVA. This guide covers the devel
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) -- authenticated
 - `git`
+- `shellcheck` (for bash linting: `brew install shellcheck` on macOS)
 
 **Optional** (for AI-assisted workflows):
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`) -- powers SOVA's slash commands and agent orchestration
 
-### Getting Started
+### Quick Setup (collaborators)
 
 ```bash
 git clone https://github.com/xsovad06/sova.git
 cd sova
-pip install -e ".[dev]"
-git config core.hooksPath .githooks
+make setup    # Installs deps + configures git hooks
+make check    # Verify everything works
+```
+
+### Fork Setup (external contributors)
+
+If you don't have push access to the main repo, work from a fork:
+
+```bash
+# 1. Fork on GitHub: https://github.com/xsovad06/sova/fork
+
+# 2. Clone your fork
+git clone https://github.com/YOUR_USERNAME/sova.git
+cd sova
+
+# 3. Add upstream remote
+git remote add upstream https://github.com/xsovad06/sova.git
+git fetch upstream
+
+# 4. Set up dev environment
+make setup
+
+# 5. Create a feature branch
+git checkout -b feat/my-feature upstream/main
+```
+
+To sync your fork with upstream before starting new work:
+
+```bash
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main
 ```
 
 ### Running Checks
 
 ```bash
-make check    # Lint + test (CI-equivalent)
+make check    # Lint + test (CI-equivalent, run before submitting PR)
 make test     # Run all tests
 make lint     # ShellCheck + Ruff
 make format   # Auto-format Python code
 ```
 
 All checks must pass before submitting a PR. The CI pipeline runs the same checks.
+
+### Environment Health Check
+
+```bash
+sova doctor   # Checks Python, git, gh CLI, hooks, config
+```
 
 ## Code Style
 
@@ -72,6 +110,25 @@ Examples:
 - `fix(dashboard): correct cost tracking calculation`
 - `docs(readme): update installation instructions`
 
+**Enforced by git hooks**: the `commit-msg` hook rejects commits with `Co-Authored-By:` lines or AI branding. The `pre-push` hook runs lint and format checks before pushing.
+
+## Commit Signing (optional)
+
+For verified commits on GitHub, set up GPG or SSH signing:
+
+```bash
+# GPG (if you already have a key)
+git config --global commit.gpgsign true
+git config --global user.signingkey YOUR_KEY_ID
+# Upload public key: https://github.com/settings/gpg/new
+
+# SSH (simpler alternative)
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+git config --global commit.gpgsign true
+# Upload signing key: https://github.com/settings/ssh/new (type: Signing Key)
+```
+
 ## Pull Request Process
 
 1. Create a feature branch from `main`: `feat/<name>`, `fix/<name>`, or `refactor/<name>`
@@ -80,6 +137,13 @@ Examples:
 4. Submit a PR linking the related issue (`Closes #<number>` in the body)
 5. Include a "Test Plan" section describing how to verify the changes
 6. Address review feedback
+
+**From a fork**: push to your fork, then open a PR against `xsovad06/sova:main`. GitHub will run CI automatically on fork PRs.
+
+```bash
+git push origin feat/my-feature
+gh pr create --repo xsovad06/sova
+```
 
 ## Reporting Issues
 
@@ -94,6 +158,16 @@ Use the [issue templates](https://github.com/xsovad06/sova/issues/new/choose) fo
 - Run with `make test` or `pytest tests/`
 - New features should include tests
 - Bash invariant scripts should handle `--help` gracefully
+
+## Troubleshooting
+
+**"shellcheck: command not found"**: Install with `brew install shellcheck` (macOS) or `apt install shellcheck` (Linux).
+
+**Git hooks not running**: Run `make setup` or `git config core.hooksPath .githooks`. Verify with `sova doctor`.
+
+**Ruff not found**: Ensure dev dependencies are installed: `pip install -e ".[dev]"` or `make install-deps`.
+
+**Tests fail with import errors**: The package must be installed in editable mode: `pip install -e ".[dev]"`.
 
 ## Questions?
 

@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps help
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help
 
 SHELL := /bin/bash
 
@@ -55,6 +55,10 @@ format: ## Auto-format Python code
 	$(RUFF) check --fix sova/ tests/
 
 # ── Setup ─────────────────────────────────────────────────────
+
+setup: install-deps ## Set up development environment (deps + hooks)
+	git config core.hooksPath .githooks
+	@echo "Development environment ready. Run 'make check' to verify."
 
 install-deps: ## Install/update all dependencies
 	pip install -q -e ".[dev]"
