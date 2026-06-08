@@ -10,7 +10,7 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, email security reports to **sovicka99@gmail.com** with:
+Use GitHub's built-in [private vulnerability reporting](https://github.com/xsovad06/sova/security/advisories/new) to submit a report. Include:
 
 - A description of the vulnerability
 - Steps to reproduce
