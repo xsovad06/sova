@@ -77,6 +77,37 @@ class TriageRole(AgentRole):
             return label if label else None
         return self._DEFAULT_LABELS.get(suitability)
 
+    def heuristic_assess(self, task: Task, triage_cfg: TriageConfig) -> TaskAssessment:
+        """Config-aware heuristic assessment with skip pattern support.
+
+        Checks title prefixes and labels against configured skip patterns
+        before falling back to content-based heuristics.
+        """
+        title_lower = task.title.lower()
+        for prefix in triage_cfg.skip_title_prefixes:
+            if title_lower.startswith(prefix.lower()):
+                return TaskAssessment(
+                    suitability="human_only",
+                    confidence=0.9,
+                    reasoning=f"Title prefix '{prefix}' matches skip pattern; not suitable for agent work.",
+                    estimated_complexity="moderate",
+                    suggested_role="triage",
+                )
+
+        if triage_cfg.skip_labels:
+            skip_set = {s.lower() for s in triage_cfg.skip_labels}
+            matched = [lbl for lbl in task.labels if lbl.lower() in skip_set]
+            if matched:
+                return TaskAssessment(
+                    suitability="human_only",
+                    confidence=0.9,
+                    reasoning=f"Label '{matched[0]}' matches skip pattern; not suitable for agent work.",
+                    estimated_complexity="moderate",
+                    suggested_role="triage",
+                )
+
+        return self._heuristic_assess(task)
+
     async def assess_task(self, task: Task) -> TaskAssessment:
         """Assess task suitability using heuristics.
 
@@ -214,7 +245,7 @@ class TriageRole(AgentRole):
         triage_cfg = ctx.config.triage
         log.info("triage.start", issue=ctx.issue_number, mode=triage_cfg.mode)
 
-        assessment = await self.assess_task(task)
+        assessment = self.heuristic_assess(task, triage_cfg)
 
         if assessment.confidence < triage_cfg.min_confidence:
             log.info(

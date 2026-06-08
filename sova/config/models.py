@@ -111,6 +111,8 @@ class TriageConfig(BaseSettings):
     write_body: bool = True
     write_transition: bool = True
     labels: dict[str, str] = Field(default_factory=dict)
+    skip_title_prefixes: list[str] = Field(default_factory=list)
+    skip_labels: list[str] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 

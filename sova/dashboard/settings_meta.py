@@ -250,6 +250,18 @@ _REGISTRY: list[SettingMeta] = [
         "triage",
         "object",
     ),
+    SettingMeta(
+        "triage.skip_title_prefixes",
+        "Skip title prefixes",
+        "Tickets with these title prefixes are auto-classified as human_only (e.g. [QE], [Spike])",
+        "triage",
+    ),
+    SettingMeta(
+        "triage.skip_labels",
+        "Skip labels",
+        "Tickets with any of these labels are auto-classified as human_only (e.g. post-mvp, QE)",
+        "triage",
+    ),
     # -- Roles --
     SettingMeta(
         "roles.default",
