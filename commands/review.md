@@ -3,6 +3,11 @@ name: review
 description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
 user-invocable: true
 category: core
+inputs:
+  - scope
+outputs:
+  - review_score
+  - findings
 ---
 
 # Code Review

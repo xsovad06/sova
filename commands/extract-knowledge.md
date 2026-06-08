@@ -3,6 +3,10 @@ name: extract-knowledge
 description: Extract reusable knowledge from this session into the project's knowledge system.
 user-invocable: true
 category: learning
+inputs:
+  - session_context
+outputs:
+  - memories_extracted
 ---
 
 # Extract Knowledge

@@ -3,6 +3,11 @@ name: test
 description: Run tests and linter for the current project until all issues are fixed.
 user-invocable: true
 category: core
+inputs:
+  - project_dir
+outputs:
+  - test_results
+  - lint_results
 ---
 
 # Test Runner

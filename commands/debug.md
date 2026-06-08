@@ -3,6 +3,11 @@ name: debug
 description: Systematic debugging workflow -- reproduce, locate, diagnose, fix, verify, prevent.
 user-invocable: true
 category: meta
+inputs:
+  - issue_description
+outputs:
+  - root_cause
+  - fix_applied
 ---
 
 # Systematic Debugging

@@ -3,6 +3,9 @@ name: rearrange-commits
 description: Reorganize current branch commits into small, logical, well-documented steps.
 user-invocable: true
 category: core
+inputs: []
+outputs:
+  - commits_reorganized
 ---
 
 # Rearrange Commits

@@ -3,6 +3,11 @@ name: health-audit
 description: Deep technical health audit -- architecture, modules, files, functions. Scored, prioritized, actionable.
 user-invocable: true
 category: core
+inputs:
+  - project_dir
+outputs:
+  - health_score
+  - findings
 ---
 
 # Deep Technical Health Audit

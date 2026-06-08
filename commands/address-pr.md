@@ -3,6 +3,11 @@ name: address-pr
 description: Address PR review comments (human and bot) -- score, fix or acknowledge, reply, resolve threads. Provide PR number.
 user-invocable: true
 category: pr
+inputs:
+  - pr_number
+outputs:
+  - files_changed
+  - review_addressed
 ---
 
 # Address PR Review Comments

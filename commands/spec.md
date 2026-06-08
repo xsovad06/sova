@@ -3,6 +3,11 @@ name: spec
 description: Produce a structured specification document for an issue before development starts.
 user-invocable: true
 category: core
+inputs:
+  - issue_number
+  - task_description
+outputs:
+  - spec_document
 ---
 
 # Specification

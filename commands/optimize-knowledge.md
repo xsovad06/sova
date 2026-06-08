@@ -3,6 +3,10 @@ name: optimize-knowledge
 description: Analyze all knowledge, memories, and skills for quality gaps, staleness, and optimization opportunities.
 user-invocable: true
 category: learning
+inputs:
+  - focus
+outputs:
+  - optimization_report
 ---
 
 # Optimize Knowledge System

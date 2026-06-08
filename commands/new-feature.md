@@ -3,6 +3,10 @@ name: new-feature
 description: Set up a new feature branch and prepare for development.
 user-invocable: true
 category: pr
+inputs:
+  - feature_description
+outputs:
+  - branch_name
 ---
 
 # Start New Feature

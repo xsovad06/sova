@@ -7,7 +7,7 @@ and groups commands by category.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sova.utils.logging import get_logger
@@ -26,6 +26,8 @@ class CommandEntry:
     category: str
     user_invocable: bool
     path: Path
+    inputs: list[str] = field(default_factory=list)
+    outputs: list[str] = field(default_factory=list)
 
 
 def discover(commands_dir: Path) -> list[CommandEntry]:
@@ -86,22 +88,43 @@ def _parse_command_file(path: Path) -> CommandEntry | None:
         name=name,
         description=fields.get("description", ""),
         category=fields.get("category", "core"),
-        user_invocable=fields.get("user-invocable", "false").lower() in ("true", "yes"),
+        user_invocable=str(fields.get("user-invocable", "false")).lower() in ("true", "yes"),
         path=path,
+        inputs=fields.get("inputs", []) if isinstance(fields.get("inputs"), list) else [],
+        outputs=fields.get("outputs", []) if isinstance(fields.get("outputs"), list) else [],
     )
 
 
-def _parse_yaml_simple(text: str) -> dict[str, str]:
+def _parse_yaml_simple(text: str) -> dict[str, str | list[str]]:
     """Minimal YAML-like key: value parser for frontmatter.
 
-    Only handles simple scalar values (no nesting, no lists).
+    Handles scalar values and simple YAML lists (lines starting with ``- ``).
     """
-    result: dict[str, str] = {}
+    result: dict[str, str | list[str]] = {}
+    current_list_key: str | None = None
     for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        if ":" in line:
-            key, _, value = line.partition(":")
-            result[key.strip()] = value.strip()
+        # List item: "  - value"
+        if stripped.startswith("- ") and current_list_key is not None:
+            val = stripped[2:].strip()
+            lst = result[current_list_key]
+            if isinstance(lst, list):
+                lst.append(val)
+            continue
+        # Scalar or list key
+        if ":" in stripped:
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value:
+                result[key] = value
+                current_list_key = None
+            else:
+                # Empty value -- next lines may be list items
+                result[key] = []
+                current_list_key = key
+        else:
+            current_list_key = None
     return result

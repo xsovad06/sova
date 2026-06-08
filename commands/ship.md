@@ -3,6 +3,11 @@ name: ship
 description: Run prepush CI checks, push PR, wait for CI pipeline, self-review, address findings. Autonomous CI + review loop.
 user-invocable: true
 category: core
+inputs:
+  - pr_or_context
+outputs:
+  - ci_result
+  - pr_url
 ---
 
 # Ship
