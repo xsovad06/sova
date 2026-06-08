@@ -5,6 +5,7 @@ Provides ordered step lists for the Developer pipeline variants.
 
 from __future__ import annotations
 
+from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 from sova.core.steps.address_review import AddressReviewStep
 from sova.core.steps.assess import AssessStep
 from sova.core.steps.base import BaseStep
@@ -22,6 +23,7 @@ from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.sync import SyncStep
 from sova.core.steps.validate import ValidateStep
+from sova.core.steps.wait_for_external_reviews import WaitForExternalReviewsStep
 
 
 def get_developer_steps() -> list[BaseStep]:
@@ -41,6 +43,8 @@ def get_developer_steps() -> list[BaseStep]:
         ValidateStep(),
         PushStep(),
         CreatePRStep(),
+        WaitForExternalReviewsStep(),
+        AddressExternalFindingsStep(),
         MonitorCIStep(),
         ExtractMemoryStep(),
         HandoffToReviewerStep(),

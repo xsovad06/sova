@@ -126,8 +126,8 @@ The wizard (CLI or UI) walks the user through these decisions:
 
 ## Agent Pipeline
 
-### Developer Pipeline (13 steps)
-Sync -> Assess -> CreateWorktree -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> MonitorCI -> ExtractMemory -> HandoffToReviewer
+### Developer Pipeline (15 steps)
+Sync -> Assess -> CreateWorktree -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> WaitForExternalReviews -> AddressExternalFindings -> MonitorCI -> ExtractMemory -> HandoffToReviewer
 
 ### Address-Review Pipeline (7 steps)
 Rebase -> AddressReview -> Commit -> Validate -> Push -> ExtractMemory -> HandoffToUser

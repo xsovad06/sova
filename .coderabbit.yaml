@@ -1,0 +1,100 @@
+language: "en-US"
+tone_instructions: "Be concise and direct. No emojis. Focus on bugs, security, and correctness over style."
+early_access: false
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+  review_status: true
+  commit_status: true
+  collapse_walkthrough: false
+  sequence_diagrams: false
+  poem: false
+  in_progress_fortune: false
+
+  path_filters:
+    - "sova/**"
+    - "tests/**"
+    - "invariants/**"
+    - "commands/**"
+    - "!.claude/**"
+    - "!docs/**"
+    - "!assets/**"
+    - "!deploy/**"
+    - "!templates/**"
+    - "!personas/**"
+    - "!knowledge/**"
+
+  path_instructions:
+    - path: "sova/**/*.py"
+      instructions: |
+        Python 3.12+ codebase. Type hints required on all signatures. Line length 120.
+        Check for: async context manager leaks (use `async with await get_session()`),
+        missing exc_info=True on except-and-log, and OWASP top 10 vulnerabilities.
+        No emojis in code or comments.
+    - path: "sova/dashboard/**"
+      instructions: |
+        FastAPI dashboard with Jinja2 templates. Verify proper async patterns,
+        response model consistency, and that new endpoints have corresponding tests.
+    - path: "sova/core/steps/**"
+      instructions: |
+        Pipeline step implementations. Every validate_output() must check unstaged diff,
+        staged diff, AND commits ahead of base. Never return GateCheckResult(passed=True)
+        unconditionally.
+    - path: "tests/**/*.py"
+      instructions: |
+        Pytest suite with pytest-asyncio (asyncio_mode=auto). Verify mocks target the
+        correct module path (patch at import site, not definition site). Check for proper
+        async test patterns.
+    - path: "invariants/*.sh"
+      instructions: |
+        Bash scripts must have set -euo pipefail, double-quoted variables, local declarations
+        in functions, and snake_case naming. Must pass shellcheck --severity=warning.
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+  tools:
+    shellcheck:
+      enabled: true
+    ruff:
+      enabled: true
+    pylint:
+      enabled: true
+    markdownlint:
+      enabled: false
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    checkmake:
+      enabled: true
+    yamllint:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "local"
+  issues:
+    scope: "local"
+  pull_requests:
+    scope: "local"
