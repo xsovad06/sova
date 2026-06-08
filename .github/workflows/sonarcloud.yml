@@ -1,0 +1,35 @@
+name: SonarCloud
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'refactor/**'
+
+jobs:
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package with test dependencies
+        run: pip install -e ".[dev]" pytest-cov
+
+      - name: Run tests with coverage
+        run: pytest tests/ --cov=sova --cov-report=xml -q
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

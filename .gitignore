@@ -26,6 +26,11 @@ dashboard/.venv/
 *.log
 *.db.bak
 
+# Coverage reports
+coverage.xml
+htmlcov/
+.coverage
+
 # Claude Code (commands/rules tracked)
 .claude/settings.json
 .claude/settings.local.json
