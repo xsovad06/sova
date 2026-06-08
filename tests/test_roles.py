@@ -1721,3 +1721,106 @@ class TestReviewerParsing:
         assert "Null ref" in comment
         assert "Findings requiring action" in comment
         assert "BLOCK" in comment
+
+
+# ---------------------------------------------------------------------------
+# CustomRole
+# ---------------------------------------------------------------------------
+
+
+class TestCustomRole:
+    def test_custom_role_from_definition(self) -> None:
+        """CustomRole sets attributes from WorkflowDefinition."""
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="my-role",
+            description="A custom role",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+            input_states=["researched"],
+            output_state="in_review",
+        )
+        role = CustomRole(defn)
+        assert role.name == "my-role"
+        assert role.description == "A custom role"
+        assert TaskState.RESEARCHED in role.allowed_input_states
+
+    async def test_custom_role_assess(self) -> None:
+        """CustomRole.assess_task returns a generic assessment."""
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test",
+            description="",
+            graph_json={"nodes": [], "edges": []},
+            input_states=[],
+            output_state="",
+        )
+        role = CustomRole(defn)
+        task = Task(id="1", title="Test", body="", state=TaskState.RESEARCHED)
+        assessment = await role.assess_task(task)
+        assert assessment.suitability == "ready"
+
+    async def test_custom_role_rejects_wrong_state(self) -> None:
+        """CustomRole.execute rejects tasks in wrong state."""
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test",
+            description="",
+            input_states=["researched"],
+            output_state="in_review",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+        )
+        role = CustomRole(defn)
+        ctx = _make_ctx(state=TaskState.BACKLOG, force=False)
+        result = await role.execute(ctx)
+        assert not result.success
+        assert "not ready" in result.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher -- async fallback
+# ---------------------------------------------------------------------------
+
+
+class TestDispatcherAsyncFallback:
+    async def test_get_role_async_builtin(self) -> None:
+        """get_role_async returns built-in roles."""
+        from sova.roles.dispatcher import get_role_async
+
+        role = await get_role_async("developer")
+        assert role.name == "developer"
+
+    async def test_get_role_async_custom(self) -> None:
+        """get_role_async falls back to DB for custom roles."""
+        from sova.db.models import WorkflowDefinition
+        from sova.db.session import get_session
+        from sova.roles.dispatcher import get_role_async
+
+        async with await get_session() as session:
+            async with session.begin():
+                defn = WorkflowDefinition(
+                    name="my-custom",
+                    description="Custom",
+                    graph_json={"nodes": [{"id": "n1", "command": "test"}], "edges": []},
+                    input_states=["researched"],
+                    output_state="in_review",
+                )
+                session.add(defn)
+
+        role = await get_role_async("my-custom")
+        assert role.name == "my-custom"
+
+    async def test_get_role_async_unknown(self) -> None:
+        """get_role_async raises ValueError for unknown names."""
+        from sova.roles.dispatcher import get_role_async
+
+        with pytest.raises(ValueError, match="Unknown role"):
+            await get_role_async("nonexistent")
