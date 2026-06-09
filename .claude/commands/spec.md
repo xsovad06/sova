@@ -2,6 +2,7 @@
 name: spec
 description: Produce a structured specification document for an issue before development starts.
 user-invocable: true
+category: core
 ---
 
 # Specification
@@ -84,16 +85,6 @@ For UI features, include:
 - Which existing templates/components to reuse
 - Responsive behavior (mobile considerations)
 
-Example ASCII mockup format:
-+----------------------------------+
-| Card Title            [?] [Edit] |
-|                                  |
-| Label        Value               |
-| Label        Value               |
-|                                  |
-| [Cancel]              [Save]     |
-+----------------------------------+
-
 (Omit this section for backend-only changes.)
 
 ## Implementation Plan
@@ -157,7 +148,6 @@ When the user approves, update the spec:
 
 - **Before spec**: Run `/find-task` to pick the next issue
 - **After spec**: Run `/develop {issue-number}` or `/develop-full {issue-number}` to implement
-- **Researcher role**: produces a brief assessment on the issue itself; the spec is a detailed implementation plan in a separate file. They complement each other.
 
 ## Rules
 
