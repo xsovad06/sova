@@ -22,7 +22,7 @@ async def list_runs(limit: int = 50, status: str | None = None):
     return {"runs": runs}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", responses={404: {"description": "Run not found"}})
 async def get_run(run_id: int):
     async with await get_session() as session:
         run = await run_service.get_run(session, run_id)
@@ -32,7 +32,13 @@ async def get_run(run_id: int):
     return {"run": run, "steps": steps}
 
 
-@router.post("/runs/{run_id}/mark-failed")
+@router.post(
+    "/runs/{run_id}/mark-failed",
+    responses={
+        404: {"description": "Run not found"},
+        409: {"description": "Run already in terminal state"},
+    },
+)
 async def mark_run_failed(run_id: int, req: MarkFailedRequest | None = None):
     reason = req.reason if req else "Manually abandoned"
     async with await get_session() as session:

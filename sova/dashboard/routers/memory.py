@@ -16,7 +16,7 @@ router = APIRouter()
 log = get_logger(component="dashboard.memory")
 
 
-@router.get("/memory")
+@router.get("/memory", responses={500: {"description": "Failed to fetch memories"}})
 async def list_memories(
     q: str | None = None,
     category: str | None = None,
@@ -38,7 +38,7 @@ async def list_memories(
         raise HTTPException(status_code=500, detail="Failed to fetch memories")
 
 
-@router.post("/memory/export")
+@router.post("/memory/export", responses={500: {"description": "Failed to export memories"}})
 async def export_memories(dry_run: bool = False):
     try:
         project_dir = get_project_dir()
@@ -55,7 +55,7 @@ async def export_memories(dry_run: bool = False):
         raise HTTPException(status_code=500, detail="Failed to export memories")
 
 
-@router.post("/memory/import")
+@router.post("/memory/import", responses={500: {"description": "Failed to import memories"}})
 async def import_memories(dry_run: bool = False):
     try:
         project_dir = get_project_dir()

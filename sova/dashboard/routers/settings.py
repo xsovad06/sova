@@ -19,7 +19,7 @@ class ConfigUpdateRequest(BaseModel):
     value: str
 
 
-@router.get("/settings/config")
+@router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
 async def get_config():
     """Get the current project configuration (flat, for backward compat)."""
     try:
@@ -30,7 +30,10 @@ async def get_config():
         raise HTTPException(status_code=500, detail="Failed to fetch configuration")
 
 
-@router.get("/settings/config/grouped")
+@router.get(
+    "/settings/config/grouped",
+    responses={500: {"description": "Failed to fetch configuration"}},
+)
 async def get_config_grouped():
     """Get configuration organized into labeled groups with descriptions."""
     try:
@@ -42,7 +45,7 @@ async def get_config_grouped():
         raise HTTPException(status_code=500, detail="Failed to fetch configuration")
 
 
-@router.post("/settings/config")
+@router.post("/settings/config", responses={500: {"description": "Failed to update configuration"}})
 async def update_config(req: ConfigUpdateRequest):
     """Update a single configuration key."""
     try:
@@ -53,7 +56,7 @@ async def update_config(req: ConfigUpdateRequest):
         raise HTTPException(status_code=500, detail="Failed to update configuration")
 
 
-@router.get("/settings/invariants")
+@router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
 async def list_invariants():
     """List invariant scripts."""
     try:
@@ -64,7 +67,7 @@ async def list_invariants():
         raise HTTPException(status_code=500, detail="Failed to fetch invariants")
 
 
-@router.get("/settings/personas")
+@router.get("/settings/personas", responses={500: {"description": "Failed to fetch personas"}})
 async def list_personas():
     """List available personas and detected persona."""
     try:
