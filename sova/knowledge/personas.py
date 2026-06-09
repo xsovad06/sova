@@ -12,6 +12,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.personas")
 
+_SETUP_PY = "setup.py"
+
 
 def _has_file(project_dir: Path, name: str) -> bool:
     return (project_dir / name).is_file()
@@ -23,7 +25,7 @@ def _requirements_mention(project_dir: Path, keyword: str) -> bool:
     Scans root-level requirements files, pyproject.toml, and also checks
     nested setup.py files (e.g. app/setup.py in monorepos).
     """
-    candidates = ["requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg"]
+    candidates = ["requirements.txt", "requirements-dev.txt", "pyproject.toml", _SETUP_PY, "setup.cfg"]
     for name in candidates:
         path = project_dir / name
         if path.is_file():
@@ -39,7 +41,7 @@ def _requirements_mention(project_dir: Path, keyword: str) -> bool:
         return False
     for child in children:
         if child.is_dir() and not child.name.startswith("."):
-            for name in ("setup.py", "requirements.txt"):
+            for name in (_SETUP_PY, "requirements.txt"):
                 path = child / name
                 if path.is_file():
                     try:
@@ -99,7 +101,7 @@ def detect_persona(project_dir: Path) -> str | None:
         return "rust"
 
     # Python (generic -- after framework-specific checks)
-    if _has_file(project_dir, "pyproject.toml") or _has_file(project_dir, "setup.py"):
+    if _has_file(project_dir, "pyproject.toml") or _has_file(project_dir, _SETUP_PY):
         return "python"
 
     # Ruby

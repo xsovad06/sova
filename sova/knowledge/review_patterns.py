@@ -44,7 +44,7 @@ async def record_review_finding(
 
 async def get_common_patterns(
     session: object,
-    min_count: int = 2,
+    _min_count: int = 2,
 ) -> list[Memory]:
     """Retrieve review pattern memories, sorted by most recent.
 
