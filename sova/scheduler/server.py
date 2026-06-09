@@ -148,6 +148,7 @@ class SOVAServer:
             await watch.run()
         except asyncio.CancelledError:
             watch.stop()
+            raise
         except Exception:
             log.error("scheduler.crash", exc_info=True)
         finally:
@@ -157,10 +158,7 @@ class SOVAServer:
         """Stop the watch loop background task."""
         if self._watch_task and not self._watch_task.done():
             self._watch_task.cancel()
-            try:
-                await self._watch_task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(self._watch_task, return_exceptions=True)
         self._running = False
         log.info("scheduler.stopped")
 
