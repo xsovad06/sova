@@ -1,6 +1,6 @@
 """Workflow step registry.
 
-Provides ordered step lists for the Developer pipeline variants.
+Provides ordered step lists for the Researcher and Developer pipeline variants.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
 from sova.core.steps.develop import DevelopStep
 from sova.core.steps.extract_memory import ExtractMemoryStep
+from sova.core.steps.fetch_task import FetchTaskStep
 from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.handoff_to_user import HandoffToUserStep
 from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.push import PushStep
 from sova.core.steps.rebase import RebaseStep
+from sova.core.steps.research import ResearchStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.sync import SyncStep
@@ -66,6 +68,24 @@ def get_address_review_steps() -> list[BaseStep]:
         ExtractMemoryStep(),
         HandoffToUserStep(),
     ]
+
+
+def get_researcher_steps() -> list[BaseStep]:
+    """Return the ordered step list for the Researcher pipeline.
+
+    Fetches the task, runs interactive codebase research via the /research
+    command, and extracts learnings. No worktree or git operations.
+    """
+    return [
+        FetchTaskStep(),
+        ResearchStep(),
+        ExtractMemoryStep(),
+    ]
+
+
+def get_researcher_step_names() -> list[str]:
+    """Return the ordered step name list for the Researcher pipeline."""
+    return [s.name for s in get_researcher_steps()]
 
 
 def get_developer_step_names() -> list[str]:
