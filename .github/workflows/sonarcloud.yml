@@ -42,6 +42,22 @@ jobs:
         if: github.event_name == 'push'
         run: pytest tests/ --cov=sova --cov-report=xml -q
 
+      - name: Find associated PR
+        id: find-pr
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+            echo "base=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_name }}" != "main" ]; then
+            PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number // empty' 2>/dev/null || echo '')
+            echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "head=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "base=main" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Check SONAR_TOKEN is available
         id: check-token
         run: |
@@ -59,3 +75,11 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            ${{ steps.find-pr.outputs.number != '' && format(
+              '-Dsonar.pullrequest.key={0} -Dsonar.pullrequest.branch={1} -Dsonar.pullrequest.base={2}',
+              steps.find-pr.outputs.number,
+              steps.find-pr.outputs.head,
+              steps.find-pr.outputs.base
+            ) || '' }}
