@@ -16,8 +16,6 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.roles")
 
-_BUILTIN_NAMES = BUILTIN_ROLE_NAMES
-
 
 # -- CRUD ---------------------------------------------------------------------
 
@@ -46,7 +44,7 @@ async def create_definition(
     output_state: str = "",
 ) -> WorkflowDefinition | None:
     """Create a new custom workflow definition. Returns None if name conflicts."""
-    if name in _BUILTIN_NAMES:
+    if name in BUILTIN_ROLE_NAMES:
         return None
 
     existing = await get_definition(session, name)
