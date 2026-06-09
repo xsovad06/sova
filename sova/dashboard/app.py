@@ -239,12 +239,12 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return _project_page(request, templates, slug, "agents.html", "agents")
 
     @app.get("/p/{slug}/work")
-    async def project_work(request: Request, slug: str):
-        return _project_page(request, templates, slug, "work.html", "work")
+    async def project_work_redirect(slug: str):
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/work/{run_id}")
     async def project_work_detail(request: Request, slug: str, run_id: int):
-        return _project_page(request, templates, slug, "run_detail.html", "work", run_id=run_id)
+        return _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
 
     # -- Old routes as redirects --
     @app.get("/p/{slug}/overview")
@@ -257,11 +257,11 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/tasks")
     async def project_tasks_redirect(slug: str):
-        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/runs")
     async def project_runs_redirect(slug: str):
-        return RedirectResponse(url=f"/p/{slug}/work", status_code=301)
+        return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/runs/{run_id}")
     async def project_run_detail_redirect(slug: str, run_id: int):
@@ -290,7 +290,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/lifecycle/{issue_number}")
     async def project_lifecycle(request: Request, slug: str, issue_number: int):
-        return _project_page(request, templates, slug, "lifecycle.html", "work", issue_number=issue_number)
+        return _project_page(request, templates, slug, "lifecycle.html", "agents", issue_number=issue_number)
 
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):
@@ -338,12 +338,12 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return templates.TemplateResponse(request, "agents.html", {"page": "agents"})
 
     @app.get("/work")
-    async def work_page(request: Request):
-        return templates.TemplateResponse(request, "work.html", {"page": "work"})
+    async def work_redirect():
+        return RedirectResponse(url="/agents", status_code=301)
 
     @app.get("/work/{run_id}")
     async def work_detail_page(request: Request, run_id: int):
-        return templates.TemplateResponse(request, "run_detail.html", {"page": "work", "run_id": run_id})
+        return templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
 
     # -- Old pages kept as redirects --
     @app.get("/overview")
@@ -356,11 +356,11 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/tasks")
     async def tasks_redirect():
-        return RedirectResponse(url="/work", status_code=301)
+        return RedirectResponse(url="/agents", status_code=301)
 
     @app.get("/runs")
     async def runs_redirect():
-        return RedirectResponse(url="/work", status_code=301)
+        return RedirectResponse(url="/agents", status_code=301)
 
     @app.get("/runs/{run_id}")
     async def run_detail_redirect(run_id: int):
@@ -389,7 +389,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/lifecycle/{issue_number}")
     async def lifecycle_page(request: Request, issue_number: int):
-        return templates.TemplateResponse(request, "lifecycle.html", {"page": "work", "issue_number": issue_number})
+        return templates.TemplateResponse(request, "lifecycle.html", {"page": "agents", "issue_number": issue_number})
 
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
