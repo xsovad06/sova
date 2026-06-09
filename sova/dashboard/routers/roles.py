@@ -82,7 +82,7 @@ async def get_role(name: str) -> dict[str, Any]:
 @router.post("")
 async def create_role(req: CreateRoleRequest) -> dict[str, Any]:
     """Create a custom role."""
-    errors = validate_dag(req.graph_json)
+    errors, _ = validate_dag(req.graph_json)
     if errors:
         raise HTTPException(status_code=400, detail={"error": "Invalid DAG", "validation_errors": errors})
 
@@ -105,7 +105,7 @@ async def create_role(req: CreateRoleRequest) -> dict[str, Any]:
 async def update_role(name: str, req: UpdateRoleRequest) -> dict[str, Any]:
     """Update a custom role."""
     if req.graph_json is not None:
-        errors = validate_dag(req.graph_json)
+        errors, _ = validate_dag(req.graph_json)
         if errors:
             raise HTTPException(status_code=400, detail={"error": "Invalid DAG", "validation_errors": errors})
 
@@ -141,5 +141,5 @@ async def delete_role(name: str) -> dict[str, str]:
 @router.post("/{name}/validate")
 async def validate_role(name: str, req: ValidateRequest) -> dict[str, Any]:
     """Validate DAG structure."""
-    errors = validate_dag(req.graph_json)
+    errors, _ = validate_dag(req.graph_json)
     return {"valid": len(errors) == 0, "errors": errors}
