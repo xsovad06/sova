@@ -1,41 +1,104 @@
-"""Step 8: Monitor CI -- poll CI checks until they complete."""
+"""Step 8: Monitor CI -- poll CI checks until they complete.
+
+When CI fails, optionally invokes Claude to fix the issue and re-pushes,
+looping up to ``ci.max_fix_attempts`` times before giving up. Set
+``max_fix_attempts = 0`` in sova.toml to disable auto-recovery (the
+pre-existing behaviour).
+"""
 
 from __future__ import annotations
 
 import asyncio
+import re
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.git.operations import get_ci_checks
+from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.monitor_ci")
+
+_MAX_CI_FIX_ATTEMPTS = 3
+
+_SENSITIVE_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:token|secret|password|api[_-]?key|authorization)[=:\s]+\S+"
+    r"|ghp_[A-Za-z0-9]{36}"
+    r"|ghs_[A-Za-z0-9]{36}"
+    r"|github_pat_[A-Za-z0-9_]{82}"
+    r"|sk-[A-Za-z0-9]{48}"
+)
+
+
+def _redact_logs(text: str) -> str:
+    """Strip tokens, keys, and secrets from CI log output."""
+    return _SENSITIVE_PATTERNS.sub("[REDACTED]", text)
 
 
 class MonitorCIStep(BaseStep):
     name = "monitor_ci"
     max_retries = 0
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         if ctx.pr_number is None:
             return StepResult(success=False, summary="No PR to monitor", error="pr_number is None")
 
+        result, failed = await self._poll_ci(ctx)
+        if result.success or not failed:
+            return result
+
+        max_attempts = min(ctx.config.ci.max_fix_attempts, _MAX_CI_FIX_ATTEMPTS)
+        if max_attempts == 0:
+            return result
+
+        return await self._try_fix_ci(ctx, failed, max_attempts)
+
+    async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+        return GateCheckResult(passed=True)
+
+    # ------------------------------------------------------------------
+    # CI polling (shared between initial check and post-fix re-checks)
+    # ------------------------------------------------------------------
+
+    async def _poll_ci(self, ctx: ExecutionContext) -> tuple[StepResult, list[CICheck]]:
+        """Poll CI checks until completion. Returns (result, failed_checks)."""
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
         elapsed = 0
 
-        log.info("step.monitor_ci", pr=ctx.pr_number, max_wait=max_wait, grace_period=grace_period)
+        log.info("step.monitor_ci.poll", pr=ctx.pr_number, max_wait=max_wait)
 
         while elapsed < max_wait:
-            checks = await get_ci_checks(ctx.pr_number, repo=ctx.repo)
+            checks = await get_ci_checks(
+                ctx.pr_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
+
+            if checks is None:
+                log.warning("step.monitor_ci.fetch_failed", elapsed=elapsed)
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                continue
 
             if not checks:
                 if elapsed >= grace_period:
-                    log.warning("step.monitor_ci.no_checks_after_grace", elapsed=elapsed, grace=grace_period)
-                    return StepResult(
-                        success=True,
-                        summary=f"No CI checks found after {elapsed}s grace period, proceeding",
+                    log.warning(
+                        "step.monitor_ci.no_checks_after_grace",
+                        elapsed=elapsed,
+                        grace=grace_period,
+                    )
+                    return (
+                        StepResult(
+                            success=True,
+                            summary=f"No CI checks found after {elapsed}s grace period, proceeding",
+                        ),
+                        [],
                     )
                 log.debug("step.monitor_ci.no_checks", elapsed=elapsed)
                 await asyncio.sleep(poll_interval)
@@ -47,13 +110,227 @@ class MonitorCIStep(BaseStep):
                 failed = [c for c in checks if not c.is_passed]
                 if failed:
                     names = ", ".join(c.name for c in failed)
-                    return StepResult(success=False, summary=f"CI failed: {names}", error=f"Failed checks: {names}")
-                return StepResult(success=True, summary=f"All {len(checks)} CI checks passed")
+                    return (
+                        StepResult(
+                            success=False,
+                            summary=f"CI failed: {names}",
+                            error=f"Failed checks: {names}",
+                        ),
+                        failed,
+                    )
+                return (
+                    StepResult(
+                        success=True,
+                        summary=f"All {len(checks)} CI checks passed",
+                    ),
+                    [],
+                )
 
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-        return StepResult(success=False, summary="CI monitoring timed out", error=f"Timed out after {max_wait}s")
+        return (
+            StepResult(
+                success=False,
+                summary="CI monitoring timed out",
+                error=f"Timed out after {max_wait}s",
+            ),
+            [],
+        )
 
-    async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        return GateCheckResult(passed=True)
+    # ------------------------------------------------------------------
+    # CI fix loop
+    # ------------------------------------------------------------------
+
+    async def _try_fix_ci(
+        self,
+        ctx: ExecutionContext,
+        failed_checks: list[CICheck],
+        max_attempts: int,
+    ) -> StepResult:
+        """Attempt to fix CI failures by invoking Claude, re-pushing, and re-polling."""
+        from decimal import Decimal
+
+        from sova.git import operations as git_ops
+        from sova.llm.client import invoke
+        from sova.utils.shell import run
+
+        total_fix_cost = Decimal("0")
+
+        for attempt in range(1, max_attempts + 1):
+            if ctx.is_budget_exceeded:
+                names = ", ".join(c.name for c in failed_checks)
+                return StepResult(
+                    success=False,
+                    summary=f"CI fix aborted: budget exceeded after {attempt - 1} attempt(s)",
+                    error=f"Budget exceeded. Remaining failures: {names}",
+                )
+
+            log.info("step.monitor_ci.fix_attempt", attempt=attempt, max=max_attempts)
+
+            fix_cost, error = await self._invoke_fix(ctx, failed_checks, invoke, run)
+            total_fix_cost += fix_cost
+            if error:
+                msg = f"CI fix LLM invocation failed on attempt {attempt}: {error}"
+                return StepResult(success=False, summary=msg, error=str(error))
+
+            skip, result = await self._validate_fix(ctx, attempt, max_attempts, run)
+            if result:
+                return result
+            if skip:
+                continue
+
+            try:
+                await git_ops.push(
+                    ctx.branch_name,
+                    force=True,
+                    set_upstream=True,
+                    cwd=ctx.working_dir,
+                )
+            except RuntimeError as exc:
+                log.error("step.monitor_ci.push_failed", error=str(exc), exc_info=True)
+                msg = f"CI fix push failed on attempt {attempt}: {exc}"
+                return StepResult(success=False, summary=msg, error=str(exc))
+
+            result, new_failed = await self._poll_ci(ctx)
+            if result.success:
+                return StepResult(
+                    success=True,
+                    summary=f"CI passed after {attempt} fix attempt(s)",
+                    cost_usd=total_fix_cost,
+                )
+            if not new_failed:
+                return result
+
+            failed_checks = new_failed
+            log.warning(
+                "step.monitor_ci.still_failing",
+                attempt=attempt,
+                checks=", ".join(c.name for c in failed_checks),
+            )
+
+        names = ", ".join(c.name for c in failed_checks)
+        return StepResult(
+            success=False,
+            summary=f"CI still failing after {max_attempts} fix attempt(s): {names}",
+            error=f"Failed checks after {max_attempts} fix attempt(s): {names}",
+        )
+
+    async def _invoke_fix(
+        self,
+        ctx: ExecutionContext,
+        failed_checks: list[CICheck],
+        invoke: object,
+        run: object,
+    ) -> tuple:
+        """Invoke Claude to fix CI failures. Returns (cost, error_or_None)."""
+        from decimal import Decimal
+
+        raw_logs = await get_ci_failure_logs(
+            failed_checks,
+            repo=ctx.repo,
+            github_user=ctx.config.github_user,
+        )
+        ci_logs = _redact_logs(raw_logs)
+        log_result = await run("git", "log", "--oneline", "-5", cwd=ctx.working_dir)
+        recent_commits = log_result.stdout.strip() if log_result.success else ""
+        prompt = self._build_fix_prompt(failed_checks, ci_logs, recent_commits, ctx)
+
+        budget = ctx.config.agent.max_budget - ctx.cost_usd
+        if budget <= 0:
+            return Decimal("0"), RuntimeError("Budget exhausted")
+        try:
+            llm_result = await invoke(
+                prompt,
+                model=ctx.config.agent.model,
+                cwd=ctx.working_dir,
+                max_budget_usd=budget,
+            )
+            ctx.add_cost(llm_result.cost_usd)
+            return llm_result.cost_usd, None
+        except RuntimeError as exc:
+            log.error("step.monitor_ci.llm_failed", error=str(exc), exc_info=True)
+            return Decimal("0"), exc
+
+    async def _validate_fix(
+        self,
+        ctx: ExecutionContext,
+        attempt: int,
+        max_attempts: int,
+        run: object,
+    ) -> tuple[bool, StepResult | None]:
+        """Run pre-push hook and check for new commits. Returns (should_skip, error_result)."""
+        from sova.core.steps.validate import find_pre_push_hook
+
+        hook = await find_pre_push_hook(ctx.working_dir)
+        if hook:
+            hook_result = await run(hook, "origin", "unused", cwd=ctx.working_dir, timeout=120)
+            if not hook_result.success:
+                hook_output = (hook_result.stdout + "\n" + hook_result.stderr).strip()
+                log.warning(
+                    "step.monitor_ci.hook_failed_after_fix",
+                    attempt=attempt,
+                    output=hook_output[:500],
+                )
+                if attempt == max_attempts:
+                    return False, StepResult(
+                        success=False,
+                        summary=f"CI fix failed local validation after {max_attempts} attempt(s)",
+                        error=hook_output[:1000],
+                    )
+                return True, None
+
+        ahead = await run(
+            "git",
+            "rev-list",
+            "--count",
+            f"origin/{ctx.branch_name}..HEAD",
+            cwd=ctx.working_dir,
+        )
+        try:
+            ahead_count = int(ahead.stdout.strip() or "0") if ahead.success else 0
+        except ValueError:
+            ahead_count = 0
+        if ahead_count == 0:
+            log.warning("step.monitor_ci.no_new_commit", attempt=attempt)
+            if attempt == max_attempts:
+                return False, StepResult(
+                    success=False,
+                    summary=f"CI fix produced no pushable commit after {max_attempts} attempt(s)",
+                    error="Auto-recovery needs a committed fix before pushing",
+                )
+            return True, None
+
+        return False, None
+
+    # ------------------------------------------------------------------
+    # Prompt construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_fix_prompt(
+        failed_checks: list[CICheck],
+        ci_logs: str,
+        recent_commits: str,
+        ctx: ExecutionContext,
+    ) -> str:
+        check_names = ", ".join(c.name for c in failed_checks)
+        task_title = ctx.task.title if ctx.task else f"Issue #{ctx.issue_number}"
+
+        return (
+            f"The following CI checks failed on PR #{ctx.pr_number} "
+            f"for '{task_title}':\n\n"
+            f"Failed checks: {check_names}\n\n"
+            f"CI failure logs:\n```\n{ci_logs}\n```\n\n"
+            f"Recent commits on this branch:\n{recent_commits}\n\n"
+            f"Fix ALL issues causing CI failures. The code works locally "
+            f"(pre-push hooks passed) but the remote CI environment caught "
+            f"these issues. Common causes include:\n"
+            f"- Missing dependencies in CI requirements/lockfiles\n"
+            f"- Tests that import modules not declared in project dependencies\n"
+            f"- Environment-specific path or config differences\n"
+            f"- Type checking or linting issues in stricter CI config\n\n"
+            f"After fixing, stage and commit the changes with a message like "
+            f"'fix: address CI failure in {check_names}'. "
+            f"Do not modify CI configuration files unless that is genuinely the fix."
+        )
