@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Agents - SOVA{% endblock %}
 {% block content %}
-<h2 class="text-2xl font-semibold mb-6">Agents</h2>
+<h2 class="text-2xl font-semibold mb-4">Agents</h2>
 
 <!-- Start Panel -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-6">
@@ -84,12 +84,46 @@
 <div id="interrupted-banner" class="hidden mb-6"></div>
 
 <!-- Log Viewer -->
-<div id="log-viewer" class="hidden bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">
+<div id="log-viewer" class="hidden bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden mb-6">
   <div class="flex items-center border-b border-gray-700/50">
     <div id="log-tabs" class="flex flex-1 overflow-x-auto"></div>
     <button onclick="closeLogViewer()" class="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors" data-tooltip="Close log viewer">Close</button>
   </div>
   <div id="log-content" class="p-4 font-mono text-xs text-gray-300 max-h-[500px] overflow-y-auto whitespace-pre-wrap"></div>
+</div>
+
+<!-- History Section -->
+<div class="border-t border-gray-700/30 pt-6">
+  <div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
+    <button onclick="switchTab('history')" id="tab-history"
+      class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white"
+      data-tooltip="Completed run history" data-tooltip-pos="bottom">
+      History
+    </button>
+    <button onclick="switchTab('failed')" id="tab-failed"
+      class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
+      data-tooltip="Failed runs only" data-tooltip-pos="bottom">
+      Failed <span id="tab-failed-count" class="text-xs text-gray-500 ml-1"></span>
+    </button>
+  </div>
+
+  <div id="panel-history">
+    <div class="flex items-center gap-3 mb-4">
+      <select id="filter-role" onchange="loadHistory()" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+        <option value="">All roles</option>
+        <option value="developer">Developer</option>
+        <option value="triage">Triage</option>
+        <option value="researcher">Researcher</option>
+        <option value="reviewer">Reviewer</option>
+        <option value="auto">Auto</option>
+      </select>
+    </div>
+    <div id="history-table"></div>
+  </div>
+
+  <div id="panel-failed" class="hidden">
+    <div id="failed-table"></div>
+  </div>
 </div>
 {% endblock %}
 
@@ -449,7 +483,7 @@ async function loadAgents() {
 
     // Running agents
     data.agents.forEach(function(agent) {
-      cards.push(renderAgentCard(agent, false));
+      cards.push(renderAgentCard(agent));
     });
 
     // Recently completed
@@ -465,16 +499,18 @@ async function loadAgents() {
   }
 }
 
-function renderAgentCard(agent, completed) {
+function renderAgentCard(agent) {
   var colors = roleColor(agent.role);
   var pipeline = renderStepPipeline(agent.current_step, agent.role, false);
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
   var elapsed = formatElapsed(agent.elapsed_seconds);
+  var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+  var detailUrl = prefix + '/work/' + agent.run_id;
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
-    '<div class="flex items-center justify-between mb-3">' +
+    '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
         '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
@@ -490,11 +526,11 @@ function renderAgentCard(agent, completed) {
     '<div class="mb-3">' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
-      '<button onclick="viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
+      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
       (agent.source !== 'external'
-        ? '<button onclick="stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors" data-tooltip="Stop this agent">Stop</button>'
+        ? '<button onclick="event.stopPropagation(); stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors" data-tooltip="Stop this agent">Stop</button>'
         : '') +
     '</div>' +
   '</div>';
@@ -506,19 +542,21 @@ function renderCompletedCard(agent) {
   var statusDotClass = agent.status === 'done' ? 'bg-accent-green' : 'bg-accent-red';
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
   var agoText = agent.completed_seconds_ago + 's ago';
+  var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+  var detailUrl = prefix + '/work/' + agent.run_id;
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
-  var rerunBtn = '<button onclick="rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
+  var rerunBtn = '<button onclick="event.stopPropagation(); rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>';
 
-  return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all">' +
+  return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all cursor-pointer hover:opacity-90" onclick="window.location=\'' + detailUrl + '\'">' +
     '<div class="flex items-center justify-between">' +
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + statusDotClass + '"></span>' +
         '<span class="text-sm font-medium text-gray-300">#' + escapeHtml(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
-        '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + agent.status + '</span>' +
+        '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + escapeHtml(agent.status) + '</span>' +
         prBadge +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
@@ -867,9 +905,94 @@ function rerunAgent(issue, role, prNumber) {
   startAgent();
 }
 
+// -- History / Failed tabs --
+
+function switchTab(tab) {
+  ['history', 'failed'].forEach(function(t) {
+    var panel = document.getElementById('panel-' + t);
+    var tabBtn = document.getElementById('tab-' + t);
+    if (t === tab) {
+      panel.classList.remove('hidden');
+      tabBtn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white';
+    } else {
+      panel.classList.add('hidden');
+      tabBtn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300';
+    }
+  });
+
+  if (tab === 'history') loadHistory();
+  if (tab === 'failed') loadFailed();
+}
+
+async function loadHistory() {
+  try {
+    var role = document.getElementById('filter-role').value;
+    var url = '/work/history?limit=50';
+    if (role) url += '&role=' + role;
+
+    var data = await fetchAPI(apiUrl(url));
+    renderHistoryTable(data.tasks, 'history-table');
+  } catch (e) {
+    console.error('Failed to load history:', e);
+  }
+}
+
+async function loadFailed() {
+  try {
+    var data = await fetchAPI(apiUrl('/work/history?status=failed&limit=50'));
+    var countEl = document.getElementById('tab-failed-count');
+    countEl.textContent = data.tasks.length > 0 ? '(' + data.tasks.length + ')' : '';
+    renderHistoryTable(data.tasks, 'failed-table', true);
+  } catch (e) {
+    console.error('Failed to load failed:', e);
+  }
+}
+
+function renderHistoryTable(tasks, targetId, showError) {
+  var el = document.getElementById(targetId);
+  if (tasks.length === 0) {
+    el.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
+      '<p class="text-gray-500">No runs found</p></div>';
+    return;
+  }
+
+  var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+
+  el.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">' +
+    '<table class="w-full text-sm">' +
+    '<thead><tr class="text-gray-500 text-xs uppercase border-b border-gray-700/50">' +
+      '<th class="text-left p-3">Issue</th>' +
+      '<th class="text-left p-3">Role</th>' +
+      '<th class="text-left p-3">Status</th>' +
+      '<th class="text-left p-3">Steps</th>' +
+      '<th class="text-right p-3">Cost</th>' +
+      '<th class="text-left p-3">Duration</th>' +
+      '<th class="text-left p-3">PR</th>' +
+      '<th class="text-left p-3">Date</th>' +
+    '</tr></thead><tbody>' +
+    tasks.map(function(t) {
+      var colors = roleColor(t.role);
+      var stepsText = t.steps_completed + '/' + t.total_steps_possible;
+
+      return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
+        '<td class="p-3 text-accent">#' + escapeHtml(t.issue_number) + '</td>' +
+        '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(t.role, t.pipeline_variant)) + '</span></td>' +
+        '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(t.status) + '"></span><span class="' + statusColor(t.status) + '">' + escapeHtml(t.status) + '</span></span></td>' +
+        '<td class="p-3 text-gray-400">' + stepsText + '</td>' +
+        '<td class="p-3 text-right text-accent-green">$' + t.total_cost_usd.toFixed(4) + '</td>' +
+        '<td class="p-3 text-gray-400">' + (t.duration_formatted || '--') + '</td>' +
+        '<td class="p-3 text-gray-400">' + prLink(t.pr_number) + '</td>' +
+        '<td class="p-3 text-gray-500 text-xs">' + (t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--') + '</td>' +
+      '</tr>' +
+      (showError && t.error_message ? '<tr class="border-t border-gray-700/10"><td colspan="8" class="px-3 pb-3 pt-1 text-xs text-accent-red">' + escapeHtml(t.error_message) + '</td></tr>' : '');
+    }).join('') +
+    '</tbody></table></div>';
+}
+
 // -- Init --
 loadAgents();
 checkInterrupted();
+loadHistory();
 agentPollInterval = setInterval(loadAgents, 2000);
 </script>
 {% endblock %}
