@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -299,6 +300,102 @@ class TestDoctorHelpers:
             mock_platform.system.return_value = "Linux"
             checks = _check_terminal_notifier()
             assert checks == []
+
+    async def test_check_git_found(self) -> None:
+        from unittest.mock import patch
+
+        from sova.cli.commands.doctor import _check_git
+
+        with patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/bin/git"):
+            with patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run:
+                from sova.utils.shell import ShellResult
+
+                mock_run.return_value = ShellResult(returncode=0, stdout="git version 2.43.0\n", stderr="")
+                checks = await _check_git()
+                assert len(checks) == 1
+                assert checks[0][0] == "git"
+                assert checks[0][1] is True
+
+    async def test_check_git_not_found(self) -> None:
+        from unittest.mock import patch
+
+        from sova.cli.commands.doctor import _check_git
+
+        with patch("sova.cli.commands.doctor.shutil.which", return_value=None):
+            checks = await _check_git()
+            assert len(checks) == 1
+            assert checks[0][1] is False
+            assert "not found" in checks[0][2]
+
+    async def test_check_gh_cli_not_found(self) -> None:
+        from unittest.mock import patch
+
+        from sova.cli.commands.doctor import _check_gh_cli
+
+        with patch("sova.cli.commands.doctor.shutil.which", return_value=None):
+            checks = await _check_gh_cli()
+            assert len(checks) == 2
+            assert checks[0][1] is False
+            assert checks[1][1] is False
+
+    async def test_check_claude_cli_not_found(self) -> None:
+        from unittest.mock import patch
+
+        from sova.cli.commands.doctor import _check_claude_cli
+
+        with patch("sova.cli.commands.doctor.shutil.which", return_value=None):
+            checks = await _check_claude_cli()
+            assert len(checks) == 1
+            assert checks[0][1] is False
+
+    async def test_check_git_hooks(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_git_hooks
+
+        check = await _check_git_hooks(tmp_path)
+        assert check[0] == "git hooks"
+        assert isinstance(check[1], bool)
+
+    async def test_check_sova_config_no_toml(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_sova_config
+
+        checks = await _check_sova_config(tmp_path)
+        assert len(checks) == 1
+        assert checks[0][0] == "sova.toml"
+        assert checks[0][1] is False
+
+    def test_check_github_config(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.cli.commands.doctor import _check_github_config
+
+        cfg = MagicMock()
+        cfg.github_repo = "owner/repo"
+        cfg.github_user = "user"
+        checks = _check_github_config(cfg)
+        assert len(checks) == 2
+        assert checks[0][1] is True
+        assert checks[1][1] is True
+
+    def test_render_results_all_pass(self) -> None:
+        from sova.cli.commands.doctor import _render_results
+
+        checks = [("test", True, "ok", True)]
+        _render_results(checks)
+
+    def test_render_results_required_failure(self) -> None:
+        from typer import Exit
+
+        from sova.cli.commands.doctor import _render_results
+
+        checks = [("test", False, "fail", True)]
+        with pytest.raises(Exit):
+            _render_results(checks)
+
+    def test_render_results_optional_warning(self) -> None:
+        from sova.cli.commands.doctor import _render_results
+
+        checks = [("test", False, "warn", False)]
+        _render_results(checks)
 
 
 # ---------------------------------------------------------------------------
