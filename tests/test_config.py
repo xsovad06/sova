@@ -316,6 +316,58 @@ class TestProjectRegistry:
         slug2 = registry.register_project(project)
         assert slug1 == slug2  # Same path re-registers under same slug
 
+    def test_get_project_path_returns_none_for_invalid_slug(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        assert registry.get_project_path("!!!@@@") is None
+
+    def test_get_project_path_rejects_traversal_alias(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "foo"
+        project.mkdir()
+        registry.register_project(project, slug="foo")
+        assert registry.get_project_path("../../foo") is None
+
+    def test_get_project_path_returns_none_for_deleted_dir(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        slug = registry.register_project(project)
+        project.rmdir()
+        assert registry.get_project_path(slug) is None
+
+    def test_validate_project_path_rejects_file(self, tmp_path: Path) -> None:
+        from sova.config.registry import _validate_project_path
+
+        f = tmp_path / "file.txt"
+        f.write_text("data")
+        with pytest.raises(ValueError, match="Not a directory"):
+            _validate_project_path(f)
+
+    def test_validate_project_path_resolves_symlinks(self, tmp_path: Path) -> None:
+        from sova.config.registry import _validate_project_path
+
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "real-link"
+        link.symlink_to(real, target_is_directory=True)
+        result = _validate_project_path(link)
+        assert result == real.resolve()
+
 
 class TestFieldConstraints:
     """Pydantic Field constraints reject invalid numeric values."""

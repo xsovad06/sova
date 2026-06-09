@@ -207,6 +207,6 @@ async def close_db() -> None:
         _engine = None
         _session_factory = None
 
-    for _url, (engine, _) in _engines.items():
+    for engine, _ in list(_engines.values()):
         await engine.dispose()
     _engines.clear()

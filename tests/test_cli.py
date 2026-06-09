@@ -255,3 +255,194 @@ class TestRunCommand:
 
         result = runner.invoke(app, ["parallel", "--help"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Doctor helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorHelpers:
+    """Tests for extracted helper functions in doctor.py."""
+
+    def test_check_python_version(self) -> None:
+        from sova.cli.commands.doctor import _check_python_version
+
+        name, passed, detail, required = _check_python_version()
+        assert name == "Python >= 3.12"
+        assert isinstance(passed, bool)
+        assert "." in detail
+        assert required is True
+
+    def test_extract_auth_detail_authenticated(self) -> None:
+        from sova.cli.commands.doctor import _extract_auth_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=0, stdout="Logged in to github.com as testuser\n", stderr="")
+        detail = _extract_auth_detail(result, auth_ok=True)
+        assert "Logged in" in detail
+
+    def test_extract_auth_detail_not_authenticated(self) -> None:
+        from sova.cli.commands.doctor import _extract_auth_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=1, stdout="", stderr="")
+        detail = _extract_auth_detail(result, auth_ok=False)
+        assert "not authenticated" in detail
+
+    def test_check_terminal_notifier_non_darwin(self) -> None:
+        from unittest.mock import patch
+
+        from sova.cli.commands.doctor import _check_terminal_notifier
+
+        with patch("sova.cli.commands.doctor.platform") as mock_platform:
+            mock_platform.system.return_value = "Linux"
+            checks = _check_terminal_notifier()
+            assert checks == []
+
+
+# ---------------------------------------------------------------------------
+# Admin helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestAdminHelpers:
+    """Tests for extracted helper functions in admin.py."""
+
+    def test_parse_worktree_output_empty(self) -> None:
+        from sova.cli.commands.admin import _parse_worktree_output
+
+        result = _parse_worktree_output("")
+        assert result == []
+
+    def test_parse_worktree_output_single(self) -> None:
+        from sova.cli.commands.admin import _parse_worktree_output
+
+        output = "worktree /path/to/wt\nbranch refs/heads/feat/test\n\n"
+        result = _parse_worktree_output(output)
+        assert len(result) == 1
+        assert result[0]["path"] == "/path/to/wt"
+        assert result[0]["branch"] == "refs/heads/feat/test"
+
+    def test_parse_worktree_output_multiple(self) -> None:
+        from sova.cli.commands.admin import _parse_worktree_output
+
+        output = "worktree /a\nbranch refs/heads/main\n\nworktree /b\nbranch refs/heads/feat/x\n\n"
+        result = _parse_worktree_output(output)
+        assert len(result) == 2
+
+    def test_filter_stale_worktrees(self) -> None:
+        from sova.cli.commands.admin import _filter_stale_worktrees
+
+        worktrees = [
+            {"path": "/a", "branch": "refs/heads/main"},
+            {"path": "/b", "branch": "refs/heads/feat/my-feature"},
+            {"path": "/c", "branch": "refs/heads/fix/a-bug"},
+            {"path": "/d", "branch": "refs/heads/refactor/cleanup"},
+            {"path": "/e", "branch": "refs/heads/chore/deps"},
+        ]
+        stale = _filter_stale_worktrees(worktrees)
+        assert len(stale) == 3
+        paths = {wt["path"] for wt in stale}
+        assert paths == {"/b", "/c", "/d"}
+
+    def test_filter_stale_worktrees_no_branch(self) -> None:
+        from sova.cli.commands.admin import _filter_stale_worktrees
+
+        worktrees = [{"path": "/a"}]
+        stale = _filter_stale_worktrees(worktrees)
+        assert stale == []
+
+
+# ---------------------------------------------------------------------------
+# Triage helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestTriageHelpers:
+    """Tests for extracted helper functions in triage.py."""
+
+    def test_apply_config_overrides_no_overrides(self) -> None:
+        from sova.cli.commands.triage import _apply_config_overrides
+        from sova.config.models import TriageConfig
+
+        cfg = TriageConfig()
+        result = _apply_config_overrides(cfg, None, None)
+        assert result.mode == cfg.mode
+        assert result.auto_label == cfg.auto_label
+
+    def test_apply_config_overrides_mode(self) -> None:
+        from sova.cli.commands.triage import _apply_config_overrides
+        from sova.config.models import TriageConfig
+
+        cfg = TriageConfig(mode="full")
+        result = _apply_config_overrides(cfg, "dry_run", None)
+        assert result.mode == "dry_run"
+
+    def test_apply_config_overrides_label(self) -> None:
+        from sova.cli.commands.triage import _apply_config_overrides
+        from sova.config.models import TriageConfig
+
+        cfg = TriageConfig(auto_label=False)
+        result = _apply_config_overrides(cfg, None, True)
+        assert result.auto_label is True
+
+    async def test_fetch_triage_tasks_single_issue(self) -> None:
+        from sova.cli.commands.triage import _fetch_triage_tasks
+
+        adapter = AsyncMock()
+        task = Task(id="42", title="Test", state=TaskState.BACKLOG, labels=[])
+        adapter.get_task.return_value = task
+
+        result = await _fetch_triage_tasks(adapter, "42")
+        assert len(result) == 1
+        assert result[0].id == "42"
+
+    async def test_fetch_triage_tasks_backlog_filter(self) -> None:
+        from sova.cli.commands.triage import _fetch_triage_tasks
+
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            Task(id="1", title="Backlog", state=TaskState.BACKLOG, labels=[]),
+            Task(id="2", title="In Progress", state=TaskState.IN_PROGRESS, labels=[]),
+            Task(id="3", title="Triaged", state=TaskState.TRIAGED, labels=[]),
+        ]
+
+        result = await _fetch_triage_tasks(adapter, None)
+        assert len(result) == 1
+        assert result[0].id == "1"
+
+
+# ---------------------------------------------------------------------------
+# Harden helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestHardenHelpers:
+    """Tests for extracted helper functions in harden.py."""
+
+    async def test_resolve_harden_tasks_single(self) -> None:
+        from sova.cli.commands.harden import _resolve_harden_tasks
+
+        adapter = AsyncMock()
+        task = Task(id="10", title="Test", state=TaskState.BACKLOG, labels=[])
+        adapter.get_task.return_value = task
+
+        result = await _resolve_harden_tasks(adapter, "10", [])
+        assert len(result) == 1
+        assert result[0].id == "10"
+
+    async def test_resolve_harden_tasks_eligible_states(self) -> None:
+        from sova.cli.commands.harden import _resolve_harden_tasks
+
+        adapter = AsyncMock()
+        all_open = [
+            Task(id="1", title="Backlog", state=TaskState.BACKLOG, labels=[]),
+            Task(id="2", title="Triaged", state=TaskState.TRIAGED, labels=[]),
+            Task(id="3", title="In Progress", state=TaskState.IN_PROGRESS, labels=[]),
+            Task(id="4", title="Needs Spec", state=TaskState.NEEDS_SPEC, labels=[]),
+        ]
+
+        result = await _resolve_harden_tasks(adapter, None, all_open)
+        ids = {t.id for t in result}
+        assert ids == {"1", "2", "4"}
