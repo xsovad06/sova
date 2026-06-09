@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.control_service import (
     _ADDRESS_REVIEW_ONLY,
+    _RESEARCHER_ONLY,
     DEVELOPER_PIPELINE,
     get_step_progress,
 )
@@ -103,11 +104,12 @@ async def get_work_history(
             duration_ms = int((ended - started).total_seconds() * 1000)
 
         step_names = steps_by_run.get(r.id, set())
-        variant = (
-            "address_review"
-            if step_names & _ADDRESS_REVIEW_ONLY
-            else _detect_variant(r.current_step, role=r.role, pr_number=r.pr_number)
-        )
+        if step_names & _RESEARCHER_ONLY:
+            variant = "researcher"
+        elif step_names & _ADDRESS_REVIEW_ONLY:
+            variant = "address_review"
+        else:
+            variant = _detect_variant(r.current_step, role=r.role, pr_number=r.pr_number)
 
         items.append(
             {
@@ -145,7 +147,8 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
 
     variant_from_steps = _detect_variant_from_steps(steps, run.current_step)
     progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
-    variant = variant_from_steps if variant_from_steps == "address_review" else progress["pipeline_variant"]
+    is_specific = variant_from_steps in ("address_review", "researcher")
+    variant = variant_from_steps if is_specific else progress["pipeline_variant"]
     progress["pipeline_variant"] = variant
 
     run_dict = _run_to_dict(run)
@@ -321,6 +324,10 @@ def _detect_variant(current_step: str | None, *, role: str | None = None, pr_num
     dashboard outer-process sentinel). WorkflowEngine TaskRuns acquire
     pr_number mid-pipeline, so gating avoids false positives.
     """
+    if current_step in (None, "agent") and role == "researcher":
+        return "researcher"
+    if current_step in _RESEARCHER_ONLY:
+        return "researcher"
     if current_step in (None, "agent") and role == "developer" and pr_number is not None:
         return "address_review"
     if current_step in _ADDRESS_REVIEW_ONLY:
@@ -331,6 +338,10 @@ def _detect_variant(current_step: str | None, *, role: str | None = None, pr_num
 def _detect_variant_from_steps(step_executions: list, current_step: str | None) -> str:
     """Detect pipeline variant from step execution history (more reliable)."""
     step_names = {s.step_name for s in step_executions}
+    if step_names & _RESEARCHER_ONLY:
+        return "researcher"
+    if current_step in _RESEARCHER_ONLY:
+        return "researcher"
     if step_names & _ADDRESS_REVIEW_ONLY:
         return "address_review"
     if current_step in _ADDRESS_REVIEW_ONLY:
