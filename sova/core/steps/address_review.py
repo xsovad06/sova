@@ -23,7 +23,7 @@ def _load_review_findings(project_dir: Path) -> list[dict]:
 
 
 async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
-    """Load review findings from the most recent reviewer handoff in DB."""
+    """Load review findings from a specific run's handoff in DB."""
     if task_run_id is None:
         return []
     try:
@@ -32,6 +32,42 @@ async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
             return handoff.pending_findings
     except Exception:
         log.debug("address_review.db_findings_failed", exc_info=True)
+    return []
+
+
+async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
+    """Load findings from the most recent reviewer run for this issue."""
+    issue = issue_number.lstrip("#").strip()
+    if not issue:
+        return []
+
+    from sqlalchemy import select
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session() as session:
+            stmt = (
+                select(TaskRun)
+                .where(
+                    TaskRun.issue_number == issue,
+                    TaskRun.role.in_(["reviewer", "command:review-pr"]),
+                    TaskRun.status.in_(["done", "failed", "interrupted"]),
+                    TaskRun.handoff_json.isnot(None),
+                )
+                .order_by(TaskRun.started_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            run = result.scalar_one_or_none()
+            if run and run.handoff_json:
+                findings = run.handoff_json.get("pending_findings", [])
+                if findings:
+                    log.info("address_review.findings_from_reviewer", run_id=run.id, count=len(findings))
+                    return findings
+    except Exception:
+        log.debug("address_review.issue_findings_failed", exc_info=True)
     return []
 
 
@@ -63,10 +99,12 @@ class AddressReviewStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.address_review", pr=ctx.pr_number)
 
-        # Load findings from file first, fallback to DB
+        # Load findings: file -> resumed run -> most recent reviewer for this issue
         findings = _load_review_findings(ctx.project_dir)
         if not findings:
             findings = await _load_review_findings_from_db(ctx.resume_run_id)
+        if not findings:
+            findings = await _load_review_findings_by_issue(ctx.issue_number)
 
         if not findings:
             log.info("step.address_review.no_findings")

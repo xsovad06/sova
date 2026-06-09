@@ -2627,3 +2627,73 @@ class TestAddressReviewHelpers:
 
         findings = await _load_review_findings_from_db(None)
         assert findings == []
+
+    async def test_load_review_findings_by_issue(self) -> None:
+        from datetime import datetime, timezone
+
+        from sova.core.steps.address_review import _load_review_findings_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    role="reviewer",
+                    status="failed",
+                    handoff_json={
+                        "pending_findings": [
+                            {"file": "a.py", "severity": 8, "description": "bug"},
+                        ],
+                    },
+                    started_at=datetime.now(timezone.utc),
+                )
+            )
+
+        findings = await _load_review_findings_by_issue("200")
+        assert len(findings) == 1
+        assert findings[0]["file"] == "a.py"
+
+    async def test_execute_falls_back_to_issue_query(self) -> None:
+        """When file and resume_run_id both miss, finds reviewer run by issue."""
+        from datetime import datetime, timezone
+
+        from sova.core.steps.address_review import AddressReviewStep
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.llm.models import LLMResult
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="201",
+                    role="reviewer",
+                    status="failed",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [
+                            {"file": "z.py", "severity": 6, "category": "style", "description": "Needs fix"},
+                        ],
+                    },
+                    started_at=datetime.now(timezone.utc),
+                )
+            )
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        ctx.issue_number = "201"
+        ctx.resume_run_id = None
+        step = AddressReviewStep()
+
+        with (
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=None),
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.03"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 review findings" in result.summary
+        prompt = mock_invoke.call_args[0][0]
+        assert "Needs fix" in prompt
