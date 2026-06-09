@@ -111,6 +111,12 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
 
     Returns adapter-agnostic review state from SOVA's own TaskRun records,
     independent of any platform-specific review mechanism (GitHub reviews, etc.).
+
+    When handoff_json is present, the verdict is derived from it (authoritative).
+    When a review run completed successfully but has no handoff_json (e.g.
+    command:review-pr which posts to GitHub but doesn't write handoff), the
+    verdict defaults to "revise" since a review that found nothing would have
+    been an approval.
     """
     from sqlalchemy import select
 
@@ -132,7 +138,6 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
                     TaskRun.issue_number == issue_number.lstrip("#").strip(),
                     TaskRun.role.in_(["reviewer", "command:review-pr"]),
                     TaskRun.status == "done",
-                    TaskRun.handoff_json.isnot(None),
                 )
                 .order_by(TaskRun.ended_at.desc())
                 .limit(1)
@@ -140,10 +145,18 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
             result = await session.execute(stmt)
             run = result.scalar_one_or_none()
 
-            if not run or not run.handoff_json:
+            if not run:
                 return no_review
 
             handoff = run.handoff_json
+            if handoff is None:
+                return {
+                    "has_sova_review": True,
+                    "verdict": "revise",
+                    "finding_count": 0,
+                    "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
+                }
+
             next_action = handoff.get("next_action", "")
             findings = handoff.get("pending_findings", [])
 
@@ -205,7 +218,9 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     ci_summary = "unknown"
     try:
         checks = await get_ci_checks(pr_info.number, repo=repo, github_user=gh_user)
-        if not checks:
+        if checks is None:
+            ci_summary = "unknown"
+        elif not checks:
             ci_summary = "none"
         elif all(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.SUCCESS for c in checks):
             ci_summary = "passed"

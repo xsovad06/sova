@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -2709,6 +2710,69 @@ class TestAgentRecoveryDirect:
 
         result = await get_sova_review_verdict("104")
         assert result["verdict"] == "approve"
+
+    async def test_sova_review_verdict_null_handoff_fallback(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="105",
+                    role="command:review-pr",
+                    status="done",
+                    handoff_json=None,
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("105")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+        assert result["finding_count"] == 0
+        assert result["reviewed_at"] is not None
+
+
+class TestReadFileHandoff:
+    def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.agent_db import _read_file_handoff
+
+        assert _read_file_handoff(tmp_path) is None
+
+    def test_reads_valid_handoff(self, tmp_path: Path) -> None:
+        import json
+
+        from sova.dashboard.services.agent_db import _read_file_handoff
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        handoff = {
+            "id": "test",
+            "source": "reviewer",
+            "status": "awaiting_action",
+            "issue": "42",
+            "pr_number": 99,
+            "summary": "test",
+            "details": {"next_action": "address_review", "findings": [{"severity": 5}]},
+            "next_actions": [],
+        }
+        (control_dir / "handoff.json").write_text(json.dumps(handoff))
+
+        result = _read_file_handoff(tmp_path)
+        assert result is not None
+        assert result["issue"] == "42"
+        assert result["pr_number"] == 99
+        assert result["details"]["next_action"] == "address_review"
+        assert result["source"] == "reviewer"
+
+    def test_returns_none_on_corrupt_json(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.agent_db import _read_file_handoff
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text("not json")
+
+        assert _read_file_handoff(tmp_path) is None
 
 
 # ---------------------------------------------------------------------------
