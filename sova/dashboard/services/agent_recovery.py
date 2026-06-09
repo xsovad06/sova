@@ -118,7 +118,7 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
     verdict defaults to "revise" since a review that found nothing would have
     been an approval.
     """
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from sova.db.models import TaskRun
     from sova.db.session import get_session
@@ -132,14 +132,18 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
 
     try:
         async with await get_session() as session:
+            # Include non-done runs: a reviewer that posted findings but crashed
+            # on a post-review side-effect ("failed") or was killed during
+            # cleanup ("interrupted") still produced a valid verdict.
             stmt = (
                 select(TaskRun)
                 .where(
                     TaskRun.issue_number == issue_number.lstrip("#").strip(),
                     TaskRun.role.in_(["reviewer", "command:review-pr"]),
-                    TaskRun.status == "done",
+                    TaskRun.status.in_(["done", "failed", "interrupted"]),
+                    TaskRun.handoff_json.isnot(None),
                 )
-                .order_by(TaskRun.ended_at.desc())
+                .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
                 .limit(1)
             )
             result = await session.execute(stmt)
@@ -154,7 +158,7 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
                     "has_sova_review": True,
                     "verdict": "revise",
                     "finding_count": 0,
-                    "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
+                    "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
                 }
 
             next_action = handoff.get("next_action", "")
@@ -172,7 +176,7 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
                 "has_sova_review": True,
                 "verdict": verdict,
                 "finding_count": len(findings),
-                "reviewed_at": run.ended_at.isoformat() if run.ended_at else None,
+                "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
             }
     except Exception:
         log.debug("sova_review_verdict.query_failed", issue=issue_number, exc_info=True)

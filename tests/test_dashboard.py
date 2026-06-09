@@ -2732,6 +2732,35 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
+    async def test_sova_review_verdict_interrupted_with_findings(self) -> None:
+        """A reviewer killed during post-review cleanup still counts."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="106",
+                    role="reviewer",
+                    status="interrupted",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [
+                            {"file": "x.py", "severity": 9, "description": "critical"},
+                            {"file": "y.py", "severity": 4, "description": "minor"},
+                        ],
+                    },
+                    started_at=datetime.now(timezone.utc),
+                    ended_at=None,
+                )
+            )
+
+        result = await get_sova_review_verdict("106")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "block"
+        assert result["finding_count"] == 2
+        assert result["reviewed_at"] is not None
+
 
 class TestReadFileHandoff:
     def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
