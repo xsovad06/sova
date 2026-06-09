@@ -264,6 +264,44 @@ class TestProjectRegistry:
         with pytest.raises(ValueError, match="Not a directory"):
             registry.register_project(tmp_path / "nonexistent")
 
+    def test_validate_slug_rejects_invalid(self) -> None:
+        import pytest
+
+        from sova.config.registry import _validate_slug
+
+        assert _validate_slug("my-project") == "my-project"
+        assert _validate_slug("proj123") == "proj123"
+        assert _validate_slug("../../../etc") == "etc"
+        with pytest.raises(ValueError, match="Invalid slug"):
+            _validate_slug("!!!@@@")
+
+    def test_validate_slug_normalizes(self) -> None:
+        from sova.config.registry import _validate_slug
+
+        assert _validate_slug("My-Project") == "my-project"
+
+    def test_get_project_path_sanitizes_traversal(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        assert registry.get_project_path("../../../etc") is None
+
+    def test_register_sanitizes_traversal_slug(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "proj"
+        project.mkdir()
+
+        slug = registry.register_project(project, slug="../../bad")
+        assert slug == "bad"
+
     def test_re_register_same_path(self, tmp_path: Path, monkeypatch: object) -> None:
         from sova.config import registry
 
