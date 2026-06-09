@@ -20,6 +20,18 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dag")
 
+# Lazy import cache to avoid circular import (dashboard -> core)
+_start_command_fn = None
+
+
+def _get_start_command():
+    global _start_command_fn
+    if _start_command_fn is None:
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        _start_command_fn = start_command
+    return _start_command_fn
+
 
 @dataclass
 class NodeResult:
@@ -60,12 +72,11 @@ class DAGExecutor:
 
     async def execute(self) -> DAGResult:
         """Topological-sort nodes, execute in order, evaluate edge conditions."""
-        errors = validate_dag(self.graph)
+        errors, sorted_ids = validate_dag(self.graph)
         if errors:
             return DAGResult(success=False, summary="DAG validation failed", error="; ".join(errors))
 
         nodes = {n["id"]: n for n in self.graph.get("nodes", [])}
-        sorted_ids = _topological_sort(self.graph)
 
         results: list[NodeResult] = []
         total_cost = Decimal("0")
@@ -115,9 +126,7 @@ class DAGExecutor:
         start_dt = datetime.now(timezone.utc)
 
         try:
-            from sova.dashboard.services.agent_lifecycle import start_command
-
-            result = await start_command(
+            result = await _get_start_command()(
                 command=command,
                 project_dir=self.ctx.project_dir,
                 args=node.get("params"),
@@ -211,10 +220,11 @@ class DAGExecutor:
         return has_completed_source
 
 
-def validate_dag(graph_json: dict) -> list[str]:
+def validate_dag(graph_json: dict) -> tuple[list[str], list[str]]:
     """Check for cycles, missing inputs, unreachable nodes, empty graphs.
 
-    Returns a list of error strings (empty = valid).
+    Returns (errors, sorted_ids) -- errors is empty when valid.
+    The sorted_ids list can be reused by the caller to avoid a second sort.
     """
     errors: list[str] = []
     nodes = graph_json.get("nodes", [])
@@ -222,7 +232,7 @@ def validate_dag(graph_json: dict) -> list[str]:
 
     if not nodes:
         errors.append("DAG has no nodes")
-        return errors
+        return errors, []
 
     node_ids = {n["id"] for n in nodes}
 
@@ -239,14 +249,14 @@ def validate_dag(graph_json: dict) -> list[str]:
             errors.append(f"Node {node['id']} has no command")
 
     # Cycle detection via topological sort (Kahn's algorithm)
+    sorted_ids: list[str] = []
     try:
-        _topological_sort(graph_json)
+        sorted_ids = _topological_sort(graph_json)
     except ValueError as exc:
         errors.append(str(exc))
 
-    # Disconnected node detection via weakly connected components
+    # Disconnected node detection -- reuse directed adjacency as undirected
     if len(nodes) > 1:
-        # Build undirected adjacency
         adj_undirected: dict[str, set[str]] = {nid: set() for nid in node_ids}
         for edge in edges:
             src, tgt = edge.get("source"), edge.get("target")
@@ -254,7 +264,6 @@ def validate_dag(graph_json: dict) -> list[str]:
                 adj_undirected[src].add(tgt)
                 adj_undirected[tgt].add(src)
 
-        # Find connected components via BFS
         visited: set[str] = set()
         components: list[set[str]] = []
         for start in node_ids:
@@ -274,12 +283,11 @@ def validate_dag(graph_json: dict) -> list[str]:
             components.append(component)
 
         if len(components) > 1:
-            # Find the largest component; report others as disconnected
             largest = max(components, key=len)
             disconnected = node_ids - largest
             errors.append(f"Unreachable nodes: {', '.join(sorted(disconnected))}")
 
-    return errors
+    return errors, sorted_ids
 
 
 def _topological_sort(graph_json: dict) -> list[str]:
