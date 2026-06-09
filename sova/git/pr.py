@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import StrEnum
+from urllib.parse import urlparse
 
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
@@ -282,8 +283,13 @@ async def get_pr_files(pr_number: int, *, repo: str, github_user: str = "") -> l
     return [f for f in result.stdout.strip().splitlines() if f.strip()]
 
 
-async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> list[CICheck]:
-    """Get CI check results for a pull request."""
+async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> list[CICheck] | None:
+    """Get CI check results for a pull request.
+
+    Returns ``None`` on fetch failures (network, auth, CLI errors) so
+    callers can distinguish "no checks configured" (``[]``) from
+    "unable to query GitHub" (``None``).
+    """
     env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
@@ -299,13 +305,13 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
 
     if not result.success:
         log.warning("git.ci_checks.failed", pr=pr_number, stderr=result.stderr[:200])
-        return []
+        return None
 
     try:
         checks_data = json.loads(result.stdout)
     except json.JSONDecodeError:
         log.warning("git.ci_checks.bad_json", stdout=result.stdout[:200])
-        return []
+        return None
 
     checks: list[CICheck] = []
     for item in checks_data:
@@ -322,3 +328,74 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
         )
 
     return checks
+
+
+def _parse_run_id(details_url: str) -> str | None:
+    """Extract the GitHub Actions run ID from a check's details URL."""
+    # Format: https://github.com/owner/repo/actions/runs/<run_id>/job/<job_id>
+    parts = urlparse(details_url).path.strip("/").split("/")
+    try:
+        idx = parts.index("runs")
+        run_id = parts[idx + 1]
+        return run_id if run_id.isdigit() else None
+    except (ValueError, IndexError):
+        return None
+
+
+async def get_ci_failure_logs(
+    failed_checks: list[CICheck],
+    *,
+    repo: str,
+    github_user: str = "",
+    max_log_chars: int = 8000,
+) -> str:
+    """Fetch CI failure logs for the given failed checks.
+
+    Extracts the run ID from each check's details_url and fetches the
+    failed job logs via ``gh run view --log-failed``.
+    """
+    env = await resolve_gh_env(github_user)
+    seen_runs: set[str] = set()
+    sections: list[str] = []
+    remaining = max_log_chars
+
+    for check in failed_checks:
+        run_id = _parse_run_id(check.details_url)
+        if not run_id or run_id in seen_runs:
+            continue
+        seen_runs.add(run_id)
+
+        output = await _fetch_run_log(run_id, repo, env)
+        if not output:
+            continue
+
+        remaining, done = _append_log_section(sections, check.name, run_id, output, remaining)
+        if done:
+            break
+
+    return "\n\n".join(sections)
+
+
+async def _fetch_run_log(run_id: str, repo: str, env: dict[str, str] | None) -> str:
+    """Fetch the failed-job log for a single run."""
+    result = await run("gh", "run", "view", run_id, "--repo", repo, "--log-failed", env=env)
+    if not result.success:
+        log.warning("git.ci_logs.fetch_failed", run_id=run_id, stderr=result.stderr[:200])
+        return ""
+    return result.stdout.strip()
+
+
+def _append_log_section(sections: list[str], name: str, run_id: str, output: str, remaining: int) -> tuple[int, bool]:
+    """Append a log section respecting the char budget. Returns (remaining, budget_exhausted)."""
+    if remaining <= 0:
+        return remaining, True
+    join_cost = 2 if sections else 0
+    header = f"=== {name} (run {run_id}) ===\n"
+    budget = remaining - len(header) - join_cost
+    if budget <= 0:
+        return remaining, True
+    if len(output) > budget:
+        output = output[-budget:]
+    section = header + output
+    sections.append(section)
+    return remaining - len(section) - join_cost, False
