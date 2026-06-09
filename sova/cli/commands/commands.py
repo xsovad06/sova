@@ -22,6 +22,8 @@ app = typer.Typer(
 
 console = Console(stderr=True)
 
+_COMMANDS_SUBDIR = Path(".claude") / "commands"
+
 
 @app.command(name="list")
 def list_cmd(
@@ -29,7 +31,7 @@ def list_cmd(
 ) -> None:
     """List installed commands (managed vs local)."""
     project_dir = (project or Path.cwd()).resolve()
-    target_dir = project_dir / ".claude" / "commands"
+    target_dir = project_dir / _COMMANDS_SUBDIR
 
     listing = list_commands(target_dir)
 
@@ -52,7 +54,7 @@ def diff_cmd(
 ) -> None:
     """Show what changed since last install."""
     project_dir = (project or Path.cwd()).resolve()
-    target_dir = project_dir / ".claude" / "commands"
+    target_dir = project_dir / _COMMANDS_SUBDIR
     cfg = load_config(project_dir)
     canonical_dir = get_canonical_dir()
 
@@ -86,7 +88,7 @@ def update_cmd(
 ) -> None:
     """Sync commands to latest canonical versions."""
     project_dir = (project or Path.cwd()).resolve()
-    target_dir = project_dir / ".claude" / "commands"
+    target_dir = project_dir / _COMMANDS_SUBDIR
     cfg = load_config(project_dir)
     canonical_dir = get_canonical_dir()
 
@@ -126,7 +128,7 @@ def sync_cmd(
             console.print(f"  [red]{slug}[/red]: directory not found ({path_str})")
             continue
 
-        target_dir = project_dir / ".claude" / "commands"
+        target_dir = project_dir / _COMMANDS_SUBDIR
         try:
             cfg = load_config(project_dir)
         except Exception:

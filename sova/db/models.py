@@ -13,6 +13,9 @@ class Base(DeclarativeBase):
     """Base class for all ORM models."""
 
 
+_FK_TASK_RUNS_ID = "task_runs.id"
+
+
 class TaskRun(Base):
     """Audit trail for every task execution."""
 
@@ -61,7 +64,7 @@ class StepExecution(Base):
     __tablename__ = "step_executions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey("task_runs.id"), nullable=False, index=True)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=False, index=True)
     step_name: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
@@ -81,7 +84,7 @@ class FailureRecord(Base):
     __tablename__ = "failure_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey("task_runs.id"), nullable=False, index=True)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=False, index=True)
     step_name: Mapped[str] = mapped_column(String(50), nullable=False)
     failure_type: Mapped[str] = mapped_column(String(30), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
@@ -99,7 +102,7 @@ class CostRecord(Base):
     __tablename__ = "cost_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("task_runs.id"), index=True)
+    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), index=True)
     phase: Mapped[str] = mapped_column(String(50), nullable=False)
     issue: Mapped[str] = mapped_column(String(50), default="")
     model: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -210,7 +213,7 @@ class LifecyclePhaseRecord(Base):
     lifecycle_id: Mapped[int] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"), nullable=False)
     phase: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("task_runs.id"))
+    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID))
     error_message: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     attempt: Mapped[int] = mapped_column(Integer, default=1)

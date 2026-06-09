@@ -12,6 +12,10 @@ from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="adapter.github")
 
+_COL_TODO = "to do"  # with space; "todo" (no space) is a separate board column name
+_COL_BACKLOG = "backlog"
+_COL_READY = "ready"
+
 # Maps TaskState to the GitHub label used to represent it.
 _STATE_LABELS: dict[TaskState, str] = {
     TaskState.TRIAGED: "agent:triaged",
@@ -27,14 +31,14 @@ _LABEL_TO_STATE: dict[str, TaskState] = {v: k for k, v in _STATE_LABELS.items()}
 
 # Maps TaskState to candidate board column names (case-insensitive match).
 _STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
-    TaskState.BACKLOG: ["backlog", "todo", "to do"],
-    TaskState.TRIAGED: ["triaged", "ready", "todo", "to do"],
-    TaskState.RESEARCHED: ["researched", "ready", "todo", "to do"],
+    TaskState.BACKLOG: [_COL_BACKLOG, "todo", _COL_TODO],
+    TaskState.TRIAGED: ["triaged", _COL_READY, "todo", _COL_TODO],
+    TaskState.RESEARCHED: ["researched", _COL_READY, "todo", _COL_TODO],
     TaskState.IN_PROGRESS: ["in progress", "doing"],
     TaskState.IN_REVIEW: ["in review", "review", "verification"],
     TaskState.DONE: ["done", "completed"],
-    TaskState.NEEDS_SPEC: ["todo", "to do", "backlog"],
-    TaskState.HUMAN_ONLY: ["todo", "to do", "backlog"],
+    TaskState.NEEDS_SPEC: ["todo", _COL_TODO, _COL_BACKLOG],
+    TaskState.HUMAN_ONLY: ["todo", _COL_TODO, _COL_BACKLOG],
 }
 
 

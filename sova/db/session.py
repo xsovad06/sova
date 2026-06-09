@@ -21,6 +21,8 @@ _engine = None
 _session_factory = None
 _engines: dict[str, tuple] = {}
 
+_DB_FILENAME = "sova.db"
+
 
 def _get_database_url(project_dir: Path | None = None) -> str:
     """Resolve the database URL.
@@ -37,9 +39,9 @@ def _get_database_url(project_dir: Path | None = None) -> str:
         return env_url
 
     if project_dir:
-        db_path = project_dir / ".claude" / "sova.db"
+        db_path = project_dir / ".claude" / _DB_FILENAME
     else:
-        db_path = Path.home() / ".config" / "sova" / "sova.db"
+        db_path = Path.home() / ".config" / "sova" / _DB_FILENAME
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite+aiosqlite:///{db_path}"
@@ -205,6 +207,6 @@ async def close_db() -> None:
         _engine = None
         _session_factory = None
 
-    for _url, (engine, _) in list(_engines.items()):
+    for _url, (engine, _) in _engines.items():
         await engine.dispose()
     _engines.clear()
