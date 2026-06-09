@@ -26,6 +26,9 @@ from sova.dashboard.services.agent_lifecycle import (
     _ADDRESS_REVIEW_ONLY as _ADDRESS_REVIEW_ONLY,
 )
 from sova.dashboard.services.agent_lifecycle import (
+    _RESEARCHER_ONLY as _RESEARCHER_ONLY,
+)
+from sova.dashboard.services.agent_lifecycle import (
     ADDRESS_REVIEW_PIPELINE as ADDRESS_REVIEW_PIPELINE,
 )
 from sova.dashboard.services.agent_lifecycle import (

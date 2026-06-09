@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sova.core.steps import get_address_review_step_names, get_developer_step_names
+from sova.core.steps import get_address_review_step_names, get_developer_step_names, get_researcher_step_names
 from sova.dashboard.services.agent_db import (
     _create_task_run,
     _fetch_run_states,
@@ -36,6 +36,7 @@ log = get_logger(component="dashboard.control")
 
 DEVELOPER_PIPELINE = get_developer_step_names()
 ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
+RESEARCHER_PIPELINE = get_researcher_step_names()
 
 _background_tasks: set[asyncio.Task[None]] = set()
 
@@ -648,6 +649,7 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
 
 
 _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
+_RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
 
 
 def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
@@ -659,11 +661,22 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
     via _sync_task_run_context, so gating on current_step avoids false
     positives for developer runs that created a PR.
     """
+    is_researcher = (current_step in (None, "agent") and role == "researcher") or (
+        current_step is not None and current_step in _RESEARCHER_ONLY
+    )
     is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
         current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
     )
-    pipeline = ADDRESS_REVIEW_PIPELINE if is_address_review else DEVELOPER_PIPELINE
-    variant = "address_review" if is_address_review else "developer"
+
+    if is_researcher:
+        pipeline = RESEARCHER_PIPELINE
+        variant = "researcher"
+    elif is_address_review:
+        pipeline = ADDRESS_REVIEW_PIPELINE
+        variant = "address_review"
+    else:
+        pipeline = DEVELOPER_PIPELINE
+        variant = "developer"
 
     if current_step is None:
         return {
