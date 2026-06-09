@@ -12,8 +12,9 @@ from rich.console import Console
 from rich.table import Table
 
 from sova.adapters import create_adapter
-from sova.adapters.base import Task, TaskFilters, TaskState
+from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
 from sova.config.loader import load_config
+from sova.config.models import ProjectConfig
 from sova.roles.triage import TriageRole
 
 console = Console(stderr=True)
@@ -40,7 +41,6 @@ async def _harden(
     skip_triage: bool,
 ) -> None:
     from sova.db.session import init_db
-    from sova.llm.client import invoke
 
     resolved_dir = project_dir or Path.cwd()
     config = load_config(resolved_dir)
@@ -50,11 +50,7 @@ async def _harden(
 
     # Fetch all open issues once (used for both target selection and conflict analysis).
     all_open = await adapter.list_tasks(TaskFilters(state="open"))
-
-    if issue:
-        tasks = [await adapter.get_task(issue)]
-    else:
-        tasks = [t for t in all_open if t.state in (TaskState.BACKLOG, TaskState.TRIAGED, TaskState.NEEDS_SPEC)]
+    tasks = await _resolve_harden_tasks(adapter, issue, all_open)
 
     if not tasks:
         console.print("[yellow]No issues found to harden.[/yellow]")
@@ -69,57 +65,104 @@ async def _harden(
     results: list[tuple[Task, str, str | None]] = []  # (task, status, triage_verdict)
 
     for task in tasks:
-        console.print(f"[cyan]Hardening #{task.id}: {task.title}[/cyan]")
+        task_result = await _harden_single_task(
+            task,
+            adapter,
+            config,
+            resolved_dir,
+            project_docs,
+            all_issues_summary,
+            dry_run,
+            skip_triage,
+        )
+        results.append(task_result)
 
-        issue_type = _detect_issue_type(task.labels)
-        template_content = _load_issue_template(resolved_dir, issue_type)
-        prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
+    _render_harden_results(results)
 
-        try:
-            result = await invoke(prompt, cwd=resolved_dir, timeout=300)
-        except RuntimeError as exc:
-            console.print(f"[red]  Failed: {exc}[/red]")
-            results.append((task, "failed", None))
-            continue
 
-        enriched_body = _strip_code_fences(result.text)
+async def _resolve_harden_tasks(adapter: TaskAdapter, issue: str | None, all_open: list[Task]) -> list[Task]:
+    """Resolve which tasks to harden -- a single issue or all eligible open ones."""
+    if issue:
+        return [await adapter.get_task(issue)]
+    return [t for t in all_open if t.state in (TaskState.BACKLOG, TaskState.TRIAGED, TaskState.NEEDS_SPEC)]
 
-        if not enriched_body.strip():
-            console.print("[red]  Claude returned empty analysis.[/red]")
-            results.append((task, "empty", None))
-            continue
 
-        if dry_run:
-            console.print(f"\n[bold]--- DRY RUN: #{task.id} ---[/bold]\n")
-            console.print(enriched_body)
-            console.print("\n[bold]--- END DRY RUN ---[/bold]\n")
-            results.append((task, "dry-run", None))
-            continue
+async def _harden_single_task(
+    task: Task,
+    adapter: TaskAdapter,
+    config: ProjectConfig,
+    resolved_dir: Path,
+    project_docs: str,
+    all_issues_summary: str,
+    dry_run: bool,
+    skip_triage: bool,
+) -> tuple[Task, str, str | None]:
+    """Harden a single task: invoke LLM, update issue, optionally re-triage."""
+    from sova.llm.client import invoke
 
-        # Update issue body
-        await adapter.edit_body(task.id, enriched_body)
-        console.print(f"[green]  Updated issue #{task.id} body.[/green]")
+    console.print(f"[cyan]Hardening #{task.id}: {task.title}[/cyan]")
 
-        # Re-triage with enriched content
-        triage_verdict = None
-        if not skip_triage:
-            try:
-                enriched_task = replace(task, body=enriched_body)
-                role = TriageRole()
-                triage_cfg = config.triage
-                assessment = role.heuristic_assess(enriched_task, triage_cfg)
-                triage_verdict = assessment.suitability
-                if triage_cfg.auto_label:
-                    label = role.resolve_label(assessment.suitability, triage_cfg)
-                    if label:
-                        await adapter.add_label(task.id, label)
-                console.print(f"[green]  Re-triaged: {triage_verdict}[/green]")
-            except Exception as exc:
-                console.print(f"[yellow]  Re-triage failed: {exc}[/yellow]")
+    issue_type = _detect_issue_type(task.labels)
+    template_content = _load_issue_template(resolved_dir, issue_type)
+    prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
 
-        results.append((task, "hardened", triage_verdict))
+    try:
+        result = await invoke(prompt, cwd=resolved_dir, timeout=300)
+    except RuntimeError as exc:
+        console.print(f"[red]  Failed: {exc}[/red]")
+        return (task, "failed", None)
 
-    # Summary table
+    enriched_body = _strip_code_fences(result.text)
+
+    if not enriched_body.strip():
+        console.print("[red]  Claude returned empty analysis.[/red]")
+        return (task, "empty", None)
+
+    if dry_run:
+        console.print(f"\n[bold]--- DRY RUN: #{task.id} ---[/bold]\n")
+        console.print(enriched_body)
+        console.print("\n[bold]--- END DRY RUN ---[/bold]\n")
+        return (task, "dry-run", None)
+
+    # Update issue body
+    await adapter.edit_body(task.id, enriched_body)
+    console.print(f"[green]  Updated issue #{task.id} body.[/green]")
+
+    # Re-triage with enriched content
+    triage_verdict = await _retriage_task(task, enriched_body, config, adapter, skip_triage)
+
+    return (task, "hardened", triage_verdict)
+
+
+async def _retriage_task(
+    task: Task,
+    enriched_body: str,
+    config: ProjectConfig,
+    adapter: TaskAdapter,
+    skip_triage: bool,
+) -> str | None:
+    """Re-triage a hardened task. Returns the verdict or None."""
+    if skip_triage:
+        return None
+    try:
+        enriched_task = replace(task, body=enriched_body)
+        role = TriageRole()
+        triage_cfg = config.triage
+        assessment = role.heuristic_assess(enriched_task, triage_cfg)
+        verdict = assessment.suitability
+        if triage_cfg.auto_label:
+            label = role.resolve_label(assessment.suitability, triage_cfg)
+            if label:
+                await adapter.add_label(task.id, label)
+        console.print(f"[green]  Re-triaged: {verdict}[/green]")
+        return verdict
+    except Exception as exc:
+        console.print(f"[yellow]  Re-triage failed: {exc}[/yellow]")
+        return None
+
+
+def _render_harden_results(results: list[tuple[Task, str, str | None]]) -> None:
+    """Render the harden results summary table."""
     table = Table(title="Harden Results", show_header=True)
     table.add_column("Issue", style="cyan")
     table.add_column("Title", style="white")
