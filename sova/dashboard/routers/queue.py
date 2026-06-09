@@ -39,7 +39,7 @@ async def start_from_queue(issue: str, req: StartFromQueueRequest):
     return result
 
 
-@router.post("/queue/batch")
+@router.post("/queue/batch", responses={400: {"description": "Unknown batch action"}})
 async def start_batch(req: BatchRequest):
     """Start a batch action on selected issues."""
     project_dir = get_project_dir()
@@ -50,7 +50,7 @@ async def start_batch(req: BatchRequest):
     if req.action not in ("triage", "harden"):
         raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
-    batch_id = await batch_service.start_batch(
+    batch_id = batch_service.start_batch(
         action=req.action,
         issue_ids=req.issues,
         project_dir=project_dir,
@@ -69,7 +69,7 @@ async def active_batch():
     return {"active": True, "batch": active}
 
 
-@router.get("/queue/batch/{batch_id}/status")
+@router.get("/queue/batch/{batch_id}/status", responses={404: {"description": "Batch not found"}})
 async def batch_status(batch_id: str):
     """Get progress of a batch operation."""
     status = batch_service.get_batch_status(batch_id)

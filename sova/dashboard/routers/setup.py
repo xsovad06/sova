@@ -58,7 +58,13 @@ async def scan_project(req: ScanRequest):
     return await setup_service.scan_project(req.project_path)
 
 
-@router.post("/setup/install")
+@router.post(
+    "/setup/install",
+    responses={
+        404: {"description": "Directory not found"},
+        500: {"description": "Installation failed"},
+    },
+)
 async def install_project(req: InstallRequest):
     """Run sova install on a project."""
     from sova.cli.commands.project import _install
@@ -75,14 +81,14 @@ async def install_project(req: InstallRequest):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/setup/configure")
+@router.post("/setup/configure", responses={404: {"description": "Directory not found"}})
 async def configure_project(req: ConfigureRequest):
     """Generate sova.toml from wizard input and register the project."""
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
-    toml_content = setup_service.generate_sova_toml(
+    toml_cfg = setup_service.TomlConfig(
         github_repo=req.github_repo,
         github_user=req.github_user,
         base_branch=req.base_branch,
@@ -99,6 +105,7 @@ async def configure_project(req: ConfigureRequest):
         pr_title_format=req.pr_title_format,
         pr_auto_link=req.pr_auto_link,
     )
+    toml_content = setup_service.generate_sova_toml(toml_cfg)
 
     toml_file = project / "sova.toml"
     toml_file.write_text(toml_content)

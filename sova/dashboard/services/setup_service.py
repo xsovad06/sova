@@ -7,6 +7,7 @@ tech stack detection, and sova.toml generation.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from sova.utils.logging import get_logger
@@ -14,15 +15,20 @@ from sova.utils.shell import run
 
 log = get_logger(component="dashboard.setup")
 
+_PACKAGE_JSON = "package.json"
+_PYPROJECT_TOML = "pyproject.toml"
+_REQUIREMENTS_TXT = "requirements.txt"
+_SOVA_TOML = "sova.toml"
+
 _PROJECT_MARKERS = (
     ".git",
-    "package.json",
-    "pyproject.toml",
+    _PACKAGE_JSON,
+    _PYPROJECT_TOML,
     "Cargo.toml",
     "go.mod",
     "manage.py",
     "Makefile",
-    "requirements.txt",
+    _REQUIREMENTS_TXT,
 )
 
 _SKIP_DIRS = frozenset(
@@ -65,7 +71,7 @@ def browse_directory(path: str) -> dict:
                 continue
 
             is_project = any((child / marker).exists() for marker in _PROJECT_MARKERS)
-            has_sova = (child / "sova.toml").exists() or (child / ".claude" / "sova.db").exists()
+            has_sova = (child / _SOVA_TOML).exists() or (child / ".claude" / "sova.db").exists()
 
             entries.append(
                 {
@@ -95,7 +101,7 @@ async def scan_project(project_path: str) -> dict:
     lint_cmd = _detect_cmd(project, "lint", "lint", "")
     format_cmd = _detect_cmd(project, "format", "format", "")
 
-    already_installed = (project / "sova.toml").exists()
+    already_installed = (project / _SOVA_TOML).exists()
     existing_config = _read_existing_toml(project) if already_installed else {}
 
     return {
@@ -113,62 +119,66 @@ async def scan_project(project_path: str) -> dict:
     }
 
 
-def generate_sova_toml(
-    *,
-    github_repo: str = "",
-    github_user: str = "",
-    base_branch: str = "main",
-    test_cmd: str = "make test",
-    lint_cmd: str = "make lint",
-    format_cmd: str = "make format",
-    task_source: str = "github",
-    agent_model: str = "opus",
-    max_budget: str = "10.00",
-    review_max_rounds: int = 2,
-    branch_naming: str = "conventional",
-    commit_format: str = "conventional",
-    no_ai_coauthor: bool = False,
-    pr_title_format: str = "conventional",
-    pr_auto_link: bool = True,
-) -> str:
+@dataclass
+class TomlConfig:
+    """Configuration values for sova.toml generation."""
+
+    github_repo: str = ""
+    github_user: str = ""
+    base_branch: str = "main"
+    test_cmd: str = "make test"
+    lint_cmd: str = "make lint"
+    format_cmd: str = "make format"
+    task_source: str = "github"
+    agent_model: str = "opus"
+    max_budget: str = "10.00"
+    review_max_rounds: int = 2
+    branch_naming: str = "conventional"
+    commit_format: str = "conventional"
+    no_ai_coauthor: bool = False
+    pr_title_format: str = "conventional"
+    pr_auto_link: bool = True
+
+
+def generate_sova_toml(config: TomlConfig) -> str:
     """Generate sova.toml content from wizard form data."""
     import tomlkit
 
     doc = tomlkit.document()
     doc.add(tomlkit.comment("SOVA configuration"))
-    doc.add("github_repo", github_repo)
-    doc.add("github_user", github_user)
-    doc.add("base_branch", base_branch)
-    doc.add("test_cmd", test_cmd)
-    doc.add("lint_cmd", lint_cmd)
-    doc.add("format_cmd", format_cmd)
+    doc.add("github_repo", config.github_repo)
+    doc.add("github_user", config.github_user)
+    doc.add("base_branch", config.base_branch)
+    doc.add("test_cmd", config.test_cmd)
+    doc.add("lint_cmd", config.lint_cmd)
+    doc.add("format_cmd", config.format_cmd)
 
     task_source_table = tomlkit.table()
-    task_source_table.add("type", task_source)
+    task_source_table.add("type", config.task_source)
     doc.add("task_source", task_source_table)
 
     agent_table = tomlkit.table()
-    agent_table.add("model", agent_model)
-    agent_table.add("max_budget", max_budget)
+    agent_table.add("model", config.agent_model)
+    agent_table.add("max_budget", config.max_budget)
     doc.add("agent", agent_table)
 
     review_table = tomlkit.table()
     review_table.add("enabled", True)
-    review_table.add("max_rounds", review_max_rounds)
+    review_table.add("max_rounds", config.review_max_rounds)
     doc.add("review", review_table)
 
     commit_table = tomlkit.table()
-    commit_table.add("format", commit_format)
-    commit_table.add("no_ai_coauthor", no_ai_coauthor)
+    commit_table.add("format", config.commit_format)
+    commit_table.add("no_ai_coauthor", config.no_ai_coauthor)
     doc.add("commit", commit_table)
 
     branch_table = tomlkit.table()
-    branch_table.add("naming", branch_naming)
+    branch_table.add("naming", config.branch_naming)
     doc.add("branch", branch_table)
 
     pr_table = tomlkit.table()
-    pr_table.add("title_format", pr_title_format)
-    pr_table.add("auto_link_issues", pr_auto_link)
+    pr_table.add("title_format", config.pr_title_format)
+    pr_table.add("auto_link_issues", config.pr_auto_link)
     doc.add("pr", pr_table)
 
     triage_table = tomlkit.table()
@@ -188,10 +198,10 @@ def generate_sova_toml(
 
 def _detect_tech_stack(project: Path) -> list[str]:
     stack: list[str] = []
-    if (project / "requirements.txt").exists() or (project / "pyproject.toml").exists():
+    if (project / _REQUIREMENTS_TXT).exists() or (project / _PYPROJECT_TOML).exists():
         stack.append("python")
         reqs = ""
-        for f in ["requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"]:
+        for f in [_REQUIREMENTS_TXT, _PYPROJECT_TOML, "setup.py", "setup.cfg"]:
             p = project / f
             if p.exists():
                 reqs += p.read_text(errors="ignore")
@@ -199,9 +209,9 @@ def _detect_tech_stack(project: Path) -> list[str]:
             stack.append("django")
         if "fastapi" in reqs.lower():
             stack.append("fastapi")
-    if (project / "package.json").exists():
+    if (project / _PACKAGE_JSON).exists():
         stack.append("javascript")
-        pkg = (project / "package.json").read_text(errors="ignore")
+        pkg = (project / _PACKAGE_JSON).read_text(errors="ignore")
         if '"react"' in pkg:
             stack.append("react")
         if '"next"' in pkg:
@@ -256,7 +266,7 @@ def _detect_cmd(project: Path, makefile_target: str, pkg_script: str, fallback: 
     makefile = project / "Makefile"
     if makefile.exists() and re.search(rf"^{makefile_target}:", makefile.read_text(), re.MULTILINE):
         return f"make {makefile_target}"
-    pkg = project / "package.json"
+    pkg = project / _PACKAGE_JSON
     if pkg.exists() and f'"{pkg_script}"' in pkg.read_text(errors="ignore"):
         return f"npm run {pkg_script}"
     return fallback
@@ -264,7 +274,7 @@ def _detect_cmd(project: Path, makefile_target: str, pkg_script: str, fallback: 
 
 def _read_existing_toml(project: Path) -> dict:
     """Read existing sova.toml as a flat dict for prefilling the form."""
-    toml_file = project / "sova.toml"
+    toml_file = project / _SOVA_TOML
     if not toml_file.exists():
         return {}
     try:
