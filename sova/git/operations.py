@@ -61,6 +61,9 @@ from sova.git.pr import (
     get_ci_checks as get_ci_checks,
 )
 from sova.git.pr import (
+    get_ci_failure_logs as get_ci_failure_logs,
+)
+from sova.git.pr import (
     get_pr_diff as get_pr_diff,
 )
 from sova.git.pr import (

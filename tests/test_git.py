@@ -21,6 +21,7 @@ from sova.git.operations import (
     create_pr,
     find_pr_for_issue,
     get_ci_checks,
+    get_ci_failure_logs,
     get_current_branch,
     get_pr_diff,
     get_pr_files,
@@ -29,6 +30,7 @@ from sova.git.operations import (
     rebase,
     sync_branch,
 )
+from sova.git.pr import _parse_run_id
 from sova.git.worktree import (
     WorktreeInfo,
     _copy_worktree_files,
@@ -465,12 +467,153 @@ class TestGetCIChecks:
             checks = await get_ci_checks(42, repo="user/repo")
             assert checks == []
 
-    async def test_returns_empty_on_failure(self) -> None:
+    async def test_returns_none_on_failure(self) -> None:
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = _shell_fail()
 
             checks = await get_ci_checks(42, repo="user/repo")
-            assert checks == []
+            assert checks is None
+
+    async def test_returns_none_on_bad_json(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="not json")
+
+            checks = await get_ci_checks(42, repo="user/repo")
+            assert checks is None
+
+
+# ---------------------------------------------------------------------------
+# CI failure log fetching
+# ---------------------------------------------------------------------------
+
+
+class TestParseRunId:
+    def test_extracts_run_id_from_actions_url(self) -> None:
+        url = "https://github.com/owner/repo/actions/runs/123456/job/789"
+        assert _parse_run_id(url) == "123456"
+
+    def test_returns_none_for_non_actions_url(self) -> None:
+        assert _parse_run_id("https://example.com/status") is None
+
+    def test_returns_none_for_empty_url(self) -> None:
+        assert _parse_run_id("") is None
+
+    def test_handles_url_with_runs_at_end(self) -> None:
+        url = "https://github.com/o/r/actions/runs"
+        assert _parse_run_id(url) is None
+
+    def test_strips_query_params_from_run_id(self) -> None:
+        url = "https://github.com/o/r/actions/runs/12345?check_suite_focus=true"
+        assert _parse_run_id(url) == "12345"
+
+    def test_rejects_non_digit_run_id(self) -> None:
+        url = "https://github.com/o/r/actions/runs/not-a-number/job/1"
+        assert _parse_run_id(url) is None
+
+
+class TestGetCIFailureLogs:
+    async def test_fetches_logs_for_failed_checks(self) -> None:
+        checks = [
+            CICheck(
+                name="Tests",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/111/job/1",
+            ),
+            CICheck(
+                name="Lint",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/222/job/2",
+            ),
+        ]
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_ok()),
+        ):
+            mock_run.side_effect = [
+                _shell_ok(stdout="ERROR: test failed"),
+                _shell_ok(stdout="WARNING: unused import"),
+            ]
+            result = await get_ci_failure_logs(checks, repo="o/r")
+        assert "=== Tests (run 111) ===" in result
+        assert "ERROR: test failed" in result
+        assert "=== Lint (run 222) ===" in result
+        assert mock_run.call_count == 2
+
+    async def test_deduplicates_by_run_id(self) -> None:
+        checks = [
+            CICheck(
+                name="A",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/111/job/1",
+            ),
+            CICheck(
+                name="B",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/111/job/2",
+            ),
+        ]
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_ok()),
+        ):
+            mock_run.return_value = _shell_ok(stdout="log output")
+            await get_ci_failure_logs(checks, repo="o/r")
+        assert mock_run.call_count == 1
+
+    async def test_skips_checks_without_run_id(self) -> None:
+        checks = [
+            CICheck(
+                name="X",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://example.com/no-run-id",
+            ),
+        ]
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_ok()),
+        ):
+            result = await get_ci_failure_logs(checks, repo="o/r")
+        assert result == ""
+        mock_run.assert_not_awaited()
+
+    async def test_respects_max_log_chars(self) -> None:
+        checks = [
+            CICheck(
+                name="T",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/1/job/1",
+            ),
+        ]
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_ok()),
+        ):
+            mock_run.return_value = _shell_ok(stdout="x" * 10000)
+            result = await get_ci_failure_logs(checks, repo="o/r", max_log_chars=200)
+        assert len(result) <= 200
+
+    async def test_handles_fetch_failure_gracefully(self) -> None:
+        checks = [
+            CICheck(
+                name="T",
+                status=CheckStatus.COMPLETED,
+                conclusion=CheckConclusion.FAILURE,
+                details_url="https://github.com/o/r/actions/runs/1/job/1",
+            ),
+        ]
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.utils.gh.run", new_callable=AsyncMock, return_value=_shell_ok()),
+        ):
+            mock_run.return_value = _shell_fail()
+            result = await get_ci_failure_logs(checks, repo="o/r")
+        assert result == ""
 
 
 # ---------------------------------------------------------------------------

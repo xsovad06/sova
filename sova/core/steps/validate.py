@@ -21,7 +21,7 @@ log = get_logger(component="step.validate")
 _MAX_FIX_ATTEMPTS = 2
 
 
-async def _find_pre_push_hook(cwd: Path | str | None) -> str | None:
+async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
     """Locate the pre-push hook script for the project."""
     result = await run("git", "config", "--get", "core.hooksPath", cwd=cwd)
     if result.success and result.stdout.strip():
@@ -45,7 +45,7 @@ class ValidateStep(BaseStep):
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         cwd = ctx.working_dir
-        hook = await _find_pre_push_hook(cwd)
+        hook = await find_pre_push_hook(cwd)
 
         if hook is None:
             log.info("step.validate.no_hook", cwd=str(cwd))
