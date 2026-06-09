@@ -39,14 +39,19 @@ _STATE_TO_ROLE: dict[TaskState, str] = {
 }
 
 
+def _resolve_nickname(name: str, config: RolesConfig | None) -> str:
+    """Resolve a role nickname to its canonical name."""
+    if config and name in config.nicknames:
+        return config.nicknames[name]
+    return name
+
+
 def get_role(name: str, *, config: RolesConfig | None = None) -> AgentRole:
     """Get a role instance by name, resolving nicknames if configured.
 
     Raises ValueError if the role name is not found.
     """
-    # Resolve nickname
-    if config and name in config.nicknames:
-        name = config.nicknames[name]
+    name = _resolve_nickname(name, config)
 
     role_cls = _ROLES.get(name)
     if role_cls is None:
@@ -78,9 +83,7 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
 
     Raises ValueError if the role name is not found in built-ins or DB.
     """
-    # Resolve nickname
-    if config and name in config.nicknames:
-        name = config.nicknames[name]
+    name = _resolve_nickname(name, config)
 
     role_cls = _ROLES.get(name)
     if role_cls is not None:

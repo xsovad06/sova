@@ -208,8 +208,9 @@
   function showNodeProps(node) {
     const data = node.data();
     const editable = !isBuiltin;
-    const inputs = commands.find(c => c.name === data.command)?.inputs || [];
-    const outputs = commands.find(c => c.name === data.command)?.outputs || [];
+    const cmd = commands.find(c => c.name === data.command);
+    const inputs = cmd?.inputs || [];
+    const outputs = cmd?.outputs || [];
 
     let html = `
       <div class="space-y-3">

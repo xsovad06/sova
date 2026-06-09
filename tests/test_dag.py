@@ -13,7 +13,7 @@ from sova.core.dag import DAGExecutor, _evaluate_condition, _topological_sort, v
 
 class TestValidateDAG:
     def test_empty_graph(self):
-        errors = validate_dag({"nodes": [], "edges": []})
+        errors, _ = validate_dag({"nodes": [], "edges": []})
         assert len(errors) == 1
         assert "no nodes" in errors[0]
 
@@ -27,7 +27,7 @@ class TestValidateDAG:
                 {"id": "e1", "source": "a", "target": "b"},
             ],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert errors == []
 
     def test_cycle_detection(self):
@@ -43,7 +43,7 @@ class TestValidateDAG:
                 {"id": "e3", "source": "c", "target": "a"},
             ],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert any("cycle" in e.lower() for e in errors)
 
     def test_missing_command(self):
@@ -56,7 +56,7 @@ class TestValidateDAG:
                 {"id": "e1", "source": "a", "target": "b"},
             ],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert any("no command" in e.lower() for e in errors)
 
     def test_unknown_source_node(self):
@@ -64,7 +64,7 @@ class TestValidateDAG:
             "nodes": [{"id": "a", "command": "develop"}],
             "edges": [{"id": "e1", "source": "nonexistent", "target": "a"}],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert any("unknown source" in e.lower() for e in errors)
 
     def test_unknown_target_node(self):
@@ -72,7 +72,7 @@ class TestValidateDAG:
             "nodes": [{"id": "a", "command": "develop"}],
             "edges": [{"id": "e1", "source": "a", "target": "nonexistent"}],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert any("unknown target" in e.lower() for e in errors)
 
     def test_unreachable_nodes(self):
@@ -87,7 +87,7 @@ class TestValidateDAG:
                 # c is not connected
             ],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert any("unreachable" in e.lower() for e in errors)
 
     def test_single_node_valid(self):
@@ -95,7 +95,7 @@ class TestValidateDAG:
             "nodes": [{"id": "a", "command": "develop"}],
             "edges": [],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert errors == []
 
     def test_diamond_graph_valid(self):
@@ -113,7 +113,7 @@ class TestValidateDAG:
                 {"id": "e4", "source": "c", "target": "d"},
             ],
         }
-        errors = validate_dag(graph)
+        errors, _ = validate_dag(graph)
         assert errors == []
 
 
