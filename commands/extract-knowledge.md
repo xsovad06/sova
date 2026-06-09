@@ -31,13 +31,6 @@ User preferences, workflow conventions, and project state.
 
 Run `git diff` and `git diff --cached` to see current changes. Also review the conversation for patterns, gotchas, decisions, and fixes that came up during the session.
 
-**Check for external review interactions in this session** (if the project has `[external_reviews]` configured in `sova.toml`):
-If this session involved addressing CodeRabbit or SonarCloud findings:
-- What types of issues were found? (security, style, correctness, performance)
-- Were any findings false positives? Document why for future reference.
-- Did addressing the findings teach something about the codebase?
-- Were there recurring patterns across multiple findings?
-
 ### 2. Categorize Findings
 
 For each finding, determine the right destination:
@@ -46,8 +39,6 @@ For each finding, determine the right destination:
 |---|---|
 | Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
 | ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
-| External tool false positives / recurring patterns | `.claude/agent-memory/cookbook.md` ("External Review Tools" section) |
-| CodeRabbit path instruction gaps | `.coderabbit.yaml` (`path_instructions`) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
@@ -97,9 +88,6 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 - **Test patterns** -- new fixtures, assertion techniques, edge case coverage
 - **Review feedback** -- what reviewers flagged and why
 - **Recurring mistakes** -- same issue appearing in multiple sessions
-- **External tool findings** -- what CodeRabbit/SonarCloud caught, which rules fired, false positive patterns
-- **CodeRabbit config gaps** -- files or patterns that need better `path_instructions` in `.coderabbit.yaml`
-- **Tool-specific quirks** -- behaviors that require workarounds (e.g., CHANGES_REQUESTED stickiness)
 
 ## Cross-References
 

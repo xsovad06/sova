@@ -40,6 +40,8 @@ gh pr checks <PR_NUMBER>
 
 Extract: author, linked issue, whether AI-generated (bot prefixes, agent comments).
 
+**CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
+
 ## 2. Cross-Reference Comment Threads vs Actual Code
 
 For AI-generated PRs where agents may claim to have pushed fixes that never landed:
