@@ -129,32 +129,26 @@ If any stash entries reference the merged branch name, report them to the user (
 
 Only run this phase if `.claude/agent-memory/` exists in the project.
 
-Check if there were review comments worth learning from:
+Fetch all review data:
 
 ```bash
 OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-INLINE_COUNT=$(gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments" --jq 'length')
-REVIEW_COUNT=$(gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews" --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .body != "")] | length')
+gh pr view <PR_NUMBER> --json comments,reviews,body,title
+gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
+gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews"
 ```
 
-If there were substantive review comments (2+ inline comments or any CHANGES_REQUESTED reviews):
+Analyze ALL review comments (human and bot) for actionable findings:
+- **Patterns to follow** -- things reviewers praised or explicitly requested
+- **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
+- **Test coverage gaps** -- missing assertions, untested scenarios
+- **Bot suggestions worth adopting** -- evaluate critically, but don't dismiss just because the source is a bot. If a bot identifies a real improvement (even in an "outside diff" comment), record it.
 
-1. Fetch full review data:
-   ```bash
-   gh pr view <PR_NUMBER> --json comments,reviews,body,title
-   gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
-   ```
+Skip only if there are truly zero review comments and zero review bodies with content. A bot approval with suggestions still counts as reviewable content.
 
-2. Analyze and extract:
-   - **Patterns to follow** -- things reviewers praised or explicitly requested
-   - **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
-   - **Test coverage gaps** -- missing assertions, untested scenarios
-
-3. Update `.claude/agent-memory/cookbook.md` (if it exists):
-   - Append new findings under the matching domain section (no duplicates)
-   - Add recurring mistakes to the "Common Mistakes" section with `[Nx]` count
-
-If there were no substantive review comments, skip the learning extraction.
+Update `.claude/agent-memory/cookbook.md` (if it exists):
+- Append new findings under the matching domain section (no duplicates)
+- Add recurring mistakes to the "Common Mistakes" section with `[Nx]` count
 
 ### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
 
@@ -168,7 +162,12 @@ Only run this phase if `.claude/agent-memory/` exists in the project.
    
    Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
 
-3. **Add session learnings**: If new framework gotchas, testing patterns, or development insights emerged during this PR's development, append them to `.claude/agent-memory/cookbook.md` under the matching domain section.
+3. **Add session learnings**: Actively scan these sources for new framework gotchas, testing patterns, operational issues, or development insights:
+   - **PR description and commit messages**: read the PR body and `git log` for investigation context, root cause analysis, or workaround notes
+   - **This conversation**: review the current session for patterns discovered, gotchas hit, or operational issues encountered (e.g., auth failures, permission gaps, tool quirks)
+   - **Errors recovered from during this pipeline**: if the merge, CI, or any phase hit an issue that was resolved, that resolution is a learning
+   
+   For each finding, append to `.claude/agent-memory/cookbook.md` under the matching domain section. Only record actionable, specific lessons -- not generic advice. Check for duplicates before adding.
 
 4. **Check file sizes**: Ensure agent memory stays within limits:
    - `MEMORY.md` -- under 20 lines (index only)
