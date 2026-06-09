@@ -142,36 +142,57 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool) -> None:
         console.print("[red]Failed to list worktrees.[/red]")
         raise typer.Exit(code=1)
 
-    worktrees = []
-    current_wt: dict[str, str] = {}
-    for line in result.stdout.strip().split("\n"):
-        if line.startswith("worktree "):
-            if current_wt:
-                worktrees.append(current_wt)
-            current_wt = {"path": line.split(" ", 1)[1]}
-        elif line.startswith("branch "):
-            current_wt["branch"] = line.split(" ", 1)[1]
-        elif not line.strip():
-            if current_wt:
-                worktrees.append(current_wt)
-                current_wt = {}
-
-    if current_wt:
-        worktrees.append(current_wt)
-
-    # Filter to SOVA-managed worktrees (branches with feat/, fix/, refactor/ prefixes)
-    sova_prefixes = ("refs/heads/feat/", "refs/heads/fix/", "refs/heads/refactor/")
-    stale = [wt for wt in worktrees if wt.get("branch", "").startswith(sova_prefixes)]
+    worktrees = _parse_worktree_output(result.stdout)
+    stale = _filter_stale_worktrees(worktrees)
 
     if not stale:
         console.print("[green]No stale worktrees found.[/green]")
         return
 
     if dry_run:
-        console.print(f"[yellow]Would remove {len(stale)} worktree(s):[/yellow]")
-        for wt in stale:
-            console.print(f"  - {wt['path']} ({wt.get('branch', 'detached')})")
+        _preview_stale_worktrees(stale)
         return
+
+    await _remove_worktrees(stale, resolved_dir)
+
+
+def _parse_worktree_output(stdout: str) -> list[dict[str, str]]:
+    """Parse `git worktree list --porcelain` output into a list of worktree dicts."""
+    worktrees: list[dict[str, str]] = []
+    current_wt: dict[str, str] = {}
+    for line in stdout.strip().split("\n"):
+        if line.startswith("worktree "):
+            if current_wt:
+                worktrees.append(current_wt)
+            current_wt = {"path": line.split(" ", 1)[1]}
+        elif line.startswith("branch "):
+            current_wt["branch"] = line.split(" ", 1)[1]
+        elif not line.strip() and current_wt:
+            worktrees.append(current_wt)
+            current_wt = {}
+
+    if current_wt:
+        worktrees.append(current_wt)
+
+    return worktrees
+
+
+def _filter_stale_worktrees(worktrees: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Filter to SOVA-managed worktrees (branches with feat/, fix/, refactor/ prefixes)."""
+    sova_prefixes = ("refs/heads/feat/", "refs/heads/fix/", "refs/heads/refactor/")
+    return [wt for wt in worktrees if wt.get("branch", "").startswith(sova_prefixes)]
+
+
+def _preview_stale_worktrees(stale: list[dict[str, str]]) -> None:
+    """Show what would be removed in a dry run."""
+    console.print(f"[yellow]Would remove {len(stale)} worktree(s):[/yellow]")
+    for wt in stale:
+        console.print(f"  - {wt['path']} ({wt.get('branch', 'detached')})")
+
+
+async def _remove_worktrees(stale: list[dict[str, str]], resolved_dir: Path) -> None:
+    """Remove stale worktrees and report results."""
+    from sova.utils.shell import run
 
     removed = 0
     for wt in stale:
