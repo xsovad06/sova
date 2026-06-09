@@ -27,10 +27,26 @@ def _save(data: dict[str, str]) -> None:
     _REGISTRY_FILE.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def _validate_slug(slug: str) -> str:
+    """Validate a slug contains only safe characters (alphanumeric, hyphens)."""
+    sanitized = re.sub(r"[^a-z0-9-]", "", slug.lower())
+    if not sanitized:
+        raise ValueError(f"Invalid slug: {slug!r}")
+    return sanitized
+
+
 def _slugify(name: str) -> str:
     """Convert a directory name to a URL-safe slug."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     return slug or "project"
+
+
+def _validate_project_path(path: Path) -> Path:
+    """Resolve and validate a project path is a real directory (no traversal)."""
+    resolved = path.resolve()
+    if not resolved.is_dir():
+        raise ValueError(f"Not a directory: {resolved}")
+    return resolved
 
 
 def register_project(path: Path, slug: str | None = None) -> str:
@@ -39,20 +55,20 @@ def register_project(path: Path, slug: str | None = None) -> str:
     If slug is None, auto-generates from directory name.
     Raises ValueError if slug is already taken by a different path.
     """
-    path = path.resolve()
-    if not path.is_dir():
-        raise ValueError(f"Not a directory: {path}")
+    path = _validate_project_path(path)
 
     data = _load()
     slug = slug or _slugify(path.name)
+    slug = _validate_slug(slug)
 
-    # Deduplicate slug if needed
-    if slug in data and Path(data[slug]).resolve() != path:
-        base = slug
-        n = 2
-        while f"{base}-{n}" in data:
-            n += 1
-        slug = f"{base}-{n}"
+    if slug in data:
+        existing = Path(data[slug]).resolve()
+        if existing != path:
+            base = slug
+            n = 2
+            while f"{base}-{n}" in data:
+                n += 1
+            slug = f"{base}-{n}"
 
     data[slug] = str(path)
     _save(data)
@@ -76,11 +92,15 @@ def list_projects() -> dict[str, str]:
 
 def get_project_path(slug: str) -> Path | None:
     """Get the path for a registered project slug."""
+    slug = _validate_slug(slug)
     data = _load()
     path_str = data.get(slug)
     if path_str is None:
         return None
-    return Path(path_str)
+    resolved = Path(path_str).resolve()
+    if not resolved.is_dir():
+        return None
+    return resolved
 
 
 def has_projects() -> bool:
