@@ -43,10 +43,8 @@ def parse_diff_lines(diff: str) -> dict[str, set[int]]:
         if raw_line.startswith("+"):
             result[current_file].add(line_num)
             line_num += 1
-        elif raw_line.startswith("-"):
-            pass
-        elif not raw_line.startswith("\\"):
-            if raw_line.startswith("index ") or raw_line.startswith("--- "):
+        elif not raw_line.startswith(("-", "\\")):
+            if raw_line.startswith(("index ", "--- ")):
                 continue
             result[current_file].add(line_num)
             line_num += 1

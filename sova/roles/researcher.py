@@ -19,6 +19,8 @@ from sova.utils.shell import run
 
 log = get_logger(component="role.researcher")
 
+_LOG_PARSE_FAILED = "researcher.parse_failed"
+
 _MAX_SOURCE_TREE_LINES = 500
 _MAX_FILE_LINES = 200
 
@@ -171,16 +173,16 @@ def _parse_research_response(text: str) -> dict | None:
             try:
                 data = json.loads(cleaned[start : end + 1])
             except json.JSONDecodeError:
-                log.warning("researcher.parse_failed", reason="no valid JSON found")
+                log.warning(_LOG_PARSE_FAILED, reason="no valid JSON found")
                 return None
         else:
-            log.warning("researcher.parse_failed", reason="no JSON boundaries found")
+            log.warning(_LOG_PARSE_FAILED, reason="no JSON boundaries found")
             return None
 
     required_keys = {"affected_files", "suggested_approach", "estimated_complexity"}
     if not required_keys.issubset(data.keys()):
         missing = required_keys - data.keys()
-        log.warning("researcher.parse_failed", reason=f"missing keys: {missing}")
+        log.warning(_LOG_PARSE_FAILED, reason=f"missing keys: {missing}")
         return None
 
     return data

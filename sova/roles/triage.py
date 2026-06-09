@@ -18,6 +18,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="role.triage")
 
+_ACCEPTANCE_CRITERIA = "acceptance criteria"
+
 # Prompt template for Claude-based assessment
 _ASSESSMENT_PROMPT = """\
 Assess this GitHub issue for autonomous AI agent suitability.
@@ -162,7 +164,7 @@ class TriageRole(AgentRole):
                 suitability="needs_spec",
                 confidence=0.7,
                 reasoning="Issue has no description; needs specification before work can begin.",
-                missing_context=["description", "acceptance criteria"],
+                missing_context=["description", _ACCEPTANCE_CRITERIA],
                 estimated_complexity="moderate",
                 suggested_role="triage",
             )
@@ -172,7 +174,7 @@ class TriageRole(AgentRole):
         # Check for acceptance criteria indicators
         has_criteria = any(
             marker in body
-            for marker in ["- [ ]", "acceptance criteria", "expected behavior", "## scope", "## requirements"]
+            for marker in ["- [ ]", _ACCEPTANCE_CRITERIA, "expected behavior", "## scope", "## requirements"]
         )
 
         # Check for file/code references
@@ -185,7 +187,7 @@ class TriageRole(AgentRole):
                 suitability="needs_spec",
                 confidence=0.6,
                 reasoning="Issue has a short description without acceptance criteria.",
-                missing_context=["acceptance criteria", "expected behavior"],
+                missing_context=[_ACCEPTANCE_CRITERIA, "expected behavior"],
                 estimated_complexity="moderate",
                 suggested_role="triage",
             )
@@ -227,7 +229,7 @@ class TriageRole(AgentRole):
                 suggested_role=data.get("suggested_role", "researcher"),
                 sub_tasks=data.get("sub_tasks", []),
             )
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        except (KeyError, ValueError) as exc:
             log.warning("triage.parse_failed", error=str(exc))
             return None
 
