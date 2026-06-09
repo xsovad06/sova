@@ -42,5 +42,9 @@ htmlcov/
 .claude/assets/
 .agent-summary.md
 
+# Environment secrets
+.env
+.env.*
+
 # Health audit (transient work artifact, auto-deleted when all issues resolved)
 docs/HEALTH-AUDIT.md
