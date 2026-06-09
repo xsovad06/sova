@@ -1458,13 +1458,15 @@ class TestMonitorCIStep:
         assert result.success
         assert "1 CI checks passed" in result.summary
 
-    async def test_fails_when_check_fails(self) -> None:
+    async def test_fails_when_check_fails_and_fix_disabled(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
-        ctx = _make_ctx(pr_number=10)
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        check = MagicMock(is_completed=True, is_passed=False)
+        check = MagicMock(is_completed=True, is_passed=False, details_url="")
         check.name = "lint"
         with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
             mock_checks.return_value = [check]
@@ -1510,6 +1512,47 @@ class TestMonitorCIStep:
         assert result.success
         assert "1 CI checks passed" in result.summary
 
+    async def test_fetch_failure_does_not_false_pass(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [None, None, [passed_check]]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 CI checks passed" in result.summary
+        assert mock_checks.call_count == 3
+
+    async def test_fetch_failure_times_out(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = None
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "timed out" in result.summary.lower()
+
     async def test_fails_when_no_pr(self) -> None:
         from sova.core.steps.monitor_ci import MonitorCIStep
 
@@ -1520,6 +1563,273 @@ class TestMonitorCIStep:
 
         assert not result.success
         assert "no pr" in result.summary.lower()
+
+
+# ---------------------------------------------------------------------------
+# MonitorCIStep -- CI fix loop
+# ---------------------------------------------------------------------------
+
+
+def _make_ci_check(name: str = "Tests", passed: bool = False, details_url: str = "") -> MagicMock:
+    """Create a mock CICheck for CI fix tests."""
+    check = MagicMock(is_completed=True, is_passed=passed, details_url=details_url)
+    check.name = name
+    return check
+
+
+def _shell_side_effect(*args: str, **kwargs: object) -> MagicMock:
+    """Dispatch shell.run mock based on the command being called."""
+    if "rev-list" in args:
+        return MagicMock(success=True, stdout="1\n")
+    return MagicMock(success=True, stdout="abc1234 fix\n")
+
+
+class TestMonitorCIFixLoop:
+    async def test_ci_fails_fix_succeeds_first_attempt(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+        passed_check = _make_ci_check("Tests", passed=True)
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [
+                [failed_check],  # initial poll
+                [passed_check],  # re-poll after fix
+            ]
+            mock_logs.return_value = "ERROR: ModuleNotFoundError: No module named 'PIL'"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("1.00"))
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 fix attempt" in result.summary
+        assert ctx.cost_usd == Decimal("1.00")
+
+    async def test_ci_fails_fix_succeeds_second_attempt(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+        passed_check = _make_ci_check("Tests", passed=True)
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [
+                [failed_check],  # initial poll
+                [failed_check],  # re-poll after fix 1 (still fails)
+                [passed_check],  # re-poll after fix 2 (passes)
+            ]
+            mock_logs.return_value = "ERROR: test failure"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 fix attempt" in result.summary
+        assert mock_invoke.await_count == 2
+        assert ctx.cost_usd == Decimal("1.00")
+
+    async def test_ci_fails_all_attempts_exhausted(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 2
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check(
+            "Tests", passed=False, details_url="https://github.com/o/r/actions/runs/123/job/456"
+        )
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+            mock_logs.return_value = "ERROR: persistent failure"
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Tried fix", model="opus", cost_usd=Decimal("0.50"))
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert not result.success
+        assert "2 fix attempt" in result.summary
+        assert "Tests" in result.summary
+        assert mock_invoke.await_count == 2
+
+    async def test_ci_fix_disabled_when_zero(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check("lint", passed=False)
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [failed_check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "lint" in result.summary
+
+    async def test_ci_fix_respects_budget(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        ctx.cost_usd = Decimal("999")  # over budget
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "budget" in result.summary.lower()
+
+    async def test_ci_fix_local_hook_fails(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 1
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value="error"),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+
+            with (
+                patch(
+                    "sova.core.steps.validate.find_pre_push_hook",
+                    new_callable=AsyncMock,
+                    return_value="/hooks/pre-push",
+                ),
+                patch("sova.git.operations.push", new_callable=AsyncMock) as mock_push,
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
+                mock_run.side_effect = [
+                    MagicMock(success=True, stdout="abc fix\n"),  # git log
+                    MagicMock(success=False, stdout="FAIL\n", stderr="hook error"),  # pre-push fails
+                ]
+                result = await step.execute(ctx)
+
+        assert not result.success
+        assert "local validation" in result.summary.lower()
+        mock_push.assert_not_awaited()
+
+    async def test_ci_fix_push_fails(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check("Tests", passed=False, details_url="https://github.com/o/r/actions/runs/1/job/2")
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value="error"),
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.return_value = [failed_check]
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock, side_effect=RuntimeError("push rejected")),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert not result.success
+        assert "push failed" in result.summary.lower()
+
+    async def test_ci_log_fetch_graceful_failure(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"))
+        step = MonitorCIStep()
+
+        failed_check = _make_ci_check("Tests", passed=False, details_url="")
+        passed_check = _make_ci_check("Tests", passed=True)
+
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock) as mock_logs,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [[failed_check], [passed_check]]
+            mock_logs.return_value = ""
+
+            with (
+                patch("sova.core.steps.validate.find_pre_push_hook", new_callable=AsyncMock, return_value=None),
+                patch("sova.git.operations.push", new_callable=AsyncMock),
+                patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
+                patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
+                mock_run.side_effect = _shell_side_effect
+                result = await step.execute(ctx)
+
+        assert result.success
+        mock_invoke.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
