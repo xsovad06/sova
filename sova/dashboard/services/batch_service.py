@@ -97,7 +97,7 @@ def cancel_batch(batch_id: str) -> bool:
     return True
 
 
-async def start_batch(
+def start_batch(
     action: str,
     issue_ids: list[str],
     project_dir: Path,
@@ -134,7 +134,7 @@ async def start_batch(
 
 async def start_batch_run(
     issue_ids: list[str],
-    project_dir: Path,
+    _project_dir: Path,
 ) -> dict:
     """Start an agent for the first issue. Returns status dict."""
     from sova.dashboard.services.control_service import start_agent

@@ -175,7 +175,7 @@ class TestStartBatch:
     @patch("sova.dashboard.services.batch_service._run_batch_triage")
     async def test_start_triage_returns_batch_id(self, mock_worker) -> None:
         mock_worker.return_value = None
-        batch_id = await start_batch("triage", ["1", "2"], Path("/tmp"))
+        batch_id = start_batch("triage", ["1", "2"], Path("/tmp"))
         assert batch_id is not None
         assert len(batch_id) == 12
         assert batch_id in _active_batches
@@ -187,7 +187,7 @@ class TestStartBatch:
     @patch("sova.dashboard.services.batch_service._run_batch_harden")
     async def test_start_harden_returns_batch_id(self, mock_worker) -> None:
         mock_worker.return_value = None
-        batch_id = await start_batch("harden", ["3"], Path("/tmp"), {"skip_triage": True})
+        batch_id = start_batch("harden", ["3"], Path("/tmp"), {"skip_triage": True})
         assert batch_id in _active_batches
         job = _active_batches[batch_id]
         assert job.action == "harden"
@@ -195,26 +195,26 @@ class TestStartBatch:
     @patch("sova.dashboard.services.batch_service._run_batch_triage")
     async def test_triage_uses_default_concurrency(self, mock_worker) -> None:
         mock_worker.return_value = None
-        batch_id = await start_batch("triage", ["1"], Path("/tmp"))
+        batch_id = start_batch("triage", ["1"], Path("/tmp"))
         job = _active_batches[batch_id]
         assert job.max_concurrency == DEFAULT_CONCURRENCY["triage"]
 
     @patch("sova.dashboard.services.batch_service._run_batch_harden")
     async def test_harden_uses_default_concurrency(self, mock_worker) -> None:
         mock_worker.return_value = None
-        batch_id = await start_batch("harden", ["1"], Path("/tmp"))
+        batch_id = start_batch("harden", ["1"], Path("/tmp"))
         job = _active_batches[batch_id]
         assert job.max_concurrency == DEFAULT_CONCURRENCY["harden"]
 
     @patch("sova.dashboard.services.batch_service._run_batch_triage")
     async def test_custom_concurrency_override(self, mock_worker) -> None:
         mock_worker.return_value = None
-        batch_id = await start_batch("triage", ["1"], Path("/tmp"), {"max_concurrency": 5})
+        batch_id = start_batch("triage", ["1"], Path("/tmp"), {"max_concurrency": 5})
         job = _active_batches[batch_id]
         assert job.max_concurrency == 5
 
     async def test_unknown_action_marks_failed(self) -> None:
-        batch_id = await start_batch("unknown_action", ["1"], Path("/tmp"))
+        batch_id = start_batch("unknown_action", ["1"], Path("/tmp"))
         job = _active_batches[batch_id]
         assert job.status == "done"
         assert all(r.status == "failed" for r in job.results)
