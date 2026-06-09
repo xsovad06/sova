@@ -259,9 +259,115 @@ class TestResearcherRole:
         role = ResearcherRole()
         steps = role.get_steps()
         names = [s.name for s in steps]
-        assert "fetch_task" in names
-        assert "research" in names
-        assert "extract_memory" in names
+        assert names == ["fetch_task", "research", "extract_memory"]
+
+
+# ---------------------------------------------------------------------------
+# Researcher pipeline steps
+# ---------------------------------------------------------------------------
+
+
+class TestFetchTaskStep:
+    async def test_execute_populates_context(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = FetchTaskStep()
+
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.task is not None
+        assert ctx.task.title == "Test issue"
+
+    async def test_validate_output_passes_when_task_set(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx.task = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
+        step = FetchTaskStep()
+
+        gate = await step.validate_output(ctx)
+        assert gate.passed
+
+    async def test_validate_output_fails_when_task_missing(self) -> None:
+        from sova.core.steps.fetch_task import FetchTaskStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        ctx.task = None
+        step = FetchTaskStep()
+
+        gate = await step.validate_output(ctx)
+        assert not gate.passed
+
+
+class TestResearchStep:
+    async def test_execute_success(self) -> None:
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        step = ResearchStep()
+
+        llm_result = LLMResult(
+            text="done",
+            model="sonnet",
+            cost_usd=Decimal("0.02"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+        with patch("sova.core.steps.research.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert result.cost_usd == Decimal("0.02")
+        assert ctx.cost_usd == Decimal("0.02")
+
+    async def test_execute_runtime_error(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.steps.research import ResearchStep
+
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED)
+        step = ResearchStep()
+
+        with patch(
+            "sova.core.steps.research.invoke_command",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("CLI failed"),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "CLI failed" in result.error
+
+    async def test_validate_output_passes_with_research_section(self) -> None:
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="Some text\n\n## Research\n\nFindings here", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = ResearchStep()
+
+        gate = await step.validate_output(ctx)
+        assert gate.passed
+
+    async def test_validate_output_fails_without_research_section(self) -> None:
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = ResearchStep()
+
+        gate = await step.validate_output(ctx)
+        assert not gate.passed
 
 
 # ---------------------------------------------------------------------------

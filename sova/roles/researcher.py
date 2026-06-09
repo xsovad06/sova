@@ -86,7 +86,7 @@ class ResearcherRole(AgentRole):
 
         log.info("researcher.start", issue=ctx.issue_number)
 
-        steps = get_researcher_steps()
+        steps = self.get_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 

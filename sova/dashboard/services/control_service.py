@@ -35,6 +35,9 @@ from sova.dashboard.services.agent_lifecycle import (
     DEVELOPER_PIPELINE as DEVELOPER_PIPELINE,
 )
 from sova.dashboard.services.agent_lifecycle import (
+    RESEARCHER_PIPELINE as RESEARCHER_PIPELINE,
+)
+from sova.dashboard.services.agent_lifecycle import (
     _resolve_command_prompt as _resolve_command_prompt,
 )
 from sova.dashboard.services.agent_lifecycle import (

@@ -324,9 +324,7 @@ def _detect_variant(current_step: str | None, *, role: str | None = None, pr_num
     dashboard outer-process sentinel). WorkflowEngine TaskRuns acquire
     pr_number mid-pipeline, so gating avoids false positives.
     """
-    if current_step in (None, "agent") and role == "researcher":
-        return "researcher"
-    if current_step in _RESEARCHER_ONLY:
+    if role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY):
         return "researcher"
     if current_step in (None, "agent") and role == "developer" and pr_number is not None:
         return "address_review"

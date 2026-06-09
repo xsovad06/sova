@@ -19,12 +19,12 @@ Fetch and analyze a task from the project tracker.
 
    **GitHub** (default, or no sova.toml):
    ```bash
-   gh issue view <ISSUE_NUMBER> --json number,title,state,assignees,labels,milestone,body,comments
+   gh issue view $ARGUMENTS --json number,title,state,assignees,labels,milestone,body,comments
    ```
 
    **JIRA** (`task_source.type = "jira"`):
    ```bash
-   jira issue view <TICKET_KEY> --plain
+   jira issue view $ARGUMENTS --plain
    ```
 
 4. Present:
