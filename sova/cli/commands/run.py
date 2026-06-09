@@ -188,7 +188,7 @@ async def _watch(*, project_dir: Path | None, force: bool) -> None:
                     force=force,
                 )
 
-                role, result = await dispatch(ctx, config=config.roles)
+                _, result = await dispatch(ctx, config=config.roles)
                 if result.success:
                     console.print(f"[green]Done: {result.summary}[/green]")
                 else:
@@ -246,7 +246,7 @@ async def _parallel(*, issues: list[str], project_dir: Path | None, force: bool)
                 force=force,
             )
             try:
-                role, result = await dispatch(ctx, config=config.roles)
+                _, result = await dispatch(ctx, config=config.roles)
                 return issue, result.success, result.summary
             except Exception as exc:
                 return issue, False, str(exc)

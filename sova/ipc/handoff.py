@@ -87,7 +87,7 @@ def read_handoff_file(project_dir: Path) -> DashboardHandoff | None:
     try:
         data = json.loads(path.read_text())
         return DashboardHandoff.model_validate(data)
-    except (json.JSONDecodeError, OSError, ValueError):
+    except (OSError, ValueError):
         return None
 
 

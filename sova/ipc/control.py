@@ -122,8 +122,9 @@ class AgentProcess:
         self._proc.terminate()
 
         try:
-            await asyncio.wait_for(self._proc.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(timeout):
+                await self._proc.wait()
+        except TimeoutError:
             log.warning("process.kill", pid=self.pid)
             self._proc.kill()
             await self._proc.wait()
