@@ -93,6 +93,37 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
 _TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
 
 
+def _read_file_handoff(project_dir: Path) -> dict | None:
+    """Read file-based handoff details (sync I/O, call outside async transactions)."""
+    try:
+        from sova.ipc.handoff import read_handoff_file
+
+        handoff = read_handoff_file(project_dir)
+        if handoff is None:
+            return None
+        return {
+            "issue": handoff.issue,
+            "pr_number": handoff.pr_number,
+            "details": handoff.details,
+            "source": handoff.source,
+        }
+    except Exception:
+        log.debug("task_run.file_handoff_read_failed", exc_info=True)
+        return None
+
+
+def _apply_file_handoff(task_run: object, file_handoff: dict | None, run_id: int) -> None:
+    """Apply file-based handoff to a TaskRun if it matches by issue or PR."""
+    if not file_handoff:
+        return
+    handoff_issue = str(file_handoff["issue"]).lstrip("#").strip() if file_handoff["issue"] else ""
+    issue_match = handoff_issue and handoff_issue == str(task_run.issue_number).lstrip("#").strip()
+    pr_match = file_handoff["pr_number"] and file_handoff["pr_number"] == task_run.pr_number
+    if issue_match or pr_match:
+        task_run.handoff_json = file_handoff["details"]
+        log.info("task_run.file_handoff_persisted", run_id=run_id, source=file_handoff["source"])
+
+
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:
     """Update the TaskRun with final status and cost.
 
@@ -106,6 +137,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 
         status = "done" if exit_code == 0 else "failed"
         cost = Decimal(str(agent.last_result_cost)) if agent.last_result_cost else Decimal("0")
+        file_handoff = _read_file_handoff(agent.project_dir)
 
         async with await get_session(project_dir=agent.project_dir) as session:
             async with session.begin():
@@ -134,6 +166,10 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                         cost_usd=cost,
                     )
                     session.add(cost_record)
+
+                if not task_run.handoff_json:
+                    _apply_file_handoff(task_run, file_handoff, run_id)
+
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
