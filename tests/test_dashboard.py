@@ -178,10 +178,20 @@ class TestDashboardHealth:
         assert resp.status_code == 200
         assert "Agents" in resp.text
 
-    async def test_work_page_loads(self, client: AsyncClient) -> None:
-        resp = await client.get("/work")
+    async def test_work_redirects_to_agents(self, client: AsyncClient) -> None:
+        resp = await client.get("/work", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/agents"
+
+    async def test_work_detail_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
+        resp = await client.get("/work/1")
         assert resp.status_code == 200
-        assert "Work" in resp.text
+        assert "Run #1" in resp.text
+
+    async def test_lifecycle_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
+        resp = await client.get("/lifecycle/42")
+        assert resp.status_code == 200
+        assert "Issue #42" in resp.text
 
     async def test_costs_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/costs")
@@ -198,15 +208,15 @@ class TestDashboardHealth:
         assert resp.status_code == 301
         assert resp.headers["location"] == "/agents"
 
-    async def test_runs_redirects_to_work(self, client: AsyncClient) -> None:
+    async def test_runs_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/runs", follow_redirects=False)
         assert resp.status_code == 301
-        assert resp.headers["location"] == "/work"
+        assert resp.headers["location"] == "/agents"
 
-    async def test_tasks_redirects_to_work(self, client: AsyncClient) -> None:
+    async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/tasks", follow_redirects=False)
         assert resp.status_code == 301
-        assert resp.headers["location"] == "/work"
+        assert resp.headers["location"] == "/agents"
 
     async def test_memory_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/memory")
@@ -1286,6 +1296,31 @@ class TestMultiProject:
         assert resp.status_code == 200
         assert "Project Setup" in resp.text
 
+    async def test_project_work_redirects_to_agents(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/work", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/p/alpha/agents"
+
+    async def test_project_work_detail_renders(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/work/1")
+        assert resp.status_code == 200
+        assert "Run #1" in resp.text
+
+    async def test_project_tasks_redirects_to_agents(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/tasks", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/p/alpha/agents"
+
+    async def test_project_runs_redirects_to_agents(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/runs", follow_redirects=False)
+        assert resp.status_code == 301
+        assert resp.headers["location"] == "/p/alpha/agents"
+
+    async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
+        resp = await multi_client.get("/p/alpha/lifecycle/42")
+        assert resp.status_code == 200
+        assert "Issue #42" in resp.text
+
 
 # ---------------------------------------------------------------------------
 # Setup API
@@ -1334,10 +1369,10 @@ class TestTasksAPI:
         data = resp.json()
         assert len(data["tasks"]) == 1
 
-    async def test_tasks_redirects_to_work(self, client: AsyncClient) -> None:
+    async def test_tasks_redirects_to_agents(self, client: AsyncClient) -> None:
         resp = await client.get("/tasks", follow_redirects=False)
         assert resp.status_code == 301
-        assert resp.headers["location"] == "/work"
+        assert resp.headers["location"] == "/agents"
 
     async def test_queue_page_renders(self, client: AsyncClient) -> None:
         resp = await client.get("/queue")
