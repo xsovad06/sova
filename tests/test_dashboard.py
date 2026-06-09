@@ -3049,3 +3049,48 @@ class TestParseStreamLine:
 
         line = json.dumps({"type": "system", "data": {}})
         assert _parse_stream_line(line, self._agent()) == ""
+
+
+# ---------------------------------------------------------------------------
+# Setup Service -- TomlConfig and generate_sova_toml
+# ---------------------------------------------------------------------------
+
+
+class TestTomlConfigGeneration:
+    """Tests for TomlConfig dataclass and generate_sova_toml."""
+
+    def test_default_toml_config(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig
+
+        cfg = TomlConfig()
+        assert cfg.base_branch == "main"
+        assert cfg.task_source == "github"
+        assert cfg.agent_model == "opus"
+        assert cfg.max_budget == "10.00"
+        assert cfg.no_ai_coauthor is False
+        assert cfg.pr_auto_link is True
+
+    def test_generate_sova_toml_includes_fields(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
+
+        cfg = TomlConfig(github_repo="owner/repo", github_user="testuser", base_branch="develop")
+        content = generate_sova_toml(cfg)
+        assert 'github_repo = "owner/repo"' in content
+        assert 'github_user = "testuser"' in content
+        assert 'base_branch = "develop"' in content
+        assert "[task_source]" in content
+        assert "[agent]" in content
+
+    def test_generate_sova_toml_no_ai_coauthor(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
+
+        cfg = TomlConfig(no_ai_coauthor=True)
+        content = generate_sova_toml(cfg)
+        assert "no_ai_coauthor = true" in content
+
+    def test_generate_sova_toml_custom_budget(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
+
+        cfg = TomlConfig(max_budget="25.00")
+        content = generate_sova_toml(cfg)
+        assert 'max_budget = "25.00"' in content

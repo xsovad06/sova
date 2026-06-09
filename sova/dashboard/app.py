@@ -336,7 +336,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return templates.TemplateResponse(request, "agents.html", {"page": "agents"})
 
     @app.get("/work")
-    async def work_redirect():
+    async def work_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/work/{run_id}")
@@ -345,23 +345,23 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # -- Old pages kept as redirects --
     @app.get("/overview")
-    async def overview_redirect():
+    async def overview_redirect() -> RedirectResponse:
         return RedirectResponse(url="/dashboard", status_code=301)
 
     @app.get("/control")
-    async def control_redirect():
+    async def control_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/tasks")
-    async def tasks_redirect():
+    async def tasks_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/runs")
-    async def runs_redirect():
+    async def runs_redirect() -> RedirectResponse:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/runs/{run_id}")
-    async def run_detail_redirect(run_id: int):
+    async def run_detail_redirect(run_id: int) -> RedirectResponse:
         return RedirectResponse(url=f"/work/{run_id}", status_code=301)
 
     # -- Unchanged pages --

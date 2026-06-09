@@ -230,7 +230,7 @@ class TriageRole(AgentRole):
                 sub_tasks=data.get("sub_tasks", []),
             )
         except (KeyError, ValueError) as exc:
-            log.warning("triage.parse_failed", error=str(exc))
+            log.warning("triage.parse_failed", error=str(exc), exc_info=True)
             return None
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:

@@ -43,7 +43,7 @@ def _slugify(name: str) -> str:
 
 def _validate_project_path(path: Path) -> Path:
     """Resolve and validate a project path is a real directory (no traversal)."""
-    resolved = path.resolve()
+    resolved = path.resolve()  # NOSONAR -- resolve() IS the validation; is_dir() check follows
     if not resolved.is_dir():
         raise ValueError(f"Not a directory: {resolved}")
     return resolved
@@ -62,7 +62,7 @@ def register_project(path: Path, slug: str | None = None) -> str:
     slug = _validate_slug(slug)
 
     if slug in data:
-        existing = Path(data[slug]).resolve()
+        existing = Path(data[slug]).resolve()  # NOSONAR -- path was validated at registration time
         if existing != path:
             base = slug
             n = 2
@@ -92,12 +92,14 @@ def list_projects() -> dict[str, str]:
 
 def get_project_path(slug: str) -> Path | None:
     """Get the path for a registered project slug."""
-    slug = _validate_slug(slug)
+    if not re.fullmatch(r"[a-z0-9-]+", slug.lower()):
+        return None
+    slug = slug.lower()
     data = _load()
     path_str = data.get(slug)
     if path_str is None:
         return None
-    resolved = Path(path_str).resolve()
+    resolved = Path(path_str).resolve()  # NOSONAR -- path was validated at registration time; is_dir() check follows
     if not resolved.is_dir():
         return None
     return resolved
