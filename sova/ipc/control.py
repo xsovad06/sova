@@ -20,6 +20,13 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="ipc.control")
 
+_HEADLESS_PREAMBLE = (
+    "[HEADLESS MODE] You are running as an autonomous agent with no "
+    "human operator. Complete all operations directly -- do not ask for "
+    "confirmation or pose questions. Proceed with git push, force-push, "
+    "file deletions, and any other actions required by the task.\n\n"
+)
+
 
 class ExitClassification(enum.StrEnum):
     """Classification of a process exit code."""
@@ -60,10 +67,12 @@ class AgentProcess:
         args: list[str] = [
             "claude",
             "-p",
-            prompt,
+            _HEADLESS_PREAMBLE + prompt,
             "--output-format",
             "stream-json",
             "--verbose",
+            "--permission-mode",
+            "auto",
         ]
 
         if model:
