@@ -47,6 +47,7 @@ log = get_logger(component="dashboard.app")
 
 BASE = Path(__file__).parent
 
+_AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 
 
@@ -145,10 +146,7 @@ def create_app(
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         yield
         sweep_task.cancel()
-        try:
-            await sweep_task
-        except asyncio.CancelledError:
-            pass
+        await asyncio.gather(sweep_task, return_exceptions=True)
         await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
@@ -339,7 +337,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/work")
     async def work_redirect():
-        return RedirectResponse(url="/agents", status_code=301)
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/work/{run_id}")
     async def work_detail_page(request: Request, run_id: int):
@@ -352,15 +350,15 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/control")
     async def control_redirect():
-        return RedirectResponse(url="/agents", status_code=301)
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/tasks")
     async def tasks_redirect():
-        return RedirectResponse(url="/agents", status_code=301)
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/runs")
     async def runs_redirect():
-        return RedirectResponse(url="/agents", status_code=301)
+        return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/runs/{run_id}")
     async def run_detail_redirect(run_id: int):

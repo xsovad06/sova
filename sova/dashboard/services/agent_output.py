@@ -49,7 +49,7 @@ async def _read_output(agent: AgentState) -> None:
                 if agent.output_writer:
                     agent.output_writer.write_line(text)
     except asyncio.CancelledError:
-        pass
+        raise
 
 
 def _parse_stream_line(line: str, agent: AgentState) -> str:
@@ -100,4 +100,4 @@ async def _read_stderr(agent: AgentState) -> None:
                 if agent.output_writer:
                     agent.output_writer.write_line(text)
     except asyncio.CancelledError:
-        pass
+        raise

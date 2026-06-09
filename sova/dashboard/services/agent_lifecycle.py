@@ -37,6 +37,8 @@ log = get_logger(component="dashboard.control")
 DEVELOPER_PIPELINE = get_developer_step_names()
 ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
 
+_background_tasks: set[asyncio.Task[None]] = set()
+
 
 # -- Status queries -----------------------------------------------------------
 
@@ -309,9 +311,13 @@ async def start_agent(
 
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
-    asyncio.create_task(_wait_and_finalize(pa, agent))
+    wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
+    _background_tasks.add(wait_task)
+    wait_task.add_done_callback(_background_tasks.discard)
     if (role or "developer") == "developer" and not pr_number:
-        asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
+        transition_task = asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
+        _background_tasks.add(transition_task)
+        transition_task.add_done_callback(_background_tasks.discard)
 
     log.info("agent.started", issue=issue, pid=pid, run_id=run_id, cwd=str(cwd))
     return {"status": "started", "pid": pid, "run_id": run_id}
@@ -339,19 +345,15 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
         pid = agent.process.pid
         await agent.process.stop()
 
+        pending: list[asyncio.Task[None]] = []
         if agent.reader_task and not agent.reader_task.done():
             agent.reader_task.cancel()
-            try:
-                await agent.reader_task
-            except asyncio.CancelledError:
-                pass
-
+            pending.append(agent.reader_task)
         if agent.stderr_task and not agent.stderr_task.done():
             agent.stderr_task.cancel()
-            try:
-                await agent.stderr_task
-            except asyncio.CancelledError:
-                pass
+            pending.append(agent.stderr_task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     log.info("agent.stopped", pid=pid, run_id=agent.run_id)
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
@@ -453,7 +455,9 @@ async def start_command(
 
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
-    asyncio.create_task(_wait_and_finalize(pa, agent))
+    wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
+    _background_tasks.add(wait_task)
+    wait_task.add_done_callback(_background_tasks.discard)
 
     log.info("command.started", command=command, pid=process.pid, run_id=run_id, cwd=str(cwd))
     return {"status": "started", "pid": process.pid, "run_id": run_id}
@@ -687,10 +691,10 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
 async def _link_run_to_lifecycle(
     run_id: int,
     issue: str,
-    role: str,
+    _role: str,
     project_dir: Path,
     *,
-    pr_number: int | None = None,
+    pr_number: int | None = None,  # noqa: ARG001
 ) -> None:
     """Link a newly created TaskRun to an IssueLifecycle."""
     try:
