@@ -12,7 +12,7 @@ router = APIRouter()
 log = get_logger(component="dashboard.costs")
 
 
-@router.get("/costs/summary")
+@router.get("/costs/summary", responses={500: {"description": "Failed to fetch cost summary"}})
 async def cost_summary():
     try:
         async with await get_session() as session:
@@ -22,7 +22,7 @@ async def cost_summary():
         raise HTTPException(status_code=500, detail="Failed to fetch cost summary")
 
 
-@router.get("/costs/daily")
+@router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
 async def daily_costs(days: int = 14):
     try:
         async with await get_session() as session:
@@ -32,7 +32,7 @@ async def daily_costs(days: int = 14):
         raise HTTPException(status_code=500, detail="Failed to fetch daily costs")
 
 
-@router.get("/costs/by-issue")
+@router.get("/costs/by-issue", responses={500: {"description": "Failed to fetch costs by issue"}})
 async def costs_by_issue():
     try:
         async with await get_session() as session:
@@ -42,7 +42,7 @@ async def costs_by_issue():
         raise HTTPException(status_code=500, detail="Failed to fetch costs by issue")
 
 
-@router.get("/costs/by-phase")
+@router.get("/costs/by-phase", responses={500: {"description": "Failed to fetch costs by phase"}})
 async def costs_by_phase():
     try:
         async with await get_session() as session:
@@ -52,7 +52,7 @@ async def costs_by_phase():
         raise HTTPException(status_code=500, detail="Failed to fetch costs by phase")
 
 
-@router.get("/costs/by-model")
+@router.get("/costs/by-model", responses={500: {"description": "Failed to fetch costs by model"}})
 async def costs_by_model():
     try:
         async with await get_session() as session:

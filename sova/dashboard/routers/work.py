@@ -55,7 +55,7 @@ async def get_issue_runs(issue_number: str):
         return {"runs": runs}
 
 
-@router.get("/work/{run_id}")
+@router.get("/work/{run_id}", responses={404: {"description": "Run not found"}})
 async def get_detail(run_id: int):
     """Get a single run with step details and pipeline progress."""
     async with await get_session() as session:
@@ -66,7 +66,7 @@ async def get_detail(run_id: int):
         return detail
 
 
-@router.post("/work/{run_id}/mark-failed")
+@router.post("/work/{run_id}/mark-failed", responses={404: {"description": "Run not found"}})
 async def mark_failed(run_id: int):
     """Mark a non-terminal run as failed and kill the agent process."""
     from sova.dashboard.services import control_service, run_service

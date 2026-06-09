@@ -23,7 +23,13 @@ async def get_handoff():
     return {"has_handoff": True, "handoff": handoff}
 
 
-@router.post("/handoff/execute")
+@router.post(
+    "/handoff/execute",
+    responses={
+        404: {"description": "No active handoff or action not found"},
+        400: {"description": "Unsupported execution type"},
+    },
+)
 async def execute_handoff_action(req: ExecuteActionRequest):
     """Execute a specific action from the current handoff.
 

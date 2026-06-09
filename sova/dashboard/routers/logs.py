@@ -12,7 +12,7 @@ router = APIRouter(tags=["logs"])
 log = get_logger(component="dashboard.logs")
 
 
-@router.get("/logs")
+@router.get("/logs", responses={500: {"description": "Failed to fetch logs"}})
 async def logs(
     level: str = "",
     component: str = "",
@@ -36,7 +36,7 @@ async def logs(
         raise HTTPException(status_code=500, detail="Failed to fetch logs")
 
 
-@router.get("/logs/components")
+@router.get("/logs/components", responses={500: {"description": "Failed to fetch log components"}})
 async def log_components():
     """Get distinct component names for the filter dropdown."""
     try:
