@@ -26,7 +26,7 @@ gh issue view $ARGUMENTS --json number,title,body,labels,milestone
 
 **JIRA** (`task_source.type = "jira"`):
 ```bash
-jira issue view <TICKET_KEY> --plain
+jira issue view $ARGUMENTS --plain
 ```
 Extract: title, description, status, linked/blocked tickets, components.
 
@@ -187,16 +187,17 @@ If the user agrees, update the tracker with the spec appended to the original de
 
 **GitHub**:
 ```bash
-gh issue edit <NUMBER> --body "<updated body>"
+echo "<updated body>" > /tmp/issue_body.md
+gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
 ```
 
-**JIRA**:
+**JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-jira issue edit <TICKET_KEY> -b "<updated body>" --no-input
+jira issue edit $ARGUMENTS -b "<updated body>" --no-input
 ```
 
 Format the updated body as:
-```
+```markdown
 ## Original Description
 
 {original description preserved verbatim}

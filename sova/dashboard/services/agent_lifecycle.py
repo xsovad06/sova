@@ -661,9 +661,7 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
     via _sync_task_run_context, so gating on current_step avoids false
     positives for developer runs that created a PR.
     """
-    is_researcher = (current_step in (None, "agent") and role == "researcher") or (
-        current_step is not None and current_step in _RESEARCHER_ONLY
-    )
+    is_researcher = role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY)
     is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
         current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
     )

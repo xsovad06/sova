@@ -26,7 +26,7 @@ gh issue view $ARGUMENTS --json number,title,body,labels,milestone
 
 **JIRA** (`task_source.type = "jira"`):
 ```bash
-jira issue view <TICKET_KEY> --plain
+jira issue view $ARGUMENTS --plain
 ```
 
 Save the original description verbatim.
@@ -70,7 +70,7 @@ Based on your findings, rate complexity:
 
 Append the research assessment to the issue/ticket body. Format:
 
-```
+```markdown
 ## Research
 
 **Issue**: {title}
@@ -117,22 +117,23 @@ Similar work was done in {ticket/PR reference if found}.
 {UI implications, or omit this section if none.}
 ```
 
-Write the updated body back to the tracker:
+Write the updated body back to the tracker (use file-based input for multi-line content):
 
 **GitHub**:
 ```bash
-gh issue edit <NUMBER> --body "<original body + research section>"
+echo "<original body + research section>" > /tmp/issue_body.md
+gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
 ```
 
-**JIRA**:
+**JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-jira issue edit <TICKET_KEY> -b "<original body + research section>" --no-input
+jira issue edit $ARGUMENTS -b "<original body + research section>" --no-input
 ```
 
 ### Step 6: Report
 
 Output a brief summary of what was found:
-```
+```text
 Research completed for #{number}: {title}
 Complexity: {rating}
 Affected files: {count}

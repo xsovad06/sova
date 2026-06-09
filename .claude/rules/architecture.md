@@ -14,9 +14,10 @@ SOVA has four main components:
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/output.py` -- OutputWriter for per-run log file persistence (moved from dashboard/services/)
-- `core/steps/` -- 16 BaseStep implementations with execute/validate_output/can_skip. Two pipeline variants:
+- `core/steps/` -- 18 BaseStep implementations with execute/validate_output/can_skip. Three pipeline variants:
   - **Developer pipeline** (13 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> monitor_ci -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (7 steps): rebase -> address_review -> commit -> validate -> push -> extract_memory -> handoff_to_user
+  - **Researcher pipeline** (3 steps): fetch_task -> research -> extract_memory
 - `roles/` -- AgentRole ABC with 4 implementations: triage, researcher, developer, reviewer
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state
 - **Role chaining**: Developer -> Reviewer -> Developer handoff chain runs autonomously. `HandoffAction.auto_execute` triggers auto-spawn of the next agent when the current one exits. Developer writes handoff to Reviewer (auto), Reviewer writes handoff back to Developer if findings exist (auto) or to user if clean (manual "Integrate PR" button). Issue stays `IN_REVIEW` until human merges via `/integrate-pr` or `/approve-merge`.
@@ -88,7 +89,7 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Worktree isolation**: each task gets its own git worktree (parallel-safe)
 - **Adapter pattern for task sources**: swap GitHub/JIRA/Linear without touching core
 - **Mandatory pipeline**: Triage -> Researcher -> Developer (enforced by Gate 3); `--force` bypasses
-- **Split pipelines at role boundaries**: each role has its own step pipeline (developer: 13 steps, address-review: 7 steps). A single monolithic pipeline that crosses role boundaries (develop + review + address in one sequence) breaks agent isolation and prevents independent lifecycles. The role detects which pipeline variant to run from `ctx.pr_number` alone (set by handoff). Issue state (`task.state`) is NOT used for variant detection because the dashboard may race it to `in_progress` before the role reads it.
+- **Split pipelines at role boundaries**: each role has its own step pipeline (developer: 13 steps, address-review: 7 steps, researcher: 3 steps). A single monolithic pipeline that crosses role boundaries (develop + review + address in one sequence) breaks agent isolation and prevents independent lifecycles. The role detects which pipeline variant to run from `ctx.pr_number` alone (set by handoff). Issue state (`task.state`) is NOT used for variant detection because the dashboard may race it to `in_progress` before the role reads it.
 - **Issue state ownership is human**: agents never auto-move issues to DONE. Issues stay IN_REVIEW until the human merges via `/integrate-pr` or `/approve-merge`. The agent prepares the PR; the human approves and merges.
 - **Handoff protocol**: JSON-based inter-agent state passing via file + DB
 - **Short-lived agent model**: agents run, write handoff, exit; dashboard provides the interactive bridge
