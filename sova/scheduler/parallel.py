@@ -152,7 +152,7 @@ class ParallelExecutor:
 
     async def stop(self) -> None:
         """Cancel all active tasks."""
-        for task in list(self._active):
+        for task in self._active:
             if not task.done():
                 task.cancel()
 

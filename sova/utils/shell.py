@@ -59,8 +59,9 @@ async def run(
 
     stdin_bytes = stdin.encode("utf-8") if stdin is not None else None
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(input=stdin_bytes), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            stdout_bytes, stderr_bytes = await proc.communicate(input=stdin_bytes)
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         return ShellResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")

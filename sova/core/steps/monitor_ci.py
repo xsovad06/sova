@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Callable
+from typing import Any
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
 from sova.utils.logging import get_logger
+
+_ShellRunner = Callable[..., Any]
+_LLMInvoker = Callable[..., Any]
 
 log = get_logger(component="step.monitor_ci")
 
@@ -220,8 +225,8 @@ class MonitorCIStep(BaseStep):
         self,
         ctx: ExecutionContext,
         failed_checks: list[CICheck],
-        invoke: object,
-        run: object,
+        invoke: _LLMInvoker,
+        run: _ShellRunner,
     ) -> tuple:
         """Invoke Claude to fix CI failures. Returns (cost, error_or_None)."""
         from decimal import Decimal
@@ -257,7 +262,7 @@ class MonitorCIStep(BaseStep):
         ctx: ExecutionContext,
         attempt: int,
         max_attempts: int,
-        run: object,
+        run: _ShellRunner,
     ) -> tuple[bool, StepResult | None]:
         """Run pre-push hook and check for new commits. Returns (should_skip, error_result)."""
         from sova.core.steps.validate import find_pre_push_hook
