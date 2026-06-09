@@ -30,6 +30,13 @@ User preferences, workflow conventions, and project state.
 
 Run `git diff` and `git diff --cached` to see current changes. Also review the conversation for patterns, gotchas, decisions, and fixes that came up during the session.
 
+**Check for external review interactions in this session**:
+If this session involved addressing CodeRabbit or SonarCloud findings:
+- What types of issues were found? (security, style, correctness, performance)
+- Were any findings false positives? Document why for future reference.
+- Did addressing the findings teach something about the codebase?
+- Were there recurring patterns across multiple findings?
+
 ### 2. Categorize Findings
 
 For each finding, determine the right destination:
@@ -38,6 +45,8 @@ For each finding, determine the right destination:
 |---|---|
 | Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
 | ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
+| External tool false positives / recurring patterns | `.claude/agent-memory/cookbook.md` ("External Review Tools" section) |
+| CodeRabbit path instruction gaps | `.coderabbit.yaml` (`path_instructions`) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
 
@@ -55,10 +64,13 @@ Before writing new entries, scan `cookbook.md` for patterns you **relied on or v
 - `[confirmed: 0]` -> `[confirmed: 1]`
 - `[confirmed: 1]` -> `[confirmed: 2]` (now eligible for promotion)
 
+Also check the "External Review Tools" section of `cookbook.md`. If a pattern from that section was validated by an external tool in this session (e.g., CodeRabbit caught `all([]) == True` again), bump its confirmation counter.
+
 **What counts as "confirmed":**
 - You relied on the pattern during this session (used it, encountered the same scenario)
 - The pattern prevented a mistake (you checked it and it saved time)
 - A review or test validated the pattern was correct
+- An external review tool flagged the same pattern again in this session
 
 **What does NOT count:**
 - Simply reading the entry without using it
@@ -112,6 +124,9 @@ List what was extracted, where it was saved, and any patterns promoted from Tier
 - **Test patterns** -- new fixtures, assertion techniques, edge case coverage
 - **Review feedback** -- what reviewers flagged and why
 - **Recurring mistakes** -- same issue appearing in multiple sessions
+- **External tool findings** -- what CodeRabbit/SonarCloud caught, which rules fired, false positive patterns
+- **CodeRabbit config gaps** -- files or patterns that need better `path_instructions` in `.coderabbit.yaml`
+- **Tool-specific quirks** -- behaviors that require workarounds (e.g., CHANGES_REQUESTED stickiness)
 
 ## Cross-References
 
