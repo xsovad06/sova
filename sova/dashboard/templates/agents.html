@@ -3,41 +3,34 @@
 {% block content %}
 <h2 class="text-2xl font-semibold mb-4">Agents</h2>
 
-<!-- Start Panel -->
-<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-6">
-  <div class="flex items-center gap-3 flex-wrap">
-    <!-- Issue combobox -->
-    <div class="relative" id="issue-combobox">
-      <input type="text" id="agent-issue" placeholder="Search issues..." autocomplete="off"
-        class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-72 focus:border-accent focus:outline-none"
-        oninput="filterIssues()" onfocus="showIssueDropdown()" onkeydown="issueKeydown(event)">
-      <input type="hidden" id="agent-issue-number" value="">
-      <div id="issue-dropdown"
-        class="hidden absolute z-50 mt-1 w-96 max-h-64 overflow-y-auto bg-surface border border-gray-700 rounded-lg shadow-xl">
-      </div>
+<!-- Task Browser -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <!-- Header bar -->
+  <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-300">Tasks</h3>
+    <div class="relative flex-1 max-w-xs ml-2">
+      <input type="text" id="task-search" placeholder="Filter..." autocomplete="off"
+        class="w-full bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 pl-8 focus:border-accent focus:outline-none"
+        oninput="filterTaskCards()">
+      <svg class="absolute left-2.5 top-[7px] w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
     </div>
-    <select id="agent-role" class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 focus:border-accent focus:outline-none"
-      onchange="togglePrInput()">
-      <option value="">Auto (dispatcher)</option>
-      <option value="developer">Developer</option>
-      <option value="triage">Triage</option>
-      <option value="researcher">Researcher</option>
-      <option value="reviewer">Reviewer</option>
-    </select>
-    <input type="text" id="agent-pr" placeholder="PR # (optional)"
-      class="bg-surface border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 w-36 focus:border-accent focus:outline-none hidden">
-    <label class="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer select-none">
-      <input type="checkbox" id="agent-force" class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">
-      <span>--force</span>
-    </label>
-    <button onclick="startAgent()" id="start-btn"
-      class="px-4 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
-      Start
-    </button>
-    <div class="flex-1"></div>
-    <span id="slots-info" class="text-xs text-gray-500"></span>
+    <div class="flex items-center gap-2 text-xs text-gray-500 ml-auto">
+      <span>Role:</span>
+      <select id="agent-role" class="bg-surface border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:border-accent focus:outline-none">
+        <option value="">Auto</option>
+      </select>
+      <span id="slots-info" class="text-gray-600 ml-2"></span>
+    </div>
+  </div>
+  <!-- Task list -->
+  <div id="task-grid" class="divide-y divide-gray-700/30">
+    <p class="text-gray-500 text-sm py-6 text-center">Loading tasks...</p>
   </div>
 </div>
+
+<!-- Hidden inputs for runCommand/startAgent backward compat -->
+<input type="hidden" id="agent-issue" value="">
+<input type="hidden" id="agent-issue-number" value="">
 
 <!-- PR Actions Panel (shown when selected issue has a linked PR) -->
 <div id="pr-actions-panel" class="hidden mb-6">
@@ -131,26 +124,10 @@
 <script>
 var activeLogRunId = null;
 
-// -- Issue combobox --
+// -- Task browser --
 
-var _allIssues = [];
-var _filteredIssues = [];
-var _highlightIdx = -1;
-var _issuesLoaded = false;
-
-async function loadIssues() {
-  if (_issuesLoaded) return;
-  try {
-    var res = await fetch(apiUrl('/tasks/issues'));
-    if (!res.ok) return;
-    var data = await res.json();
-    var issues = data.issues || [];
-    _allIssues = issues.sort(function(a, b) {
-      return parseInt(b.number) - parseInt(a.number);
-    });
-    if (issues.length > 0) _issuesLoaded = true;
-  } catch (e) { /* ignore */ }
-}
+var _queueData = [];
+var _runningIssues = new Set();
 
 function stateTag(state) {
   var colors = {
@@ -165,61 +142,176 @@ function stateTag(state) {
   return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(state) + '</span>';
 }
 
-function renderIssueDropdown() {
-  var dd = document.getElementById('issue-dropdown');
-  if (_filteredIssues.length === 0) {
-    dd.innerHTML = '<div class="px-3 py-2 text-xs text-gray-500">No matching issues</div>';
-    dd.classList.remove('hidden');
+var _actionLabels = {
+  triage: { text: 'Triage', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
+  research: { text: 'Research', cls: 'bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30' },
+  develop: { text: 'Develop', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
+  review: { text: 'Review', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
+  resume: { text: 'Resume', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
+};
+
+var _VISIBLE_COUNT = 5;
+var _showAll = false;
+
+async function loadTaskCards() {
+  try {
+    var res = await fetch(apiUrl('/queue'));
+    if (!res.ok) return;
+    var data = await res.json();
+    _queueData = data.queue || [];
+    renderTaskCards();
+  } catch (e) {
+    document.getElementById('task-grid').innerHTML =
+      '<p class="text-accent-red text-sm py-6 text-center">Failed to load tasks</p>';
+  }
+}
+
+function filterTaskCards() {
+  renderTaskCards();
+}
+
+function toggleShowAll() {
+  _showAll = !_showAll;
+  renderTaskCards();
+}
+
+function _extractPriority(labels) {
+  for (var i = 0; i < (labels || []).length; i++) {
+    var l = labels[i];
+    if (l.indexOf('priority:') === 0) return l.replace('priority: ', '').replace('priority:', '').trim();
+  }
+  return '';
+}
+
+var _priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+
+function renderTaskCards() {
+  var grid = document.getElementById('task-grid');
+  var q = (document.getElementById('task-search').value || '').trim().toLowerCase().replace(/^#/, '');
+
+  var items = _queueData.slice();
+  if (q) {
+    items = items.filter(function(t) {
+      return t.issue.toString().includes(q) || t.title.toLowerCase().includes(q);
+    });
+  }
+
+  items.sort(function(a, b) {
+    var pa = _priorityOrder[_extractPriority(a.labels)];
+    var pb = _priorityOrder[_extractPriority(b.labels)];
+    if (pa === undefined) pa = 99;
+    if (pb === undefined) pb = 99;
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return pa - pb;
+  });
+
+  if (!items.length) {
+    grid.innerHTML = q
+      ? '<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>'
+      : '<p class="text-gray-500 text-sm py-6 text-center">No actionable issues in queue</p>';
     return;
   }
-  var html = _filteredIssues.map(function(issue, idx) {
-    var active = idx === _highlightIdx ? 'bg-accent/10' : '';
-    return '<div class="px-3 py-2 cursor-pointer hover:bg-accent/10 transition-colors text-sm ' + active + '" ' +
-      'onmousedown="selectIssue(' + idx + ')" ' +
-      'id="issue-opt-' + idx + '">' +
-      '<div class="flex items-center gap-2">' +
-        '<span class="text-accent font-medium">#' + escapeHtml(issue.number) + '</span>' +
-        stateTag(issue.state) +
+
+  var visible = (q || _showAll) ? items : items.slice(0, _VISIBLE_COUNT);
+  var hiddenCount = q ? 0 : Math.max(0, items.length - _VISIBLE_COUNT);
+
+  var html = visible.map(function(t) {
+    var isRunning = _runningIssues.has(String(t.issue));
+    var action = _actionLabels[t.action] || _actionLabels.develop;
+    var lastFailed = t.last_run && t.last_run.status === 'failed';
+    var p = _extractPriority(t.labels);
+    var pColors = { critical: 'text-accent-red', high: 'text-accent-yellow', medium: 'text-gray-500', low: 'text-gray-600' };
+    var pDots = { critical: 'bg-accent-red', high: 'bg-accent-yellow', medium: 'bg-gray-500', low: 'bg-gray-600' };
+    var pDot = p ? '<span class="w-1.5 h-1.5 rounded-full shrink-0 ' + (pDots[p] || 'bg-gray-600') + '"></span>' : '';
+
+    var actionBtn;
+    if (isRunning) {
+      actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
+        '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>Running</span>';
+    } else {
+      actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\')" ' +
+        'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
+        escapeHtml(action.text) + '</button>';
+    }
+
+    var failedDot = lastFailed
+      ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-red shrink-0" data-tooltip="Last run failed"></span>'
+      : '';
+
+    return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
+      pDot +
+      '<span class="text-accent text-xs font-medium w-10 shrink-0">#' + escapeHtml(t.issue) + '</span>' +
+      '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(t.title) + '</span>' +
+      failedDot +
+      stateTag(t.state) +
+      '<div class="w-20 flex justify-end">' + actionBtn + '</div>' +
+      '<button onclick="toggleCardMenu(event, \'' + escapeHtml(t.issue) + '\')" ' +
+        'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0" ' +
+        'data-tooltip="More options">' +
+        '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>' +
+      '</button>' +
+      '<div id="card-menu-' + t.issue + '" class="hidden absolute right-4 top-8 z-50 bg-surface border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]">' +
+        '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
+        '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
+        '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>' +
       '</div>' +
-      '<div class="text-gray-300 text-xs mt-0.5 truncate">' + escapeHtml(issue.title) + '</div>' +
     '</div>';
   }).join('');
-  dd.innerHTML = html;
-  dd.classList.remove('hidden');
-}
 
-function filterIssues() {
-  var q = document.getElementById('agent-issue').value.trim().toLowerCase().replace(/^#/, '');
-  document.getElementById('agent-issue-number').value = '';
-  hidePrActionsPanel();
-  if (!q) {
-    _filteredIssues = _allIssues.slice(0, 20);
-  } else {
-    _filteredIssues = _allIssues.filter(function(i) {
-      return i.number.toString().includes(q) || i.title.toLowerCase().includes(q);
-    }).slice(0, 20);
+  if (hiddenCount > 0 && !_showAll) {
+    html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
+      '<button onclick="toggleShowAll()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+      'Show ' + hiddenCount + ' more tasks</button></div>';
+  } else if (_showAll && hiddenCount > 0) {
+    html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
+      '<button onclick="toggleShowAll()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+      'Show less</button></div>';
   }
-  _highlightIdx = -1;
-  renderIssueDropdown();
+
+  grid.innerHTML = html;
 }
 
-function showIssueDropdown() {
-  loadIssues().then(function() {
-    filterIssues();
-  });
+function toggleCardMenu(event, issue) {
+  event.stopPropagation();
+  var menu = document.getElementById('card-menu-' + issue);
+  var wasHidden = menu.classList.contains('hidden');
+  document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
+  if (wasHidden) menu.classList.remove('hidden');
 }
 
-function hideIssueDropdown() {
-  document.getElementById('issue-dropdown').classList.add('hidden');
+document.addEventListener('click', function() {
+  document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
+});
+
+async function quickStart(issue, force) {
+  var role = document.getElementById('agent-role').value || null;
+  await _doStartAgent(issue, role, force || false);
 }
 
-function selectIssue(idx) {
-  var issue = _filteredIssues[idx];
-  if (!issue) return;
-  document.getElementById('agent-issue').value = '#' + issue.number + ' ' + issue.title;
-  document.getElementById('agent-issue-number').value = issue.number;
-  hideIssueDropdown();
-  fetchPrStatus(issue.number);
+async function quickStartRole(issue, role) {
+  await _doStartAgent(issue, role, false);
+}
+
+async function _doStartAgent(issue, role, force) {
+  try {
+    var res = await fetch(apiUrl('/agents/start'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue: String(issue), role: role, force: force }),
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to start agent'), 'error');
+    } else {
+      var result = await res.json();
+      if (result.error) { showToast(result.error, 'error'); return; }
+      if (result.run_id) viewLogs(result.run_id);
+      showToast('Agent started for #' + issue, 'success');
+    }
+  } catch (e) {
+    showToast('Failed to start agent: ' + e.message, 'error');
+  }
+  loadAgents();
+  loadTaskCards();
 }
 
 // -- PR status panel --
@@ -400,39 +492,6 @@ async function runCommand(command, args) {
   loadAgents();
 }
 
-function issueKeydown(e) {
-  var dd = document.getElementById('issue-dropdown');
-  if (dd.classList.contains('hidden')) return;
-
-  if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    _highlightIdx = Math.min(_highlightIdx + 1, _filteredIssues.length - 1);
-    renderIssueDropdown();
-    var el = document.getElementById('issue-opt-' + _highlightIdx);
-    if (el) el.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    _highlightIdx = Math.max(_highlightIdx - 1, 0);
-    renderIssueDropdown();
-    var el2 = document.getElementById('issue-opt-' + _highlightIdx);
-    if (el2) el2.scrollIntoView({ block: 'nearest' });
-  } else if (e.key === 'Enter') {
-    e.preventDefault();
-    if (_highlightIdx >= 0) {
-      selectIssue(_highlightIdx);
-    } else if (_filteredIssues.length > 0) {
-      selectIssue(0);
-    }
-  } else if (e.key === 'Escape') {
-    hideIssueDropdown();
-  }
-}
-
-document.addEventListener('click', function(e) {
-  if (!document.getElementById('issue-combobox').contains(e.target)) {
-    hideIssueDropdown();
-  }
-});
 var logCursor = 0;
 var agentPollInterval = null;
 var logPollInterval = null;
@@ -453,10 +512,10 @@ async function loadAgents() {
     var data = await fetchAPI(apiUrl('/agents/active'));
     var grid = document.getElementById('agents-grid');
     var slotsInfo = document.getElementById('slots-info');
-    var startBtn = document.getElementById('start-btn');
+    slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots';
 
-    slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots available';
-    startBtn.disabled = data.slots_available <= 0;
+    _runningIssues = new Set(data.agents.map(function(a) { return String(a.issue_number); }));
+    renderTaskCards();
 
     var fp = agentFingerprint(data);
     if (fp === lastAgentFingerprint) {
@@ -636,86 +695,14 @@ async function pollLogs() {
 
 // -- Agent actions --
 
-function togglePrInput() {
-  var role = document.getElementById('agent-role').value;
-  var prEl = document.getElementById('agent-pr');
-  if (role === 'reviewer') {
-    prEl.classList.remove('hidden');
-  } else {
-    prEl.classList.add('hidden');
-    prEl.value = '';
-  }
-}
+function togglePrInput() { /* no-op: PR input removed in card redesign */ }
 
 async function startAgent() {
-  var issueEl = document.getElementById('agent-issue');
-  var issueNumEl = document.getElementById('agent-issue-number');
-  var roleEl = document.getElementById('agent-role');
-  var forceEl = document.getElementById('agent-force');
-  var prEl = document.getElementById('agent-pr');
-  var issue = issueNumEl.value || issueEl.value.replace(/^#/, '').split(/\s/)[0].trim();
-  if (!issue) { issueEl.focus(); return; }
-
-  var btn = document.getElementById('start-btn');
-  btn.disabled = true;
-  btn.textContent = 'Starting...';
-
-  try {
-    var hRes = await fetch(apiUrl('/handoff'));
-    if (hRes.ok) {
-      var hData = await hRes.json();
-      if (hData.has_handoff && hData.handoff) {
-        var hIssue = String(hData.handoff.issue || '').replace(/^#/, '').trim();
-        if (hIssue === issue && hData.handoff.status === 'awaiting_action') {
-          var useHandoff = confirm(
-            'Issue #' + issue + ' has a pending handoff:\n\n' +
-            (hData.handoff.summary || 'Action required') +
-            '\n\nOK = view handoff actions, Cancel = start fresh agent'
-          );
-          if (useHandoff) {
-            btn.disabled = false;
-            btn.textContent = 'Start';
-            checkStandaloneHandoff();
-            return;
-          }
-        } else if (hIssue === issue && hData.handoff.status === 'failed') {
-          showToast('Previous action for #' + issue + ' failed: ' + (hData.handoff.summary || ''), 'warning');
-        }
-      }
-    }
-  } catch (e) { /* proceed with start */ }
-
-  var payload = {
-    issue: issue,
-    role: roleEl.value || null,
-    force: forceEl.checked,
-  };
-  var prVal = prEl.value.trim();
-  if (prVal) payload.pr_number = parseInt(prVal, 10);
-
-  try {
-    var res = await fetch(apiUrl('/agents/start'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      showToast(await getErrorDetail(res, 'Failed to start agent'), 'error');
-    } else {
-      var result = await res.json();
-      issueEl.value = '';
-      issueNumEl.value = '';
-      prEl.value = '';
-      forceEl.checked = false;
-      if (result.run_id) viewLogs(result.run_id);
-    }
-  } catch (e) {
-    showToast('Failed to start agent: ' + e.message, 'error');
-  }
-
-  btn.disabled = false;
-  btn.textContent = 'Start';
-  loadAgents();
+  var issue = document.getElementById('agent-issue-number').value ||
+    document.getElementById('agent-issue').value.replace(/^#/, '').split(/\s/)[0].trim();
+  if (!issue) return;
+  var role = document.getElementById('agent-role').value || null;
+  await _doStartAgent(issue, role, false);
 }
 
 async function stopAgent(runId) {
@@ -892,17 +879,11 @@ async function dismissInterrupted() {
 }
 
 function restartInterrupted(issue, role) {
-  document.getElementById('agent-issue').value = issue;
-  document.getElementById('agent-role').value = role === 'auto' ? '' : role;
-  startAgent();
+  _doStartAgent(issue, role === 'auto' ? null : role, false);
 }
 
 function rerunAgent(issue, role, prNumber) {
-  document.getElementById('agent-issue').value = issue;
-  document.getElementById('agent-issue-number').value = issue;
-  document.getElementById('agent-role').value = role === 'auto' ? '' : role;
-  document.getElementById('agent-pr').value = prNumber || '';
-  startAgent();
+  _doStartAgent(issue, role === 'auto' ? null : role, false);
 }
 
 // -- History / Failed tabs --
@@ -989,7 +970,34 @@ function renderHistoryTable(tasks, targetId, showError) {
     '</tbody></table></div>';
 }
 
+async function loadRoles() {
+  try {
+    var res = await fetch(apiUrl('/roles'));
+    if (!res.ok) return;
+    var data = await res.json();
+    var roles = data.roles || [];
+    var select = document.getElementById('agent-role');
+    var builtins = roles.filter(function(r) { return r.is_builtin; });
+    var customs = roles.filter(function(r) { return !r.is_builtin; });
+
+    var html = '<option value="">Auto (dispatcher)</option>';
+    builtins.forEach(function(r) {
+      html += '<option value="' + escapeHtml(r.name) + '">' + escapeHtml(r.name.charAt(0).toUpperCase() + r.name.slice(1)) + '</option>';
+    });
+    if (customs.length) {
+      html += '<optgroup label="Custom Roles">';
+      customs.forEach(function(r) {
+        html += '<option value="' + escapeHtml(r.name) + '">' + escapeHtml(r.name) + '</option>';
+      });
+      html += '</optgroup>';
+    }
+    select.innerHTML = html;
+  } catch (e) { /* ignore -- keeps the Auto option */ }
+}
+
 // -- Init --
+loadRoles();
+loadTaskCards();
 loadAgents();
 checkInterrupted();
 loadHistory();
