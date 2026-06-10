@@ -17,6 +17,7 @@ class SettingMeta:
 GROUPS: dict[str, str] = {
     "project": "Project",
     "agent": "Agent",
+    "pipeline": "Pipeline",
     "task_source": "Task Source",
     "review": "Code Review",
     "ci": "CI / CD",
@@ -32,6 +33,7 @@ GROUPS: dict[str, str] = {
 GROUP_ORDER: list[str] = [
     "project",
     "agent",
+    "pipeline",
     "roles",
     "task_source",
     "commit",
@@ -91,6 +93,21 @@ _REGISTRY: list[SettingMeta] = [
         "Auto-approve fixes",
         "Automatically approve review fix suggestions without human confirmation",
         "agent",
+        "boolean",
+    ),
+    # -- Pipeline --
+    SettingMeta(
+        "pipeline.auto_handoff",
+        "Auto-handoff to reviewer",
+        "Automatically spawn Reviewer after Developer creates a PR and CI passes",
+        "pipeline",
+        "boolean",
+    ),
+    SettingMeta(
+        "pipeline.auto_address_review",
+        "Auto-address review findings",
+        "Automatically spawn Developer to fix Reviewer findings",
+        "pipeline",
         "boolean",
     ),
     # -- Task Source --
