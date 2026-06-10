@@ -992,6 +992,27 @@ class TestHandoffToReviewerStep:
         assert handoff.next_actions[0].auto_execute is True
         assert handoff.next_actions[0].mode == "agent"
 
+    async def test_auto_execute_disabled_by_config(self) -> None:
+        from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
+
+        config = ProjectConfig()
+        config.pipeline.auto_handoff = False
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, pr_number=42, config=config)
+        ctx.project_dir = Path("/tmp/test-handoff")
+        step = HandoffToReviewerStep()
+
+        with (
+            patch("sova.core.steps._handoff_helpers.write_handoff", new_callable=AsyncMock),
+            patch("sova.core.steps._handoff_helpers.write_handoff_file") as mock_file,
+            patch("sova.core.steps._handoff_helpers.notify"),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        handoff = mock_file.call_args[0][1]
+        assert handoff.next_actions[0].auto_execute is False
+
     async def test_can_skip_when_completed(self) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 

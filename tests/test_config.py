@@ -12,6 +12,7 @@ from sova.config.loader import load_config
 from sova.config.models import (
     AgentConfig,
     CIConfig,
+    PipelineConfig,
     ProjectConfig,
     ReviewConfig,
     TaskSourceConfig,
@@ -32,6 +33,8 @@ def test_default_config() -> None:
     assert cfg.review.max_rounds == 2
     assert cfg.commit.format == "conventional"
     assert cfg.roles.default == "developer"
+    assert cfg.pipeline.auto_handoff is True
+    assert cfg.pipeline.auto_address_review is True
     assert cfg.triage.auto_label is True
     assert cfg.triage.min_confidence == 0.7
 
@@ -81,6 +84,24 @@ reviewer = "Koda"
     assert cfg.triage.min_confidence == 0.8
     assert cfg.roles.default == "researcher"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
+
+
+def test_pipeline_section_loaded_from_toml(tmp_path: Path) -> None:
+    """Pipeline config is loaded from [pipeline] section in sova.toml."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[pipeline]
+auto_handoff = false
+auto_address_review = false
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.pipeline.auto_handoff is False
+    assert cfg.pipeline.auto_address_review is False
 
 
 def test_notification_section_loaded_from_toml(tmp_path: Path) -> None:
@@ -450,3 +471,4 @@ class TestFieldConstraints:
         WatchConfig()
         WorktreeConfig()
         TriageConfig()
+        PipelineConfig()

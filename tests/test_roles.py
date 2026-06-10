@@ -1542,6 +1542,37 @@ class TestReviewerLLMReview:
         assert dashboard_handoff.next_actions[0].id == "address_review"
         assert dashboard_handoff.next_actions[0].label == "Address Review"
 
+    async def test_handoff_auto_execute_disabled_by_config(self) -> None:
+        """When pipeline.auto_address_review is False, handoff action has auto_execute=False."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.config.models import PipelineConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        config = ProjectConfig(pipeline=PipelineConfig(auto_address_review=False))
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10, config=config)
+        ctx.task_run_id = 1
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Bad"}]
+        llm_result = LLMResult(text=self._llm_response(findings), model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            role = ReviewerRole()
+            await role.execute(ctx)
+
+        dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert dashboard_handoff.next_actions[0].id == "address_review"
+        assert dashboard_handoff.next_actions[0].auto_execute is False
+
     async def test_handoff_approve_when_zero_findings(self) -> None:
         """With zero findings, handoff recommends approve."""
         from decimal import Decimal
