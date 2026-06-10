@@ -22,9 +22,10 @@ log = get_logger(component="ipc.control")
 
 _HEADLESS_PREAMBLE = (
     "[HEADLESS MODE] You are running as an autonomous agent with no "
-    "human operator. Complete all operations directly -- do not ask for "
-    "confirmation or pose questions. Proceed with git push, force-push, "
-    "file deletions, and any other actions required by the task.\n\n"
+    "human operator. Do not ask for confirmation or pose questions. "
+    "Proceed with git push, force-push, file deletions, and any other "
+    "actions required by the task.\n\n"
+    "Execute the following instruction exactly as specified:\n\n"
 )
 
 
