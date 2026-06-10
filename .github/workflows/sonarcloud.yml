@@ -2,9 +2,9 @@ name: SonarCloud
 
 on:
   # pull_request_target runs in the base repo context so secrets are
-  # available even for PRs from forks. Safe because the workflow YAML
-  # always comes from the base branch (tamper-proof) and we never
-  # execute code from the PR (no pip install / pytest on fork PRs).
+  # available even for PRs from forks. The workflow YAML always comes
+  # from the base branch (tamper-proof). Coverage (pip install + pytest)
+  # runs on fork code; secrets are scoped to individual steps.
   pull_request_target:
     branches: [main]
   push:
@@ -18,6 +18,9 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,20 +29,20 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || '' }}
           persist-credentials: false
 
-      # Coverage for push events (always trusted) and pull_request_target
-      # from the repo owner's forks (trusted). Untrusted fork PRs get
-      # static analysis only -- we never execute their code.
+      # Coverage for push and pull_request_target events.
+      # pull_request_target uses the workflow from main (tamper-proof)
+      # and SONAR_TOKEN is scoped to its own step.
       - uses: actions/setup-python@v5
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.owner.login == github.repository_owner
+        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
         with:
           python-version: "3.12"
 
       - name: Install package with test dependencies
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.owner.login == github.repository_owner
+        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
         run: pip install -e ".[dev]" pytest-cov
 
       - name: Run tests with coverage
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.owner.login == github.repository_owner
+        if: github.event_name == 'push' || github.event_name == 'pull_request_target'
         run: pytest tests/ --cov=sova --cov-report=xml -q
 
       - name: Find associated PR
