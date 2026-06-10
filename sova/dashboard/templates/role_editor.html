@@ -19,8 +19,25 @@
     </div>
   </div>
 
+  <!-- Role Settings (hidden for built-in roles) -->
+  <div id="role-settings" class="hidden mb-4 bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <div class="flex items-center gap-6 flex-wrap">
+      <div>
+        <label class="text-[10px] text-gray-500 uppercase tracking-wide block mb-1.5">Accepts issues in states</label>
+        <div id="input-states-checkboxes" class="flex flex-wrap gap-2"></div>
+        <p class="text-[10px] text-gray-600 mt-1">Empty = accepts any state</p>
+      </div>
+      <div class="border-l border-gray-700/50 pl-6">
+        <label class="text-[10px] text-gray-500 uppercase tracking-wide block mb-1.5">Transitions issue to</label>
+        <select id="output-state-select" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-2 py-1 focus:border-accent focus:outline-none">
+          <option value="">None (no transition)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
   <!-- Main layout -->
-  <div class="flex gap-4" style="height: calc(100vh - 160px);">
+  <div class="flex gap-4" style="height: calc(100vh - 220px);">
     <!-- Left: Command palette -->
     <div id="command-palette" class="w-56 shrink-0 bg-surface-card rounded-lg border border-gray-700/50 overflow-y-auto">
       <div class="p-3 border-b border-gray-700/50">
@@ -51,5 +68,5 @@
   <div id="validation-bar" class="hidden mt-3 p-3 rounded-lg border text-sm"></div>
 </div>
 
-<script src="{{ prefix|default('') }}/static/role-editor.js"></script>
+<script src="/static/role-editor.js"></script>
 {% endblock %}

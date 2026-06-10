@@ -128,7 +128,6 @@ class DAGExecutor:
         try:
             result = await _get_start_command()(
                 command=command,
-                project_dir=self.ctx.project_dir,
                 args=node.get("params"),
             )
             elapsed_ms = int((time.monotonic() - start) * 1000)
