@@ -509,6 +509,7 @@ class ReviewerRole(AgentRole):
         actions: list[HandoffAction] = []
 
         if actionable:
+            auto = ctx.config.pipeline.auto_address_review
             actions.append(
                 HandoffAction(
                     id="address_review",
@@ -518,7 +519,7 @@ class ReviewerRole(AgentRole):
                     mode="agent",
                     command="",
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
-                    auto_execute=True,
+                    auto_execute=auto,
                 ),
             )
         else:

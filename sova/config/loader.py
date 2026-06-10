@@ -61,7 +61,9 @@ _NESTED_SECTIONS = (
     "commit",
     "triage",
     "roles",
+    "pipeline",
     "notification",
+    "server",
     "external_reviews",
 )
 

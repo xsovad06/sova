@@ -17,6 +17,8 @@ class HandoffToReviewerStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.handoff_to_reviewer", issue=ctx.issue_number, pr=ctx.pr_number)
 
+        auto = ctx.config.pipeline.auto_handoff
+
         return await write_step_handoff(
             ctx,
             role="developer",
@@ -35,7 +37,7 @@ class HandoffToReviewerStep(BaseStep):
                     mode="agent",
                     command="",
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "reviewer"},
-                    auto_execute=True,
+                    auto_execute=auto,
                 ),
             ],
             notification_message=f"PR #{ctx.pr_number} passed CI, handing to Reviewer",

@@ -149,6 +149,15 @@ class RolesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_ROLES_")
 
 
+class PipelineConfig(BaseSettings):
+    """Pipeline orchestration configuration."""
+
+    auto_handoff: bool = True
+    auto_address_review: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_PIPELINE_")
+
+
 class SonarCloudConfig(BaseSettings):
     """SonarCloud-specific configuration."""
 
@@ -219,6 +228,7 @@ class ProjectConfig(BaseSettings):
     commit: CommitConfig = Field(default_factory=CommitConfig)
     triage: TriageConfig = Field(default_factory=TriageConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
