@@ -8,6 +8,7 @@ Delegates DB persistence to agent_db and pool management to agent_pool.
 from __future__ import annotations
 
 import asyncio
+import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -274,15 +275,22 @@ async def start_agent(
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
-        prompt = f"sova run {issue} --run-id {run_id}"
+        cmd_parts = ["sova", "run", shlex.quote(issue), "--run-id", str(run_id)]
         if resume_run_id:
-            prompt += f" --resume {resume_run_id}"
+            cmd_parts.extend(["--resume", str(resume_run_id)])
         if role:
-            prompt += f" --role {role}"
+            cmd_parts.extend(["--role", shlex.quote(role)])
         if force:
-            prompt += " --force"
+            cmd_parts.append("--force")
         if pr_number:
-            prompt += f" --pr {pr_number}"
+            cmd_parts.extend(["--pr", str(pr_number)])
+        cmd = " ".join(cmd_parts)
+        prompt = (
+            "Run the following command in your bash shell. This is a CLI "
+            "command, not a task description -- do not implement the work "
+            "yourself. Execute it exactly as written and let it complete:\n\n"
+            f"```bash\n{cmd}\n```"
+        )
 
         gh_env = await _resolve_project_gh_env(cwd)
         try:
