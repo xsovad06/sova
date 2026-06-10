@@ -3164,18 +3164,37 @@ class TestRolesAPI:
         )
         assert resp.status_code == 409
 
-    async def test_create_rejects_invalid_dag(self, client):
-        """POST /api/roles rejects DAGs with cycles."""
+    async def test_create_accepts_draft_dag(self, client):
+        """POST /api/roles accepts drafts (validation on save, not create)."""
         graph = {
-            "nodes": [{"id": "a", "command": "x"}, {"id": "b", "command": "y"}],
-            "edges": [{"id": "e1", "source": "a", "target": "b"}, {"id": "e2", "source": "b", "target": "a"}],
+            "nodes": [{"id": "n1", "command": "", "label": "Start"}],
+            "edges": [],
         }
         resp = await client.post(
             "/api/roles",
-            json={
-                "name": "bad-role",
-                "graph_json": graph,
-            },
+            json={"name": "draft-role", "graph_json": graph},
+        )
+        assert resp.status_code == 200
+
+    async def test_update_rejects_invalid_dag(self, client):
+        """PUT /api/roles/{name} rejects DAGs with cycles."""
+        graph_ok = {
+            "nodes": [{"id": "a", "command": "x"}],
+            "edges": [],
+        }
+        resp = await client.post(
+            "/api/roles",
+            json={"name": "bad-update-role", "graph_json": graph_ok},
+        )
+        assert resp.status_code == 200
+
+        graph_bad = {
+            "nodes": [{"id": "a", "command": "x"}, {"id": "b", "command": "y"}],
+            "edges": [{"id": "e1", "source": "a", "target": "b"}, {"id": "e2", "source": "b", "target": "a"}],
+        }
+        resp = await client.put(
+            "/api/roles/bad-update-role",
+            json={"graph_json": graph_bad},
         )
         assert resp.status_code == 400
         data = resp.json()
