@@ -110,7 +110,7 @@ async function createRole() {
   if (!name) return;
 
   const graph = {
-    nodes: [{ id: 'n1', command: 'develop', label: 'Start', position: { x: 200, y: 80 }, params: {} }],
+    nodes: [{ id: 'n1', command: '', label: 'Start', position: { x: 200, y: 80 }, params: {} }],
     edges: []
   };
 
@@ -118,7 +118,7 @@ async function createRole() {
     const resp = await fetch(`${apiBase}/roles`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, description: desc, graph_json: graph, input_states: ['researched'], output_state: 'in_review' })
+      body: JSON.stringify({ name, description: desc, graph_json: graph, input_states: [], output_state: '' })
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({ detail: 'Create failed' }));

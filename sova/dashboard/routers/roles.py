@@ -81,11 +81,7 @@ async def get_role(name: str) -> dict[str, Any]:
 
 @router.post("")
 async def create_role(req: CreateRoleRequest) -> dict[str, Any]:
-    """Create a custom role."""
-    errors, _ = validate_dag(req.graph_json)
-    if errors:
-        raise HTTPException(status_code=400, detail={"error": "Invalid DAG", "validation_errors": errors})
-
+    """Create a custom role (draft -- DAG validated on save, not create)."""
     async with await get_session() as session:
         async with session.begin():
             definition = await role_service.create_definition(

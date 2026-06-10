@@ -28,9 +28,9 @@ class CustomRole(AgentRole):
             ts = _STATE_MAP.get(state_str)
             if ts:
                 input_states.add(ts)
-        self.allowed_input_states = frozenset(input_states) if input_states else frozenset({TaskState.RESEARCHED})
+        self.allowed_input_states = frozenset(input_states) if input_states else frozenset(TaskState)
 
-        self.output_state = _STATE_MAP.get(definition.output_state or "", TaskState.IN_REVIEW)
+        self.output_state = _STATE_MAP.get(definition.output_state) if definition.output_state else None
 
     async def assess_task(self, task: Task) -> TaskAssessment:
         return TaskAssessment(

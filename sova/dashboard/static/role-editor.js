@@ -21,6 +21,8 @@
   let commands = [];
   let nodeIdCounter = 100;
 
+  const TASK_STATES = ['backlog', 'triaged', 'researched', 'in_progress', 'in_review', 'done', 'needs_spec', 'human_only'];
+
   // -- Init -------------------------------------------------------------------
 
   async function init() {
@@ -29,7 +31,30 @@
     renderCommandPalette();
     if (!isBuiltin) {
       document.getElementById('btn-save').classList.remove('hidden');
+      initStateConfig();
     }
+  }
+
+  function initStateConfig() {
+    const settingsEl = document.getElementById('role-settings');
+    settingsEl.classList.remove('hidden');
+
+    const checkboxes = document.getElementById('input-states-checkboxes');
+    const currentInputs = new Set(roleData.input_states || []);
+    checkboxes.innerHTML = TASK_STATES.map(s => {
+      const checked = currentInputs.has(s) ? 'checked' : '';
+      return `<label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none">
+        <input type="checkbox" value="${esc(s)}" ${checked} class="js-input-state rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">
+        <span>${esc(s)}</span>
+      </label>`;
+    }).join('');
+
+    const select = document.getElementById('output-state-select');
+    select.innerHTML = '<option value="">None (no transition)</option>' +
+      TASK_STATES.map(s => {
+        const selected = (roleData.output_state === s) ? 'selected' : '';
+        return `<option value="${esc(s)}" ${selected}>${esc(s)}</option>`;
+      }).join('');
   }
 
   async function loadRole() {
@@ -375,12 +400,14 @@
   window.saveRole = async function() {
     if (isBuiltin) return;
     const graph = buildGraphJSON();
+    const inputStates = Array.from(document.querySelectorAll('.js-input-state:checked')).map(cb => cb.value);
+    const outputState = document.getElementById('output-state-select').value;
 
     try {
       const resp = await fetch(`${apiBase}/roles/${roleName}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph_json: graph }),
+        body: JSON.stringify({ graph_json: graph, input_states: inputStates, output_state: outputState }),
       });
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({ detail: 'Save failed' }));
