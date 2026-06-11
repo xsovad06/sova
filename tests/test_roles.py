@@ -11,6 +11,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig, RolesConfig
 from sova.core.context import ExecutionContext
+from sova.core.dag import DAGExecutor
 from sova.core.state import TaskStatus
 from sova.core.workflow import WorkflowEngine
 from sova.db.session import close_db, init_db
@@ -1784,6 +1785,93 @@ class TestCustomRole:
         assert not result.success
         assert "not ready" in result.summary.lower()
 
+    async def test_custom_role_execute_success(self) -> None:
+        """CustomRole.execute returns success when DAG completes."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.core.dag import DAGResult
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test-role",
+            description="",
+            input_states=["researched"],
+            output_state="in_review",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+        )
+        role = CustomRole(defn)
+        ctx = _make_ctx(state=TaskState.RESEARCHED)
+
+        mock_result = DAGResult(success=True, summary="DAG completed: 1 nodes executed", total_cost_usd=Decimal("0.5"))
+        with patch.object(DAGExecutor, "execute", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert result.output_state == TaskState.IN_REVIEW
+        assert "1 nodes" in result.summary
+
+    async def test_custom_role_execute_dag_failure(self) -> None:
+        """CustomRole.execute returns failure when DAG fails."""
+        from unittest.mock import patch
+
+        from sova.core.dag import DAGResult
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test-role",
+            description="",
+            input_states=["researched"],
+            output_state="in_review",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+        )
+        role = CustomRole(defn)
+        ctx = _make_ctx(state=TaskState.RESEARCHED)
+
+        mock_result = DAGResult(success=False, summary="DAG failed at node n1", error="develop step crashed")
+        with patch.object(DAGExecutor, "execute", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "develop step crashed" in result.error
+
+    def test_custom_role_empty_input_states_accepts_all(self) -> None:
+        """When input_states is empty, any state is accepted."""
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test",
+            description="",
+            input_states=[],
+            output_state="",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+        )
+        role = CustomRole(defn)
+        task = Task(id="1", title="Test", state=TaskState.BACKLOG)
+        assert role.validate_preconditions(task)
+
+    def test_custom_role_no_output_state(self) -> None:
+        """When output_state is empty, output_state is None."""
+        from sova.db.models import WorkflowDefinition
+        from sova.roles.custom import CustomRole
+
+        defn = WorkflowDefinition(
+            id=1,
+            name="test",
+            description="",
+            input_states=[],
+            output_state="",
+            graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
+        )
+        role = CustomRole(defn)
+        assert role.output_state is None
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher -- async fallback
@@ -1824,3 +1912,13 @@ class TestDispatcherAsyncFallback:
 
         with pytest.raises(ValueError, match="Unknown role"):
             await get_role_async("nonexistent")
+
+    async def test_get_role_async_db_failure_propagates(self) -> None:
+        """get_role_async re-raises DB failures instead of returning 'Unknown role'."""
+        from unittest.mock import patch
+
+        from sova.roles.dispatcher import get_role_async
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+            with pytest.raises(RuntimeError, match="DB down"):
+                await get_role_async("some-custom-role")

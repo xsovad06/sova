@@ -3168,6 +3168,31 @@ class TestRolesAPI:
         assert data["is_builtin"] is True
         assert "graph_json" in data
 
+    async def test_get_custom_role(self, client):
+        """GET /api/roles/{name} returns a custom role from the DB."""
+        graph = {
+            "nodes": [{"id": "n1", "command": "develop", "label": "Dev", "position": {"x": 0, "y": 0}, "params": {}}],
+            "edges": [],
+        }
+        await client.post(
+            "/api/roles",
+            json={
+                "name": "fetch-me",
+                "description": "Fetchable role",
+                "graph_json": graph,
+            },
+        )
+        resp = await client.get("/api/roles/fetch-me")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "fetch-me"
+        assert data["is_builtin"] is False
+
+    async def test_get_nonexistent_role(self, client):
+        """GET /api/roles/{name} returns 404 for unknown role."""
+        resp = await client.get("/api/roles/does-not-exist")
+        assert resp.status_code == 404
+
     async def test_create_custom_role(self, client):
         """POST /api/roles creates a custom role."""
         graph = {

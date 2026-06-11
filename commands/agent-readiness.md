@@ -3,8 +3,7 @@ name: agent-readiness
 description: Assess and improve a repository's readiness for AI-assisted development.
 user-invocable: true
 category: meta
-inputs:
-  - project_dir
+inputs: []
 outputs:
   - readiness_score
   - recommendations
