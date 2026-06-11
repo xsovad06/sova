@@ -29,12 +29,16 @@ async def get_active_grouped():
 
 
 @router.get("/work/history")
-async def get_history(status: str | None = None, role: str | None = None, limit: int = 50):
-    """Get completed/failed task run history."""
+async def get_history(
+    status: str | None = None,
+    role: str | None = None,
+    limit: int = 15,
+    offset: int = 0,
+):
+    """Get completed/failed task run history with pagination."""
     async with await get_session() as session:
         async with session.begin():
-            items = await work_service.get_work_history(session, status=status, role=role, limit=limit)
-        return {"tasks": items}
+            return await work_service.get_work_history(session, status=status, role=role, limit=limit, offset=offset)
 
 
 @router.get("/work/summary")
