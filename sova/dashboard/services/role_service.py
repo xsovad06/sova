@@ -22,7 +22,7 @@ log = get_logger(component="dashboard.roles")
 
 async def list_definitions(session: AsyncSession) -> list[WorkflowDefinition]:
     """List all custom workflow definitions."""
-    stmt = select(WorkflowDefinition).order_by(WorkflowDefinition.name)
+    stmt = select(WorkflowDefinition).where(WorkflowDefinition.is_builtin.is_(False)).order_by(WorkflowDefinition.name)
     result = await session.execute(stmt)
     return list(result.scalars().all())
 

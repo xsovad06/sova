@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from sova.core.context import ExecutionContext
 from sova.db.models import StepExecution, WorkflowDefinition
@@ -21,10 +23,10 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dag")
 
 # Lazy import cache to avoid circular import (dashboard -> core)
-_start_command_fn = None
+_start_command_fn: Callable[..., Awaitable[Any]] | None = None
 
 
-def _get_start_command():
+def _get_start_command() -> Callable[..., Awaitable[Any]]:
     global _start_command_fn
     if _start_command_fn is None:
         from sova.dashboard.services.agent_lifecycle import start_command
@@ -134,7 +136,11 @@ class DAGExecutor:
 
             success = result.get("status") != "error" if isinstance(result, dict) else True
             summary = result.get("message", str(result)) if isinstance(result, dict) else str(result)
-            cost_usd = Decimal(str(result.get("cost_usd", 0))) if isinstance(result, dict) else Decimal("0")
+            raw_cost = result.get("cost_usd") if isinstance(result, dict) else 0
+            try:
+                cost_usd = Decimal(str(raw_cost)) if raw_cost not in (None, "") else Decimal("0")
+            except (InvalidOperation, TypeError, ValueError):
+                cost_usd = Decimal("0")
 
             node_result = NodeResult(
                 node_id=node_id,

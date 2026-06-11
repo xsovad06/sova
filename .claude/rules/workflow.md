@@ -19,6 +19,10 @@ When the user asks to "start the next task", "what should we work on", or simila
 
 - **Verify branch identity before committing or resetting**: always check `git branch --show-current` before committing or running `git reset --soft`. If a feature branch was already merged and you're on main, commits land on main and `reset --soft` detaches from `origin/main`. Run `git log main..HEAD --oneline` to confirm you're ahead of main on the intended branch. Fix: create a branch at HEAD, reset main back, switch to the new branch.
 
+## Rebase Conflict Resolution
+
+- **Module split conflicts: take the refactored facade, preserve functional changes** -- when a PR branch predates a module split on main (e.g., `control_service.py` split into `agent_lifecycle.py` + `agent_output.py`), take main's version of the re-export facade (`git checkout HEAD -- file`). Then verify that the PR's functional changes (new functions, modified logic) are present in the correct submodule. If not, cherry-pick the functional changes into the submodule. Never take the incoming side's monolithic version -- it lacks the split structure that downstream code depends on.
+
 ## Issue State Management
 
 SOVA agents own issue state on the tracker. When working on an issue:

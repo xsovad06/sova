@@ -86,6 +86,13 @@
 
   function initCytoscape() {
     const graph = roleData.graph_json || { nodes: [], edges: [] };
+
+    // Advance nodeIdCounter past any existing numeric IDs to prevent collisions
+    for (const item of [...(graph.nodes || []), ...(graph.edges || [])]) {
+      const m = String(item.id).match(/^[ne](\d+)$/);
+      if (m) nodeIdCounter = Math.max(nodeIdCounter, parseInt(m[1], 10));
+    }
+
     const elements = [];
 
     for (const node of (graph.nodes || [])) {
@@ -222,7 +229,10 @@
 
   window._addNode = function(commandName) {
     if (isBuiltin) return;
-    const id = `n${++nodeIdCounter}`;
+    let id = `n${++nodeIdCounter}`;
+    while (cy.getElementById(id).length) {
+      id = `n${++nodeIdCounter}`;
+    }
     const center = cy.extent();
     cy.add({
       data: { id, label: commandName, command: commandName, params: {} },
@@ -349,7 +359,10 @@
     cy.one('tap', 'node', function(evt) {
       const targetId = evt.target.data('id');
       if (targetId !== pendingEdgeSource) {
-        const edgeId = `e${++nodeIdCounter}`;
+        let edgeId = `e${++nodeIdCounter}`;
+        while (cy.getElementById(edgeId).length) {
+          edgeId = `e${++nodeIdCounter}`;
+        }
         cy.add({ data: { id: edgeId, source: pendingEdgeSource, target: targetId, condition: '', label: '' } });
       }
       pendingEdgeSource = null;
