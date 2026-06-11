@@ -102,7 +102,7 @@
 
   <div id="panel-history">
     <div class="flex items-center gap-3 mb-4">
-      <select id="filter-role" onchange="loadHistory()" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
+      <select id="filter-role" onchange="historyPage=0; loadHistory()" class="bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 focus:border-accent focus:outline-none">
         <option value="">All roles</option>
         <option value="developer">Developer</option>
         <option value="triage">Triage</option>
@@ -110,11 +110,23 @@
         <option value="reviewer">Reviewer</option>
         <option value="auto">Auto</option>
       </select>
+      <div id="history-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
+        <button onclick="historyPrev()" id="history-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
+        <span id="history-page-info"></span>
+        <button onclick="historyNext()" id="history-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
+      </div>
     </div>
     <div id="history-table"></div>
   </div>
 
   <div id="panel-failed" class="hidden">
+    <div class="flex items-center gap-3 mb-4">
+      <div id="failed-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
+        <button onclick="failedPrev()" id="failed-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
+        <span id="failed-page-info"></span>
+        <button onclick="failedNext()" id="failed-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
+      </div>
+    </div>
     <div id="failed-table"></div>
   </div>
 </div>
@@ -150,8 +162,8 @@ var _actionLabels = {
   resume: { text: 'Resume', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
 };
 
-var _VISIBLE_COUNT = 5;
-var _showAll = false;
+var _TIER2_PAGE_SIZE = 15;
+var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
 
 async function loadTaskCards() {
   try {
@@ -170,8 +182,13 @@ function filterTaskCards() {
   renderTaskCards();
 }
 
-function toggleShowAll() {
-  _showAll = !_showAll;
+function expandTasks() {
+  _expansionTier++;
+  renderTaskCards();
+}
+
+function collapseTasks() {
+  _expansionTier = 0;
   renderTaskCards();
 }
 
@@ -212,8 +229,28 @@ function renderTaskCards() {
     return;
   }
 
-  var visible = (q || _showAll) ? items : items.slice(0, _VISIBLE_COUNT);
-  var hiddenCount = q ? 0 : Math.max(0, items.length - _VISIBLE_COUNT);
+  var _highPriStates = { in_progress: 1, in_review: 1 };
+  var _highPriLabels = { critical: 1, high: 1 };
+  var tier1 = items.filter(function(t) {
+    return _highPriStates[t.state] || _highPriLabels[_extractPriority(t.labels)];
+  });
+  if (tier1.length === 0 && items.length > 0) tier1 = items.slice(0, 3);
+
+  var visible;
+  var hiddenCount;
+  if (q) {
+    visible = items;
+    hiddenCount = 0;
+  } else if (_expansionTier === 0) {
+    visible = tier1;
+    hiddenCount = items.length - tier1.length;
+  } else if (_expansionTier === 1) {
+    visible = items.slice(0, tier1.length + _TIER2_PAGE_SIZE);
+    hiddenCount = Math.max(0, items.length - visible.length);
+  } else {
+    visible = items;
+    hiddenCount = 0;
+  }
 
   var html = visible.map(function(t) {
     var isRunning = _runningIssues.has(String(t.issue));
@@ -258,13 +295,16 @@ function renderTaskCards() {
     '</div>';
   }).join('');
 
-  if (hiddenCount > 0 && !_showAll) {
+  if (hiddenCount > 0) {
+    var label = hiddenCount <= _TIER2_PAGE_SIZE
+      ? 'Show ' + hiddenCount + ' more'
+      : 'Show ' + Math.min(hiddenCount, _TIER2_PAGE_SIZE) + ' more (' + hiddenCount + ' remaining)';
     html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
-      '<button onclick="toggleShowAll()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
-      'Show ' + hiddenCount + ' more tasks</button></div>';
-  } else if (_showAll && hiddenCount > 0) {
+      '<button onclick="expandTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+      label + '</button></div>';
+  } else if (_expansionTier > 0 && !q) {
     html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
-      '<button onclick="toggleShowAll()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+      '<button onclick="collapseTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
       'Show less</button></div>';
   }
 
@@ -905,28 +945,56 @@ function switchTab(tab) {
   if (tab === 'failed') loadFailed();
 }
 
+var _PAGE_SIZE = 15;
+var historyPage = 0;
+var historyTotal = 0;
+var failedPage = 0;
+var failedTotal = 0;
+
 async function loadHistory() {
   try {
     var role = document.getElementById('filter-role').value;
-    var url = '/work/history?limit=50';
+    var offset = historyPage * _PAGE_SIZE;
+    var url = '/work/history?limit=' + _PAGE_SIZE + '&offset=' + offset;
     if (role) url += '&role=' + role;
 
     var data = await fetchAPI(apiUrl(url));
+    historyTotal = data.total || 0;
     renderHistoryTable(data.tasks, 'history-table');
+    _updatePager('history', historyPage, historyTotal, _PAGE_SIZE);
   } catch (e) {
     console.error('Failed to load history:', e);
   }
 }
 
+function historyPrev() { if (historyPage > 0) { historyPage--; loadHistory(); } }
+function historyNext() { if ((historyPage + 1) * _PAGE_SIZE < historyTotal) { historyPage++; loadHistory(); } }
+
 async function loadFailed() {
   try {
-    var data = await fetchAPI(apiUrl('/work/history?status=failed&limit=50'));
+    var offset = failedPage * _PAGE_SIZE;
+    var data = await fetchAPI(apiUrl('/work/history?status=failed&limit=' + _PAGE_SIZE + '&offset=' + offset));
+    failedTotal = data.total || 0;
     var countEl = document.getElementById('tab-failed-count');
-    countEl.textContent = data.tasks.length > 0 ? '(' + data.tasks.length + ')' : '';
+    countEl.textContent = failedTotal > 0 ? '(' + failedTotal + ')' : '';
     renderHistoryTable(data.tasks, 'failed-table', true);
+    _updatePager('failed', failedPage, failedTotal, _PAGE_SIZE);
   } catch (e) {
     console.error('Failed to load failed:', e);
   }
+}
+
+function failedPrev() { if (failedPage > 0) { failedPage--; loadFailed(); } }
+function failedNext() { if ((failedPage + 1) * _PAGE_SIZE < failedTotal) { failedPage++; loadFailed(); } }
+
+function _updatePager(prefix, page, total, pageSize) {
+  var pager = document.getElementById(prefix + '-pager');
+  if (total <= pageSize) { pager.classList.add('hidden'); return; }
+  pager.classList.remove('hidden');
+  var totalPages = Math.ceil(total / pageSize);
+  document.getElementById(prefix + '-page-info').textContent = 'Page ' + (page + 1) + ' of ' + totalPages;
+  document.getElementById(prefix + '-prev').disabled = page === 0;
+  document.getElementById(prefix + '-next').disabled = page + 1 >= totalPages;
 }
 
 function renderHistoryTable(tasks, targetId, showError) {
