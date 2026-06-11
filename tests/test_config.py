@@ -29,6 +29,7 @@ def test_default_config() -> None:
     assert cfg.task_source.type == "github"
     assert cfg.agent.model == "opus"
     assert cfg.agent.max_budget == Decimal("10.00")
+    assert cfg.agent.step_timeout == 1800
     assert cfg.review.enabled is True
     assert cfg.review.max_rounds == 2
     assert cfg.commit.format == "conventional"
@@ -398,6 +399,8 @@ class TestFieldConstraints:
         [
             (AgentConfig, "max_budget", Decimal("-1")),
             (AgentConfig, "max_budget", Decimal("0")),
+            (AgentConfig, "step_timeout", 0),
+            (AgentConfig, "step_timeout", -1),
             (ReviewConfig, "max_rounds", 0),
             (ReviewConfig, "max_rounds", -1),
             (CIConfig, "poll_interval", 0),
@@ -421,6 +424,8 @@ class TestFieldConstraints:
         ids=[
             "agent-max_budget-negative",
             "agent-max_budget-zero",
+            "agent-step_timeout-zero",
+            "agent-step_timeout-negative",
             "review-max_rounds-zero",
             "review-max_rounds-negative",
             "ci-poll_interval-zero",
