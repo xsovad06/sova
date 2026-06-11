@@ -1978,9 +1978,9 @@ class TestWorkServiceDirect:
             session.add(TaskRun(issue_number="4", role="dev", status="developing"))
 
         result = await get_work_history(session)
-        statuses = {r["status"] for r in result}
+        statuses = {r["status"] for r in result["tasks"]}
         assert statuses == {"done", "failed", "interrupted"}
-        assert all(r["issue_number"] != "4" for r in result)
+        assert all(r["issue_number"] != "4" for r in result["tasks"])
 
     async def test_get_work_history_status_filter(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_history
@@ -1991,8 +1991,8 @@ class TestWorkServiceDirect:
             session.add(TaskRun(issue_number="2", role="dev", status="failed", started_at=now, ended_at=now))
 
         result = await get_work_history(session, status="done")
-        assert len(result) == 1
-        assert result[0]["status"] == "done"
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["status"] == "done"
 
     async def test_get_work_history_role_filter(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_history
@@ -2003,8 +2003,8 @@ class TestWorkServiceDirect:
             session.add(TaskRun(issue_number="2", role="triage", status="done", started_at=now, ended_at=now))
 
         result = await get_work_history(session, role="triage")
-        assert len(result) == 1
-        assert result[0]["role"] == "triage"
+        assert len(result["tasks"]) == 1
+        assert result["tasks"][0]["role"] == "triage"
 
     async def test_get_work_history_limit_capped(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_history
@@ -2015,7 +2015,7 @@ class TestWorkServiceDirect:
                 session.add(TaskRun(issue_number=str(i), role="dev", status="done", started_at=now, ended_at=now))
 
         result = await get_work_history(session, limit=2)
-        assert len(result) == 2
+        assert len(result["tasks"]) == 2
 
     async def test_get_work_history_accepts_large_limit(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_history
@@ -2025,7 +2025,43 @@ class TestWorkServiceDirect:
             session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
 
         result = await get_work_history(session, limit=999)
-        assert len(result) == 1
+        assert len(result["tasks"]) == 1
+
+    async def test_get_work_history_offset(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            for i in range(10):
+                session.add(TaskRun(issue_number=str(i), role="dev", status="done", started_at=now, ended_at=now))
+
+        page1 = await get_work_history(session, limit=3, offset=0)
+        page2 = await get_work_history(session, limit=3, offset=3)
+        assert len(page1["tasks"]) == 3
+        assert len(page2["tasks"]) == 3
+        assert page1["total"] == 10
+        assert page2["total"] == 10
+        ids_1 = {r["id"] for r in page1["tasks"]}
+        ids_2 = {r["id"] for r in page2["tasks"]}
+        assert ids_1.isdisjoint(ids_2)
+
+    async def test_get_work_history_offset_past_end(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="1", role="dev", status="done", started_at=now, ended_at=now))
+
+        result = await get_work_history(session, limit=10, offset=100)
+        assert len(result["tasks"]) == 0
+        assert result["total"] == 1
+
+    async def test_work_history_endpoint_pagination(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/work/history?limit=15&offset=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+        assert "total" in data
 
     async def test_get_work_summary(self, session: AsyncSession) -> None:
         from sova.dashboard.services.work_service import get_work_summary

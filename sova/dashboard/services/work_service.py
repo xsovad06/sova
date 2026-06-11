@@ -67,16 +67,22 @@ async def get_work_history(
     status: str | None = None,
     role: str | None = None,
     limit: int = 50,
-) -> list[dict]:
-    """Get completed/failed/interrupted task runs with step counts."""
-    stmt = select(TaskRun).where(TaskRun.status.in_(_TERMINAL)).order_by(TaskRun.ended_at.desc())
+    offset: int = 0,
+) -> dict:
+    """Get completed/failed/interrupted task runs with step counts.
+
+    Returns ``{"tasks": [...], "total": N}`` for pagination support.
+    """
+    base = select(TaskRun).where(TaskRun.status.in_(_TERMINAL))
 
     if status:
-        stmt = stmt.where(TaskRun.status == status)
+        base = base.where(TaskRun.status == status)
     if role:
-        stmt = stmt.where(TaskRun.role == role)
-    stmt = stmt.limit(min(limit, 200))
+        base = base.where(TaskRun.role == role)
 
+    total = await session.scalar(select(func.count()).select_from(base.subquery()))
+
+    stmt = base.order_by(TaskRun.ended_at.desc()).limit(min(limit, 200)).offset(max(offset, 0))
     result = await session.execute(stmt)
     runs = result.scalars().all()
 
@@ -132,7 +138,7 @@ async def get_work_history(
                 "ended_at": iso_utc(r.ended_at),
             }
         )
-    return items
+    return {"tasks": items, "total": total or 0}
 
 
 async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:

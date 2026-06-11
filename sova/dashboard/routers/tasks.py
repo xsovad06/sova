@@ -67,5 +67,5 @@ async def task_history(limit: int = 50):
     """Get completed/failed task history."""
     project_dir = get_project_dir()
     async with await get_session(project_dir) as session:
-        tasks = await get_task_history(session, limit=limit)
-    return {"tasks": tasks}
+        result = await get_task_history(session, limit=limit)
+    return {"tasks": result["tasks"]}
