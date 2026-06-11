@@ -41,7 +41,7 @@ class ConfigureRequest(BaseModel):
     test_cmd: str = ""
     lint_cmd: str = ""
     format_cmd: str = ""
-    no_ai_coauthor: bool = False
+    ai_coauthor: bool = True
     pr_title_format: str = "conventional"
     pr_auto_link: bool = True
 
@@ -101,7 +101,7 @@ async def configure_project(req: ConfigureRequest):
         review_max_rounds=req.review_max_rounds,
         branch_naming=req.branch_naming,
         commit_format=req.commit_format,
-        no_ai_coauthor=req.no_ai_coauthor,
+        ai_coauthor=req.ai_coauthor,
         pr_title_format=req.pr_title_format,
         pr_auto_link=req.pr_auto_link,
     )

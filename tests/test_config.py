@@ -87,6 +87,49 @@ reviewer = "Koda"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
 
 
+def test_migrate_deprecated_no_ai_coauthor(tmp_path: Path) -> None:
+    """Old no_ai_coauthor=true is migrated to ai_coauthor=false."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[commit]
+no_ai_coauthor = true
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.commit.ai_coauthor is False
+
+
+def test_migrate_deprecated_no_ai_coauthor_false(tmp_path: Path) -> None:
+    """Old no_ai_coauthor=false is migrated to ai_coauthor=true."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[commit]
+no_ai_coauthor = false
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.commit.ai_coauthor is True
+
+
+def test_migrate_no_clobber_new_key(tmp_path: Path) -> None:
+    """If both old and new keys exist, new key wins (no migration)."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[commit]
+no_ai_coauthor = true
+ai_coauthor = true
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.commit.ai_coauthor is True
+
+
 def test_pipeline_section_loaded_from_toml(tmp_path: Path) -> None:
     """Pipeline config is loaded from [pipeline] section in sova.toml."""
     toml_content = """
