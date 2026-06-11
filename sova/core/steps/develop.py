@@ -31,6 +31,7 @@ class DevelopStep(BaseStep):
                 model=ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+                timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_cost(result.cost_usd)
             ctx.session_id = result.session_id

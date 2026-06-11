@@ -27,6 +27,7 @@ class ResearchStep(BaseStep):
                 model=ctx.config.agent.model,
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
+                timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_cost(result.cost_usd)
 
