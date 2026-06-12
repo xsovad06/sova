@@ -60,15 +60,50 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
                 .limit(1)
             )
             result = await session.execute(stmt)
-            run = result.scalar_one_or_none()
-            if run and run.handoff_json:
-                findings = run.handoff_json.get("pending_findings", [])
+            run_record = result.scalar_one_or_none()
+            if run_record and run_record.handoff_json:
+                findings = run_record.handoff_json.get("pending_findings", [])
                 if findings:
-                    log.info("address_review.findings_from_reviewer", run_id=run.id, count=len(findings))
+                    log.info("address_review.findings_from_reviewer", run_id=run_record.id, count=len(findings))
                     return findings
     except Exception:
         log.debug("address_review.issue_findings_failed", exc_info=True)
     return []
+
+
+async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], list[str]]:
+    """Fetch unresolved CodeRabbit findings from the PR.
+
+    Returns (findings_as_dicts, thread_ids).
+    """
+    if not ctx.pr_number:
+        return [], []
+    try:
+        from sova.adapters.external_reviews import _fetch_coderabbit_threads
+
+        cr_result = await _fetch_coderabbit_threads(
+            ctx.repo,
+            ctx.pr_number,
+            github_user=ctx.config.github_user,
+        )
+        findings = [
+            {
+                "file": f.file_path,
+                "line": f.line,
+                "severity": 6,
+                "category": "external-review",
+                "description": f.message,
+                "suggestion": "",
+                "source": "coderabbit",
+            }
+            for f in cr_result.findings
+        ]
+        if findings:
+            log.info("address_review.coderabbit_findings", count=len(findings))
+        return findings, cr_result.thread_ids
+    except Exception:
+        log.warning("address_review.coderabbit_fetch_failed", exc_info=True)
+        return [], []
 
 
 def _format_findings_prompt(findings: list[dict]) -> str:
@@ -84,7 +119,8 @@ def _format_findings_prompt(findings: list[dict]) -> str:
         loc = f.get("file", "unknown")
         if f.get("line"):
             loc += f":{f['line']}"
-        lines.append(f"{i}. [{f.get('severity', '?')}/10] [{f.get('category', 'other')}] `{loc}`")
+        source_tag = f" [from {f['source']}]" if f.get("source") else ""
+        lines.append(f"{i}. [{f.get('severity', '?')}/10] [{f.get('category', 'other')}] `{loc}`{source_tag}")
         lines.append(f"   {f.get('description', '')}")
         if f.get("suggestion"):
             lines.append(f"   Fix: {f['suggestion']}")
@@ -96,8 +132,17 @@ def _format_findings_prompt(findings: list[dict]) -> str:
 class AddressReviewStep(BaseStep):
     name = "address_review"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._head_before_llm: str | None = None
+
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.address_review", pr=ctx.pr_number)
+
+        # Capture HEAD before LLM invocation for gate check
+        head_result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        if head_result.success:
+            self._head_before_llm = head_result.stdout.strip()
 
         # Load findings: file -> resumed run -> most recent reviewer for this issue
         findings = _load_review_findings(ctx.project_dir)
@@ -105,6 +150,11 @@ class AddressReviewStep(BaseStep):
             findings = await _load_review_findings_from_db(ctx.resume_run_id)
         if not findings:
             findings = await _load_review_findings_by_issue(ctx.issue_number)
+
+        # Also fetch CodeRabbit findings from the PR
+        cr_findings, _thread_ids = await _load_coderabbit_findings(ctx)
+        if cr_findings:
+            findings.extend(cr_findings)
 
         if not findings:
             log.info("step.address_review.no_findings")
@@ -131,16 +181,18 @@ class AddressReviewStep(BaseStep):
             return StepResult(success=False, summary="Failed to address review findings", error=str(exc))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: addressing review should produce changes."""
+        """Gate: the LLM must have produced new changes or commits."""
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
-        has_changes = bool(
+        has_uncommitted = bool(
             (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
         )
-        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-        has_commits = bool(log_result.success and log_result.stdout.strip())
 
-        if has_changes or has_commits:
+        head_result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        head_after = head_result.stdout.strip() if head_result.success else ""
+        head_moved = self._head_before_llm is not None and head_after != self._head_before_llm
+
+        if has_uncommitted or head_moved:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="No changes after addressing review findings")
 
