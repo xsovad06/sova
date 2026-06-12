@@ -3103,7 +3103,7 @@ class TestTomlConfigGeneration:
         assert cfg.task_source == "github"
         assert cfg.agent_model == "opus"
         assert cfg.max_budget == "10.00"
-        assert cfg.ai_coauthor is True
+        assert cfg.no_ai_coauthor is False
         assert cfg.pr_auto_link is True
 
     def test_generate_sova_toml_includes_fields(self) -> None:
@@ -3117,12 +3117,12 @@ class TestTomlConfigGeneration:
         assert "[task_source]" in content
         assert "[agent]" in content
 
-    def test_generate_sova_toml_ai_coauthor(self) -> None:
+    def test_generate_sova_toml_no_ai_coauthor(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
 
-        cfg = TomlConfig(ai_coauthor=False)
+        cfg = TomlConfig(no_ai_coauthor=True)
         content = generate_sova_toml(cfg)
-        assert "ai_coauthor = false" in content
+        assert "no_ai_coauthor = true" in content
 
     def test_generate_sova_toml_custom_budget(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml

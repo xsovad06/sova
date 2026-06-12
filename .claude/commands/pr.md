@@ -124,8 +124,8 @@ Create a pull request for the current branch using the project's standard PR tem
 
 10. **Create or update PR**:
     ```bash
-    # New PR
-    gh pr create --title "THE_TITLE" --body "$(cat <<'EOF'
+    # New PR (--assignee @me ensures creator is always assigned)
+    gh pr create --assignee @me --title "THE_TITLE" --body "$(cat <<'EOF'
     [THE BODY]
     EOF
     )"
@@ -137,12 +137,7 @@ Create a pull request for the current branch using the project's standard PR tem
     )"
     ```
 
-11. **Assign the PR** to the current user:
-    ```bash
-    gh pr edit <PR_NUMBER> --add-assignee "$(gh api user --jq '.login')"
-    ```
-
-12. **Return the PR URL** to the user.
+11. **Return the PR URL** to the user.
 
 ## Rules
 

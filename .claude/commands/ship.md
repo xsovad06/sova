@@ -82,8 +82,7 @@ If rebase has conflicts, stop and ask the user for help.
    - Concise title based on changes
    - Summary, changes, and testing sections in body
    - Link task if applicable
-   - Assign to self: `gh pr edit <NUMBER> --add-assignee @me`
-   - Use `--base main` when creating the PR
+   - Use `--assignee @me --base main` when creating the PR
 
 **If PR already exists:**
 1. Force push: `git push --force-with-lease`

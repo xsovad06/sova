@@ -135,7 +135,7 @@ class TomlConfig:
     review_max_rounds: int = 2
     branch_naming: str = "conventional"
     commit_format: str = "conventional"
-    ai_coauthor: bool = True
+    no_ai_coauthor: bool = False
     pr_title_format: str = "conventional"
     pr_auto_link: bool = True
 
@@ -169,7 +169,7 @@ def generate_sova_toml(config: TomlConfig) -> str:
 
     commit_table = tomlkit.table()
     commit_table.add("format", config.commit_format)
-    commit_table.add("ai_coauthor", config.ai_coauthor)
+    commit_table.add("no_ai_coauthor", config.no_ai_coauthor)
     doc.add("commit", commit_table)
 
     branch_table = tomlkit.table()

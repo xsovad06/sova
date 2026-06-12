@@ -28,7 +28,6 @@ GROUPS: dict[str, str] = {
     "roles": "Roles",
     "notification": "Notifications",
     "server": "Server",
-    "external_reviews": "External Reviews",
 }
 
 GROUP_ORDER: list[str] = [
@@ -45,7 +44,6 @@ GROUP_ORDER: list[str] = [
     "worktree",
     "notification",
     "server",
-    "external_reviews",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -211,7 +209,9 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "commit.format", "Commit format", "Commit message style: conventional (type(scope): msg) or freeform", "commit"
     ),
-    SettingMeta("commit.ai_coauthor", "AI co-author", "Include AI co-author lines in commits", "commit", "boolean"),
+    SettingMeta(
+        "commit.no_ai_coauthor", "No AI co-author", "Omit AI co-author lines from commits", "commit", "boolean"
+    ),
     SettingMeta(
         "commit.author", "Author override", "Override the Git author for commits (empty = use git config)", "commit"
     ),
@@ -315,41 +315,6 @@ _REGISTRY: list[SettingMeta] = [
         "Run the watch-loop scheduler alongside the dashboard",
         "server",
         "boolean",
-    ),
-    # -- External Reviews --
-    SettingMeta(
-        "external_reviews.enabled",
-        "Enabled",
-        "Enable external review tool integration (e.g. SonarCloud, CodeRabbit, Sourcery)",
-        "external_reviews",
-        "boolean",
-    ),
-    SettingMeta(
-        "external_reviews.tools",
-        "Review tools",
-        "External review tools to poll (e.g. sonarcloud, coderabbit, sourcery)",
-        "external_reviews",
-        "list",
-    ),
-    SettingMeta(
-        "external_reviews.poll_interval",
-        "Poll interval (s)",
-        "Seconds between external review status checks",
-        "external_reviews",
-        "number",
-    ),
-    SettingMeta(
-        "external_reviews.timeout",
-        "Timeout (min)",
-        "Minutes to wait for external reviews before proceeding",
-        "external_reviews",
-        "number",
-    ),
-    SettingMeta(
-        "external_reviews.sonarcloud.project_key",
-        "SonarCloud project key",
-        "SonarCloud project key (e.g. org_repo)",
-        "external_reviews",
     ),
 ]
 

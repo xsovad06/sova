@@ -48,7 +48,6 @@ def _load_from_toml(path: Path) -> ProjectConfig:
         data = tomllib.load(f)
 
     flat = _flatten_toml(data)
-    _migrate_deprecated_keys(flat)
     return ProjectConfig(**flat)
 
 
@@ -93,12 +92,3 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
             result[key] = data[key]
 
     return result
-
-
-def _migrate_deprecated_keys(flat: dict[str, Any]) -> None:
-    """Migrate deprecated config keys to their replacements."""
-    commit = flat.get("commit")
-    if isinstance(commit, dict) and "no_ai_coauthor" in commit:
-        old_val = commit.pop("no_ai_coauthor")
-        if "ai_coauthor" not in commit:
-            commit["ai_coauthor"] = not old_val

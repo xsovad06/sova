@@ -2888,20 +2888,23 @@ class TestResolveExternalReviewsStep:
         assert "No PR" in result.summary
 
     async def test_resolves_threads_and_dismisses_reviews(self) -> None:
+        from sova.adapters.external_reviews import _ThreadsResult
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         ctx = _make_ctx(pr_number=42)
         step = ResolveExternalReviewsStep()
 
+        cr_result = _ThreadsResult(thread_ids=["thread-1", "thread-2"])
         with (
             patch(
-                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
                 new_callable=AsyncMock,
-                return_value=["thread-1", "thread-2"],
+                return_value=cr_result,
             ),
             patch(
                 "sova.adapters.external_reviews.resolve_coderabbit_threads",
                 new_callable=AsyncMock,
+                return_value=2,
             ) as mock_resolve,
             patch(
                 "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
@@ -2918,6 +2921,7 @@ class TestResolveExternalReviewsStep:
 
     async def test_includes_github_user_in_authors(self) -> None:
         """SOVA reviewer threads (posted under github_user) should also be resolved."""
+        from sova.adapters.external_reviews import _ThreadsResult
         from sova.config.models import ProjectConfig
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
@@ -2925,15 +2929,17 @@ class TestResolveExternalReviewsStep:
         ctx = _make_ctx(pr_number=42, config=config)
         step = ResolveExternalReviewsStep()
 
+        cr_result = _ThreadsResult(thread_ids=["thread-sova"])
         with (
             patch(
-                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
                 new_callable=AsyncMock,
-                return_value=["thread-sova"],
+                return_value=cr_result,
             ) as mock_fetch,
             patch(
                 "sova.adapters.external_reviews.resolve_coderabbit_threads",
                 new_callable=AsyncMock,
+                return_value=1,
             ),
             patch(
                 "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
@@ -2950,6 +2956,7 @@ class TestResolveExternalReviewsStep:
         assert "coderabbitai" in call_kwargs["authors"]
 
     async def test_no_threads_to_resolve(self) -> None:
+        from sova.adapters.external_reviews import _ThreadsResult
         from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 
         ctx = _make_ctx(pr_number=42)
@@ -2957,9 +2964,9 @@ class TestResolveExternalReviewsStep:
 
         with (
             patch(
-                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
                 new_callable=AsyncMock,
-                return_value=[],
+                return_value=_ThreadsResult(),
             ),
             patch(
                 "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
@@ -3038,9 +3045,9 @@ class TestDismissBotReviews:
         assert count == 0
 
 
-class TestFetchUnresolvedThreadIds:
-    async def test_filters_by_author(self) -> None:
-        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+class TestFetchThreadsWithAuthorsFilter:
+    async def test_filters_by_custom_authors(self) -> None:
+        from sova.adapters.external_reviews import _fetch_coderabbit_threads
 
         graphql_response = json.dumps(
             {
@@ -3054,28 +3061,28 @@ class TestFetchUnresolvedThreadIds:
                                         "isResolved": False,
                                         "path": "a.py",
                                         "line": 10,
-                                        "comments": {"nodes": [{"author": {"login": "xsovad06"}}]},
+                                        "comments": {"nodes": [{"body": "fix", "author": {"login": "xsovad06"}}]},
                                     },
                                     {
                                         "id": "t2",
                                         "isResolved": False,
                                         "path": "b.py",
                                         "line": 20,
-                                        "comments": {"nodes": [{"author": {"login": "coderabbitai"}}]},
+                                        "comments": {"nodes": [{"body": "issue", "author": {"login": "coderabbitai"}}]},
                                     },
                                     {
                                         "id": "t3",
                                         "isResolved": False,
                                         "path": "c.py",
                                         "line": 30,
-                                        "comments": {"nodes": [{"author": {"login": "other-human"}}]},
+                                        "comments": {"nodes": [{"body": "nit", "author": {"login": "other-human"}}]},
                                     },
                                     {
                                         "id": "t4",
                                         "isResolved": True,
                                         "path": "d.py",
                                         "line": 40,
-                                        "comments": {"nodes": [{"author": {"login": "xsovad06"}}]},
+                                        "comments": {"nodes": [{"body": "old", "author": {"login": "xsovad06"}}]},
                                     },
                                 ]
                             }
@@ -3085,37 +3092,38 @@ class TestFetchUnresolvedThreadIds:
             }
         )
 
-        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=True, stdout=graphql_response)
-            ids = await _fetch_unresolved_thread_ids(
+            result = await _fetch_coderabbit_threads(
                 "user/repo",
                 42,
                 authors={"xsovad06", "coderabbitai"},
                 github_user="xsovad06",
             )
 
-        assert sorted(ids) == ["t1", "t2"]
+        assert sorted(result.thread_ids) == ["t1", "t2"]
 
     async def test_returns_empty_on_failure(self) -> None:
-        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+        from sova.adapters.external_reviews import _fetch_coderabbit_threads
 
-        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=False, stderr="error")
-            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+            result = await _fetch_coderabbit_threads("user/repo", 42, authors={"x"}, github_user="x")
 
-        assert ids == []
+        assert result.thread_ids == []
+        assert result.findings == []
 
     async def test_returns_empty_on_bad_json(self) -> None:
-        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+        from sova.adapters.external_reviews import _fetch_coderabbit_threads
 
-        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=True, stdout="not json")
-            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+            result = await _fetch_coderabbit_threads("user/repo", 42, authors={"x"}, github_user="x")
 
-        assert ids == []
+        assert result.thread_ids == []
 
     async def test_skips_threads_without_comments(self) -> None:
-        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+        from sova.adapters.external_reviews import _fetch_coderabbit_threads
 
         graphql_response = json.dumps(
             {
@@ -3139,11 +3147,11 @@ class TestFetchUnresolvedThreadIds:
             }
         )
 
-        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = MagicMock(success=True, stdout=graphql_response)
-            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+            result = await _fetch_coderabbit_threads("user/repo", 42, authors={"x"}, github_user="x")
 
-        assert ids == []
+        assert result.thread_ids == []
 
 
 class TestDismissBotReviewsEdgeCases:
