@@ -172,8 +172,8 @@
           </div>
           <div class="mt-3">
             <label class="flex items-center gap-2 text-sm text-gray-300">
-              <input name="no_ai_coauthor" type="checkbox" class="rounded border-gray-600 bg-surface">
-              Strip AI co-author from commits
+              <input name="ai_coauthor" type="checkbox" checked class="rounded border-gray-600 bg-surface">
+              Include AI co-author in commits
             </label>
           </div>
         </div>
@@ -330,7 +330,7 @@ function prefillForm(data) {
   f('test_cmd', c['test_cmd'] || data.test_cmd);
   f('lint_cmd', c['lint_cmd'] || data.lint_cmd);
   f('format_cmd', c['format_cmd'] || data.format_cmd);
-  fc('no_ai_coauthor', c['commit.no_ai_coauthor'] === 'True');
+  fc('ai_coauthor', c['commit.ai_coauthor'] !== 'False');
   fc('pr_auto_link', c['pr.auto_link_issues'] !== 'False');
 }
 
@@ -384,7 +384,7 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     test_cmd: fd.get('test_cmd'),
     lint_cmd: fd.get('lint_cmd'),
     format_cmd: fd.get('format_cmd'),
-    no_ai_coauthor: !!fd.get('no_ai_coauthor'),
+    ai_coauthor: !!fd.get('ai_coauthor'),
     pr_title_format: fd.get('pr_title_format'),
     pr_auto_link: !!fd.get('pr_auto_link'),
   };

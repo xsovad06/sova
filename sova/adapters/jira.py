@@ -23,6 +23,17 @@ _STATE_LABELS: dict[TaskState, str] = {
 
 _LABEL_TO_STATE: dict[str, TaskState] = {v: k for k, v in _STATE_LABELS.items()}
 
+_JIRA_STATUS_TO_STATE: dict[str, TaskState] = {
+    "To Do": TaskState.BACKLOG,
+    "Backlog": TaskState.BACKLOG,
+    "Open": TaskState.BACKLOG,
+    "Refinement": TaskState.NEEDS_SPEC,
+    "New": TaskState.NEEDS_SPEC,
+    "In Progress": TaskState.IN_PROGRESS,
+    "Code Review": TaskState.IN_REVIEW,
+    "Review": TaskState.IN_REVIEW,
+}
+
 _DEFAULT_TRANSITIONS: dict[TaskState, list[str]] = {
     TaskState.BACKLOG: ["To Do", "Backlog", "Open"],
     TaskState.IN_PROGRESS: ["In Progress", "Start Progress"],
@@ -43,6 +54,7 @@ class JiraAdapter(TaskAdapter):
         component: str = "",
         jql_filter: str = "",
         state_transitions: dict[str, str] | None = None,
+        status_mapping: dict[str, str] | None = None,
     ) -> None:
         # jql_filter is appended verbatim to queries -- callers own validation.
         # component is sanitized; jql_filter is not because it may contain
@@ -54,6 +66,12 @@ class JiraAdapter(TaskAdapter):
         self.component = component
         self.jql_filter = jql_filter
         self._state_transitions = state_transitions or {}
+
+        effective: dict[str, TaskState] = dict(_JIRA_STATUS_TO_STATE)
+        if status_mapping:
+            for jira_status, state_str in status_mapping.items():
+                effective[jira_status] = TaskState(state_str)
+        self._status_mapping = effective
 
         credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
         self._headers = {
@@ -110,7 +128,18 @@ class JiraAdapter(TaskAdapter):
             json={
                 "jql": jql,
                 "maxResults": 50,
-                "fields": ["summary", "description", "status", "labels", "assignee", "fixVersions", "key"],
+                "fields": [
+                    "summary",
+                    "description",
+                    "status",
+                    "labels",
+                    "assignee",
+                    "fixVersions",
+                    "key",
+                    "issuetype",
+                    "priority",
+                    "created",
+                ],
             },
         )
         if response.status_code != 200:
@@ -128,6 +157,29 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(msg)
         return self._parse_issue(response.json())
 
+    def _resolve_state(self, labels: list[str], status: dict, issue_key: str) -> TaskState:
+        state = TaskState.BACKLOG
+        for label in labels:
+            if label in _LABEL_TO_STATE:
+                state = _LABEL_TO_STATE[label]
+                break
+
+        status_name = status.get("name", "")
+        if state == TaskState.BACKLOG and status_name in self._status_mapping:
+            state = self._status_mapping[status_name]
+        elif state == TaskState.BACKLOG and status_name:
+            log.warning(
+                "status.unmapped",
+                status=status_name,
+                issue=issue_key,
+                hint="Add to [task_source] jira_status_mapping in sova.toml",
+            )
+
+        if status.get("statusCategory", {}).get("name") == "Done":
+            state = TaskState.DONE
+
+        return state
+
     async def get_state(self, task_id: str) -> TaskState:
         issue_key = self._resolve_key(task_id)
         response = await self._http.get(
@@ -139,16 +191,11 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(msg)
 
         fields = response.json().get("fields", {})
-        status_category = fields.get("status", {}).get("statusCategory", {}).get("name", "")
-
-        if status_category == "Done":
-            return TaskState.DONE
-
-        for label in fields.get("labels", []):
-            if label in _LABEL_TO_STATE:
-                return _LABEL_TO_STATE[label]
-
-        return TaskState.BACKLOG
+        return self._resolve_state(
+            fields.get("labels", []),
+            fields.get("status", {}),
+            issue_key,
+        )
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         issue_key = self._resolve_key(task_id)
@@ -253,18 +300,15 @@ class JiraAdapter(TaskAdapter):
         assignee = fields.get("assignee")
         fix_versions = fields.get("fixVersions", [])
 
-        state = TaskState.BACKLOG
-        for label in labels:
-            if label in _LABEL_TO_STATE:
-                state = _LABEL_TO_STATE[label]
-                break
-
+        key = data.get("key", "")
         status = fields.get("status", {})
-        if status.get("statusCategory", {}).get("name") == "Done":
-            state = TaskState.DONE
+        state = self._resolve_state(labels, status, key or "?")
+
+        issue_type = (fields.get("issuetype") or {}).get("name", "")
+        priority_name = (fields.get("priority") or {}).get("name", "")
+        created = fields.get("created", "")
 
         milestone = fix_versions[0]["name"] if fix_versions else ""
-        key = data.get("key", "")
         number = key.split("-")[-1] if "-" in key else key
 
         return Task(
@@ -276,7 +320,13 @@ class JiraAdapter(TaskAdapter):
             assignees=[assignee["displayName"]] if assignee else [],
             url=f"{self.base_url}/browse/{key}",
             milestone=milestone,
-            metadata={"key": key, "status": status.get("name", "")},
+            metadata={
+                "key": key,
+                "status": status.get("name", ""),
+                "issue_type": issue_type,
+                "jira_priority": priority_name,
+                "created_at": created,
+            },
         )
 
     @staticmethod
