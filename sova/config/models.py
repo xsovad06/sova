@@ -6,8 +6,21 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_VALID_TASK_STATES = frozenset(
+    {
+        "backlog",
+        "triaged",
+        "researched",
+        "in_progress",
+        "in_review",
+        "done",
+        "needs_spec",
+        "human_only",
+    }
+)
 
 
 class TaskSourceConfig(BaseSettings):
@@ -31,6 +44,18 @@ class TaskSourceConfig(BaseSettings):
     jira_component: str = ""
     jira_jql_filter: str = ""
     jira_state_transitions: dict[str, str] = Field(default_factory=dict)
+    jira_status_mapping: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("jira_status_mapping")
+    @classmethod
+    def _validate_status_mapping(cls, v: dict[str, str]) -> dict[str, str]:
+        for jira_status, sova_state in v.items():
+            if sova_state not in _VALID_TASK_STATES:
+                raise ValueError(
+                    f"Invalid SOVA state {sova_state!r} for JIRA status {jira_status!r}. "
+                    f"Valid states: {', '.join(sorted(_VALID_TASK_STATES))}"
+                )
+        return v
 
     model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
 

@@ -65,6 +65,16 @@ def _milestone_badge(milestone: str) -> str:
     return milestone.split(":")[0].strip()[:8]
 
 
+_JIRA_PRIORITY_ORDER: dict[str, int] = {
+    "Blocker": 0,
+    "Critical": 0,
+    "Major": 1,
+    "Normal": 1,
+    "Minor": 2,
+    "Trivial": 3,
+}
+
+
 def _extract_label_priority(labels: list[str]) -> int:
     """Extract numeric priority from priority: labels. Lower = higher priority."""
     for label in labels:
@@ -103,6 +113,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
         key=lambda t: (
             _STATE_PRIORITY.get(t.state, 99),
             _extract_label_priority(t.labels),
+            _JIRA_PRIORITY_ORDER.get(t.metadata.get("jira_priority", ""), 99),
             t.metadata.get("created_at", "9999"),
         )
     )
@@ -124,6 +135,11 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "url": t.url,
                 "last_run": last_runs.get(t.id),
                 "created_at": t.metadata.get("created_at", ""),
+                "assignees": t.assignees,
+                "issue_type": t.metadata.get("issue_type", ""),
+                "jira_status": t.metadata.get("status", ""),
+                "jira_priority": t.metadata.get("jira_priority", ""),
+                "jira_key": t.metadata.get("key", ""),
             }
         )
 

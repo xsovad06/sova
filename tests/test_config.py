@@ -520,3 +520,57 @@ class TestFieldConstraints:
         WorktreeConfig()
         TriageConfig()
         PipelineConfig()
+
+
+class TestJiraStatusMappingConfig:
+    def test_valid_mapping_accepted(self) -> None:
+        cfg = TaskSourceConfig(
+            type="jira",
+            jira_status_mapping={"ON_QA": "done", "Selected for Development": "triaged"},
+        )
+        assert cfg.jira_status_mapping == {"ON_QA": "done", "Selected for Development": "triaged"}
+
+    def test_invalid_state_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="Invalid SOVA state"):
+            TaskSourceConfig(
+                type="jira",
+                jira_status_mapping={"ON_QA": "testing"},
+            )
+
+    def test_empty_mapping_accepted(self) -> None:
+        cfg = TaskSourceConfig(type="jira")
+        assert cfg.jira_status_mapping == {}
+
+    def test_all_valid_states_accepted(self) -> None:
+        mapping = {
+            "S1": "backlog",
+            "S2": "triaged",
+            "S3": "researched",
+            "S4": "in_progress",
+            "S5": "in_review",
+            "S6": "done",
+            "S7": "needs_spec",
+            "S8": "human_only",
+        }
+        cfg = TaskSourceConfig(type="jira", jira_status_mapping=mapping)
+        assert len(cfg.jira_status_mapping) == 8
+
+    def test_mapping_loaded_from_toml(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[task_source]
+type = "jira"
+jira_base_url = "https://test.atlassian.net"
+jira_email = "test@example.com"
+jira_api_token = "token"
+jira_project_key = "TEST"
+jira_status_mapping = { "ON_QA" = "done", "Selected for Development" = "triaged" }
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.task_source.jira_status_mapping == {
+            "ON_QA": "done",
+            "Selected for Development": "triaged",
+        }

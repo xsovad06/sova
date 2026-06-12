@@ -53,6 +53,7 @@ def create_adapter(config: ProjectConfig) -> TaskAdapter:
             component=ts.jira_component,
             jql_filter=ts.jira_jql_filter,
             state_transitions=ts.jira_state_transitions or None,
+            status_mapping=ts.jira_status_mapping or None,
         )
 
     raise ValueError(f"Unknown adapter type: {adapter_type!r}. Available: github, jira")

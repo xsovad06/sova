@@ -161,6 +161,20 @@ _REGISTRY: list[SettingMeta] = [
         "Additional JQL clause appended to queries (e.g. assignee = currentUser())",
         "task_source",
     ),
+    SettingMeta(
+        "task_source.jira_status_mapping",
+        "JIRA status mapping",
+        'Map JIRA board status names to SOVA states (e.g. ON_QA = "done", Selected for Development = "triaged")',
+        "task_source",
+        "object",
+    ),
+    SettingMeta(
+        "task_source.jira_state_transitions",
+        "JIRA state transitions",
+        'Map SOVA states to JIRA transition names for status changes (e.g. in_progress = "Start Work")',
+        "task_source",
+        "object",
+    ),
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
