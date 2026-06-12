@@ -38,7 +38,7 @@ class TaskSourceConfig(BaseSettings):
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
-    provider: Literal["claude-code"] = "claude-code"
+    provider: str = "claude-code"
 
     model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
 

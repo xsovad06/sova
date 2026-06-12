@@ -138,12 +138,11 @@ def _make_error_json() -> str:
 @pytest.fixture(autouse=True)
 def _reset_provider():
     """Reset the global provider between tests to avoid state leakage."""
-    from sova.llm import client
+    from sova.llm.client import reset_provider
 
-    old = client._provider
-    client._provider = None
+    reset_provider()
     yield
-    client._provider = old
+    reset_provider()
 
 
 class TestInvoke:
@@ -549,9 +548,6 @@ class TestLLMProvider:
             async def invoke_streaming(self, prompt, **kwargs):
                 yield StreamEvent(type="result", text="fake")
 
-            def normalize_model_name(self, model):
-                return model
-
             async def check_available(self):
                 return True, "fake"
 
@@ -608,9 +604,6 @@ class TestLLMProvider:
             async def invoke_streaming(self, prompt, **kwargs):
                 yield StreamEvent(type="result", text="ok")
 
-            def normalize_model_name(self, model):
-                return model
-
             async def check_available(self):
                 return True, "test"
 
@@ -652,6 +645,42 @@ class TestLLMConfig:
 # ---------------------------------------------------------------------------
 
 
+class TestProviderInitFromConfig:
+    def test_init_provider_from_config(self, tmp_path: Path) -> None:
+        """Provider is initialized from config when _init_llm_provider is called."""
+        from sova.cli.app import _init_llm_provider
+        from sova.llm.client import get_provider
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+
+        with patch("sova.cli.app.load_config") as mock_load:
+            from sova.config.models import ProjectConfig
+
+            mock_load.return_value = ProjectConfig(llm={"provider": "claude-code"})
+            _init_llm_provider()
+
+        provider = get_provider()
+        assert isinstance(provider, ClaudeCodeProvider)
+
+    def test_init_provider_unknown_falls_back(self, tmp_path: Path) -> None:
+        """Unknown provider type falls back silently to default."""
+        from sova.cli.app import _init_llm_provider
+        from sova.llm.client import get_provider
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        with patch("sova.cli.app.load_config") as mock_load:
+            from sova.config.models import ProjectConfig
+
+            mock_load.return_value = ProjectConfig(llm={"provider": "nonexistent"})
+            _init_llm_provider()
+
+        # Falls back to default
+        provider = get_provider()
+        assert isinstance(provider, ClaudeCodeProvider)
+
+
 class TestModuleExports:
     def test_imports(self) -> None:
         from sova.llm import (
@@ -664,6 +693,7 @@ class TestModuleExports:
             invoke_command,
             invoke_streaming,
             record_cost,
+            reset_provider,
             set_provider,
         )
 
@@ -671,6 +701,7 @@ class TestModuleExports:
         assert callable(invoke_command)
         assert callable(invoke_streaming)
         assert callable(record_cost)
+        assert callable(reset_provider)
         assert callable(create_provider)
         assert callable(get_provider)
         assert callable(set_provider)

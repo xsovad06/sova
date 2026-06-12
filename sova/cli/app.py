@@ -66,6 +66,18 @@ app.add_typer(server_app)
 console = Console(stderr=True)
 
 
+def _init_llm_provider() -> None:
+    """Initialize the global LLM provider from project config."""
+    try:
+        from sova.llm.client import set_provider
+        from sova.llm.provider import create_provider
+
+        cfg = load_config()
+        set_provider(create_provider(cfg.llm.provider))
+    except Exception:
+        pass  # Fall back to default provider
+
+
 def version_callback(value: bool) -> None:
     if value:
         typer.echo(f"sova {sova.__version__}")
@@ -80,6 +92,7 @@ def main(
     ] = None,
 ) -> None:
     """SOVA -- an autonomous AI development crew."""
+    _init_llm_provider()
 
 
 @app.command()
