@@ -45,6 +45,7 @@ async def _doctor(project: Path | None) -> None:
     project_dir = (project or Path.cwd()).resolve()
     checks.append(await _check_git_hooks(project_dir))
     checks.extend(await _check_sova_config(project_dir))
+    checks.extend(await _check_llm_provider(project_dir))
 
     _render_results(checks)
 
@@ -182,6 +183,28 @@ def _check_jira_config(cfg: ProjectConfig) -> list[_Check]:
         ("jira_api_token", bool(ts.jira_api_token), token_detail, False),
         ("jira_project_key", bool(ts.jira_project_key), ts.jira_project_key or _EMPTY, False),
     ]
+
+
+async def _check_llm_provider(project_dir: Path) -> list[_Check]:
+    """Check configured LLM provider availability."""
+    checks: list[_Check] = []
+    try:
+        from sova.config.loader import load_config
+        from sova.llm.provider import create_provider
+
+        cfg = load_config(project_dir)
+        provider_type = cfg.llm.provider
+        try:
+            provider = create_provider(provider_type)
+        except ValueError as exc:
+            checks.append(("llm provider", False, str(exc), True))
+            return checks
+
+        available, detail = await provider.check_available()
+        checks.append(("llm provider", available, f"{provider_type}: {detail}", True))
+    except Exception as exc:
+        checks.append(("llm provider", False, str(exc)[:80], False))
+    return checks
 
 
 def _render_results(checks: list[_Check]) -> None:
