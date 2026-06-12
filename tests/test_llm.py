@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -743,3 +743,428 @@ class TestModuleExports:
         assert LLMResult is not None
         assert StreamEvent is not None
         assert LLMProvider is not None
+
+
+# ---------------------------------------------------------------------------
+# LLMProvider ABC
+# ---------------------------------------------------------------------------
+
+
+class TestLLMProvider:
+    def test_abc_cannot_instantiate(self) -> None:
+        from sova.llm.provider import LLMProvider
+
+        with pytest.raises(TypeError):
+            LLMProvider()  # type: ignore[abstract]
+
+    def test_create_provider_claude_code(self) -> None:
+        from sova.llm.provider import create_provider
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        provider = create_provider("claude-code")
+        assert isinstance(provider, ClaudeCodeProvider)
+
+    def test_create_provider_unknown_raises(self) -> None:
+        from sova.llm.provider import create_provider
+
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            create_provider("unknown_provider")
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCodeProvider
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCodeProvider:
+    @pytest.fixture
+    def mock_run(self):
+        with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock:
+            yield mock
+
+    async def test_invoke(self, mock_run: AsyncMock) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=0,
+            stdout=_make_cli_json(result_text="Provider output"),
+            stderr="",
+        )
+
+        provider = ClaudeCodeProvider()
+        result = await provider.invoke("Hello")
+
+        assert result.text == "Provider output"
+        assert result.cost_usd == Decimal("0.05")
+
+    async def test_invoke_with_model(self, mock_run: AsyncMock) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=0,
+            stdout=_make_cli_json(),
+            stderr="",
+        )
+
+        provider = ClaudeCodeProvider()
+        await provider.invoke("Hello", model="sonnet")
+
+        call_args = mock_run.call_args[0]
+        assert "--model" in call_args
+        assert "sonnet" in call_args
+
+    async def test_invoke_streaming(self, mock_run: AsyncMock) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        stream_lines = [
+            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Hi"}]}}),
+            json.dumps(
+                {
+                    "type": "result",
+                    "result": "Hi",
+                    "stop_reason": "end_turn",
+                    "session_id": "s1",
+                    "total_cost_usd": 0.01,
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
+                    "modelUsage": {"sonnet": {"costUSD": 0.01}},
+                    "duration_ms": 500,
+                }
+            ),
+        ]
+
+        async def mock_readline():
+            if stream_lines:
+                return (stream_lines.pop(0) + "\n").encode()
+            return b""
+
+        mock_proc = AsyncMock()
+        mock_proc.stdout.readline = mock_readline
+        mock_proc.wait = AsyncMock()
+
+        with patch(
+            "sova.llm.providers.claude_code._start_streaming_process",
+            return_value=mock_proc,
+        ):
+            provider = ClaudeCodeProvider()
+            events = []
+            async for event in provider.invoke_streaming("Hello"):
+                events.append(event)
+
+        assert any(e.type == "content" for e in events)
+        assert any(e.type == "result" for e in events)
+
+    async def test_check_available(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        provider = ClaudeCodeProvider()
+        with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout="1.0.0\n", stderr="")
+            with patch("shutil.which", return_value="/usr/local/bin/claude"):
+                available, detail = await provider.check_available()
+
+        assert available is True
+        assert "1.0.0" in detail
+
+    def test_normalize_model_name(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        provider = ClaudeCodeProvider()
+        assert provider.normalize_model_name("fast") == "sonnet"
+        assert provider.normalize_model_name("smart") == "opus"
+        assert provider.normalize_model_name("cheap") == "haiku"
+        assert provider.normalize_model_name("custom-model") == "custom-model"
+
+
+# ---------------------------------------------------------------------------
+# LiteLLMProvider
+# ---------------------------------------------------------------------------
+
+
+class _MockUsage:
+    def __init__(self, prompt_tokens: int = 100, completion_tokens: int = 50) -> None:
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
+class _MockMessage:
+    def __init__(self, content: str = "Hello from LiteLLM") -> None:
+        self.content = content
+
+
+class _MockChoice:
+    def __init__(self, content: str = "Hello from LiteLLM", finish_reason: str = "stop") -> None:
+        self.message = _MockMessage(content)
+        self.finish_reason = finish_reason
+        self.delta = _MockMessage(content)
+
+
+class _MockResponse:
+    def __init__(
+        self,
+        content: str = "Hello from LiteLLM",
+        model: str = "gpt-4o",
+        prompt_tokens: int = 100,
+        completion_tokens: int = 50,
+    ) -> None:
+        self.choices = [_MockChoice(content)]
+        self.model = model
+        self.usage = _MockUsage(prompt_tokens, completion_tokens)
+
+
+class _MockStreamChunk:
+    def __init__(self, content: str = "", model: str = "gpt-4o", usage: _MockUsage | None = None) -> None:
+        delta = _MockMessage(content)
+        choice = _MockChoice(content)
+        choice.delta = delta
+        self.choices = [choice]
+        self.model = model
+        self.usage = usage
+
+
+class TestLiteLLMProvider:
+    @pytest.fixture
+    def mock_litellm(self):
+        """Mock litellm at module level so the import check passes."""
+        import importlib
+        import sys
+
+        mock_module = MagicMock()
+        mock_module.acompletion = AsyncMock()
+        mock_module.completion_cost = MagicMock(return_value=0.005)
+        mock_module.__version__ = "1.0.0"
+
+        old = sys.modules.get("litellm")
+        sys.modules["litellm"] = mock_module
+
+        import sova.llm.litellm_provider as llm_mod
+
+        llm_mod.litellm = mock_module
+        llm_mod._HAS_LITELLM = True
+
+        yield mock_module
+
+        if old is not None:
+            sys.modules["litellm"] = old
+        else:
+            sys.modules.pop("litellm", None)
+        importlib.reload(llm_mod)
+
+    async def test_invoke_basic(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse(
+            content="LiteLLM response",
+            model="gpt-4o",
+            prompt_tokens=100,
+            completion_tokens=50,
+        )
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        result = await provider.invoke("Hello")
+
+        assert result.text == "LiteLLM response"
+        assert result.model == "gpt-4o"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.cost_usd == Decimal("0.005")
+        assert result.stop_reason == "end_turn"
+        assert result.duration_ms >= 0
+
+        mock_litellm.acompletion.assert_called_once()
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["model"] == "gpt-4o"
+        messages = call_kwargs[1]["messages"]
+        assert len(messages) == 1
+        assert messages[0]["role"] == "user"
+
+    async def test_invoke_with_model_override(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse(model="claude-sonnet-4-6")
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        result = await provider.invoke("Hello", model="claude-sonnet-4-6")
+
+        assert result.model == "claude-sonnet-4-6"
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["model"] == "claude-sonnet-4-6"
+
+    async def test_invoke_with_api_base(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+
+        provider = LiteLLMProvider(model="gpt-4o", api_base="http://localhost:4000")
+        await provider.invoke("Hello")
+
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["api_base"] == "http://localhost:4000"
+
+    async def test_invoke_with_timeout(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        await provider.invoke("Hello", timeout=30.0)
+
+        call_kwargs = mock_litellm.acompletion.call_args
+        assert call_kwargs[1]["timeout"] == 30.0
+
+    async def test_fallback_on_failure(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = [
+            RuntimeError("Primary model unavailable"),
+            _MockResponse(content="Fallback response", model="ollama/qwen3-coder"),
+        ]
+
+        provider = LiteLLMProvider(model="gpt-4o", fallback_model="ollama/qwen3-coder")
+        result = await provider.invoke("Hello")
+
+        assert result.text == "Fallback response"
+        assert result.model == "ollama/qwen3-coder"
+        assert mock_litellm.acompletion.call_count == 2
+
+    async def test_no_fallback_raises(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = RuntimeError("Model unavailable")
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        with pytest.raises(RuntimeError, match="Model unavailable"):
+            await provider.invoke("Hello")
+
+    async def test_fallback_same_model_raises(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = RuntimeError("Model unavailable")
+
+        provider = LiteLLMProvider(model="gpt-4o", fallback_model="gpt-4o")
+        with pytest.raises(RuntimeError, match="Model unavailable"):
+            await provider.invoke("Hello")
+
+    async def test_invoke_streaming(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        chunks = [
+            _MockStreamChunk(content="Hello ", model="gpt-4o"),
+            _MockStreamChunk(content="world", model="gpt-4o"),
+            _MockStreamChunk(
+                content="",
+                model="gpt-4o",
+                usage=_MockUsage(prompt_tokens=50, completion_tokens=20),
+            ),
+        ]
+
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+
+        mock_litellm.acompletion.return_value = mock_stream()
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        events = []
+        async for event in provider.invoke_streaming("Hello"):
+            events.append(event)
+
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 2
+        assert content_events[0].text == "Hello "
+        assert content_events[1].text == "world"
+
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].result is not None
+        assert result_events[0].result.text == "Hello world"
+        assert result_events[0].result.input_tokens == 50
+        assert result_events[0].result.output_tokens == 20
+
+    async def test_cost_tracking_fallback(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.return_value = _MockResponse()
+        mock_litellm.completion_cost.side_effect = Exception("Unknown model")
+
+        provider = LiteLLMProvider(model="custom-model")
+        result = await provider.invoke("Hello")
+
+        assert result.cost_usd == Decimal("0")
+
+    async def test_stop_reason_mapping(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        response = _MockResponse()
+        response.choices[0].finish_reason = "length"
+        mock_litellm.acompletion.return_value = response
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        result = await provider.invoke("Hello")
+
+        assert result.stop_reason == "length"
+
+    def test_create_provider_litellm(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.provider import create_provider
+
+        provider = create_provider("litellm")
+        assert isinstance(provider, LiteLLMProvider)
+
+    async def test_check_available(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        available, detail = await provider.check_available()
+
+        assert available is True
+        assert "1.0.0" in detail
+
+
+# ---------------------------------------------------------------------------
+# LLMConfig
+# ---------------------------------------------------------------------------
+
+
+class TestLLMConfig:
+    def test_default_values(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig()
+        assert cfg.provider == "claude-code"
+        assert cfg.model == ""
+        assert cfg.fallback_model == ""
+        assert cfg.api_base == ""
+
+    def test_litellm_config(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(
+            provider="litellm",
+            model="gpt-4o",
+            fallback_model="ollama/qwen3-coder:32b",
+            api_base="http://localhost:4000",
+        )
+        assert cfg.provider == "litellm"
+        assert cfg.model == "gpt-4o"
+        assert cfg.fallback_model == "ollama/qwen3-coder:32b"
+
+    def test_litellm_default_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="litellm")
+        assert cfg.model == "claude-sonnet-4-6"
+
+    def test_project_config_has_llm_section(self) -> None:
+        from sova.config.models import LLMConfig, ProjectConfig
+
+        cfg = ProjectConfig()
+        assert isinstance(cfg.llm, LLMConfig)
+        assert cfg.llm.provider == "claude-code"

@@ -82,7 +82,25 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.provider",
         "Provider",
-        "LLM backend to use (claude-code). Future: litellm, ollama, openai",
+        "LLM provider backend (claude-code for Claude CLI, litellm for multi-provider API)",
+        "llm",
+    ),
+    SettingMeta(
+        "llm.model",
+        "Model",
+        "Default model for LiteLLM provider (e.g. claude-sonnet-4-6, gpt-4o, ollama/qwen3-coder)",
+        "llm",
+    ),
+    SettingMeta(
+        "llm.fallback_model",
+        "Fallback model",
+        "Fallback model if primary fails (LiteLLM only)",
+        "llm",
+    ),
+    SettingMeta(
+        "llm.api_base",
+        "API base URL",
+        "Base URL for LiteLLM proxy mode (leave empty for direct API calls)",
         "llm",
     ),
     # -- Agent --
