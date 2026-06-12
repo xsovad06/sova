@@ -293,7 +293,8 @@ async function resumeRun() {
 }
 
 async function markFailed() {
-  if (!confirm('Mark this run as failed?')) return;
+  var ok = await sovaConfirm('Mark this run as failed?', { confirmText: 'Mark Failed', confirmClass: 'danger' });
+  if (!ok) return;
   try {
     var res = await fetch(apiUrl('/work/{{ run_id }}/mark-failed'), {
       method: 'POST',

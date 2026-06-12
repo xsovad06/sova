@@ -308,7 +308,8 @@ async function restartPhase(phase) {
 
 async function skipPhase(phase) {
   if (!_lifecycleData || !_lifecycleData.id) return;
-  if (!confirm('Skip ' + PHASE_LABELS[phase] + '?')) return;
+  var ok = await sovaConfirm('Skip ' + PHASE_LABELS[phase] + '?', { confirmText: 'Skip' });
+  if (!ok) return;
   try {
     await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/phase/' + phase + '/skip'), { method: 'POST' });
     _lastUpdated = null;
@@ -321,7 +322,8 @@ async function skipPhase(phase) {
 
 async function forceAdvance(toPhase) {
   if (!_lifecycleData || !_lifecycleData.id || !toPhase) return;
-  if (!confirm('Force advance to ' + PHASE_LABELS[toPhase] + '?')) return;
+  var ok = await sovaConfirm('Force advance to ' + PHASE_LABELS[toPhase] + '?', { confirmText: 'Advance' });
+  if (!ok) return;
   try {
     await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/advance'), {
       method: 'POST',
@@ -338,7 +340,8 @@ async function forceAdvance(toPhase) {
 
 async function abandonLifecycle() {
   if (!_lifecycleData || !_lifecycleData.id) return;
-  if (!confirm('Abandon this lifecycle? This cannot be undone.')) return;
+  var ok = await sovaConfirm('Abandon this lifecycle? This cannot be undone.', { confirmText: 'Abandon', confirmClass: 'danger' });
+  if (!ok) return;
   try {
     await fetch(apiUrl('/lifecycle/' + _lifecycleData.id + '/abandon'), { method: 'POST' });
     _lastUpdated = null;
