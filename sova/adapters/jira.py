@@ -7,7 +7,7 @@ import re
 
 import httpx
 
-from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.logging import get_logger
 
 log = get_logger(component="adapter.jira")
@@ -222,6 +222,10 @@ class JiraAdapter(TaskAdapter):
         if response.status_code not in (200, 204):
             msg = f"Failed to edit body for {issue_key}: {response.text[:200]}"
             raise RuntimeError(msg)
+
+    async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
+        log.info("get_pr_reviews.no_op_for_jira", pr=pr_number)
+        return []
 
     async def link_pr(self, task_id: str, pr_url: str) -> None:
         issue_key = self._resolve_key(task_id)
