@@ -23,7 +23,7 @@ sova/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server)
+      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server, mcp)
     core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)
@@ -38,6 +38,7 @@ sova/
       services/                    # 21 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output, role)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
+    mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
     commands/                      # Command distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     db/                            # SQLAlchemy ORM models + async session

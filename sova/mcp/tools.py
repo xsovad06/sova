@@ -6,7 +6,6 @@ it as an MCP tool that any compliant agent runtime can invoke.
 
 from __future__ import annotations
 
-from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
@@ -124,7 +123,7 @@ async def _run_command(command: str, args: str, project_dir: str) -> str:
         args=args,
         model=config.agent.model,
         cwd=resolved,
-        max_budget_usd=Decimal(str(config.agent.max_budget)),
+        max_budget_usd=config.agent.max_budget,
         timeout=config.agent.step_timeout,
     )
 
