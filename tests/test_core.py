@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -1052,7 +1053,16 @@ class TestAddressReviewStep:
         ctx.project_dir = Path("/tmp/nonexistent")
         step = AddressReviewStep()
 
-        result = await step.execute(ctx)
+        with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+        ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
+            result = await step.execute(ctx)
 
         assert result.success
         assert "No review findings" in result.summary
@@ -1093,6 +1103,8 @@ class TestStepRegistry:
             "commit",
             "validate",
             "push",
+            "monitor_ci",
+            "resolve_external_reviews",
             "extract_memory",
             "handoff_to_user",
         ]
@@ -2481,9 +2493,16 @@ class TestAddressReviewStepExecute:
         mock_handoff.details = {"findings": findings}
 
         with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
             patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
             patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
         ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(
                 text="Fixed",
                 model="sonnet",
@@ -2498,6 +2517,78 @@ class TestAddressReviewStepExecute:
         assert "Null check" in prompt
         assert "foo.py:10" in prompt
 
+    async def test_execute_includes_coderabbit_findings(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        sova_findings = [
+            {"file": "foo.py", "severity": 7, "category": "bug", "description": "SOVA finding"},
+        ]
+        cr_findings = [
+            {
+                "file": "bar.py",
+                "line": 5,
+                "severity": 6,
+                "category": "external-review",
+                "description": "CodeRabbit finding",
+                "suggestion": "",
+                "source": "coderabbit",
+            },
+        ]
+        mock_handoff = MagicMock()
+        mock_handoff.details = {"findings": sova_findings}
+
+        with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=(cr_findings, ["thread-1"]),
+            ),
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.05"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 review findings" in result.summary
+        prompt = mock_invoke.call_args[0][0]
+        assert "SOVA finding" in prompt
+        assert "CodeRabbit finding" in prompt
+        assert "coderabbit" in prompt
+
+    async def test_execute_captures_head_before_llm(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(pr_number=42, worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
+        mock_handoff = MagicMock()
+        mock_handoff.details = {"findings": findings}
+
+        with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
+            patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123\n")
+            mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.01"))
+            await step.execute(ctx)
+
+        assert step._head_before_llm == "abc123"
+
     async def test_execute_falls_back_to_db(self) -> None:
         from sova.core.steps.address_review import AddressReviewStep
         from sova.llm.models import LLMResult
@@ -2511,10 +2602,17 @@ class TestAddressReviewStepExecute:
         ]
 
         with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
             patch("sova.core.steps.address_review.read_handoff_file", return_value=None),
             patch("sova.core.steps.address_review.read_handoff", new_callable=AsyncMock) as mock_db,
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
             patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
         ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_db_handoff = MagicMock()
             mock_db_handoff.pending_findings = db_findings
             mock_db.return_value = mock_db_handoff
@@ -2541,9 +2639,16 @@ class TestAddressReviewStepExecute:
         mock_handoff.details = {"findings": findings}
 
         with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
             patch("sova.core.steps.address_review.read_handoff_file", return_value=mock_handoff),
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
             patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
         ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.side_effect = RuntimeError("LLM crashed")
             result = await step.execute(ctx)
 
@@ -2558,13 +2663,49 @@ class TestAddressReviewStepExecute:
 
         with patch("sova.core.steps.address_review.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # unstaged
-                MagicMock(success=True, stdout=" bar.py | 3 +++\n"),  # staged
-                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # unstaged diff
+                MagicMock(success=True, stdout=" bar.py | 3 +++\n"),  # staged diff
+                MagicMock(success=True, stdout="abc123"),  # rev-parse HEAD
             ]
             gate = await step.validate_output(ctx)
 
         assert gate.passed
+
+    async def test_validate_output_passes_when_head_moved(self) -> None:
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+        step._head_before_llm = "abc123"
+
+        with patch("sova.core.steps.address_review.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged diff
+                MagicMock(success=True, stdout=""),  # staged diff
+                MagicMock(success=True, stdout="def456"),  # rev-parse HEAD (different)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_fails_when_head_unchanged_and_no_diff(self) -> None:
+        """Pre-existing commits should NOT satisfy the gate -- only new work counts."""
+        from sova.core.steps.address_review import AddressReviewStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = AddressReviewStep()
+        step._head_before_llm = "abc123"
+
+        with patch("sova.core.steps.address_review.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged diff
+                MagicMock(success=True, stdout=""),  # staged diff
+                MagicMock(success=True, stdout="abc123"),  # rev-parse HEAD (same)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "No changes" in gate.reason
 
     async def test_validate_output_fails_with_no_changes(self) -> None:
         from sova.core.steps.address_review import AddressReviewStep
@@ -2574,9 +2715,9 @@ class TestAddressReviewStepExecute:
 
         with patch("sova.core.steps.address_review.run") as mock_run:
             mock_run.side_effect = [
-                MagicMock(success=True, stdout=""),  # unstaged
-                MagicMock(success=True, stdout=""),  # staged
-                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # unstaged diff
+                MagicMock(success=True, stdout=""),  # staged diff
+                MagicMock(success=True, stdout=""),  # rev-parse HEAD
             ]
             gate = await step.validate_output(ctx)
 
@@ -2708,9 +2849,16 @@ class TestAddressReviewHelpers:
         step = AddressReviewStep()
 
         with (
+            patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
             patch("sova.core.steps.address_review.read_handoff_file", return_value=None),
+            patch(
+                "sova.core.steps.address_review._load_coderabbit_findings",
+                new_callable=AsyncMock,
+                return_value=([], []),
+            ),
             patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock) as mock_invoke,
         ):
+            mock_run.return_value = MagicMock(success=True, stdout="abc123")
             mock_invoke.return_value = LLMResult(text="Fixed", model="sonnet", cost_usd=Decimal("0.03"))
             result = await step.execute(ctx)
 
@@ -2718,3 +2866,239 @@ class TestAddressReviewHelpers:
         assert "1 review findings" in result.summary
         prompt = mock_invoke.call_args[0][0]
         assert "Needs fix" in prompt
+
+
+# ---------------------------------------------------------------------------
+# ResolveExternalReviewsStep
+# ---------------------------------------------------------------------------
+
+
+class TestResolveExternalReviewsStep:
+    async def test_skips_when_no_pr(self) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx()
+        ctx.pr_number = None
+        step = ResolveExternalReviewsStep()
+
+        result = await step.execute(ctx)
+        assert result.success
+        assert "No PR" in result.summary
+
+    async def test_resolves_threads_and_dismisses_reviews(self) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx(pr_number=42)
+        step = ResolveExternalReviewsStep()
+
+        with (
+            patch(
+                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                new_callable=AsyncMock,
+                return_value=["thread-1", "thread-2"],
+            ),
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+            ) as mock_resolve,
+            patch(
+                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 threads resolved" in result.summary
+        assert "1 bot reviews dismissed" in result.summary
+        mock_resolve.assert_awaited_once_with(["thread-1", "thread-2"], github_user="")
+
+    async def test_includes_github_user_in_authors(self) -> None:
+        """SOVA reviewer threads (posted under github_user) should also be resolved."""
+        from sova.config.models import ProjectConfig
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
+        ctx = _make_ctx(pr_number=42, config=config)
+        step = ResolveExternalReviewsStep()
+
+        with (
+            patch(
+                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                new_callable=AsyncMock,
+                return_value=["thread-sova"],
+            ) as mock_fetch,
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 threads resolved" in result.summary
+        call_kwargs = mock_fetch.call_args[1]
+        assert "xsovad06" in call_kwargs["authors"]
+        assert "coderabbitai" in call_kwargs["authors"]
+
+    async def test_no_threads_to_resolve(self) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx(pr_number=42)
+        step = ResolveExternalReviewsStep()
+
+        with (
+            patch(
+                "sova.core.steps.resolve_external_reviews._fetch_unresolved_thread_ids",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "No external review threads" in result.summary
+
+    async def test_can_skip_without_pr(self) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx()
+        ctx.pr_number = None
+        step = ResolveExternalReviewsStep()
+        assert await step.can_skip(ctx)
+
+    async def test_gate_always_passes(self) -> None:
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        ctx = _make_ctx(pr_number=42)
+        step = ResolveExternalReviewsStep()
+        gate = await step.validate_output(ctx)
+        assert gate.passed
+
+
+class TestDismissBotReviews:
+    async def test_dismisses_bot_changes_requested(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        reviews_json = json.dumps(
+            [
+                {"id": 1001, "state": "CHANGES_REQUESTED", "user": {"login": "coderabbitai[bot]", "type": "Bot"}},
+                {"id": 1002, "state": "APPROVED", "user": {"login": "human-dev", "type": "User"}},
+                {"id": 1003, "state": "CHANGES_REQUESTED", "user": {"login": "human-reviewer", "type": "User"}},
+            ]
+        )
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=reviews_json),  # fetch reviews
+                MagicMock(success=True, stdout=""),  # dismiss review 1001
+            ]
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 1
+        dismiss_call = mock_run.call_args_list[1]
+        assert "1001" in dismiss_call[0][4]
+        assert "dismissals" in dismiss_call[0][4]
+
+    async def test_skips_human_reviews(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        reviews_json = json.dumps(
+            [
+                {"id": 1001, "state": "CHANGES_REQUESTED", "user": {"login": "human", "type": "User"}},
+            ]
+        )
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=reviews_json)
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 0
+
+    async def test_handles_fetch_failure(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stderr="API error")
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 0
+
+
+class TestFetchUnresolvedThreadIds:
+    async def test_filters_by_author(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+
+        graphql_response = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [
+                                    {
+                                        "id": "t1",
+                                        "isResolved": False,
+                                        "path": "a.py",
+                                        "line": 10,
+                                        "comments": {"nodes": [{"author": {"login": "xsovad06"}}]},
+                                    },
+                                    {
+                                        "id": "t2",
+                                        "isResolved": False,
+                                        "path": "b.py",
+                                        "line": 20,
+                                        "comments": {"nodes": [{"author": {"login": "coderabbitai"}}]},
+                                    },
+                                    {
+                                        "id": "t3",
+                                        "isResolved": False,
+                                        "path": "c.py",
+                                        "line": 30,
+                                        "comments": {"nodes": [{"author": {"login": "other-human"}}]},
+                                    },
+                                    {
+                                        "id": "t4",
+                                        "isResolved": True,
+                                        "path": "d.py",
+                                        "line": 40,
+                                        "comments": {"nodes": [{"author": {"login": "xsovad06"}}]},
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=graphql_response)
+            ids = await _fetch_unresolved_thread_ids(
+                "user/repo",
+                42,
+                authors={"xsovad06", "coderabbitai"},
+                github_user="xsovad06",
+            )
+
+        assert sorted(ids) == ["t1", "t2"]
+
+    async def test_returns_empty_on_failure(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stderr="error")
+            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+
+        assert ids == []

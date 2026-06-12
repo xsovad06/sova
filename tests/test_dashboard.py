@@ -2910,7 +2910,7 @@ class TestStepProgress:
         result = get_step_progress(None, role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == -1
-        assert result["total_steps"] == 7
+        assert result["total_steps"] == 9
 
     def test_agent_step_with_pr_number_is_address_review(self) -> None:
         """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""

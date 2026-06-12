@@ -21,6 +21,7 @@ from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.push import PushStep
 from sova.core.steps.rebase import RebaseStep
 from sova.core.steps.research import ResearchStep
+from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.sync import SyncStep
@@ -65,6 +66,8 @@ def get_address_review_steps() -> list[BaseStep]:
         CommitStep(),
         ValidateStep(),
         PushStep(),
+        MonitorCIStep(),
+        ResolveExternalReviewsStep(),
         ExtractMemoryStep(),
         HandoffToUserStep(),
     ]
