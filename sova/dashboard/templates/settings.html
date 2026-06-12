@@ -3,47 +3,25 @@
 {% block content %}
 <h2 class="text-2xl font-semibold mb-6">Settings</h2>
 
-<!-- Configuration groups (accordion) -->
-<div id="config-groups" class="space-y-3 mb-6">
-  <p class="text-gray-500 text-sm">Loading configuration...</p>
-</div>
-
-<!-- Two columns: Invariants + Personas -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  <!-- Invariants -->
-  <div class="sova-card">
-    <div class="sova-card-header">
-      <h3 class="text-sm font-medium text-gray-400">Invariants</h3>
-    </div>
-    <div class="sova-card-body" id="invariants-list">
-      <p class="text-gray-500 text-sm">Loading...</p>
-    </div>
-  </div>
-
-  <!-- Personas -->
-  <div class="sova-card">
-    <div class="sova-card-header">
-      <h3 class="text-sm font-medium text-gray-400">Personas</h3>
-    </div>
-    <div class="sova-card-body" id="personas-list">
-      <p class="text-gray-500 text-sm">Loading...</p>
-    </div>
-  </div>
+<!-- All settings in a responsive two-column grid -->
+<div id="config-groups" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 items-start">
+  <p class="text-gray-500 text-sm lg:col-span-2">Loading configuration...</p>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function formatValue(val, type) {
+function formatValue(val, type, key) {
   if (val === null || val === undefined || val === '') {
     return '<span class="text-gray-600 italic text-xs">not set</span>';
   }
   if (type === 'boolean' || val === true || val === false) {
     var isTrue = (val === true || val === 'true');
-    if (isTrue) {
-      return '<span class="sova-badge" style="background:rgb(var(--ctp-green-rgb)/0.15);color:var(--ctp-green)">true</span>';
-    }
-    return '<span class="sova-badge" style="background:rgb(var(--ctp-red-rgb)/0.15);color:var(--ctp-red)">false</span>';
+    return '<label class="sova-toggle">' +
+      '<input type="checkbox"' + (isTrue ? ' checked' : '') +
+        ' onchange="toggleBool(\'' + escapeHtml(key) + '\', this.checked)">' +
+      '<span class="sova-toggle-track"></span>' +
+    '</label>';
   }
   if (type === 'list') {
     if (Array.isArray(val)) {
@@ -73,26 +51,32 @@ function formatValue(val, type) {
 }
 
 function renderSettingRow(s) {
-  var valHtml = formatValue(s.value, s.value_type);
+  var isBool = (s.value_type === 'boolean' || s.value === true || s.value === false);
+  var isStructured = (s.value_type === 'list' || s.value_type === 'object');
+  var editable = !isBool && !isStructured;
+  var valHtml = formatValue(s.value, s.value_type, s.key);
   var descHtml = s.description
     ? '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(s.description) + '</div>'
     : '';
+  var clickAttr = editable ? ' onclick="editConfig(\'' + escapeHtml(s.key) + '\')" style="cursor:pointer"' : '';
+  var editBtn = editable
+    ? '<button onclick="event.stopPropagation(); editConfig(\'' + escapeHtml(s.key) + '\')" ' +
+      'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">' +
+      'edit' +
+    '</button>'
+    : '<span class="text-xs opacity-0 shrink-0 pointer-events-none">edit</span>';
   return '<tr class="border-b border-gray-700/20 hover:bg-surface-hover/30 group">' +
-    '<td class="px-4 py-3 align-top w-2/5">' +
+    '<td class="px-4 py-3 align-top">' +
       '<div class="flex items-baseline">' +
         '<span class="text-sm text-gray-300">' + escapeHtml(s.label) + '</span>' +
         '<span class="font-mono text-gray-600 text-xs ml-2 opacity-0 group-hover:opacity-100 transition-opacity">' + escapeHtml(s.key) + '</span>' +
       '</div>' +
       descHtml +
     '</td>' +
-    '<td class="px-4 py-3 align-top">' +
-      '<div class="flex items-center gap-2">' +
-        '<span class="config-val flex-1" data-key="' + escapeHtml(s.key) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
-        '<button onclick="editConfig(\'' + escapeHtml(s.key) + '\', this)" ' +
-          'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" ' +
-          'data-tooltip="Edit">' +
-          'edit' +
-        '</button>' +
+    '<td class="px-4 py-3 align-top text-right">' +
+      '<div class="flex items-center gap-2 justify-end"' + clickAttr + '>' +
+        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
+        editBtn +
       '</div>' +
     '</td>' +
   '</tr>';
@@ -120,7 +104,7 @@ async function loadConfig() {
     var groups = data.groups;
 
     if (!groups || groups.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-sm">No configuration found</p>';
+      container.innerHTML = '<p class="text-gray-500 text-sm lg:col-span-2">No configuration found</p>';
       return;
     }
 
@@ -132,7 +116,7 @@ async function loadConfig() {
       }
     });
 
-    container.innerHTML = groups.map(function(group) {
+    var html = groups.map(function(group) {
       var rows = group.settings.map(renderSettingRow).join('');
       var count = group.settings.length;
 
@@ -149,24 +133,70 @@ async function loadConfig() {
           '</div>' +
         '</button>' +
         '<div id="group-body-' + group.id + '" class="sova-settings-body" style="max-height:0px">' +
-          '<table class="w-full text-left"><tbody>' + rows + '</tbody></table>' +
+          '<div class="overflow-x-auto">' +
+            '<table class="w-full text-left" style="table-layout:fixed"><colgroup><col style="width:65%"><col style="width:35%"></colgroup><tbody>' + rows + '</tbody></table>' +
+          '</div>' +
         '</div>' +
       '</div>';
     }).join('');
 
+    // Append Invariants and Personas cards into the same grid
+    html += '<div class="sova-card">' +
+      '<div class="sova-card-header">' +
+        '<h3 class="text-sm font-medium text-gray-400">Invariants</h3>' +
+      '</div>' +
+      '<div class="sova-card-body" id="invariants-list">' +
+        '<p class="text-gray-500 text-sm">Loading...</p>' +
+      '</div>' +
+    '</div>';
+
+    html += '<div class="sova-card">' +
+      '<div class="sova-card-header">' +
+        '<h3 class="text-sm font-medium text-gray-400">Personas</h3>' +
+      '</div>' +
+      '<div class="sova-card-body" id="personas-list">' +
+        '<p class="text-gray-500 text-sm">Loading...</p>' +
+      '</div>' +
+    '</div>';
+
+    container.innerHTML = html;
+
     // Restore previously expanded groups, or auto-expand first on initial load
     var toExpand = expanded.length > 0 ? expanded : [groups[0].id];
     toExpand.forEach(function(id) { toggleGroup(id); });
+
+    // Load invariants and personas into their containers
+    loadInvariants();
+    loadPersonas();
   } catch (e) {
     console.error('Failed to load config:', e);
     document.getElementById('config-groups').innerHTML =
-      '<p class="text-gray-500 text-sm">Failed to load configuration</p>';
+      '<p class="text-gray-500 text-sm lg:col-span-2">Failed to load configuration</p>';
   }
 }
 
-function editConfig(key, btn) {
-  var row = btn.closest('tr');
-  var span = row.querySelector('.config-val');
+async function toggleBool(key, checked) {
+  try {
+    var res = await fetch(apiUrl('/settings/config'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: key, value: String(checked)}),
+    });
+    var data = await res.json();
+    if (data.error) {
+      alert(data.error);
+    }
+    loadConfig();
+  } catch (e) {
+    alert('Failed to save: ' + e.message);
+    loadConfig();
+  }
+}
+
+function editConfig(key) {
+  var span = document.querySelector('.config-val[data-key="' + key + '"]');
+  if (!span || span.querySelector('input')) return;
+
   var currentVal;
   if (span.dataset.raw) {
     var raw = JSON.parse(span.dataset.raw);
@@ -180,16 +210,29 @@ function editConfig(key, btn) {
   input.type = 'text';
   input.value = currentVal;
   input.className = 'sova-input text-xs py-1';
+  var saving = false;
   input.onkeydown = function(e) {
-    if (e.key === 'Enter') saveConfig(key, input.value, span, input);
-    if (e.key === 'Escape') cancelEdit(span, input);
+    if (e.key === 'Enter') { saving = true; saveConfig(key, input.value, span, input); }
+    if (e.key === 'Escape') { cancelEdit(span, input); }
   };
-  input.onblur = function() { cancelEdit(span, input); };
+  input.onblur = function() {
+    if (saving) return;
+    var newVal = input.value;
+    var origRaw = span.dataset.raw ? JSON.parse(span.dataset.raw) : '';
+    var origStr = (typeof origRaw === 'string') ? origRaw : JSON.stringify(origRaw);
+    if (newVal !== origStr) {
+      saving = true;
+      saveConfig(key, newVal, span, input);
+    } else {
+      cancelEdit(span, input);
+    }
+  };
 
   span.dataset.origHtml = span.innerHTML;
   span.innerHTML = '';
   span.appendChild(input);
-  btn.style.display = 'none';
+  var btn = span.closest('td').querySelector('button');
+  if (btn) btn.style.display = 'none';
   input.focus();
   input.select();
 }
@@ -278,7 +321,5 @@ async function loadPersonas() {
 }
 
 loadConfig();
-loadInvariants();
-loadPersonas();
 </script>
 {% endblock %}
