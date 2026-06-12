@@ -172,13 +172,20 @@ class _ThreadsResult:
     thread_ids: list[str] = field(default_factory=list)
 
 
+_DEFAULT_CODERABBIT_AUTHORS = frozenset({"coderabbitai", "coderabbitai[bot]", "coderabbit[bot]"})
+
+
 async def _fetch_coderabbit_threads(
     repo: str,
     pr_number: int,
     *,
+    authors: set[str] | None = None,
     github_user: str | None = None,
 ) -> _ThreadsResult:
-    """Fetch unresolved CodeRabbit review threads from a PR via GraphQL."""
+    """Fetch unresolved review threads from a PR via GraphQL.
+
+    When ``authors`` is None, defaults to CodeRabbit bot accounts.
+    """
     from sova.utils.gh import resolve_gh_env
 
     owner, name = repo.split("/", 1) if "/" in repo else ("", repo)
@@ -213,6 +220,7 @@ async def _fetch_coderabbit_threads(
         data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("reviewThreads", {}).get("nodes", [])
     )
 
+    allowed = authors if authors is not None else _DEFAULT_CODERABBIT_AUTHORS
     out = _ThreadsResult()
     for thread in threads:
         if thread.get("isResolved"):
@@ -221,7 +229,7 @@ async def _fetch_coderabbit_threads(
         if not comments:
             continue
         author = comments[0].get("author", {}).get("login", "")
-        if author not in ("coderabbitai", "coderabbitai[bot]", "coderabbit[bot]"):
+        if author not in allowed:
             continue
 
         body = comments[0].get("body", "")
@@ -257,14 +265,15 @@ async def resolve_coderabbit_threads(
     thread_ids: list[str],
     *,
     github_user: str | None = None,
-) -> None:
-    """Resolve CodeRabbit review threads by ID via GraphQL."""
+) -> int:
+    """Resolve review threads by ID via GraphQL. Returns count of successfully resolved."""
     from sova.utils.gh import resolve_gh_env
 
     env = await resolve_gh_env(github_user)
 
     mutation = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
 
+    resolved = 0
     for thread_id in thread_ids:
         result = await run(
             "gh",
@@ -277,12 +286,15 @@ async def resolve_coderabbit_threads(
             env=env,
             timeout=15,
         )
-        if not result.success:
+        if result.success:
+            resolved += 1
+        else:
             log.warning(
                 "external_reviews.resolve_thread_failed",
                 thread_id=thread_id,
                 stderr=result.stderr[:200],
             )
+    return resolved
 
 
 def format_findings_for_prompt(findings: list[ExternalFinding]) -> str:

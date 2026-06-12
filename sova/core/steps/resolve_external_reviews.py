@@ -11,84 +11,6 @@ from sova.utils.shell import run
 
 log = get_logger(component="step.resolve_external_reviews")
 
-_REVIEW_THREADS_QUERY = """
-query($owner: String!, $name: String!, $pr: Int!) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $pr) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          path
-          line
-          comments(first: 1) {
-            nodes {
-              author { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-"""
-
-
-async def _fetch_unresolved_thread_ids(
-    repo: str,
-    pr_number: int,
-    *,
-    authors: set[str],
-    github_user: str = "",
-) -> list[str]:
-    """Fetch unresolved review thread IDs authored by any of the given logins."""
-    from sova.utils.gh import resolve_gh_env
-
-    owner, name = repo.split("/", 1) if "/" in repo else ("", repo)
-    env = await resolve_gh_env(github_user)
-
-    result = await run(
-        "gh",
-        "api",
-        "graphql",
-        "-f",
-        f"query={_REVIEW_THREADS_QUERY}",
-        "-F",
-        f"owner={owner}",
-        "-F",
-        f"name={name}",
-        "-F",
-        f"pr={pr_number}",
-        env=env,
-        timeout=30,
-    )
-    if not result.success:
-        log.warning("resolve_reviews.threads_fetch_failed", stderr=result.stderr[:200])
-        return []
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        log.warning("resolve_reviews.threads_parse_failed", exc_info=True)
-        return []
-
-    threads = (
-        data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("reviewThreads", {}).get("nodes", [])
-    )
-
-    thread_ids: list[str] = []
-    for thread in threads:
-        if thread.get("isResolved"):
-            continue
-        comments = thread.get("comments", {}).get("nodes", [])
-        if not comments:
-            continue
-        author = comments[0].get("author", {}).get("login", "")
-        if author in authors:
-            thread_ids.append(thread.get("id", ""))
-
-    return [tid for tid in thread_ids if tid]
-
 
 async def _dismiss_bot_reviews(
     pr_number: int,
@@ -107,7 +29,6 @@ async def _dismiss_bot_reviews(
         "gh",
         "api",
         f"repos/{repo}/pulls/{pr_number}/reviews",
-        "--paginate",
         env=env,
         timeout=15,
     )
@@ -170,30 +91,30 @@ class ResolveExternalReviewsStep(BaseStep):
         resolved_count = 0
         dismissed_count = 0
 
-        # Build set of authors whose threads we should resolve:
-        # - CodeRabbit bot accounts
-        # - The SOVA github_user (reviewer posts findings under this account)
-        authors = {"coderabbitai", "coderabbitai[bot]", "coderabbit[bot]"}
-        if ctx.config.github_user:
-            authors.add(ctx.config.github_user)
-
         try:
-            from sova.adapters.external_reviews import resolve_coderabbit_threads
+            from sova.adapters.external_reviews import (
+                _DEFAULT_CODERABBIT_AUTHORS,
+                _fetch_coderabbit_threads,
+                resolve_coderabbit_threads,
+            )
 
-            thread_ids = await _fetch_unresolved_thread_ids(
+            authors = set(_DEFAULT_CODERABBIT_AUTHORS)
+            if ctx.config.github_user:
+                authors.add(ctx.config.github_user)
+
+            cr_result = await _fetch_coderabbit_threads(
                 ctx.repo,
                 ctx.pr_number,
                 authors=authors,
                 github_user=ctx.config.github_user,
             )
-            if thread_ids:
-                await resolve_coderabbit_threads(
-                    thread_ids,
+            if cr_result.thread_ids:
+                resolved_count = await resolve_coderabbit_threads(
+                    cr_result.thread_ids,
                     github_user=ctx.config.github_user,
                 )
-                resolved_count = len(thread_ids)
                 log.info("step.resolve_external_reviews.threads_resolved", count=resolved_count)
-        except Exception:
+        except (ImportError, RuntimeError, OSError):
             log.warning("step.resolve_external_reviews.resolve_failed", exc_info=True)
 
         # Dismiss bot CHANGES_REQUESTED reviews
@@ -205,7 +126,7 @@ class ResolveExternalReviewsStep(BaseStep):
             )
             if dismissed_count:
                 log.info("step.resolve_external_reviews.reviews_dismissed", count=dismissed_count)
-        except Exception:
+        except (RuntimeError, OSError):
             log.warning("step.resolve_external_reviews.dismiss_failed", exc_info=True)
 
         parts = []
