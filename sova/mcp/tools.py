@@ -159,9 +159,7 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
         return _read_project_context(effective, allowed_root=allowed_root)
 
 
-async def _run_command(
-    command: str, args: str, project_dir: str, *, allowed_root: Path | None = None
-) -> str:
+async def _run_command(command: str, args: str, project_dir: str, *, allowed_root: Path | None = None) -> str:
     """Run a SOVA command via the LLM client and return the result text."""
     resolved = _validate_project_dir(project_dir, allowed_root)
 
