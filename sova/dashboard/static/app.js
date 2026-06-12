@@ -176,7 +176,83 @@ function showToast(message, type, duration) {
 }
 
 /* ============================================================
-   5. SIDEBAR POLLING & NOTIFICATIONS
+   5. CONFIRMATION MODAL
+   ============================================================ */
+
+/**
+ * sovaConfirm(message, options) -> Promise<boolean>
+ *
+ * options: { title, confirmText, confirmClass, cancelText }
+ * confirmClass: 'danger' for destructive (red), default is accent (teal)
+ */
+function sovaConfirm(message, options) {
+  var opts = options || {};
+  var title = opts.title || 'Confirm';
+  var confirmText = opts.confirmText || 'Confirm';
+  var cancelText = opts.cancelText || 'Cancel';
+  var isDanger = opts.confirmClass === 'danger';
+
+  return new Promise(function(resolve) {
+    var backdrop = document.createElement('div');
+    backdrop.className = 'sova-modal-backdrop';
+
+    var confirmBtnClass = isDanger
+      ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30'
+      : 'bg-accent/20 text-accent hover:bg-accent/30';
+
+    backdrop.innerHTML =
+      '<div class="sova-modal-dialog">' +
+        '<div class="px-5 pt-5 pb-4">' +
+          '<p class="text-sm font-medium text-gray-200 mb-2">' + escapeHtml(title) + '</p>' +
+          '<p class="text-sm text-gray-400">' + escapeHtml(message) + '</p>' +
+        '</div>' +
+        '<div class="flex justify-end gap-2 px-5 pb-4">' +
+          '<button class="sova-modal-cancel px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 rounded transition-colors">' +
+            escapeHtml(cancelText) +
+          '</button>' +
+          '<button class="sova-modal-confirm px-3 py-1.5 text-sm font-medium rounded transition-colors ' + confirmBtnClass + '">' +
+            escapeHtml(confirmText) +
+          '</button>' +
+        '</div>' +
+      '</div>';
+
+    function close(result) {
+      backdrop.classList.remove('sova-modal-visible');
+      setTimeout(function() {
+        if (backdrop.parentElement) backdrop.remove();
+      }, 150);
+      document.removeEventListener('keydown', onKey);
+      resolve(result);
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') close(false);
+    }
+
+    backdrop.addEventListener('click', function(e) {
+      if (e.target === backdrop) close(false);
+    });
+    backdrop.querySelector('.sova-modal-cancel').addEventListener('click', function() {
+      close(false);
+    });
+    backdrop.querySelector('.sova-modal-confirm').addEventListener('click', function() {
+      close(true);
+    });
+    document.addEventListener('keydown', onKey);
+
+    document.body.appendChild(backdrop);
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        backdrop.classList.add('sova-modal-visible');
+      });
+    });
+
+    backdrop.querySelector('.sova-modal-confirm').focus();
+  });
+}
+
+/* ============================================================
+   6. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
 var _notifItems = [];
@@ -368,7 +444,7 @@ document.addEventListener('click', function(e) {
 });
 
 /* ============================================================
-   6. PR LINK HELPER
+   7. PR LINK HELPER
    ============================================================ */
 
 window.SOVA_GITHUB_REPO = null;
@@ -390,7 +466,7 @@ function prLink(prNumber) {
 }
 
 /* ============================================================
-   7. GLOBAL BATCH PROGRESS
+   8. GLOBAL BATCH PROGRESS
    ============================================================ */
 
 var _globalBatchId = null;
@@ -547,7 +623,7 @@ function _clearGlobalBatch() {
 }
 
 /* ============================================================
-   8. COLLAPSIBLE SIDEBAR
+   9. COLLAPSIBLE SIDEBAR
    ============================================================ */
 
 function initSidebarCollapse() {
@@ -576,7 +652,7 @@ function toggleSidebar() {
 }
 
 /* ============================================================
-   9. INITIALIZATION
+   10. INITIALIZATION
    ============================================================ */
 
 initColors();
@@ -589,7 +665,7 @@ if (document.getElementById('activity-dot')) {
 initGlobalBatch();
 
 /* ============================================================
-   10. ROLE COLORS
+   11. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
@@ -639,7 +715,7 @@ function _commandToRole(role) {
 }
 
 /* ============================================================
-   11. STEP PIPELINE BAR
+   12. STEP PIPELINE BAR
    ============================================================ */
 
 var PIPELINE_STEPS = [
@@ -693,7 +769,7 @@ function formatElapsed(seconds) {
 }
 
 /* ============================================================
-   12. RUNS TABLE (shared)
+   13. RUNS TABLE (shared)
    ============================================================ */
 
 function renderRunsTable(runs, targetId) {

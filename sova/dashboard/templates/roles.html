@@ -135,7 +135,8 @@ async function createRole() {
 }
 
 async function deleteRole(name) {
-  if (!confirm(`Delete role "${name}"?`)) return;
+  var ok = await sovaConfirm('Delete role "' + name + '"?', { confirmText: 'Delete', confirmClass: 'danger' });
+  if (!ok) return;
   try {
     const resp = await fetch(`${apiBase}/roles/${encodeURIComponent(name)}`, { method: 'DELETE' });
     if (!resp.ok) {

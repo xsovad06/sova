@@ -219,6 +219,38 @@ Tooltips are hidden on `disabled` or `aria-disabled="true"` elements.
 
 Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-text` color, `0.75rem` font, 150ms fade transition. Defined in `style.css` Section 6.
 
+## Confirmation Dialogs
+
+Use `sovaConfirm()` instead of the browser's native `confirm()`. Returns a Promise that resolves `true` (Confirm) or `false` (Cancel/Escape/backdrop click).
+
+### API
+
+```javascript
+var ok = await sovaConfirm('Delete this item?', {
+  title: 'Confirm',          // optional, default 'Confirm'
+  confirmText: 'Delete',     // optional, default 'Confirm'
+  cancelText: 'Cancel',      // optional, default 'Cancel'
+  confirmClass: 'danger',    // optional, 'danger' for red styling
+});
+if (!ok) return;
+```
+
+### Styling
+
+- Backdrop: `z-200`, `bg-black/50`, 150ms fade
+- Dialog: `--color-surface-card` background, `--ctp-surface1` border, 150ms scale transition
+- Cancel button: ghost text (`text-gray-400 hover:text-gray-200`)
+- Confirm button (default): `bg-accent/20 text-accent`
+- Confirm button (danger): `bg-accent-red/20 text-accent-red`
+
+Defined in `style.css` Section 3b, function in `app.js` Section 5.
+
+### Usage Rules
+
+- Always use `confirmClass: 'danger'` for destructive actions (delete, abandon, mark failed)
+- Default styling for neutral confirmations (skip, advance, approve)
+- The enclosing function must be `async` to use `await`
+
 ## Layout Tokens
 
 | Token | Value | Usage |
@@ -237,5 +269,5 @@ Tooltips match the Catppuccin Mocha theme: `--ctp-surface1` background, `--ctp-t
 | `sova/dashboard/templates/_icons.html` | SVG icon macro (Heroicons v2) |
 | `sova/dashboard/templates/_components.html` | Jinja2 component macros |
 | `sova/dashboard/templates/base.html` | Main layout, sidebar, notification panel |
-| `sova/dashboard/static/app.js` | Color system, toasts, browser notifications, utilities |
+| `sova/dashboard/static/app.js` | Color system, toasts, confirmation modal, browser notifications, utilities |
 | `sova/dashboard/templates/style_guide.html` | Living style guide at `/style-guide` |

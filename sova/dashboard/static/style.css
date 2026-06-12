@@ -162,6 +162,41 @@
 .sova-toast-success { border-left-color: var(--ctp-green); }
 
 /* ============================================================
+   3b. CONFIRMATION MODAL
+   ============================================================ */
+
+.sova-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgb(0 0 0 / 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.sova-modal-backdrop.sova-modal-visible {
+  opacity: 1;
+}
+
+.sova-modal-dialog {
+  background: var(--color-surface-card);
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+  border-radius: 0.5rem;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5);
+  max-width: 24rem;
+  width: calc(100% - 2rem);
+  transform: scale(0.95);
+  transition: transform 150ms ease;
+}
+
+.sova-modal-visible .sova-modal-dialog {
+  transform: scale(1);
+}
+
+/* ============================================================
    4. REUSABLE COMPONENT CLASSES
    ============================================================ */
 
