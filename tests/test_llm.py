@@ -135,10 +135,21 @@ def _make_error_json() -> str:
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_provider():
+    """Reset the global provider between tests to avoid state leakage."""
+    from sova.llm import client
+
+    old = client._provider
+    client._provider = None
+    yield
+    client._provider = old
+
+
 class TestInvoke:
     @pytest.fixture
     def mock_run(self):
-        with patch("sova.llm.client.run", new_callable=AsyncMock) as mock:
+        with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock:
             yield mock
 
     async def test_invoke_basic(self, mock_run: AsyncMock) -> None:
@@ -249,7 +260,7 @@ class TestInvoke:
 class TestInvokeCommand:
     @pytest.fixture
     def mock_run(self):
-        with patch("sova.llm.client.run", new_callable=AsyncMock) as mock:
+        with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock:
             yield mock
 
     async def test_invoke_command(self, mock_run: AsyncMock) -> None:
@@ -322,13 +333,13 @@ class TestResolveModel:
 
 
 # ---------------------------------------------------------------------------
-# Client: _parse_result()
+# Provider: _parse_result()
 # ---------------------------------------------------------------------------
 
 
 class TestParseResult:
     def test_parse_success(self) -> None:
-        from sova.llm.client import _parse_result
+        from sova.llm.providers.claude_code import _parse_result
 
         raw = json.loads(
             _make_cli_json(
@@ -354,14 +365,14 @@ class TestParseResult:
         assert result.stop_reason == "end_turn"
 
     def test_parse_extracts_model_from_usage(self) -> None:
-        from sova.llm.client import _parse_result
+        from sova.llm.providers.claude_code import _parse_result
 
         raw = json.loads(_make_cli_json(model_id="claude-opus-4-6@20260401"))
         result = _parse_result(raw)
         assert result.model == "claude-opus-4-6@20260401"
 
     def test_parse_missing_fields_defaults(self) -> None:
-        from sova.llm.client import _parse_result
+        from sova.llm.providers.claude_code import _parse_result
 
         raw = {"result": "ok", "type": "result"}
         result = _parse_result(raw)
@@ -487,7 +498,7 @@ class TestInvokeStreaming:
         mock_proc.returncode = 0
         mock_proc.wait = AsyncMock()
 
-        with patch("sova.llm.client._start_streaming_process", return_value=mock_proc):
+        with patch("sova.llm.providers.claude_code._start_streaming_process", return_value=mock_proc):
             events = []
             async for event in invoke_streaming("Say hello"):
                 events.append(event)
@@ -502,17 +513,167 @@ class TestInvokeStreaming:
 
 
 # ---------------------------------------------------------------------------
+# Provider abstraction
+# ---------------------------------------------------------------------------
+
+
+class TestLLMProvider:
+    def test_create_provider_default(self) -> None:
+        from sova.llm.provider import create_provider
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        provider = create_provider("claude-code")
+        assert isinstance(provider, ClaudeCodeProvider)
+
+    def test_create_provider_unknown(self) -> None:
+        from sova.llm.provider import create_provider
+
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            create_provider("nonexistent")
+
+    def test_get_provider_default(self) -> None:
+        from sova.llm.client import get_provider
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        provider = get_provider()
+        assert isinstance(provider, ClaudeCodeProvider)
+
+    def test_set_provider(self) -> None:
+        from sova.llm.client import get_provider, set_provider
+        from sova.llm.provider import LLMProvider
+
+        class FakeProvider(LLMProvider):
+            async def invoke(self, prompt, **kwargs):
+                return LLMResult(text="fake", model="fake")
+
+            async def invoke_streaming(self, prompt, **kwargs):
+                yield StreamEvent(type="result", text="fake")
+
+            def normalize_model_name(self, model):
+                return model
+
+            async def check_available(self):
+                return True, "fake"
+
+        fake = FakeProvider()
+        set_provider(fake)
+        assert get_provider() is fake
+
+    def test_normalize_model_name_claude_code(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        p = ClaudeCodeProvider()
+        assert p.normalize_model_name("fast") == "sonnet"
+        assert p.normalize_model_name("smart") == "opus"
+        assert p.normalize_model_name("cheap") == "haiku"
+        assert p.normalize_model_name("opus") == "opus"
+
+    async def test_check_available_claude_found(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        p = ClaudeCodeProvider()
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="1.0.0\n", stderr=""),
+            ),
+        ):
+            available, detail = await p.check_available()
+            assert available is True
+            assert "1.0.0" in detail
+
+    async def test_check_available_claude_not_found(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+
+        p = ClaudeCodeProvider()
+        with patch("sova.llm.providers.claude_code.shutil.which", return_value=None):
+            available, detail = await p.check_available()
+            assert available is False
+            assert "not found" in detail
+
+    async def test_invoke_command_delegates_to_invoke(self) -> None:
+        from sova.llm.provider import LLMProvider
+
+        class TrackingProvider(LLMProvider):
+            def __init__(self):
+                self.last_prompt = ""
+
+            async def invoke(self, prompt, **kwargs):
+                self.last_prompt = prompt
+                return LLMResult(text="ok", model="test")
+
+            async def invoke_streaming(self, prompt, **kwargs):
+                yield StreamEvent(type="result", text="ok")
+
+            def normalize_model_name(self, model):
+                return model
+
+            async def check_available(self):
+                return True, "test"
+
+        p = TrackingProvider()
+        result = await p.invoke_command("/develop", args="42")
+        assert p.last_prompt == "/develop 42"
+        assert result.text == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Config: LLMConfig
+# ---------------------------------------------------------------------------
+
+
+class TestLLMConfig:
+    def test_default_provider(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig()
+        assert cfg.provider == "claude-code"
+
+    def test_project_config_has_llm(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        assert cfg.llm.provider == "claude-code"
+
+    def test_load_from_toml(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text('[llm]\nprovider = "claude-code"\n')
+        cfg = load_config(tmp_path)
+        assert cfg.llm.provider == "claude-code"
+
+
+# ---------------------------------------------------------------------------
 # Module exports
 # ---------------------------------------------------------------------------
 
 
 class TestModuleExports:
     def test_imports(self) -> None:
-        from sova.llm import LLMResult, StreamEvent, invoke, invoke_command, invoke_streaming, record_cost
+        from sova.llm import (
+            LLMProvider,
+            LLMResult,
+            StreamEvent,
+            create_provider,
+            get_provider,
+            invoke,
+            invoke_command,
+            invoke_streaming,
+            record_cost,
+            set_provider,
+        )
 
         assert callable(invoke)
         assert callable(invoke_command)
         assert callable(invoke_streaming)
         assert callable(record_cost)
+        assert callable(create_provider)
+        assert callable(get_provider)
+        assert callable(set_provider)
         assert LLMResult is not None
         assert StreamEvent is not None
+        assert LLMProvider is not None

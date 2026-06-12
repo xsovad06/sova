@@ -16,6 +16,7 @@ class SettingMeta:
 
 GROUPS: dict[str, str] = {
     "project": "Project",
+    "llm": "LLM Provider",
     "agent": "Agent",
     "pipeline": "Pipeline",
     "task_source": "Task Source",
@@ -32,6 +33,7 @@ GROUPS: dict[str, str] = {
 
 GROUP_ORDER: list[str] = [
     "project",
+    "llm",
     "agent",
     "pipeline",
     "roles",
@@ -76,6 +78,13 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta("slack_channel", "Slack channel", "Default Slack channel for notifications", "project"),
+    # -- LLM Provider --
+    SettingMeta(
+        "llm.provider",
+        "Provider",
+        "LLM backend to use (claude-code). Future: litellm, ollama, openai",
+        "llm",
+    ),
     # -- Agent --
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
     SettingMeta(

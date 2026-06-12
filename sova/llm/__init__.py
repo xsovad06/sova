@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from sova.llm.client import invoke, invoke_command, invoke_streaming, resolve_model
+from sova.llm.client import get_provider, invoke, invoke_command, invoke_streaming, resolve_model, set_provider
 from sova.llm.cost import record_cost
 from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.provider import LLMProvider, create_provider
 
 __all__ = [
+    "LLMProvider",
     "LLMResult",
     "StreamEvent",
+    "create_provider",
+    "get_provider",
     "invoke",
     "invoke_command",
     "invoke_streaming",
     "record_cost",
     "resolve_model",
+    "set_provider",
 ]

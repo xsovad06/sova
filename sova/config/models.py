@@ -35,6 +35,14 @@ class TaskSourceConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
 
 
+class LLMConfig(BaseSettings):
+    """LLM provider configuration."""
+
+    provider: str = "claude-code"
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
+
+
 class AgentConfig(BaseSettings):
     """Agent behavior configuration."""
 
@@ -220,6 +228,7 @@ class ProjectConfig(BaseSettings):
     slack_channel: str = ""
 
     # Nested config sections
+    llm: LLMConfig = Field(default_factory=LLMConfig)
     task_source: TaskSourceConfig = Field(default_factory=TaskSourceConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)

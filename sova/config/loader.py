@@ -52,6 +52,7 @@ def _load_from_toml(path: Path) -> ProjectConfig:
 
 
 _NESTED_SECTIONS = (
+    "llm",
     "task_source",
     "agent",
     "review",
