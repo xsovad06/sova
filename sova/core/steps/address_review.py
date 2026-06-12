@@ -181,7 +181,13 @@ class AddressReviewStep(BaseStep):
             return StepResult(success=False, summary="Failed to address review findings", error=str(exc))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: the LLM must have produced new changes or commits."""
+        """Gate: the LLM must have produced new changes, commits, or confirmed prior fixes.
+
+        Three passing conditions:
+        1. Uncommitted changes exist (LLM modified files)
+        2. HEAD moved (LLM committed directly)
+        3. Branch is already ahead of base (findings were fixed in prior runs)
+        """
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
         has_uncommitted = bool(
@@ -194,6 +200,13 @@ class AddressReviewStep(BaseStep):
 
         if has_uncommitted or head_moved:
             return GateCheckResult(passed=True)
+
+        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
+        has_prior_commits = bool(log_result.success and log_result.stdout.strip())
+        if has_prior_commits:
+            log.info("step.address_review.findings_already_fixed")
+            return GateCheckResult(passed=True)
+
         return GateCheckResult(passed=False, reason="No changes after addressing review findings")
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:

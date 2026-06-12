@@ -2688,8 +2688,8 @@ class TestAddressReviewStepExecute:
 
         assert gate.passed
 
-    async def test_validate_output_fails_when_head_unchanged_and_no_diff(self) -> None:
-        """Pre-existing commits should NOT satisfy the gate -- only new work counts."""
+    async def test_validate_output_passes_when_findings_already_fixed(self) -> None:
+        """When LLM produces no changes but branch has prior commits, findings are already fixed."""
         from sova.core.steps.address_review import AddressReviewStep
 
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
@@ -2701,23 +2701,25 @@ class TestAddressReviewStepExecute:
                 MagicMock(success=True, stdout=""),  # unstaged diff
                 MagicMock(success=True, stdout=""),  # staged diff
                 MagicMock(success=True, stdout="abc123"),  # rev-parse HEAD (same)
+                MagicMock(success=True, stdout="abc123 fix: prior work\n"),  # git log base..HEAD
             ]
             gate = await step.validate_output(ctx)
 
-        assert not gate.passed
-        assert "No changes" in gate.reason
+        assert gate.passed
 
-    async def test_validate_output_fails_with_no_changes(self) -> None:
+    async def test_validate_output_fails_with_no_changes_and_no_prior_commits(self) -> None:
         from sova.core.steps.address_review import AddressReviewStep
 
         ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
         step = AddressReviewStep()
+        step._head_before_llm = "abc123"
 
         with patch("sova.core.steps.address_review.run") as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout=""),  # unstaged diff
                 MagicMock(success=True, stdout=""),  # staged diff
-                MagicMock(success=True, stdout=""),  # rev-parse HEAD
+                MagicMock(success=True, stdout="abc123"),  # rev-parse HEAD (same)
+                MagicMock(success=True, stdout=""),  # git log base..HEAD (empty)
             ]
             gate = await step.validate_output(ctx)
 
