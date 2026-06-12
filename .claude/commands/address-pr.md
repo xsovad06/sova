@@ -85,7 +85,27 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 11. **Rearrange commits**: run the `/rearrange-commits` workflow to squash the fix commit into the original feature commits. The PR should read as clean feature development with no review-fix artifacts.
 
-12. **Push and wait for CI**:
+12. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
+    ```bash
+    BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName')
+    git fetch origin
+    git rebase origin/$BASE
+    ```
+
+    If there are merge conflicts:
+    1. Read each conflicted file, understand both sides of each conflict marker
+    2. Resolve conflicts by editing the file to remove markers, keeping the correct code
+    3. `git add <resolved_file>` and `git rebase --continue`
+    4. Repeat for subsequent commits (up to 3 rebase steps)
+    5. After each resolution, verify no conflict markers remain: `grep -rn "<<<<<<<" <file>`
+
+    If resolution fails after 3 attempts:
+    - Run `git rebase --abort` to restore a clean state
+    - Report the conflicting files and stop
+
+    If rebase was a no-op (already up to date), continue to the next step.
+
+13. **Push and wait for CI**:
     ```bash
     git push --force-with-lease
     ```
@@ -96,17 +116,17 @@ Score each review comment, address all of them (fix or acknowledge with justific
     If CI fails, analyze the failure, fix, amend the commit, and re-push (max 2 retries).
     If CI passes, continue. If still pending after max wait, report status and continue anyway.
 
-13. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
+14. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
     - Fixed: `Fixed: [what changed].` or `Added [what].`
     - Acknowledged (not fixed): `Acknowledged -- [justification: false positive / not applicable / needs human input].`
     - No filler words, no 'Great catch!', no emojis.
 
-14. **Resolve each thread** using GraphQL (for PR review comments only):
+15. **Resolve each thread** using GraphQL (for PR review comments only):
     ```bash
     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
     ```
 
-15. **Dismiss stale bot reviews** that block mergeability. After addressing all findings, check for `CHANGES_REQUESTED` reviews from bots (CodeRabbit, etc.) and dismiss them:
+16. **Dismiss stale bot reviews** that block mergeability. After addressing all findings, check for `CHANGES_REQUESTED` reviews from bots (CodeRabbit, etc.) and dismiss them:
     ```bash
     # List reviews with CHANGES_REQUESTED state from bots
     gh api repos/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | select(.state == "CHANGES_REQUESTED") | select(.user.type == "Bot") | "\(.id) | \(.user.login)"'
@@ -117,14 +137,14 @@ Score each review comment, address all of them (fix or acknowledge with justific
     ```
     Only dismiss bot reviews whose findings have been addressed or acknowledged. Never dismiss human reviews.
 
-16. **Clear the handoff** after addressing all findings:
+17. **Clear the handoff** after addressing all findings:
     ```bash
     rm -f .claude/agent-control/handoff.json
     ```
 
-17. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
+18. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
-18. **Print summary**:
+19. **Print summary**:
     - Table: | Source | File | Score | Action |
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
 
