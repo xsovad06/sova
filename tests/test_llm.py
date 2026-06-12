@@ -664,21 +664,16 @@ class TestProviderInitFromConfig:
         provider = get_provider()
         assert isinstance(provider, ClaudeCodeProvider)
 
-    def test_init_provider_unknown_falls_back(self, tmp_path: Path) -> None:
-        """Unknown provider type falls back silently to default."""
+    def test_init_provider_unknown_raises(self, tmp_path: Path) -> None:
+        """Unknown provider type raises ValueError (not silently swallowed)."""
         from sova.cli.app import _init_llm_provider
-        from sova.llm.client import get_provider
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
 
         with patch("sova.cli.app.load_config") as mock_load:
             from sova.config.models import ProjectConfig
 
             mock_load.return_value = ProjectConfig(llm={"provider": "nonexistent"})
-            _init_llm_provider()
-
-        # Falls back to default
-        provider = get_provider()
-        assert isinstance(provider, ClaudeCodeProvider)
+            with pytest.raises(ValueError, match="Unknown LLM provider"):
+                _init_llm_provider()
 
 
 class TestModuleExports:

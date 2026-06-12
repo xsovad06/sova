@@ -66,7 +66,7 @@ class LLMProvider(ABC):
         Providers that support native command dispatch can override this.
         """
         prompt = f"{command} {args}".strip() if args else command
-        log.info("llm.invoke_command", command=command, args=args, model=model)
+        log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
         return await self.invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
 
     def normalize_model_name(self, model: str) -> str:
