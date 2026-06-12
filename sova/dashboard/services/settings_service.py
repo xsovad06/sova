@@ -19,15 +19,30 @@ def get_config(project_dir: Path | None = None) -> dict:
         return {"_error": "No configuration found"}
 
     # Flatten the config into displayable key-value pairs
-    result = {}
-    for key, value in cfg.model_dump().items():
-        if isinstance(value, dict):
-            for sub_key, sub_value in value.items():
-                result[f"{key}.{sub_key}"] = sub_value
-        else:
-            result[key] = value
-
+    result: dict = {}
+    _flatten_dict("", cfg.model_dump(), result)
     return result
+
+
+def _flatten_dict(prefix: str, obj: dict, result: dict, registered: frozenset[str] | None = None) -> None:
+    """Recursively flatten a nested dict into dotted keys.
+
+    Stops recursing when ``full_key`` is a registered setting leaf (e.g.
+    ``triage.labels``, ``roles.nicknames``) so object-valued settings stay
+    intact.  Only intermediate containers (e.g. ``external_reviews.sonarcloud``)
+    are expanded further.
+    """
+    if registered is None:
+        from sova.dashboard.settings_meta import _META_BY_KEY
+
+        registered = frozenset(_META_BY_KEY)
+
+    for key, value in obj.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict) and full_key not in registered:
+            _flatten_dict(full_key, value, result, registered)
+        else:
+            result[full_key] = value
 
 
 def get_config_file_path(project_dir: Path | None = None) -> Path:
