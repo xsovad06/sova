@@ -52,6 +52,43 @@ var stateLabels = {
   triaged: 'Triaged',
   backlog: 'Backlog',
   needs_spec: 'Needs Spec',
+  in_review: 'In Review',
+};
+
+var stateColors = {
+  backlog: 'bg-gray-600/30 text-gray-400',
+  triaged: 'bg-accent-yellow/20 text-accent-yellow',
+  researched: 'bg-accent-purple/20 text-accent-purple',
+  in_progress: 'bg-accent/20 text-accent',
+  in_review: 'bg-accent-green/20 text-accent-green',
+  needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
+};
+
+var issueTypeStyles = {
+  Bug: 'bg-accent-red/20 text-accent-red',
+  Story: 'bg-accent/20 text-accent',
+  Task: 'bg-accent-yellow/20 text-accent-yellow',
+  Spike: 'bg-accent-purple/20 text-accent-purple',
+  Epic: 'bg-accent-purple/20 text-accent-purple',
+};
+
+var actionStyles = {
+  triage: 'bg-accent-yellow/20 text-accent-yellow',
+  research: 'bg-accent-purple/20 text-accent-purple',
+  develop: 'bg-accent/20 text-accent',
+  review: 'bg-accent-green/20 text-accent-green',
+  resume: 'bg-accent/20 text-accent',
+  harden: 'bg-accent-purple/20 text-accent-purple',
+};
+
+var stateGroupOrder = ['in_progress', 'in_review', 'researched', 'triaged', 'backlog', 'needs_spec'];
+var stateGroupLabels = {
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  researched: 'Ready to Develop',
+  triaged: 'Triaged',
+  backlog: 'Backlog / Triage',
+  needs_spec: 'Needs Refinement',
 };
 
 var validStates = {
@@ -116,6 +153,78 @@ function timeAgo(isoStr) {
   return Math.floor(diff / 86400) + 'd ago';
 }
 
+function issueTypeBadge(type) {
+  if (!type) return '';
+  var cls = issueTypeStyles[type] || 'bg-gray-600/30 text-gray-400';
+  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(type) + '</span>';
+}
+
+function stateBadge(state) {
+  var label = stateLabels[state] || state;
+  var cls = stateColors[state] || 'bg-gray-600/30 text-gray-400';
+  return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
+function actionBadge(action) {
+  var cls = actionStyles[action] || 'bg-gray-600/30 text-gray-400';
+  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(action) + '</span>';
+}
+
+function renderQueueCard(item) {
+  var style = milestoneStyles[item.priority_label] || milestoneStyles['--'];
+  var isSelected = !!selectedItems[item.issue];
+  var selectedClasses = isSelected ? ' ring-1 ring-accent/40 bg-accent/5' : '';
+
+  var issueDisplay = item.jira_key ? escapeHtml(item.jira_key) : '#' + escapeHtml(item.issue);
+
+  var typeBadge = issueTypeBadge(item.issue_type);
+
+  var displayLabels = (item.labels || []).filter(function(l) {
+    return l.indexOf('agent:') !== 0 && l.indexOf('priority:') !== 0 && l.indexOf('role:') !== 0;
+  });
+  var labelsHtml = displayLabels.map(function(l) {
+    return '<span class="px-1.5 py-0.5 rounded text-xs bg-gray-700/50 text-gray-400">' + escapeHtml(l) + '</span>';
+  }).join(' ');
+
+  var metaParts = [];
+  metaParts.push(stateBadge(item.state));
+  if (item.jira_status) {
+    metaParts.push('<span class="text-xs text-gray-500">' + escapeHtml(item.jira_status) + '</span>');
+  }
+  if (item.assignees && item.assignees.length > 0) {
+    metaParts.push('<span class="text-xs text-gray-500">' + escapeHtml(item.assignees[0]) + '</span>');
+  }
+  if (item.created_at) {
+    metaParts.push('<span class="text-xs text-gray-600">opened ' + timeAgo(item.created_at) + '</span>');
+  }
+  if (labelsHtml) {
+    metaParts.push(labelsHtml);
+  }
+  var metaHtml = metaParts.join('<span class="text-gray-700 mx-1">|</span>');
+
+  return '<div id="card-' + escapeHtml(item.issue) + '" class="bg-surface-card rounded-lg border ' + style.border + ' p-4 flex items-center gap-4 transition-all' + selectedClasses + '">' +
+    '<input type="checkbox" id="cb-' + escapeHtml(item.issue) + '" ' + (isSelected ? 'checked ' : '') +
+      'onchange="toggleSelection(\'' + escapeHtml(item.issue) + '\', \'' + escapeHtml(item.state) + '\')" ' +
+      'class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50 cursor-pointer shrink-0">' +
+    '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
+    '<div class="flex-1 min-w-0">' +
+      '<div class="flex items-center gap-2">' +
+        (item.url
+          ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener" class="text-sm font-medium text-accent hover:underline whitespace-nowrap">' + issueDisplay + '</a>'
+          : '<span class="text-sm font-medium whitespace-nowrap">' + issueDisplay + '</span>') +
+        typeBadge +
+        '<span class="text-sm text-gray-300 truncate">' + escapeHtml(item.title) + '</span>' +
+      '</div>' +
+      '<div class="flex items-center gap-1 mt-1 flex-wrap">' + metaHtml + '</div>' +
+    '</div>' +
+    '<div class="flex items-center gap-2 shrink-0">' +
+      renderRunStatusBadge(item) +
+      actionBadge(item.action) +
+      renderStartButton(item) +
+    '</div>' +
+  '</div>';
+}
+
 function toggleSelection(issueId, state) {
   if (selectedItems[issueId]) {
     delete selectedItems[issueId];
@@ -149,7 +258,6 @@ function updateSelectionUI() {
   var bar = document.getElementById('bulk-bar');
   var countEl = document.getElementById('bulk-count');
 
-  // Update checkboxes and card highlights
   queueData.forEach(function(item) {
     var selected = !!selectedItems[item.issue];
     var cb = document.getElementById('cb-' + item.issue);
@@ -164,7 +272,6 @@ function updateSelectionUI() {
     }
   });
 
-  // Update select-all checkbox
   var allBox = document.getElementById('select-all');
   if (allBox && queueData.length > 0) {
     allBox.checked = count === queueData.length;
@@ -180,7 +287,6 @@ function updateSelectionUI() {
   bar.style.bottom = _globalBatchId ? '48px' : '0';
   countEl.textContent = count + ' selected';
 
-  // Compute action eligibility
   var states = Object.values(selectedItems).map(function(v) { return v.state; });
 
   var triageCount = states.filter(function(s) { return validStates.triage.indexOf(s) !== -1; }).length;
@@ -220,44 +326,37 @@ async function loadQueue() {
 
     selectAllWrapper.style.display = 'flex';
 
-    container.innerHTML = '<div class="space-y-3">' + data.queue.map(function(item) {
-      var style = milestoneStyles[item.priority_label] || milestoneStyles['--'];
-      var stateText = stateLabels[item.state] || item.state;
-      var isSelected = !!selectedItems[item.issue];
+    var groups = {};
+    data.queue.forEach(function(item) {
+      var g = item.state;
+      if (!groups[g]) groups[g] = [];
+      groups[g].push(item);
+    });
 
-      var labelsHtml = (item.labels || []).map(function(l) {
-        return '<span class="px-1.5 py-0.5 rounded text-xs bg-gray-700/50 text-gray-400">' + escapeHtml(l) + '</span>';
-      }).join(' ');
+    var html = '';
+    stateGroupOrder.forEach(function(state) {
+      var items = groups[state];
+      if (!items || items.length === 0) return;
 
-      var selectedClasses = isSelected ? ' ring-1 ring-accent/40 bg-accent/5' : '';
+      var isDimmed = state === 'needs_spec';
+      var groupClasses = isDimmed ? ' opacity-60' : '';
 
-      return '<div id="card-' + escapeHtml(item.issue) + '" class="bg-surface-card rounded-lg border ' + style.border + ' p-4 flex items-center gap-4 transition-all' + selectedClasses + '">' +
-        '<input type="checkbox" id="cb-' + escapeHtml(item.issue) + '" ' + (isSelected ? 'checked ' : '') +
-          'onchange="toggleSelection(\'' + escapeHtml(item.issue) + '\', \'' + escapeHtml(item.state) + '\')" ' +
-          'class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50 cursor-pointer shrink-0">' +
-        '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
-        '<div class="flex-1 min-w-0">' +
-          '<div class="flex items-center gap-2">' +
-            (item.url
-              ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener" class="text-sm font-medium text-accent hover:underline">#' + escapeHtml(item.issue) + '</a>'
-              : '<span class="text-sm font-medium">#' + escapeHtml(item.issue) + '</span>') +
-            '<span class="text-sm text-gray-300 truncate">' + escapeHtml(item.title) + '</span>' +
-          '</div>' +
-          '<div class="flex items-center gap-2 mt-1">' +
-            '<span class="text-xs text-gray-500">' + stateText + '</span>' +
-            (item.created_at ? '<span class="text-gray-600">|</span><span class="text-xs text-gray-600">opened ' + timeAgo(item.created_at) + '</span>' : '') +
-            (labelsHtml ? '<span class="text-gray-600">|</span>' + labelsHtml : '') +
-          '</div>' +
+      html += '<div class="mt-6 first:mt-0">' +
+        '<div class="flex items-center gap-3 mb-3">' +
+          '<h3 class="text-sm font-medium text-gray-400 whitespace-nowrap">' + stateGroupLabels[state] + '</h3>' +
+          '<span class="text-xs text-gray-600">(' + items.length + ')</span>' +
+          '<div class="flex-1 border-t border-gray-700/30"></div>' +
         '</div>' +
-        '<div class="flex items-center gap-2 shrink-0">' +
-          renderRunStatusBadge(item) +
-          '<span class="text-xs text-gray-500">' + escapeHtml(item.action) + '</span>' +
-          renderStartButton(item) +
-        '</div>' +
-      '</div>';
-    }).join('') + '</div>';
+        '<div class="space-y-2' + groupClasses + '">';
 
-    // Re-apply selection UI after render
+      items.forEach(function(item) {
+        html += renderQueueCard(item);
+      });
+
+      html += '</div></div>';
+    });
+
+    container.innerHTML = html;
     updateSelectionUI();
   } catch (e) {
     console.error('Failed to load queue:', e);
@@ -314,7 +413,6 @@ async function executeBulkAction(action) {
     return;
   }
 
-  // Triage or harden -- background batch with global progress bar
   try {
     var resp = await fetch(apiUrl('/queue/batch'), {
       method: 'POST',
