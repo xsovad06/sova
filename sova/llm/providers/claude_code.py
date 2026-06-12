@@ -57,6 +57,7 @@ class ClaudeCodeProvider(LLMProvider):
         proc = await _start_streaming_process(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd)
 
         previous_text = ""
+        got_result = False
         try:
             while True:
                 line = await proc.stdout.readline()
@@ -75,6 +76,7 @@ class ClaudeCodeProvider(LLMProvider):
                 if data.get("type") == "result":
                     parsed = _parse_result(data)
                     yield StreamEvent(type="result", text=parsed.text, result=parsed)
+                    got_result = True
                     break
 
                 if data.get("type") == "assistant":
@@ -89,7 +91,11 @@ class ClaudeCodeProvider(LLMProvider):
                         previous_text = full_text
                         yield StreamEvent(type="content", text=delta)
         finally:
+            stderr_bytes = await proc.stderr.read() if proc.stderr else b""
             await proc.wait()
+            if not got_result and proc.returncode and proc.returncode != 0:
+                stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"Claude CLI streaming failed (exit {proc.returncode}): {stderr_text[:500]}")
 
     def normalize_model_name(self, model: str) -> str:
         return _MODEL_ALIASES.get(model, model)

@@ -134,16 +134,15 @@ def create_app(
         log_file = resolved / ".claude" / "sova.log"
         setup_logging(log_file=log_file)
 
-        # Initialize the global LLM provider from project config
-        try:
-            from sova.config.loader import load_config
-            from sova.llm.client import set_provider
-            from sova.llm.provider import create_provider
+        # Initialize the global LLM provider from project config.
+        # NOTE: in multi_project mode this uses the first resolved dir's config.
+        # Per-project provider selection requires threading through ExecutionContext.
+        from sova.config.loader import load_config
+        from sova.llm.client import set_provider
+        from sova.llm.provider import create_provider
 
-            cfg = load_config(resolved)
-            set_provider(create_provider(cfg.llm.provider))
-        except Exception:
-            pass  # Fall back to default provider
+        cfg = load_config(resolved)
+        set_provider(create_provider(cfg.llm.provider))
 
         if is_multi:
             for _slug, path_str in list_projects().items():
