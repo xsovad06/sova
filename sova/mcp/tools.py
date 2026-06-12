@@ -125,9 +125,11 @@ def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
         ),
     )
     async def address_review(
-        pr_number: Annotated[int, "Pull request number to address"],
+        pr_number: Annotated[int, "Pull request number to address (must be positive)"],
         project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
+        if pr_number <= 0:
+            raise ValueError(f"Invalid PR number: {pr_number}. Must be positive.")
         effective = project_dir or (str(bound_dir) if bound_dir else ".")
         return await _run_command("/address-pr", str(pr_number), effective, allowed_root=allowed_root)
 
