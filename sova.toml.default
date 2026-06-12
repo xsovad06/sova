@@ -71,8 +71,8 @@ pr_title_format = "conventional"
 branch_naming = "conventional"
 # Auto-link issues in PR body ("Closes #N")
 pr_auto_link_issues = true
-# Prevent AI co-author lines in commits
-no_ai_coauthor = false
+# Include AI co-author lines in commits
+ai_coauthor = true
 
 [triage]
 # Auto-apply agent:ready/needs-spec labels during triage
