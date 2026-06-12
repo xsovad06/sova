@@ -69,10 +69,13 @@ class LLMProvider(ABC):
         log.info("llm.invoke_command", command=command, args=args, model=model)
         return await self.invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
 
-    @abstractmethod
     def normalize_model_name(self, model: str) -> str:
-        """Map generic model tiers (fast/smart/cheap) to provider-specific IDs."""
-        ...
+        """Map generic model tiers (fast/smart/cheap) to provider-specific IDs.
+
+        Default implementation returns the model unchanged. Providers can
+        override to map generic tiers to provider-specific identifiers.
+        """
+        return model
 
     @abstractmethod
     async def check_available(self) -> tuple[bool, str]:

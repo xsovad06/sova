@@ -40,6 +40,12 @@ def set_provider(provider: LLMProvider) -> None:
     _provider = provider
 
 
+def reset_provider() -> None:
+    """Reset the global provider to None (for testing)."""
+    global _provider  # noqa: PLW0603
+    _provider = None
+
+
 async def invoke(
     prompt: str,
     *,

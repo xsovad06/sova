@@ -197,6 +197,10 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         try:
             provider = create_provider(provider_type)
         except ValueError as exc:
+            # Only ValueError from create_provider (unknown provider type).
+            # pydantic.ValidationError also inherits ValueError in v2 but
+            # load_config() is called outside this inner try, so it won't
+            # be caught here.
             checks.append(("llm provider", False, str(exc), True))
             return checks
 
