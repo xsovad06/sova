@@ -476,6 +476,61 @@ class TestDeveloperRole:
         assert result.output_state == TaskState.IN_REVIEW
         adapter.transition_state.assert_not_called()
 
+    async def test_address_review_discovers_branch_from_pr(self) -> None:
+        """Address-review should discover branch_name from the PR when not set."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.developer import DeveloperRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="developer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=88)
+        assert ctx.branch_name == ""
+        role = DeveloperRole()
+
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
+        with (
+            patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)),
+            patch(
+                "sova.roles.developer.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-42",
+            ),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert ctx.branch_name == "feat/issue-42"
+
+    async def test_address_review_discovers_existing_worktree(self, tmp_path: Path) -> None:
+        """Address-review should discover and use an existing worktree for the issue."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.developer import DeveloperRole
+
+        worktree_path = tmp_path / ".claude" / "worktrees" / "42"
+        worktree_path.mkdir(parents=True)
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="developer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=88,
+            project_dir=tmp_path,
+        )
+        ctx.branch_name = "feat/issue-42"
+        assert ctx.worktree_dir is None
+        role = DeveloperRole()
+
+        mock_result = WorkflowResult(success=True, final_status=TaskStatus.DONE, task_run_id=1)
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert ctx.worktree_dir == worktree_path
+
     async def test_execute_routes_to_development_without_pr_number(self) -> None:
         """Without pr_number, developer should run the full development pipeline."""
         from unittest.mock import patch
@@ -535,6 +590,7 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
@@ -564,7 +620,7 @@ class TestReviewerRole:
             patch(
                 "sova.roles.reviewer.find_pr_for_issue",
                 new_callable=AsyncMock,
-                return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82"),
+                return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82", branch="feat/issue-42"),
             ),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
@@ -576,6 +632,79 @@ class TestReviewerRole:
 
         assert result.success
         assert ctx.pr_number == 82
+        assert ctx.branch_name == "feat/issue-42"
+
+    async def test_reviewer_discovers_branch_when_pr_number_preset(self) -> None:
+        """When pr_number is already set, reviewer should still discover branch_name."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        assert ctx.branch_name == ""
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-42",
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert ctx.branch_name == "feat/issue-42"
+
+    async def test_reviewer_propagates_branch_name_in_handoff(self) -> None:
+        """Reviewer must include branch_name in handoff so address-review can find the worktree."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.git.operations import PRInfo
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter)
+        ctx.task_run_id = 1
+        role = ReviewerRole()
+
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Bad"}]
+        llm_resp = json.dumps({"findings": findings, "summary": "Found a bug"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch(
+                "sova.roles.reviewer.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=PRInfo(number=82, url="https://github.com/x/y/pull/82", branch="feat/issue-42"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            await role.execute(ctx)
+
+        db_handoff = mock_db_handoff.call_args[0][1]
+        assert db_handoff.branch_name == "feat/issue-42"
+
+        file_handoff = mock_file_handoff.call_args[0][1]
+        assert file_handoff.branch == "feat/issue-42"
 
     async def test_execute_fails_when_no_pr_found(self) -> None:
         from unittest.mock import patch
@@ -634,6 +763,7 @@ class TestReviewerRole:
         )
 
         with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
@@ -669,6 +799,7 @@ class TestReviewerRole:
         llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
 
         with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
@@ -719,6 +850,7 @@ class TestReviewerRole:
         )
 
         with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
@@ -764,6 +896,7 @@ class TestReviewerRole:
         )
 
         with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value=""),
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value=real_diff),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),

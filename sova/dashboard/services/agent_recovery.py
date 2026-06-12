@@ -3,12 +3,75 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control.recovery")
+
+_SENTINEL_NO_PR = -1  # cached "no PR exists" marker (distinct from None = not cached)
+
+# TTL cache for synthesized PR actions: (issue, pr) -> (monotonic_ts, result)
+_synthesis_cache: dict[tuple[str, int], tuple[float, list[dict] | None]] = {}
+# Issue-level cache to avoid find_pr_for_issue shell call on cache hit
+_issue_pr_cache: dict[str, tuple[float, int | None]] = {}
+_SYNTHESIS_TTL_SECONDS = 60
+
+
+def _check_ttl_cache(cache: dict, key: object) -> tuple[bool, object]:
+    """Check a TTL cache entry. Returns (hit, value)."""
+    entry = cache.get(key)
+    if entry:
+        ts, value = entry
+        if time.monotonic() - ts < _SYNTHESIS_TTL_SECONDS:
+            return True, value
+    return False, None
+
+
+def _check_issue_cache(issue_number: str) -> tuple[bool, int | None, list[dict] | None]:
+    """Check issue-level and synthesis caches.
+
+    Returns (fully_resolved, pr_number_or_None, result).
+    - fully_resolved=True, pr=None, result=None: no PR exists (sentinel cached)
+    - fully_resolved=True, pr=N, result=actions: synthesis cache hit
+    - fully_resolved=False, pr=N, result=None: PR known but synthesis not cached
+    - fully_resolved=False, pr=None, result=None: issue cache miss entirely
+    """
+    issue_hit, cached_pr = _check_ttl_cache(_issue_pr_cache, issue_number)
+    if not issue_hit:
+        return False, None, None
+    if cached_pr == _SENTINEL_NO_PR:
+        return True, None, None
+    if cached_pr is not None:
+        synth_hit, synth_result = _check_ttl_cache(_synthesis_cache, (issue_number, cached_pr))
+        if synth_hit:
+            return True, cached_pr, synth_result
+        # PR number is known from cache; skip find_pr_for_issue
+        return False, cached_pr, None
+    return False, None, None
+
+
+def _deduplicate_reviews(reviews: list) -> dict:
+    """Keep latest review per reviewer, using timestamp comparison."""
+    from sova.adapters.base import PRReview  # noqa: F811
+
+    latest_by_reviewer: dict[str, PRReview] = {}
+    for review in reviews:
+        existing = latest_by_reviewer.get(review.reviewer)
+        if existing is None:
+            latest_by_reviewer[review.reviewer] = review
+            continue
+        try:
+            new_ts = datetime.fromisoformat(review.submitted_at.replace("Z", "+00:00"))
+            old_ts = datetime.fromisoformat(existing.submitted_at.replace("Z", "+00:00"))
+            if new_ts > old_ts:
+                latest_by_reviewer[review.reviewer] = review
+        except (ValueError, AttributeError):
+            if review.submitted_at > existing.submitted_at:
+                latest_by_reviewer[review.reviewer] = review
+    return latest_by_reviewer
 
 
 def _is_process_alive(pid: int) -> bool:
@@ -183,31 +246,48 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
         return no_review
 
 
-async def get_pr_status_for_issue(issue_number: str) -> dict:
-    """Get PR status for an issue -- approval state, CI, mergeability."""
+def _summarize_ci_checks(checks: list | None) -> str:
+    """Summarize CI check results into a single status string."""
+    from sova.git.operations import CheckConclusion, CheckStatus
+
+    if checks is None:
+        return "unknown"
+    if not checks:
+        return "none"
+    if all(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.SUCCESS for c in checks):
+        return "passed"
+    if any(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.FAILURE for c in checks):
+        return "failed"
+    if any(c.status == CheckStatus.IN_PROGRESS for c in checks):
+        return "pending"
+    return "passed"
+
+
+def _load_repo_config() -> tuple[str, str] | None:
+    """Load project config and return (repo, gh_user), or None if unavailable."""
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
-    from sova.git.operations import (
-        CheckConclusion,
-        CheckStatus,
-        find_pr_for_issue,
-        get_ci_checks,
-        get_pr_status,
-    )
 
     project_dir = get_project_dir()
     if not project_dir:
-        return {"has_pr": False}
-
+        return None
     try:
         cfg = load_config(project_dir)
     except Exception:
-        return {"has_pr": False}
+        return None
+    if not cfg.github_repo:
+        return None
+    return cfg.github_repo, cfg.github_user
 
-    repo = cfg.github_repo
-    gh_user = cfg.github_user
-    if not repo:
+
+async def get_pr_status_for_issue(issue_number: str) -> dict:
+    """Get PR status for an issue -- approval state, CI, mergeability."""
+    from sova.git.operations import find_pr_for_issue, get_ci_checks, get_pr_status
+
+    repo_cfg = _load_repo_config()
+    if not repo_cfg:
         return {"has_pr": False}
+    repo, gh_user = repo_cfg
 
     pr_info = await find_pr_for_issue(issue_number, repo=repo, github_user=gh_user)
     if not pr_info:
@@ -222,18 +302,7 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     ci_summary = "unknown"
     try:
         checks = await get_ci_checks(pr_info.number, repo=repo, github_user=gh_user)
-        if checks is None:
-            ci_summary = "unknown"
-        elif not checks:
-            ci_summary = "none"
-        elif all(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.SUCCESS for c in checks):
-            ci_summary = "passed"
-        elif any(c.status == CheckStatus.COMPLETED and c.conclusion == CheckConclusion.FAILURE for c in checks):
-            ci_summary = "failed"
-        elif any(c.status == CheckStatus.IN_PROGRESS for c in checks):
-            ci_summary = "pending"
-        else:
-            ci_summary = "passed"
+        ci_summary = _summarize_ci_checks(checks)
     except Exception:
         log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
 
@@ -252,3 +321,221 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
         "is_mergeable": status.is_mergeable,
         "sova_review": sova_review,
     }
+
+
+async def _has_active_run(issue_number: str) -> bool:
+    """Check if there are non-terminal TaskRuns for this issue."""
+    from sqlalchemy import select
+
+    from sova.dashboard.services.work_service import _TERMINAL
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    async with await get_session() as session:
+        async with session.begin():
+            stmt = (
+                select(TaskRun.id)
+                .where(
+                    TaskRun.issue_number == issue_number,
+                    TaskRun.status.notin_(_TERMINAL),
+                )
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none() is not None
+
+
+def _interpret_reviews(latest_by_reviewer: dict) -> tuple[bool, int, int]:
+    """Interpret review states, excluding dismissed and bot reviews.
+
+    Returns (has_changes_requested, approvals, human_review_count).
+    """
+    has_changes_requested = False
+    approvals = 0
+    human_review_count = 0
+
+    for review in latest_by_reviewer.values():
+        if review.state == "DISMISSED" or review.is_bot:
+            continue
+        human_review_count += 1
+        if review.state == "CHANGES_REQUESTED":
+            has_changes_requested = True
+        elif review.state == "APPROVED":
+            approvals += 1
+
+    return has_changes_requested, approvals, human_review_count
+
+
+def _build_address_review_action(issue_number: str, pr_number: int) -> list[dict]:
+    """Build the 'Address Review' action list."""
+    return [
+        {
+            "id": "address_review",
+            "label": "Address Review",
+            "description": "Address review findings from PR reviewers",
+            "style": "approve",
+            "mode": "agent",
+            "command": "",
+            "args": {"issue": issue_number, "pr": pr_number, "role": "developer"},
+            "auto_execute": False,
+        },
+    ]
+
+
+def _build_integrate_actions(issue_number: str, pr_number: int) -> list[dict]:
+    """Build the 'Integrate PR' + 'Merge Only' action list."""
+    return [
+        {
+            "id": "integrate",
+            "label": "Integrate PR",
+            "description": "All reviews approved -- rebase, merge, cleanup, and learn",
+            "style": "approve",
+            "mode": "claude-command",
+            "command": f"/integrate-pr {pr_number}",
+            "args": {"issue": issue_number, "pr": pr_number},
+            "auto_execute": False,
+        },
+        {
+            "id": "approve",
+            "label": "Merge Only",
+            "description": "Squash merge without rebase or learning -- skip the full pipeline",
+            "style": "neutral",
+            "mode": "claude-command",
+            "command": f"/approve-merge {pr_number}",
+            "args": {"issue": issue_number, "pr": pr_number},
+            "auto_execute": False,
+        },
+    ]
+
+
+async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_key: tuple) -> list[dict] | None:
+    """Fetch reviews from adapter, deduplicate, interpret, and build actions."""
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.dashboard.project_context import get_project_dir
+
+    cfg = load_config(get_project_dir())
+    try:
+        adapter = create_adapter(cfg)
+        reviews = await adapter.get_pr_reviews(pr_number)
+    except Exception:
+        log.debug("synthesize.fetch_reviews_failed", issue=issue_number, exc_info=True)
+        _synthesis_cache[cache_key] = (time.monotonic(), None)
+        return None
+
+    if not reviews:
+        _synthesis_cache[cache_key] = (time.monotonic(), None)
+        return None
+
+    latest_by_reviewer = _deduplicate_reviews(reviews)
+    has_changes_requested, approvals, human_review_count = _interpret_reviews(latest_by_reviewer)
+
+    actions: list[dict] | None = None
+    if has_changes_requested:
+        actions = _build_address_review_action(issue_number, pr_number)
+    elif approvals > 0 and approvals == human_review_count:
+        actions = _build_integrate_actions(issue_number, pr_number)
+
+    _synthesis_cache[cache_key] = (time.monotonic(), actions)
+    return actions
+
+
+async def synthesize_pr_actions(issue_number: str) -> list[dict] | None:
+    """Synthesize HandoffAction-shaped dicts from PR review state.
+
+    Returns None if no PR exists or no actionable review state found.
+    Called only when no handoff file exists and no agent is running for the issue.
+    """
+    from sova.git.operations import find_pr_for_issue
+
+    issue_number = issue_number.lstrip("#").strip()
+
+    repo_cfg = _load_repo_config()
+    if not repo_cfg:
+        return None
+    repo, gh_user = repo_cfg
+
+    fully_resolved, cached_pr, cached_result = _check_issue_cache(issue_number)
+    if fully_resolved:
+        return cached_result
+
+    # Use cached PR number if available, otherwise call find_pr_for_issue
+    if cached_pr is not None:
+        pr_number = cached_pr
+    else:
+        pr_info = await find_pr_for_issue(issue_number, repo=repo, github_user=gh_user)
+        if not pr_info:
+            _issue_pr_cache[issue_number] = (time.monotonic(), _SENTINEL_NO_PR)
+            return None
+        pr_number = pr_info.number
+        _issue_pr_cache[issue_number] = (time.monotonic(), pr_number)
+
+    cache_key = (issue_number, pr_number)
+    synth_hit, synth_result = _check_ttl_cache(_synthesis_cache, cache_key)
+    if synth_hit:
+        return synth_result
+
+    try:
+        if await _has_active_run(issue_number):
+            _synthesis_cache[cache_key] = (time.monotonic(), None)
+            return None
+    except Exception:
+        log.debug("synthesize.active_run_check_failed", issue=issue_number, exc_info=True)
+
+    return await _fetch_and_interpret_reviews(issue_number, pr_number, cache_key)
+
+
+def invalidate_synthesis_cache(issue: str, pr: int) -> None:
+    """Invalidate synthesized PR actions cache for an issue/PR pair."""
+    _synthesis_cache.pop((issue, pr), None)
+    _issue_pr_cache.pop(issue, None)
+
+
+async def get_synthesized_handoff() -> dict | None:
+    """Build a handoff-shaped dict from PR review state for recent done runs.
+
+    Queries recent completed developer/review runs that have a PR, then
+    synthesizes actionable handoff buttons from the PR's review state.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        async with await get_session() as session:
+            async with session.begin():
+                stmt = (
+                    select(TaskRun)
+                    .where(
+                        TaskRun.status == "done",
+                        TaskRun.role.in_(["developer", "command:review-pr"]),
+                        TaskRun.pr_number.isnot(None),
+                        func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= cutoff,
+                    )
+                    .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
+                    .limit(2)
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+
+        for run in runs:
+            if not run.issue_number or run.pr_number is None:
+                continue
+            actions = await synthesize_pr_actions(run.issue_number)
+            if actions:
+                return {
+                    "source": "pr-review-state",
+                    "status": "awaiting_action",
+                    "issue": run.issue_number,
+                    "pr_number": run.pr_number,
+                    "summary": "Actions synthesized from PR review state",
+                    "next_actions": actions,
+                }
+    except Exception:
+        log.debug("synthesized_handoff.failed", exc_info=True)
+
+    return None

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -277,6 +277,47 @@ class GitHubAdapter(TaskAdapter):
             "--body",
             f"Linked PR: {pr_url}",
         )
+
+    async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
+        result = await self._gh(
+            "api",
+            f"repos/{self.repo}/pulls/{pr_number}/reviews",
+            "--paginate",
+        )
+        if not result.success:
+            log.warning("get_pr_reviews.failed", pr=pr_number, stderr=result.stderr[:200])
+            return []
+
+        try:
+            reviews = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            log.warning("get_pr_reviews.bad_json", pr=pr_number, stdout=result.stdout[:200], exc_info=True)
+            return []
+
+        if not isinstance(reviews, list):
+            log.warning("get_pr_reviews.unexpected_type", pr=pr_number, type=type(reviews).__name__)
+            return []
+
+        parsed: list[PRReview] = []
+        for r in reviews:
+            if not isinstance(r, dict):
+                continue
+            reviewer = r.get("user", {}).get("login", "")
+            state = r.get("state", "")
+            submitted_at = r.get("submitted_at", "")
+            if not reviewer or not state or not submitted_at:
+                log.warning("get_pr_reviews.malformed_entry", pr=pr_number, reviewer=reviewer, state=state)
+                continue
+            parsed.append(
+                PRReview(
+                    reviewer=reviewer,
+                    state=state,
+                    body=r.get("body", "") or "",
+                    submitted_at=submitted_at,
+                    is_bot=r.get("user", {}).get("type", "") == "Bot",
+                )
+            )
+        return parsed
 
     async def _clear_state_labels(self, task_id: str) -> None:
         """Remove all agent state labels from an issue."""

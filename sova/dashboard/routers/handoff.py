@@ -6,6 +6,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.dashboard.services import control_service, handoff_service
+from sova.dashboard.services.agent_recovery import (
+    get_synthesized_handoff,
+    invalidate_synthesis_cache,
+)
 
 router = APIRouter()
 
@@ -18,9 +22,15 @@ class ExecuteActionRequest(BaseModel):
 async def get_handoff():
     """Get the current handoff state."""
     handoff = handoff_service.get_handoff()
-    if handoff is None:
-        return {"has_handoff": False}
-    return {"has_handoff": True, "handoff": handoff}
+    if handoff is not None:
+        return {"has_handoff": True, "handoff": handoff}
+
+    # Fallback: synthesize from PR review state
+    synthesized = await get_synthesized_handoff()
+    if synthesized is not None:
+        return {"has_handoff": True, "handoff": synthesized}
+
+    return {"has_handoff": False}
 
 
 @router.post(
@@ -35,8 +45,15 @@ async def execute_handoff_action(req: ExecuteActionRequest):
 
     Finds the action by ID in next_actions, resolves execution params,
     archives the handoff, and starts the appropriate agent or command.
+    Supports both file-backed and synthesized (PR state) handoffs.
     """
+    # Try file-backed handoff first
     handoff = handoff_service.get_handoff()
+
+    if not handoff:
+        # Fall back to synthesized handoff
+        handoff = await get_synthesized_handoff()
+
     if not handoff:
         raise HTTPException(status_code=404, detail="No active handoff")
 
@@ -47,8 +64,14 @@ async def execute_handoff_action(req: ExecuteActionRequest):
 
     exec_params = handoff_service.build_action_command(action)
 
-    # Clear the current handoff before starting new work
-    handoff_service.clear_handoff()
+    # Clear file-backed handoff; for synthesized, invalidate cache
+    if handoff.get("source") != "pr-review-state":
+        handoff_service.clear_handoff()
+    else:
+        issue = handoff.get("issue", "")
+        pr = handoff.get("pr_number")
+        if issue and pr is not None:
+            invalidate_synthesis_cache(issue, pr)
 
     if exec_params["type"] == "agent":
         result = await control_service.start_agent(

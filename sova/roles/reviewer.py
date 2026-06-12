@@ -14,7 +14,7 @@ from decimal import Decimal
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.git.diff import parse_diff_lines
-from sova.git.operations import find_pr_for_issue, get_pr_diff, get_pr_files
+from sova.git.operations import find_pr_for_issue, get_pr_branch, get_pr_diff, get_pr_files
 from sova.ipc.handoff import AgentHandoff, DashboardHandoff, HandoffAction, write_handoff, write_handoff_file
 from sova.llm.client import invoke
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
@@ -342,7 +342,9 @@ class ReviewerRole(AgentRole):
             if pr_info:
                 ctx.pr_number = pr_info.number
                 ctx.pr_url = pr_info.url
-                log.info("reviewer.pr_discovered", pr=pr_info.number)
+                if pr_info.branch and not ctx.branch_name:
+                    ctx.branch_name = pr_info.branch
+                log.info("reviewer.pr_discovered", pr=pr_info.number, branch=ctx.branch_name)
             else:
                 return RoleResult(
                     success=False,
@@ -350,7 +352,17 @@ class ReviewerRole(AgentRole):
                     error="No PR found for this issue. Create a PR first.",
                 )
 
-        log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number)
+        if ctx.pr_number and not ctx.branch_name:
+            try:
+                ctx.branch_name = await get_pr_branch(
+                    ctx.pr_number,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
+            except Exception:
+                log.warning("reviewer.branch_discovery_failed", exc_info=True)
+
+        log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number, branch=ctx.branch_name)
 
         # Fetch PR diff and file list
         try:

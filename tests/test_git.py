@@ -390,6 +390,25 @@ class TestFindPRForIssue:
             assert result is not None
             assert result.number == 82
 
+    async def test_find_pr_populates_branch_from_head_ref(self) -> None:
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "Closes #73",
+                    "headRefName": "feat/issue-73",
+                }
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.branch == "feat/issue-73"
+
 
 class TestGetPRStatus:
     async def test_returns_pr_status(self) -> None:
@@ -779,6 +798,11 @@ class TestPRInfo:
         pr = PRInfo(number=42, url="https://github.com/user/repo/pull/42")
         assert pr.number == 42
         assert pr.url == "https://github.com/user/repo/pull/42"
+        assert pr.branch == ""
+
+    def test_pr_info_with_branch(self) -> None:
+        pr = PRInfo(number=42, url="https://github.com/user/repo/pull/42", branch="feat/issue-42")
+        assert pr.branch == "feat/issue-42"
 
 
 class TestPRStatus:

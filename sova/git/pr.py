@@ -45,6 +45,7 @@ class PRInfo:
 
     number: int
     url: str
+    branch: str = ""
 
 
 @dataclass
@@ -198,9 +199,32 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
         body = pr.get("body", "") or ""
         head = pr.get("headRefName", "") or ""
         if link_pattern.search(body) or branch_pattern in head:
-            return PRInfo(number=pr["number"], url=pr.get("url", ""))
+            return PRInfo(number=pr["number"], url=pr.get("url", ""), branch=head)
 
     return None
+
+
+async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> str:
+    """Get the head branch name of a PR. Returns empty string on failure."""
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName",
+        env=env,
+    )
+    if not result.success:
+        return ""
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return ""
+    return data.get("headRefName", "") or ""
 
 
 async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> PRStatus:

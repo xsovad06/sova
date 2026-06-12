@@ -44,6 +44,17 @@ class TaskFilters:
     state: str = "open"
 
 
+@dataclass
+class PRReview:
+    """A single review on a pull request."""
+
+    reviewer: str
+    state: str  # APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED
+    body: str
+    submitted_at: str  # ISO 8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ); lexicographic comparison assumed
+    is_bot: bool
+
+
 class TaskAdapter(ABC):
     """Abstract base for task source adapters.
 
@@ -109,3 +120,7 @@ class TaskAdapter(ABC):
     @abstractmethod
     async def link_pr(self, task_id: str, pr_url: str) -> None:
         """Associate a pull request with the task."""
+
+    @abstractmethod
+    async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
+        """Fetch all reviews on a pull request."""

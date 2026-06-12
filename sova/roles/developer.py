@@ -15,6 +15,7 @@ from sova.core.context import ExecutionContext
 from sova.core.steps import get_address_review_steps, get_developer_steps
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
+from sova.git.operations import get_pr_branch
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
@@ -84,7 +85,14 @@ class DeveloperRole(AgentRole):
         )
 
     async def _execute_address_review(self, ctx: ExecutionContext) -> RoleResult:
-        log.info("developer.address_review.start", issue=ctx.issue_number, pr=ctx.pr_number)
+        await self._discover_address_review_context(ctx)
+        log.info(
+            "developer.address_review.start",
+            issue=ctx.issue_number,
+            pr=ctx.pr_number,
+            branch=ctx.branch_name,
+            worktree=ctx.worktree_dir,
+        )
 
         steps = get_address_review_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)
@@ -104,3 +112,31 @@ class DeveloperRole(AgentRole):
             summary=f"Address review failed at step: {workflow_result.final_status}",
             error=workflow_result.error,
         )
+
+    async def _discover_address_review_context(self, ctx: ExecutionContext) -> None:
+        """Self-discover branch_name and worktree_dir when missing.
+
+        The auto-handoff chain (developer -> reviewer -> developer) may not
+        propagate branch_name, leaving the address-review pipeline unable to
+        find the feature branch. Look it up from the PR's headRefName and
+        check for an existing worktree.
+        """
+        if not ctx.branch_name and ctx.pr_number:
+            try:
+                branch = await get_pr_branch(
+                    ctx.pr_number,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
+                if branch:
+                    ctx.branch_name = branch
+                    log.info("developer.discovered_branch", branch=branch, pr=ctx.pr_number)
+            except Exception:
+                log.warning("developer.branch_discovery_failed", exc_info=True)
+
+        if ctx.worktree_dir is None:
+            issue_num = ctx.issue_number.lstrip("#").strip()
+            candidate = ctx.project_dir / ".claude" / "worktrees" / issue_num
+            if candidate.exists():
+                ctx.worktree_dir = candidate
+                log.info("developer.discovered_worktree", path=str(candidate))
