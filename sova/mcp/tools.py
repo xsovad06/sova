@@ -18,8 +18,47 @@ from sova.utils.logging import get_logger
 log = get_logger(component="mcp.tools")
 
 
-def register_tools(server: FastMCP) -> None:
-    """Register all SOVA tools on the given MCP server."""
+def _validate_project_dir(project_dir: str, allowed_root: Path | None) -> Path:
+    """Resolve and validate a project directory path.
+
+    Args:
+        project_dir: Raw path string from the caller.
+        allowed_root: If set, the resolved path must be under this root
+            (path traversal guard). None disables the check.
+
+    Returns:
+        The resolved Path.
+
+    Raises:
+        FileNotFoundError: If the path does not exist.
+        NotADirectoryError: If the path is not a directory.
+        ValueError: If the path escapes the allowed root.
+    """
+    resolved = Path(project_dir).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Project directory not found: {resolved}")
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"Not a directory: {resolved}")
+    if allowed_root is not None:
+        allowed = allowed_root.resolve()
+        if not (resolved == allowed or allowed in resolved.parents):
+            raise ValueError(f"Project directory {resolved} is outside the allowed root {allowed}")
+    return resolved
+
+
+def register_tools(server: FastMCP, *, project_dir: Path | None = None) -> None:
+    """Register all SOVA tools on the given MCP server.
+
+    Args:
+        server: The FastMCP server to register tools on.
+        project_dir: If provided, tools are bound to this project directory
+            and the ``project_dir`` parameter is removed from tool signatures.
+            Paths are also constrained to stay within this root.
+    """
+    # When bound to a startup project, use it as the allowed root for
+    # path-traversal protection and as the default directory.
+    bound_dir = project_dir
+    allowed_root = project_dir
 
     @server.tool(
         name="sova_develop",
@@ -30,10 +69,13 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def develop(
-        issue_number: Annotated[int, "GitHub issue number to develop"],
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        issue_number: Annotated[int, "GitHub issue number to develop (must be positive)"],
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/develop", str(issue_number), project_dir)
+        if issue_number <= 0:
+            raise ValueError(f"Invalid issue number: {issue_number}. Must be positive.")
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/develop", str(issue_number), effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_review",
@@ -44,9 +86,10 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def review(
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/review", "", project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/review", "", effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_test",
@@ -56,9 +99,10 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def test(
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/test", "", project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/test", "", effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_simplify",
@@ -68,9 +112,10 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def simplify(
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/simplify", "", project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/simplify", "", effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_address_review",
@@ -81,9 +126,10 @@ def register_tools(server: FastMCP) -> None:
     )
     async def address_review(
         pr_number: Annotated[int, "Pull request number to address"],
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/address-pr", str(pr_number), project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/address-pr", str(pr_number), effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_create_pr",
@@ -93,9 +139,10 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def create_pr(
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return await _run_command("/pr", "", project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return await _run_command("/pr", "", effective, allowed_root=allowed_root)
 
     @server.tool(
         name="sova_read_project",
@@ -106,15 +153,22 @@ def register_tools(server: FastMCP) -> None:
         ),
     )
     async def read_project(
-        project_dir: Annotated[str, "Path to the project directory"] = ".",
+        project_dir: Annotated[str, "Path to the project directory"] = "",
     ) -> str:
-        return _read_project_context(project_dir)
+        effective = project_dir or (str(bound_dir) if bound_dir else ".")
+        return _read_project_context(effective, allowed_root=allowed_root)
 
 
-async def _run_command(command: str, args: str, project_dir: str) -> str:
+async def _run_command(
+    command: str, args: str, project_dir: str, *, allowed_root: Path | None = None
+) -> str:
     """Run a SOVA command via the LLM client and return the result text."""
-    resolved = Path(project_dir).resolve()
-    config = load_config(resolved)
+    resolved = _validate_project_dir(project_dir, allowed_root)
+
+    try:
+        config = load_config(resolved)
+    except Exception as e:
+        raise ValueError(f"Failed to load SOVA config from {resolved}: {e}") from e
 
     log.info("mcp.run_command", command=command, args=args, project_dir=str(resolved))
 
@@ -137,9 +191,9 @@ async def _run_command(command: str, args: str, project_dir: str) -> str:
     return result.text
 
 
-def _read_project_context(project_dir: str) -> str:
+def _read_project_context(project_dir: str, *, allowed_root: Path | None = None) -> str:
     """Read project context files and return their contents."""
-    resolved = Path(project_dir).resolve()
+    resolved = _validate_project_dir(project_dir, allowed_root)
     sections: list[str] = []
 
     context_files = [
