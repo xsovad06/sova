@@ -517,6 +517,12 @@ class TestInvokeStreaming:
 
 
 class TestLLMProvider:
+    def test_abc_cannot_instantiate(self) -> None:
+        from sova.llm.provider import LLMProvider
+
+        with pytest.raises(TypeError):
+            LLMProvider()  # type: ignore[abstract]
+
     def test_create_provider_default(self) -> None:
         from sova.llm.provider import create_provider
         from sova.llm.providers.claude_code import ClaudeCodeProvider
@@ -664,11 +670,15 @@ class TestLLMConfig:
 
         cfg = LLMConfig()
         assert cfg.provider == "claude-code"
+        assert cfg.model == ""
+        assert cfg.fallback_model == ""
+        assert cfg.api_base == ""
 
     def test_project_config_has_llm(self) -> None:
-        from sova.config.models import ProjectConfig
+        from sova.config.models import LLMConfig, ProjectConfig
 
         cfg = ProjectConfig()
+        assert isinstance(cfg.llm, LLMConfig)
         assert cfg.llm.provider == "claude-code"
 
     def test_load_from_toml(self, tmp_path: Path) -> None:
@@ -678,6 +688,25 @@ class TestLLMConfig:
         toml_file.write_text('[llm]\nprovider = "claude-code"\n')
         cfg = load_config(tmp_path)
         assert cfg.llm.provider == "claude-code"
+
+    def test_litellm_config(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(
+            provider="litellm",
+            model="gpt-4o",
+            fallback_model="ollama/qwen3-coder:32b",
+            api_base="http://localhost:4000",
+        )
+        assert cfg.provider == "litellm"
+        assert cfg.model == "gpt-4o"
+        assert cfg.fallback_model == "ollama/qwen3-coder:32b"
+
+    def test_litellm_defaults_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="litellm")
+        assert cfg.model == "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -706,14 +735,10 @@ class TestProviderInitFromConfig:
 
     def test_init_provider_unknown_raises(self, tmp_path: Path) -> None:
         """Unknown provider type raises ValueError (not silently swallowed)."""
-        from sova.cli.app import _init_llm_provider
+        from sova.llm.provider import create_provider
 
-        with patch("sova.cli.app.load_config") as mock_load:
-            from sova.config.models import ProjectConfig
-
-            mock_load.return_value = ProjectConfig(llm={"provider": "nonexistent"})
-            with pytest.raises(ValueError, match="Unknown LLM provider"):
-                _init_llm_provider()
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            create_provider("nonexistent")
 
 
 class TestModuleExports:
@@ -743,32 +768,6 @@ class TestModuleExports:
         assert LLMResult is not None
         assert StreamEvent is not None
         assert LLMProvider is not None
-
-
-# ---------------------------------------------------------------------------
-# LLMProvider ABC
-# ---------------------------------------------------------------------------
-
-
-class TestLLMProvider:
-    def test_abc_cannot_instantiate(self) -> None:
-        from sova.llm.provider import LLMProvider
-
-        with pytest.raises(TypeError):
-            LLMProvider()  # type: ignore[abstract]
-
-    def test_create_provider_claude_code(self) -> None:
-        from sova.llm.provider import create_provider
-        from sova.llm.providers.claude_code import ClaudeCodeProvider
-
-        provider = create_provider("claude-code")
-        assert isinstance(provider, ClaudeCodeProvider)
-
-    def test_create_provider_unknown_raises(self) -> None:
-        from sova.llm.provider import create_provider
-
-        with pytest.raises(ValueError, match="Unknown LLM provider"):
-            create_provider("unknown_provider")
 
 
 # ---------------------------------------------------------------------------
@@ -1158,51 +1157,3 @@ class TestLiteLLMProvider:
 
         assert available is True
         assert "1.0.0" in detail
-
-
-# ---------------------------------------------------------------------------
-# LLMConfig
-# ---------------------------------------------------------------------------
-
-
-class TestLLMConfig:
-    def test_default_values(self) -> None:
-        from sova.config.models import LLMConfig
-
-        cfg = LLMConfig()
-        assert cfg.provider == "claude-code"
-        assert cfg.model == ""
-        assert cfg.fallback_model == ""
-        assert cfg.api_base == ""
-
-    def test_litellm_defaults_model(self) -> None:
-        from sova.config.models import LLMConfig
-
-        cfg = LLMConfig(provider="litellm")
-        assert cfg.model == "claude-sonnet-4-6"
-
-    def test_litellm_config(self) -> None:
-        from sova.config.models import LLMConfig
-
-        cfg = LLMConfig(
-            provider="litellm",
-            model="gpt-4o",
-            fallback_model="ollama/qwen3-coder:32b",
-            api_base="http://localhost:4000",
-        )
-        assert cfg.provider == "litellm"
-        assert cfg.model == "gpt-4o"
-        assert cfg.fallback_model == "ollama/qwen3-coder:32b"
-
-    def test_litellm_default_model(self) -> None:
-        from sova.config.models import LLMConfig
-
-        cfg = LLMConfig(provider="litellm")
-        assert cfg.model == "claude-sonnet-4-6"
-
-    def test_project_config_has_llm_section(self) -> None:
-        from sova.config.models import LLMConfig, ProjectConfig
-
-        cfg = ProjectConfig()
-        assert isinstance(cfg.llm, LLMConfig)
-        assert cfg.llm.provider == "claude-code"
