@@ -255,6 +255,26 @@ class TestDevelopValidation:
             await server.call_tool("sova_develop", {"issue_number": -5, "project_dir": str(tmp_path)})
 
 
+class TestAddressReviewValidation:
+    async def test_zero_pr_number(self, tmp_path: Path) -> None:
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        from sova.mcp.server import create_server
+
+        server = create_server()
+        with pytest.raises(ToolError, match="Must be positive"):
+            await server.call_tool("sova_address_review", {"pr_number": 0, "project_dir": str(tmp_path)})
+
+    async def test_negative_pr_number(self, tmp_path: Path) -> None:
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        from sova.mcp.server import create_server
+
+        server = create_server()
+        with pytest.raises(ToolError, match="Must be positive"):
+            await server.call_tool("sova_address_review", {"pr_number": -3, "project_dir": str(tmp_path)})
+
+
 # ---------------------------------------------------------------------------
 # Tool registration (via call_tool)
 # ---------------------------------------------------------------------------
@@ -343,5 +363,5 @@ class TestMCPCLI:
         from sova.cli.commands.mcp import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["--project", "/nonexistent/path/xyz"])
+        result = runner.invoke(app, ["serve", "--project", "/nonexistent/path/xyz"])
         assert result.exit_code != 0
