@@ -66,6 +66,7 @@ SOVA has four main components:
 - **SOVA config**: `sova.toml` per project (Pydantic Settings, env var overrides via `SOVA_` prefix)
 - **DB URL**: `SOVA_DATABASE_URL` env var for PostgreSQL; defaults to `.claude/sova.db` (SQLite)
 - **Budget limits**: `agent.max_budget` ($10 default) limits per-run cost; `agent.max_issue_budget` ($50 default) limits cumulative cost across all runs for an issue. Per-issue budget is checked in `start_agent()` before spawning; `--force` bypasses it. Per-run budget is checked at step boundaries in `WorkflowEngine`.
+- **Settings metadata registry**: every field in a config model (`models.py`) must also have a `SettingMeta` entry in `sova/dashboard/settings_meta.py` with key, label, description, group, and value_type. Without it, the field won't appear in the dashboard settings UI. When adding a new config group (e.g., `external_reviews`), also add it to `GROUPS` dict and `GROUP_ORDER` list.
 
 ## Naming Convention
 
