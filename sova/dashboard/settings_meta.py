@@ -236,9 +236,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "commit.format", "Commit format", "Commit message style: conventional (type(scope): msg) or freeform", "commit"
     ),
-    SettingMeta(
-        "commit.no_ai_coauthor", "No AI co-author", "Omit AI co-author lines from commits", "commit", "boolean"
-    ),
+    SettingMeta("commit.ai_coauthor", "AI co-author", "Include AI co-author lines in commits", "commit", "boolean"),
     SettingMeta(
         "commit.author", "Author override", "Override the Git author for commits (empty = use git config)", "commit"
     ),

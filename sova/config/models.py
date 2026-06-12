@@ -112,7 +112,7 @@ class CommitConfig(BaseSettings):
     """Commit and PR configuration."""
 
     format: Literal["conventional", "freeform"] = "conventional"
-    no_ai_coauthor: bool = False
+    ai_coauthor: bool = True
     author: str = ""
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
     pr_auto_link_issues: bool = True

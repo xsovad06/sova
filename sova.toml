@@ -28,4 +28,4 @@ format = "conventional"
 pr_title_format = "conventional"
 branch_naming = "conventional"
 pr_auto_link_issues = true
-no_ai_coauthor = true
+ai_coauthor = false
