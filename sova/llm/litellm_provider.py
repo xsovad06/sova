@@ -67,6 +67,7 @@ class LiteLLMProvider(LLMProvider):
         timeout: float | None = 600,
     ) -> LLMResult:
         target_model = model or self.model
+
         start = time.monotonic()
 
         try:
