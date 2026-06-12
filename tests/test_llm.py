@@ -590,6 +590,46 @@ class TestLLMProvider:
             assert available is False
             assert "not found" in detail
 
+    def test_normalize_model_name_base_default(self) -> None:
+        from sova.llm.provider import LLMProvider
+
+        class MinimalProvider(LLMProvider):
+            async def invoke(self, prompt, **kwargs):
+                return LLMResult(text="", model="")
+
+            async def invoke_streaming(self, prompt, **kwargs):
+                yield StreamEvent(type="result", text="")
+
+            async def check_available(self):
+                return True, ""
+
+        p = MinimalProvider()
+        assert p.normalize_model_name("opus") == "opus"
+        assert p.normalize_model_name("anything") == "anything"
+
+    async def test_check_available_version_fails(self) -> None:
+        from sova.llm.providers.claude_code import ClaudeCodeProvider
+        from sova.utils.shell import ShellResult
+
+        p = ClaudeCodeProvider()
+        with (
+            patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"),
+            patch(
+                "sova.llm.providers.claude_code.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=1, stdout="", stderr="error"),
+            ),
+        ):
+            available, detail = await p.check_available()
+            assert available is False
+            assert "failed" in detail
+
+    def test_parse_json_output_invalid_json(self) -> None:
+        from sova.llm.providers.claude_code import _parse_json_output
+
+        with pytest.raises(RuntimeError, match="Failed to parse Claude CLI JSON"):
+            _parse_json_output("not valid json {{{")
+
     async def test_invoke_command_delegates_to_invoke(self) -> None:
         from sova.llm.provider import LLMProvider
 
