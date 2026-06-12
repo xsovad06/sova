@@ -9,18 +9,13 @@
   <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50">
     <h3 class="text-sm font-medium text-gray-300">Tasks</h3>
     <div class="relative flex-1 max-w-xs ml-2">
-      <input type="text" id="task-search" placeholder="Filter..." autocomplete="off"
+      <label for="task-search" class="sr-only">Search issues</label>
+      <input type="text" id="task-search" placeholder="Search all issues..." autocomplete="off"
         class="w-full bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 pl-8 focus:border-accent focus:outline-none"
         oninput="filterTaskCards()">
       <svg class="absolute left-2.5 top-[7px] w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
     </div>
-    <div class="flex items-center gap-2 text-xs text-gray-500 ml-auto">
-      <span>Role:</span>
-      <select id="agent-role" class="bg-surface border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:border-accent focus:outline-none">
-        <option value="">Auto</option>
-      </select>
-      <span id="slots-info" class="text-gray-600 ml-2"></span>
-    </div>
+    <span id="slots-info" class="text-xs text-gray-600 ml-auto"></span>
   </div>
   <!-- Task list -->
   <div id="task-grid" class="divide-y divide-gray-700/30">
@@ -48,8 +43,25 @@
   </div>
 </div>
 
-<!-- Handoff Action Panel(s) (shown when no agents running but handoff awaits action) -->
-<div id="handoff-panel" class="hidden mb-6 space-y-3"></div>
+<!-- Handoff Action Panel (shown when no agents running but handoff awaits action) -->
+<div id="handoff-panel" class="hidden mb-6">
+  <div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
+    <div class="flex items-center gap-2 mb-3">
+      <span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span>
+      <span class="text-sm text-accent-yellow font-medium">Review Complete -- Action Required</span>
+    </div>
+    <div id="handoff-panel-details" class="mb-3">
+      <p id="handoff-panel-summary" class="text-sm text-gray-300"></p>
+      <p id="handoff-panel-meta" class="text-xs text-gray-500 mt-1"></p>
+    </div>
+    <div id="handoff-panel-actions" class="flex flex-wrap gap-2"></div>
+    <div class="mt-3 border-t border-gray-700/30 pt-3">
+      <button onclick="dismissHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss this handoff">
+        Dismiss
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- Running Agents Grid -->
 <div id="agents-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
@@ -121,7 +133,10 @@ var activeLogRunId = null;
 
 // -- Task browser --
 
+var _allQueue = [];
 var _queueData = [];
+var _agentHistory = [];
+var _suggested = [];
 var _runningIssues = new Set();
 
 function stateTag(state) {
@@ -145,6 +160,7 @@ var _actionLabels = {
   develop: { text: 'Develop', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
   review: { text: 'Review', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
   resume: { text: 'Resume', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
+  harden: { text: 'Harden', cls: 'bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30' },
   spec: { text: 'Spec', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
 };
 
@@ -156,7 +172,12 @@ async function loadTaskCards() {
     var res = await fetch(apiUrl('/queue'));
     if (!res.ok) return;
     var data = await res.json();
-    _queueData = data.queue || [];
+    _allQueue = data.queue || [];
+    _agentHistory = _allQueue.filter(function(t) { return t.last_run; });
+    _suggested = _allQueue.filter(function(t) {
+      return !t.last_run && (t.state === 'researched' || t.state === 'triaged');
+    });
+    _queueData = _agentHistory.concat(_suggested);
     renderTaskCards();
   } catch (e) {
     document.getElementById('task-grid').innerHTML =
@@ -188,116 +209,137 @@ function _extractPriority(labels) {
 
 var _priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
 
-function renderTaskCards() {
-  if (document.querySelector('[id^="card-menu-"]:not(.hidden)')) return;
-  var grid = document.getElementById('task-grid');
-  var q = (document.getElementById('task-search').value || '').trim().toLowerCase().replace(/^#/, '');
+function renderTaskCard(t) {
+  var isRunning = _runningIssues.has(String(t.issue));
+  var action = _actionLabels[t.action] || _actionLabels.develop;
+  var lastFailed = t.last_run && t.last_run.status === 'failed';
+  var p = _extractPriority(t.labels);
+  var pDots = { critical: 'bg-accent-red', high: 'bg-accent-yellow', medium: 'bg-gray-500', low: 'bg-gray-600' };
+  var pDot = p ? '<span class="w-1.5 h-1.5 rounded-full shrink-0 ' + (pDots[p] || 'bg-gray-600') + '"></span>' : '';
 
-  var items = _queueData.slice();
-  if (q) {
-    items = items.filter(function(t) {
-      return t.issue.toString().includes(q) || t.title.toLowerCase().includes(q);
-    });
+  var actionBtn;
+  if (isRunning) {
+    actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
+      '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>Running</span>';
+  } else {
+    actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', false, \'' + escapeHtml(t.action) + '\')" ' +
+      'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
+      escapeHtml(action.text) + '</button>';
   }
 
-  items.sort(function(a, b) {
-    var pa = _priorityOrder[_extractPriority(a.labels)];
-    var pb = _priorityOrder[_extractPriority(b.labels)];
-    if (pa === undefined) pa = 99;
-    if (pb === undefined) pb = 99;
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    return pa - pb;
-  });
+  var failedDot = lastFailed
+    ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-red shrink-0" data-tooltip="Last run failed"></span>'
+    : '';
 
-  if (!items.length) {
-    grid.innerHTML = q
-      ? '<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>'
-      : '<p class="text-gray-500 text-sm py-6 text-center">No actionable issues in queue</p>';
+  return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
+    pDot +
+    '<span class="text-accent text-xs font-medium shrink-0">' + (t.jira_key ? escapeHtml(t.jira_key) : '#' + escapeHtml(t.issue)) + '</span>' +
+    '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(t.title) + '</span>' +
+    failedDot +
+    stateTag(t.state) +
+    '<div class="w-20 flex justify-end">' + actionBtn + '</div>' +
+    '<button onclick="toggleCardMenu(event, \'' + escapeHtml(t.issue) + '\')" ' +
+      'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0" ' +
+      'data-tooltip="More options">' +
+      '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>' +
+    '</button>' +
+    '<div id="card-menu-' + t.issue + '" class="hidden absolute right-4 top-8 z-50 bg-surface border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]">' +
+      '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
+      '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
+      '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>' +
+      (t.state === 'in_review' && t.last_run && t.last_run.pr_number
+        ? '<hr class="border-gray-700/50 my-1">' +
+          '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'developer\', ' + t.last_run.pr_number + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + t.last_run.pr_number + ')</button>' +
+          '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeHtml(t.issue) + '\', pr: ' + t.last_run.pr_number + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + t.last_run.pr_number + '</button>'
+        : '') +
+    '</div>' +
+  '</div>';
+}
+
+function renderTaskCards() {
+  var grid = document.getElementById('task-grid');
+  var q = (document.getElementById('task-search').value || '').trim().toLowerCase().replace(/^#/, '');
+  var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+
+  if (q) {
+    var items = _allQueue.filter(function(t) {
+      return t.issue.toString().includes(q) || t.title.toLowerCase().includes(q) ||
+        (t.jira_key && t.jira_key.toLowerCase().includes(q));
+    });
+    if (!items.length) {
+      grid.innerHTML = '<p class="text-gray-500 text-sm py-6 text-center">No matching issues</p>';
+      return;
+    }
+    grid.innerHTML = items.map(renderTaskCard).join('');
     return;
   }
 
-  var _highPriStates = { in_progress: 1, in_review: 1 };
-  var _highPriLabels = { critical: 1, high: 1 };
-  var tier1 = items.filter(function(t) {
-    return _highPriStates[t.state] || _highPriLabels[_extractPriority(t.labels)];
-  });
-  if (tier1.length === 0 && items.length > 0) tier1 = items.slice(0, 3);
+  var html = '';
+  var hasHistory = _agentHistory.length > 0;
+  var hasSuggested = _suggested.length > 0;
 
-  var visible;
-  var hiddenCount;
-  if (q) {
-    visible = items;
-    hiddenCount = 0;
-  } else if (_expansionTier === 0) {
-    visible = tier1;
-    hiddenCount = items.length - tier1.length;
-  } else if (_expansionTier === 1) {
-    visible = items.slice(0, tier1.length + _TIER2_PAGE_SIZE);
-    hiddenCount = Math.max(0, items.length - visible.length);
-  } else {
-    visible = items;
-    hiddenCount = 0;
+  if (!hasHistory && !hasSuggested) {
+    grid.innerHTML = '<p class="text-gray-500 text-sm py-6 text-center">' +
+      'No tasks available. <a href="' + prefix + '/queue" class="text-accent hover:underline">Visit the Priority Queue</a> to triage new issues.</p>';
+    return;
   }
 
-  var html = visible.map(function(t) {
-    var isRunning = _runningIssues.has(String(t.issue));
-    var action = _actionLabels[t.action] || _actionLabels.develop;
-    var lastFailed = t.last_run && t.last_run.status === 'failed';
-    var p = _extractPriority(t.labels);
-    var pColors = { critical: 'text-accent-red', high: 'text-accent-yellow', medium: 'text-gray-500', low: 'text-gray-600' };
-    var pDots = { critical: 'bg-accent-red', high: 'bg-accent-yellow', medium: 'bg-gray-500', low: 'bg-gray-600' };
-    var pDot = p ? '<span class="w-1.5 h-1.5 rounded-full shrink-0 ' + (pDots[p] || 'bg-gray-600') + '"></span>' : '';
+  if (hasHistory) {
+    var _highPriStates = { in_progress: 1, in_review: 1 };
+    var _highPriLabels = { critical: 1, high: 1 };
+    var sorted = _agentHistory.slice().sort(function(a, b) {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      var pa = _priorityOrder[_extractPriority(a.labels)];
+      var pb = _priorityOrder[_extractPriority(b.labels)];
+      return (pa === undefined ? 99 : pa) - (pb === undefined ? 99 : pb);
+    });
 
-    var actionBtn;
-    if (isRunning) {
-      actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
-        '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>Running</span>';
+    var tier1 = sorted.filter(function(t) {
+      return _highPriStates[t.state] || _highPriLabels[_extractPriority(t.labels)];
+    });
+    if (tier1.length === 0 && sorted.length > 0) tier1 = sorted.slice(0, 3);
+
+    var visible;
+    var hiddenCount;
+    if (_expansionTier === 0) {
+      visible = tier1;
+      hiddenCount = sorted.length - tier1.length;
+    } else if (_expansionTier === 1) {
+      visible = sorted.slice(0, tier1.length + _TIER2_PAGE_SIZE);
+      hiddenCount = Math.max(0, sorted.length - visible.length);
     } else {
-      actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', false, \'' + escapeHtml(t.action) + '\')" ' +
-        'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
-        escapeHtml(action.text) + '</button>';
+      visible = sorted;
+      hiddenCount = 0;
     }
 
-    var failedDot = lastFailed
-      ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-red shrink-0" data-tooltip="Last run failed"></span>'
-      : '';
+    html += visible.map(renderTaskCard).join('');
 
-    return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
-      pDot +
-      '<span class="text-accent text-xs font-medium w-10 shrink-0">#' + escapeHtml(t.issue) + '</span>' +
-      '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(t.title) + '</span>' +
-      failedDot +
-      stateTag(t.state) +
-      '<div class="w-20 flex justify-end">' + actionBtn + '</div>' +
-      '<button onclick="toggleCardMenu(event, \'' + escapeHtml(t.issue) + '\')" ' +
-        'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0" ' +
-        'data-tooltip="More options">' +
-        '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>' +
-      '</button>' +
-      '<div id="card-menu-' + t.issue + '" class="hidden absolute right-4 top-8 z-50 bg-surface border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]">' +
-        '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
-        '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
-        '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>' +
-        (t.state === 'in_review' && t.last_run && t.last_run.pr_number
-          ? '<hr class="border-gray-700/50 my-1">' +
-            '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'developer\', ' + t.last_run.pr_number + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + t.last_run.pr_number + ')</button>' +
-            '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeHtml(t.issue) + '\', pr: ' + t.last_run.pr_number + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + t.last_run.pr_number + '</button>'
-          : '') +
-      '</div>' +
+    if (hiddenCount > 0) {
+      var label = hiddenCount <= _TIER2_PAGE_SIZE
+        ? 'Show ' + hiddenCount + ' more'
+        : 'Show ' + Math.min(hiddenCount, _TIER2_PAGE_SIZE) + ' more (' + hiddenCount + ' remaining)';
+      html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
+        '<button onclick="expandTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+        label + '</button></div>';
+    } else if (_expansionTier > 0) {
+      html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
+        '<button onclick="collapseTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+        'Show less</button></div>';
+    }
+  }
+
+  if (hasSuggested) {
+    var suggestedVisible = _suggested.slice(0, 5);
+    html += '<div class="flex items-center gap-2 px-4 py-2 border-t border-gray-700/30">' +
+      '<span class="text-xs text-gray-500">Suggested</span>' +
+      '<div class="flex-1 border-t border-gray-700/20"></div>' +
     '</div>';
-  }).join('');
-
-  if (hiddenCount > 0) {
-    var label = hiddenCount <= _TIER2_PAGE_SIZE
-      ? 'Show ' + hiddenCount + ' more'
-      : 'Show ' + Math.min(hiddenCount, _TIER2_PAGE_SIZE) + ' more (' + hiddenCount + ' remaining)';
-    html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
-      '<button onclick="expandTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
-      label + '</button></div>';
-  } else if (_expansionTier > 0 && !q) {
-    html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
-      '<button onclick="collapseTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
-      'Show less</button></div>';
+    html += '<div class="opacity-80">' + suggestedVisible.map(renderTaskCard).join('') + '</div>';
+    if (_suggested.length > 5) {
+      html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
+        '<a href="' + prefix + '/queue" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
+        (_suggested.length - 5) + ' more in Priority Queue</a></div>';
+    }
   }
 
   grid.innerHTML = html;
@@ -755,8 +797,7 @@ async function startAgent() {
   var issue = document.getElementById('agent-issue-number').value ||
     document.getElementById('agent-issue').value.replace(/^#/, '').split(/\s/)[0].trim();
   if (!issue) return;
-  var role = document.getElementById('agent-role').value || null;
-  await _doStartAgent(issue, role, false);
+  await _doStartAgent(issue, null, false);
 }
 
 async function stopAgent(runId) {
@@ -791,7 +832,7 @@ async function checkHandoffForAgents(agents) {
       var container = document.getElementById('handoff-inline-' + agent.run_id);
       if (!container) return;
 
-      if (targetIssue) {
+      if (targetIssue && targetIssue !== agent.issue) {
         container.innerHTML = '';
         return;
       }
@@ -800,7 +841,7 @@ async function checkHandoffForAgents(agents) {
         var btnStyle = action.style === 'approve' ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' :
                        action.style === 'danger' ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' :
                        'bg-accent/20 text-accent hover:bg-accent/30';
-        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\', \'' + escapeHtml(handoff.issue || '') + '\')" ' +
+        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs transition-colors ' + btnStyle + '" data-tooltip="' + escapeHtml(action.description || '') + '">' +
           escapeHtml(action.label) + '</button>';
       }).join(' ');
@@ -817,14 +858,12 @@ async function checkHandoffForAgents(agents) {
   } catch (e) { /* ignore */ }
 }
 
-async function executeHandoffAction(actionId, issue) {
+async function executeHandoffAction(actionId) {
   try {
-    var payload = { action_id: actionId };
-    if (issue) payload.issue = issue;
     var res = await fetch(apiUrl('/handoff/execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ action_id: actionId }),
     });
     if (!res.ok) {
       showToast(await getErrorDetail(res, 'Failed to execute action'), 'error');
@@ -844,50 +883,37 @@ async function checkStandaloneHandoff() {
     if (!res.ok) { hideHandoffPanel(); return; }
     var data = await res.json();
 
-    var handoffs = (data.handoffs || []).filter(function(h) { return h.status === 'awaiting_action'; });
-    if (handoffs.length === 0) {
+    if (!data.has_handoff || !data.handoff || data.handoff.status !== 'awaiting_action') {
       hideHandoffPanel();
       return;
     }
 
+    var handoff = data.handoff;
     var panel = document.getElementById('handoff-panel');
-    panel.innerHTML = handoffs.map(function(handoff) {
-      var metaParts = [];
-      if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
-      if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
-      if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
+    var summary = document.getElementById('handoff-panel-summary');
+    var meta = document.getElementById('handoff-panel-meta');
+    var actionsDiv = document.getElementById('handoff-panel-actions');
 
-      var actions = (handoff.next_actions || []).map(function(action) {
-        var btnStyle = action.style === 'approve'
-          ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
-          : action.style === 'danger'
-          ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
-          : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
-        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\', \'' + escapeHtml(handoff.issue || '') + '\')" ' +
-          'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
-          'title="' + escapeHtml(action.description || '') + '">' +
-          escapeHtml(action.label) + '</button>';
-      }).join(' ');
+    summary.textContent = handoff.summary || 'Review completed';
+    var metaParts = [];
+    if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
+    if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
+    if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
+    meta.textContent = metaParts.join('  |  ');
 
-      var issueLabel = handoff.issue ? ' #' + handoff.issue : '';
-      return '<div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">' +
-        '<div class="flex items-center gap-2 mb-3">' +
-          '<span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span>' +
-          '<span class="text-sm text-accent-yellow font-medium">Review Complete' + issueLabel + ' -- Action Required</span>' +
-        '</div>' +
-        '<div class="mb-3">' +
-          '<p class="text-sm text-gray-300">' + escapeHtml(handoff.summary || 'Review completed') + '</p>' +
-          '<p class="text-xs text-gray-500 mt-1">' + escapeHtml(metaParts.join('  |  ')) + '</p>' +
-        '</div>' +
-        '<div class="flex flex-wrap gap-2">' + actions + '</div>' +
-        '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
-          '<button onclick="dismissHandoff(\'' + escapeHtml(handoff.issue || '') + '\')" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss this handoff">' +
-            'Dismiss' +
-          '</button>' +
-        '</div>' +
-      '</div>';
-    }).join('');
+    var actions = (handoff.next_actions || []).map(function(action) {
+      var btnStyle = action.style === 'approve'
+        ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
+        : action.style === 'danger'
+        ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
+        : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
+      return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+        'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
+        'title="' + escapeHtml(action.description || '') + '">' +
+        escapeHtml(action.label) + '</button>';
+    }).join(' ');
 
+    actionsDiv.innerHTML = actions;
     panel.classList.remove('hidden');
   } catch (e) {
     hideHandoffPanel();
@@ -898,16 +924,14 @@ function hideHandoffPanel() {
   document.getElementById('handoff-panel').classList.add('hidden');
 }
 
-async function dismissHandoff(issue) {
+async function dismissHandoff() {
   try {
-    var body = issue ? { issue: issue } : {};
     await fetch(apiUrl('/handoff/clear'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
     });
   } catch (e) { /* ignore */ }
-  loadAgents();
+  hideHandoffPanel();
 }
 
 // -- Interrupted runs --
@@ -1069,33 +1093,7 @@ function renderHistoryTable(tasks, targetId, showError) {
     '</tbody></table></div>';
 }
 
-async function loadRoles() {
-  try {
-    var res = await fetch(apiUrl('/roles'));
-    if (!res.ok) return;
-    var data = await res.json();
-    var roles = data.roles || [];
-    var select = document.getElementById('agent-role');
-    var builtins = roles.filter(function(r) { return r.is_builtin; });
-    var customs = roles.filter(function(r) { return !r.is_builtin; });
-
-    var html = '<option value="">Auto (dispatcher)</option>';
-    builtins.forEach(function(r) {
-      html += '<option value="' + escapeHtml(r.name) + '">' + escapeHtml(r.name.charAt(0).toUpperCase() + r.name.slice(1)) + '</option>';
-    });
-    if (customs.length) {
-      html += '<optgroup label="Custom Roles">';
-      customs.forEach(function(r) {
-        html += '<option value="' + escapeHtml(r.name) + '">' + escapeHtml(r.name) + '</option>';
-      });
-      html += '</optgroup>';
-    }
-    select.innerHTML = html;
-  } catch (e) { /* ignore -- keeps the Auto option */ }
-}
-
 // -- Init --
-loadRoles();
 loadTaskCards();
 loadAgents();
 checkInterrupted();
