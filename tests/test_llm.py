@@ -1088,11 +1088,43 @@ class TestLiteLLMProvider:
         assert result_events[0].result.input_tokens == 50
         assert result_events[0].result.output_tokens == 20
 
+    async def test_invoke_streaming_mid_stream_failure(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        chunks = [
+            _MockStreamChunk(content="Hello ", model="gpt-4o"),
+            _MockStreamChunk(content="world", model="gpt-4o"),
+        ]
+
+        async def mock_stream():
+            for chunk in chunks:
+                yield chunk
+            raise RuntimeError("Connection lost mid-stream")
+
+        mock_litellm.acompletion.return_value = mock_stream()
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        events = []
+        with pytest.raises(RuntimeError, match="Connection lost mid-stream"):
+            async for event in provider.invoke_streaming("Hello"):
+                events.append(event)
+
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 2
+        assert content_events[0].text == "Hello "
+        assert content_events[1].text == "world"
+
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].result is not None
+        assert result_events[0].result.text == "Hello world"
+        assert result_events[0].result.stop_reason == "error"
+
     async def test_cost_tracking_fallback(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
 
         mock_litellm.acompletion.return_value = _MockResponse()
-        mock_litellm.completion_cost.side_effect = Exception("Unknown model")
+        mock_litellm.completion_cost.side_effect = ValueError("Unknown model")
 
         provider = LiteLLMProvider(model="custom-model")
         result = await provider.invoke("Hello")
@@ -1142,6 +1174,12 @@ class TestLLMConfig:
         assert cfg.model == ""
         assert cfg.fallback_model == ""
         assert cfg.api_base == ""
+
+    def test_litellm_defaults_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="litellm")
+        assert cfg.model == "claude-sonnet-4-6"
 
     def test_litellm_config(self) -> None:
         from sova.config.models import LLMConfig

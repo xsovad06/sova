@@ -25,7 +25,7 @@ try:
     import litellm  # type: ignore[import-untyped]
 
     _HAS_LITELLM = True
-except ImportError:
+except Exception:  # noqa: BLE001 -- catch broken installs (AttributeError, SyntaxError, etc.)
     _HAS_LITELLM = False
 
 
@@ -67,7 +67,6 @@ class LiteLLMProvider(LLMProvider):
         timeout: float | None = 600,
     ) -> LLMResult:
         target_model = model or self.model
-
         start = time.monotonic()
 
         try:
@@ -110,18 +109,37 @@ class LiteLLMProvider(LLMProvider):
         output_tokens = 0
         response_model = target_model
 
-        async for chunk in response:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta and delta.content:
-                text_parts.append(delta.content)
-                yield StreamEvent(type="content", text=delta.content)
+        try:
+            async for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta and delta.content:
+                    text_parts.append(delta.content)
+                    yield StreamEvent(type="content", text=delta.content)
 
-            if hasattr(chunk, "usage") and chunk.usage:
-                input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+                if hasattr(chunk, "usage") and chunk.usage:
+                    input_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    output_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
 
-            if hasattr(chunk, "model") and chunk.model:
-                response_model = chunk.model
+                if hasattr(chunk, "model") and chunk.model:
+                    response_model = chunk.model
+        except Exception:
+            log.error("llm.litellm.stream_error", model=target_model, exc_info=True)
+            accumulated_text = "".join(text_parts)
+            cost = _get_cost(response_model, input_tokens, output_tokens)
+            yield StreamEvent(
+                type="result",
+                text=accumulated_text,
+                result=LLMResult(
+                    text=accumulated_text,
+                    model=response_model,
+                    cost_usd=cost,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    duration_ms=_measure_ms(start),
+                    stop_reason="error",
+                ),
+            )
+            raise
 
         accumulated_text = "".join(text_parts)
         cost = _get_cost(response_model, input_tokens, output_tokens)
