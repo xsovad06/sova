@@ -104,7 +104,7 @@ class LiteLLMProvider(LLMProvider):
             **kwargs,
         )
 
-        accumulated_text = ""
+        text_parts: list[str] = []
         input_tokens = 0
         output_tokens = 0
         response_model = target_model
@@ -112,7 +112,7 @@ class LiteLLMProvider(LLMProvider):
         async for chunk in response:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta and delta.content:
-                accumulated_text += delta.content
+                text_parts.append(delta.content)
                 yield StreamEvent(type="content", text=delta.content)
 
             if hasattr(chunk, "usage") and chunk.usage:
@@ -122,6 +122,7 @@ class LiteLLMProvider(LLMProvider):
             if hasattr(chunk, "model") and chunk.model:
                 response_model = chunk.model
 
+        accumulated_text = "".join(text_parts)
         cost = _get_cost(response_model, input_tokens, output_tokens)
         result = LLMResult(
             text=accumulated_text,
@@ -202,4 +203,5 @@ def _get_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
         )
         return Decimal(str(cost))
     except Exception:
+        log.warning("llm.litellm.cost_fallback", model=model, exc_info=True)
         return Decimal("0")
