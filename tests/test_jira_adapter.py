@@ -20,6 +20,7 @@ def _adapter(
     base_url: str = "https://test.atlassian.net",
     project_key: str = "TEST",
     state_transitions: dict[str, str] | None = None,
+    status_mapping: dict[str, str] | None = None,
 ) -> JiraAdapter:
     return JiraAdapter(
         base_url=base_url,
@@ -27,6 +28,7 @@ def _adapter(
         api_token="test-token",
         project_key=project_key,
         state_transitions=state_transitions,
+        status_mapping=status_mapping,
     )
 
 
@@ -37,6 +39,10 @@ def _issue_json(
     status_category: str = "To Do",
     labels: list[str] | None = None,
     description: dict | None = None,
+    issue_type: str = "Task",
+    priority: str = "Major",
+    assignee_name: str | None = None,
+    created: str = "2024-01-15T10:00:00.000+0000",
 ) -> dict:
     return {
         "key": key,
@@ -48,8 +54,11 @@ def _issue_json(
                 "statusCategory": {"name": status_category},
             },
             "labels": labels or [],
-            "assignee": None,
+            "assignee": {"displayName": assignee_name} if assignee_name else None,
             "fixVersions": [],
+            "issuetype": {"name": issue_type},
+            "priority": {"name": priority},
+            "created": created,
         },
     }
 
@@ -153,6 +162,137 @@ class TestParseIssue:
         adapter = _adapter()
         task = adapter._parse_issue(_issue_json(key="TEST-7"))
         assert task.metadata["key"] == "TEST-7"
+
+    def test_issue_type_in_metadata(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(issue_type="Bug"))
+        assert task.metadata["issue_type"] == "Bug"
+
+    def test_jira_priority_in_metadata(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(priority="Critical"))
+        assert task.metadata["jira_priority"] == "Critical"
+
+    def test_created_at_in_metadata(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(created="2024-06-01T12:00:00.000+0000"))
+        assert task.metadata["created_at"] == "2024-06-01T12:00:00.000+0000"
+
+    def test_assignee_extracted(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(assignee_name="Jane Doe"))
+        assert task.assignees == ["Jane Doe"]
+
+    def test_missing_issuetype_defaults_empty(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        del raw["fields"]["issuetype"]
+        task = adapter._parse_issue(raw)
+        assert task.metadata["issue_type"] == ""
+
+    def test_missing_priority_defaults_empty(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        del raw["fields"]["priority"]
+        task = adapter._parse_issue(raw)
+        assert task.metadata["jira_priority"] == ""
+
+    def test_null_priority_defaults_empty(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["priority"] = None
+        task = adapter._parse_issue(raw)
+        assert task.metadata["jira_priority"] == ""
+
+
+class TestJiraStatusMapping:
+    def test_refinement_maps_to_needs_spec(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(status_name="Refinement"))
+        assert task.state == TaskState.NEEDS_SPEC
+
+    def test_new_maps_to_needs_spec(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(status_name="New"))
+        assert task.state == TaskState.NEEDS_SPEC
+
+    def test_in_progress_maps_to_in_progress(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="In Progress", status_category="In Progress"),
+        )
+        assert task.state == TaskState.IN_PROGRESS
+
+    def test_code_review_maps_to_in_review(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="Code Review", status_category="In Progress"),
+        )
+        assert task.state == TaskState.IN_REVIEW
+
+    def test_agent_label_overrides_jira_status(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="Refinement", labels=["agent:triaged"]),
+        )
+        assert task.state == TaskState.TRIAGED
+
+    def test_done_overrides_jira_status_mapping(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="Refinement", status_category="Done"),
+        )
+        assert task.state == TaskState.DONE
+
+    def test_unknown_status_falls_to_backlog(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(status_name="Custom Status"))
+        assert task.state == TaskState.BACKLOG
+
+
+class TestConfigurableStatusMapping:
+    def test_custom_mapping_overrides_default(self) -> None:
+        adapter = _adapter(status_mapping={"New": "triaged"})
+        task = adapter._parse_issue(_issue_json(status_name="New"))
+        assert task.state == TaskState.TRIAGED
+
+    def test_custom_mapping_extends_defaults(self) -> None:
+        adapter = _adapter(status_mapping={"ON_QA": "done"})
+        task = adapter._parse_issue(_issue_json(status_name="ON_QA"))
+        assert task.state == TaskState.DONE
+
+    def test_defaults_still_work_without_config(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(status_name="Refinement"))
+        assert task.state == TaskState.NEEDS_SPEC
+
+    def test_unmentioned_defaults_preserved(self) -> None:
+        adapter = _adapter(status_mapping={"ON_QA": "done"})
+        task = adapter._parse_issue(
+            _issue_json(status_name="In Progress", status_category="In Progress"),
+        )
+        assert task.state == TaskState.IN_PROGRESS
+
+    def test_done_category_overrides_custom_mapping(self) -> None:
+        adapter = _adapter(status_mapping={"Closed": "backlog"})
+        task = adapter._parse_issue(
+            _issue_json(status_name="Closed", status_category="Done"),
+        )
+        assert task.state == TaskState.DONE
+
+    def test_agent_label_wins_over_custom_mapping(self) -> None:
+        adapter = _adapter(status_mapping={"In Progress": "done"})
+        task = adapter._parse_issue(
+            _issue_json(status_name="In Progress", labels=["agent:researched"]),
+        )
+        assert task.state == TaskState.RESEARCHED
+
+    def test_unmapped_status_logs_warning(self, capsys: pytest.CaptureFixture[str]) -> None:
+        adapter = _adapter()
+        adapter._parse_issue(_issue_json(status_name="Weird Custom Status"))
+        captured = capsys.readouterr()
+        assert "Weird Custom Status" in captured.out
+        assert "status.unmapped" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +408,39 @@ class TestGetState:
         )
         state = await adapter.get_state("1")
         assert state == TaskState.BACKLOG
+
+    @respx.mock
+    async def test_state_from_jira_status_refinement(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1", status_name="Refinement")),
+        )
+        state = await adapter.get_state("1")
+        assert state == TaskState.NEEDS_SPEC
+
+    @respx.mock
+    async def test_state_from_jira_status_code_review(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(
+                200,
+                json=_issue_json(key="TEST-1", status_name="Code Review", status_category="In Progress"),
+            ),
+        )
+        state = await adapter.get_state("1")
+        assert state == TaskState.IN_REVIEW
+
+    @respx.mock
+    async def test_state_done_overrides_jira_status(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(
+                200,
+                json=_issue_json(key="TEST-1", status_name="Refinement", status_category="Done"),
+            ),
+        )
+        state = await adapter.get_state("1")
+        assert state == TaskState.DONE
 
 
 class TestLabels:

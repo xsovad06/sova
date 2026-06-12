@@ -1816,6 +1816,39 @@ class TestMilestoneBadge:
         assert _milestone_badge("  P4  : future work") == "P4"
 
 
+class TestQueueServiceEnrichment:
+    """Tests for NEEDS_SPEC inclusion and JIRA priority sorting in queue_service."""
+
+    def test_needs_spec_in_actionable_states(self) -> None:
+        from sova.adapters.base import TaskState
+        from sova.dashboard.services.queue_service import _ACTIONABLE_STATES
+
+        assert TaskState.NEEDS_SPEC in _ACTIONABLE_STATES
+
+    def test_needs_spec_has_state_priority(self) -> None:
+        from sova.adapters.base import TaskState
+        from sova.dashboard.services.queue_service import _STATE_PRIORITY
+
+        assert TaskState.NEEDS_SPEC in _STATE_PRIORITY
+        assert _STATE_PRIORITY[TaskState.NEEDS_SPEC] > _STATE_PRIORITY[TaskState.BACKLOG]
+
+    def test_needs_spec_recommended_action(self) -> None:
+        from sova.adapters.base import TaskState
+        from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
+
+        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "harden"
+
+    def test_jira_priority_order_critical_before_minor(self) -> None:
+        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
+
+        assert _JIRA_PRIORITY_ORDER["Critical"] < _JIRA_PRIORITY_ORDER["Minor"]
+
+    def test_jira_priority_order_major_before_trivial(self) -> None:
+        from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
+
+        assert _JIRA_PRIORITY_ORDER["Major"] < _JIRA_PRIORITY_ORDER["Trivial"]
+
+
 class TestBatchAPI:
     """Tests for the batch queue API endpoints."""
 
@@ -3504,7 +3537,7 @@ class TestTomlConfigGeneration:
         assert cfg.task_source == "github"
         assert cfg.agent_model == "opus"
         assert cfg.max_budget == "10.00"
-        assert cfg.no_ai_coauthor is False
+        assert cfg.ai_coauthor is True
         assert cfg.pr_auto_link is True
 
     def test_generate_sova_toml_includes_fields(self) -> None:
@@ -3518,12 +3551,12 @@ class TestTomlConfigGeneration:
         assert "[task_source]" in content
         assert "[agent]" in content
 
-    def test_generate_sova_toml_no_ai_coauthor(self) -> None:
+    def test_generate_sova_toml_ai_coauthor(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
 
-        cfg = TomlConfig(no_ai_coauthor=True)
+        cfg = TomlConfig(ai_coauthor=False)
         content = generate_sova_toml(cfg)
-        assert "no_ai_coauthor = true" in content
+        assert "ai_coauthor = false" in content
 
     def test_generate_sova_toml_custom_budget(self) -> None:
         from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
