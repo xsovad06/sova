@@ -6,7 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,9 +38,19 @@ class TaskSourceConfig(BaseSettings):
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
-    provider: str = "claude-code"
+    provider: Literal["claude-code", "litellm"] = "claude-code"
+    model: str = ""
+    fallback_model: str = ""
+    api_base: str = ""
 
     model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
+
+    @model_validator(mode="after")
+    def _default_model_for_litellm(self) -> LLMConfig:
+        """Ensure litellm provider always has an explicit model."""
+        if self.provider == "litellm" and not self.model:
+            self.model = "claude-sonnet-4-6"
+        return self
 
 
 class AgentConfig(BaseSettings):

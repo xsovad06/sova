@@ -6,6 +6,7 @@ The default provider (ClaudeCodeProvider) wraps the Claude Code CLI.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from decimal import Decimal
@@ -91,18 +92,29 @@ def create_provider(provider_type: str = "claude-code") -> LLMProvider:
     """Create an LLM provider instance by type name.
 
     Args:
-        provider_type: Provider identifier (e.g., "claude-code").
+        provider_type: Provider identifier (e.g., "claude-code", "litellm").
 
     Returns:
         An LLMProvider instance.
 
     Raises:
         ValueError: If the provider type is unknown.
+        ImportError: If litellm is not installed.
     """
     if provider_type == "claude-code":
         from sova.llm.providers.claude_code import ClaudeCodeProvider
 
         return ClaudeCodeProvider()
 
-    available = ["claude-code"]
+    if provider_type == "litellm":
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        return LiteLLMProvider()
+
+    available = ["claude-code", "litellm"]
     raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")
+
+
+def _measure_ms(start: float) -> int:
+    """Convert a time.monotonic() start to elapsed milliseconds."""
+    return int((time.monotonic() - start) * 1000)

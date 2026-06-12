@@ -44,6 +44,7 @@ Issues = "https://github.com/xsovad06/sova/issues"
 Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
+litellm = ["litellm>=1.40"]
 postgres = ["asyncpg>=0.30"]
 dev = [
     "pytest>=8.0",
