@@ -151,9 +151,11 @@ def _read_project_context(project_dir: str) -> str:
 
     for filename, label in context_files:
         path = resolved / filename
-        if path.exists():
+        try:
             content = path.read_text(encoding="utf-8", errors="replace")
-            sections.append(f"## {label}\n\n```\n{content}\n```")
+        except (FileNotFoundError, OSError):
+            continue
+        sections.append(f"## {label}\n\n```\n{content}\n```")
 
     if not sections:
         return f"No SOVA project context found in {resolved}"
