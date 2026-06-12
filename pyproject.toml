@@ -35,6 +35,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "markdown>=3.5",
     "tomlkit>=0.13",
+    "mcp>=1.0",
 ]
 
 [project.urls]
