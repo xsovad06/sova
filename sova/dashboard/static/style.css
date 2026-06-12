@@ -462,7 +462,65 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 }
 
 /* ============================================================
-   7. SETTINGS ACCORDION
+   7. TOGGLE SWITCH
+   ============================================================ */
+
+.sova-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sova-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.sova-toggle-track {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--ctp-surface1);
+  transition: background 200ms ease;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sova-toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ctp-overlay1);
+  transition: transform 200ms ease, background 200ms ease;
+}
+
+.sova-toggle input:checked + .sova-toggle-track {
+  background: rgb(var(--ctp-green-rgb) / 0.3);
+}
+
+.sova-toggle input:checked + .sova-toggle-track::after {
+  transform: translateX(16px);
+  background: var(--ctp-green);
+}
+
+.sova-toggle:hover .sova-toggle-track {
+  background: var(--ctp-surface2);
+}
+
+.sova-toggle:hover input:checked + .sova-toggle-track {
+  background: rgb(var(--ctp-green-rgb) / 0.4);
+}
+
+/* ============================================================
+   8. SETTINGS ACCORDION
    ============================================================ */
 
 .sova-settings-group .sova-card-header {
