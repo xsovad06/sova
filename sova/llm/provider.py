@@ -13,9 +13,6 @@ from decimal import Decimal
 from pathlib import Path
 
 from sova.llm.models import LLMResult, StreamEvent
-from sova.utils.logging import get_logger
-
-log = get_logger(component="llm.provider")
 
 
 class LLMProvider(ABC):
