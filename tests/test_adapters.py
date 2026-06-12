@@ -89,6 +89,7 @@ class TestTaskAdapterInterface:
             "edit_body",
             "get_state",
             "link_pr",
+            "get_pr_reviews",
         ]
 
         class IncompleteAdapter(TaskAdapter):
@@ -437,6 +438,106 @@ class TestGitHubAdapter:
 
         call_args = mock_run.call_args[0]
         assert "comment" in call_args
+
+    # -- get_pr_reviews --
+
+    async def test_get_pr_reviews_parses_reviews(self, mock_run: AsyncMock) -> None:
+        reviews_json = json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice", "type": "User"},
+                    "state": "APPROVED",
+                    "body": "LGTM",
+                    "submitted_at": "2026-01-01T10:00:00Z",
+                },
+                {
+                    "id": 2,
+                    "user": {"login": "coderabbit[bot]", "type": "Bot"},
+                    "state": "CHANGES_REQUESTED",
+                    "body": "Found issues",
+                    "submitted_at": "2026-01-01T11:00:00Z",
+                },
+            ]
+        )
+        mock_run.return_value = _shell_result(stdout=reviews_json)
+
+        from sova.adapters.base import PRReview
+
+        reviews = await self.adapter.get_pr_reviews(99)
+
+        assert len(reviews) == 2
+        assert reviews[0] == PRReview(
+            reviewer="alice",
+            state="APPROVED",
+            body="LGTM",
+            submitted_at="2026-01-01T10:00:00Z",
+            is_bot=False,
+        )
+        assert reviews[1].reviewer == "coderabbit[bot]"
+        assert reviews[1].is_bot is True
+        assert reviews[1].state == "CHANGES_REQUESTED"
+
+    async def test_get_pr_reviews_empty_on_failure(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stderr="API error", returncode=1)
+
+        reviews = await self.adapter.get_pr_reviews(99)
+        assert reviews == []
+
+    async def test_get_pr_reviews_empty_on_bad_json(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="not json")
+
+        reviews = await self.adapter.get_pr_reviews(99)
+        assert reviews == []
+
+    async def test_get_pr_reviews_calls_paginate(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="[]")
+
+        await self.adapter.get_pr_reviews(42)
+
+        call_args = mock_run.call_args[0]
+        assert "repos/user/repo/pulls/42/reviews" in " ".join(str(a) for a in call_args)
+        assert "--paginate" in call_args
+
+    async def test_get_pr_reviews_non_list_response(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout='{"error": "not a list"}')
+
+        reviews = await self.adapter.get_pr_reviews(99)
+        assert reviews == []
+
+    async def test_get_pr_reviews_skips_non_dict_items(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(
+            stdout=json.dumps(
+                [
+                    "not-a-dict",
+                    {
+                        "user": {"login": "alice", "type": "User"},
+                        "state": "APPROVED",
+                        "body": "ok",
+                        "submitted_at": "2026-01-01T10:00:00Z",
+                    },
+                ]
+            )
+        )
+
+        reviews = await self.adapter.get_pr_reviews(99)
+        assert len(reviews) == 1
+        assert reviews[0].reviewer == "alice"
+
+    async def test_get_pr_reviews_skips_malformed_entries(self, mock_run: AsyncMock) -> None:
+        ts = "2026-01-01T10:00:00Z"
+        mock_run.return_value = _shell_result(
+            stdout=json.dumps(
+                [
+                    {"user": {"login": "", "type": "User"}, "state": "APPROVED", "submitted_at": ts},
+                    {"user": {"login": "bob", "type": "User"}, "state": "", "submitted_at": ts},
+                    {"user": {"login": "carol", "type": "User"}, "state": "APPROVED", "submitted_at": ""},
+                ]
+            )
+        )
+
+        reviews = await self.adapter.get_pr_reviews(99)
+        assert reviews == []
 
 
 # ---------------------------------------------------------------------------

@@ -394,6 +394,13 @@ class TestTransitionState:
         assert b'"5"' in body
 
 
+class TestGetPrReviews:
+    async def test_returns_empty_list(self) -> None:
+        adapter = _adapter()
+        result = await adapter.get_pr_reviews(42)
+        assert result == []
+
+
 class TestStateLabelMappings:
     def test_all_mappable_states_have_labels(self) -> None:
         for state in (TaskState.TRIAGED, TaskState.RESEARCHED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW):

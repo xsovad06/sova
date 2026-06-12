@@ -3104,3 +3104,135 @@ class TestFetchUnresolvedThreadIds:
             ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
 
         assert ids == []
+
+    async def test_returns_empty_on_bad_json(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="not json")
+            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+
+        assert ids == []
+
+    async def test_skips_threads_without_comments(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _fetch_unresolved_thread_ids
+
+        graphql_response = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [
+                                    {
+                                        "id": "t1",
+                                        "isResolved": False,
+                                        "path": "a.py",
+                                        "line": 1,
+                                        "comments": {"nodes": []},
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=graphql_response)
+            ids = await _fetch_unresolved_thread_ids("user/repo", 42, authors={"x"}, github_user="x")
+
+        assert ids == []
+
+
+class TestDismissBotReviewsEdgeCases:
+    async def test_handles_bad_json(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="not json")
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 0
+
+    async def test_handles_non_list_response(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout='{"error": "something"}')
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 0
+
+    async def test_handles_dismiss_failure(self) -> None:
+        from sova.core.steps.resolve_external_reviews import _dismiss_bot_reviews
+
+        reviews_json = json.dumps(
+            [
+                {"id": 1001, "state": "CHANGES_REQUESTED", "user": {"login": "bot[bot]", "type": "Bot"}},
+            ]
+        )
+
+        with patch("sova.core.steps.resolve_external_reviews.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=reviews_json),
+                MagicMock(success=False, stderr="403 Forbidden"),
+            ]
+            count = await _dismiss_bot_reviews(42, repo="user/repo")
+
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# AddressReviewStep -- _load_coderabbit_findings
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCoderabbitFindings:
+    async def test_returns_findings_from_external_reviews(self) -> None:
+        from sova.core.steps.address_review import _load_coderabbit_findings
+
+        ctx = _make_ctx(pr_number=42)
+
+        mock_result = MagicMock()
+        mock_result.findings = [
+            MagicMock(file_path="foo.py", line=10, message="Fix this"),
+        ]
+        mock_result.thread_ids = ["t1"]
+
+        with patch(
+            "sova.adapters.external_reviews._fetch_coderabbit_threads",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            findings, thread_ids = await _load_coderabbit_findings(ctx)
+
+        assert len(findings) == 1
+        assert findings[0]["file"] == "foo.py"
+        assert findings[0]["source"] == "coderabbit"
+        assert thread_ids == ["t1"]
+
+    async def test_returns_empty_without_pr(self) -> None:
+        from sova.core.steps.address_review import _load_coderabbit_findings
+
+        ctx = _make_ctx()
+        ctx.pr_number = None
+        findings, thread_ids = await _load_coderabbit_findings(ctx)
+        assert findings == []
+        assert thread_ids == []
+
+    async def test_returns_empty_on_exception(self) -> None:
+        from sova.core.steps.address_review import _load_coderabbit_findings
+
+        ctx = _make_ctx(pr_number=42)
+
+        with patch(
+            "sova.adapters.external_reviews._fetch_coderabbit_threads",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Network error"),
+        ):
+            findings, thread_ids = await _load_coderabbit_findings(ctx)
+
+        assert findings == []
+        assert thread_ids == []

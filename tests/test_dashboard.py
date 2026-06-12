@@ -3347,3 +3347,891 @@ class TestRolesAPI:
         """GET /roles/{name} renders the role editor page."""
         resp = await client.get("/roles/developer")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Synthesize PR actions
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizePrActions:
+    @pytest.fixture(autouse=True)
+    def _synthesis_env(self, monkeypatch, tmp_path):
+        """Set up common mocks for synthesize_pr_actions tests."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+        from sova.git.pr import PRInfo
+
+        agent_recovery._synthesis_cache.clear()
+        agent_recovery._issue_pr_cache.clear()
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = type(
+            "Cfg",
+            (),
+            {
+                "github_repo": "user/repo",
+                "github_user": "testuser",
+                "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
+            },
+        )()
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr(
+            "sova.git.operations.find_pr_for_issue",
+            AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
+        )
+
+        self.mock_adapter = AsyncMock()
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: self.mock_adapter)
+
+    async def test_returns_address_review_on_changes_requested(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(
+                reviewer="alice",
+                state="CHANGES_REQUESTED",
+                body="Fix this",
+                submitted_at="2026-01-01T10:00:00Z",
+                is_bot=False,
+            ),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+
+        assert actions is not None
+        assert len(actions) == 1
+        assert actions[0]["id"] == "address_review"
+        assert actions[0]["mode"] == "agent"
+        assert actions[0]["args"]["issue"] == "42"
+        assert actions[0]["args"]["pr"] == 99
+        assert actions[0]["auto_execute"] is False
+
+    async def test_returns_integrate_on_all_approved(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(
+                reviewer="alice", state="APPROVED", body="LGTM", submitted_at="2026-01-01T10:00:00Z", is_bot=False
+            ),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+
+        assert actions is not None
+        assert len(actions) == 2
+        assert actions[0]["id"] == "integrate"
+        assert actions[1]["id"] == "approve"
+
+    async def test_returns_none_for_only_bot_reviews(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(
+                reviewer="coderabbit[bot]",
+                state="CHANGES_REQUESTED",
+                body="Issues",
+                submitted_at="2026-01-01T10:00:00Z",
+                is_bot=True,
+            ),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+        assert actions is None
+
+    async def test_changes_requested_takes_priority_over_approval(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(
+                reviewer="alice", state="APPROVED", body="LGTM", submitted_at="2026-01-01T10:00:00Z", is_bot=False
+            ),
+            PRReview(
+                reviewer="bob",
+                state="CHANGES_REQUESTED",
+                body="Fix this",
+                submitted_at="2026-01-01T11:00:00Z",
+                is_bot=False,
+            ),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+        assert actions is not None
+        assert len(actions) == 1
+        assert actions[0]["id"] == "address_review"
+
+    async def test_dismissed_reviews_excluded(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(reviewer="alice", state="DISMISSED", body="", submitted_at="2026-01-01T10:00:00Z", is_bot=False),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+        assert actions is None
+
+    async def test_returns_none_when_no_pr(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+
+        monkeypatch.setattr(
+            "sova.git.operations.find_pr_for_issue",
+            AsyncMock(return_value=None),
+        )
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+        assert actions is None
+
+    async def test_deduplicates_reviewer_keeps_latest(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+
+        self.mock_adapter.get_pr_reviews.return_value = [
+            PRReview(
+                reviewer="alice",
+                state="CHANGES_REQUESTED",
+                body="Fix",
+                submitted_at="2026-01-01T10:00:00Z",
+                is_bot=False,
+            ),
+            PRReview(
+                reviewer="alice", state="APPROVED", body="LGTM now", submitted_at="2026-01-01T12:00:00Z", is_bot=False
+            ),
+        ]
+
+        actions = await agent_recovery.synthesize_pr_actions("42")
+        assert actions is not None
+        assert len(actions) == 2
+        assert actions[0]["id"] == "integrate"
+
+
+# ---------------------------------------------------------------------------
+# Handoff fallback to synthesized PR actions
+# ---------------------------------------------------------------------------
+
+
+class TestHandoffFallback:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import handoff_service
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+    async def test_get_handoff_falls_back_to_synthesized(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        synthesized = {
+            "source": "pr-review-state",
+            "status": "awaiting_action",
+            "issue": "42",
+            "pr_number": 99,
+            "summary": "Actions synthesized from PR review state",
+            "next_actions": [
+                {
+                    "id": "address_review",
+                    "label": "Address Review",
+                    "mode": "agent",
+                    "args": {"issue": "42", "pr": 99, "role": "developer"},
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+
+        resp = await client.get("/api/handoff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert data["handoff"]["source"] == "pr-review-state"
+        assert len(data["handoff"]["next_actions"]) == 1
+
+    async def test_file_handoff_takes_precedence(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        import json
+        from unittest.mock import AsyncMock
+
+        control_dir = tmp_path / ".claude" / "agent-control"
+        control_dir.mkdir(parents=True)
+        (control_dir / "handoff.json").write_text(
+            json.dumps(
+                {
+                    "id": "file-handoff",
+                    "source": "reviewer",
+                    "status": "awaiting_action",
+                    "summary": "From file",
+                    "created_at": "2026-04-20T10:00:00Z",
+                    "next_actions": [{"id": "integrate", "label": "Integrate"}],
+                }
+            )
+        )
+
+        mock_synth = AsyncMock(return_value={"source": "pr-review-state", "next_actions": []})
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            mock_synth,
+        )
+
+        resp = await client.get("/api/handoff")
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert data["handoff"]["source"] == "reviewer"
+        # Synthesized should not have been called
+        mock_synth.assert_not_awaited()
+
+    async def test_no_handoff_and_no_synthesis(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+
+        resp = await client.get("/api/handoff")
+        data = resp.json()
+        assert data["has_handoff"] is False
+
+
+# ---------------------------------------------------------------------------
+# _summarize_ci_checks
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeCiChecks:
+    def test_returns_unknown_for_none(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+
+        assert _summarize_ci_checks(None) == "unknown"
+
+    def test_returns_none_for_empty(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+
+        assert _summarize_ci_checks([]) == "none"
+
+    def test_returns_passed_when_all_success(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="test", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.SUCCESS, details_url=""),
+            CICheck(name="lint", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.SUCCESS, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "passed"
+
+    def test_returns_failed_when_any_failure(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="test", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.SUCCESS, details_url=""),
+            CICheck(name="lint", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.FAILURE, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "failed"
+
+    def test_returns_pending_when_in_progress(self) -> None:
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="test", status=CheckStatus.IN_PROGRESS, conclusion=None, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "pending"
+
+
+# ---------------------------------------------------------------------------
+# _check_ttl_cache / _check_issue_cache
+# ---------------------------------------------------------------------------
+
+
+class TestTTLCache:
+    def test_cache_miss(self) -> None:
+        from sova.dashboard.services.agent_recovery import _check_ttl_cache
+
+        cache: dict = {}
+        hit, value = _check_ttl_cache(cache, "key")
+        assert not hit
+        assert value is None
+
+    def test_cache_hit(self) -> None:
+        import time
+
+        from sova.dashboard.services.agent_recovery import _check_ttl_cache
+
+        cache = {"key": (time.monotonic(), "result")}
+        hit, value = _check_ttl_cache(cache, "key")
+        assert hit
+        assert value == "result"
+
+    def test_cache_expired(self) -> None:
+        import time
+
+        from sova.dashboard.services.agent_recovery import _check_ttl_cache
+
+        cache = {"key": (time.monotonic() - 120, "stale")}
+        hit, value = _check_ttl_cache(cache, "key")
+        assert not hit
+
+    def test_issue_cache_miss(self) -> None:
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._issue_pr_cache.clear()
+        agent_recovery._synthesis_cache.clear()
+        resolved, pr, result = agent_recovery._check_issue_cache("99")
+        assert not resolved
+        assert pr is None
+        assert result is None
+
+    def test_issue_cache_sentinel_no_pr(self) -> None:
+        import time
+
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._issue_pr_cache["99"] = (time.monotonic(), agent_recovery._SENTINEL_NO_PR)
+        resolved, pr, result = agent_recovery._check_issue_cache("99")
+        assert resolved
+        assert pr is None
+        assert result is None
+        agent_recovery._issue_pr_cache.clear()
+
+    def test_issue_cache_pr_known_synthesis_cached(self) -> None:
+        import time
+
+        from sova.dashboard.services import agent_recovery
+
+        now = time.monotonic()
+        agent_recovery._issue_pr_cache["99"] = (now, 42)
+        agent_recovery._synthesis_cache[("99", 42)] = (now, [{"id": "test"}])
+        resolved, pr, result = agent_recovery._check_issue_cache("99")
+        assert resolved
+        assert pr == 42
+        assert result == [{"id": "test"}]
+        agent_recovery._issue_pr_cache.clear()
+        agent_recovery._synthesis_cache.clear()
+
+    def test_issue_cache_pr_known_synthesis_not_cached(self) -> None:
+        import time
+
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._issue_pr_cache["99"] = (time.monotonic(), 42)
+        agent_recovery._synthesis_cache.clear()
+        resolved, pr, result = agent_recovery._check_issue_cache("99")
+        assert not resolved
+        assert pr == 42
+        assert result is None
+        agent_recovery._issue_pr_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# _deduplicate_reviews edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicateReviews:
+    def test_fallback_string_comparison(self) -> None:
+        """When timestamp parsing fails, fall back to string comparison."""
+        from sova.dashboard.services.agent_recovery import _deduplicate_reviews
+
+        r1 = type("R", (), {"reviewer": "alice", "state": "APPROVED", "submitted_at": "bad-ts-1", "is_bot": False})()
+        attrs = {"reviewer": "alice", "state": "CHANGES_REQUESTED", "submitted_at": "bad-ts-2", "is_bot": False}
+        r2 = type("R", (), attrs)()
+
+        result = _deduplicate_reviews([r1, r2])
+        assert len(result) == 1
+        assert result["alice"].state == "CHANGES_REQUESTED"
+
+
+# ---------------------------------------------------------------------------
+# execute_handoff_action with synthesized handoff
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteHandoffAction:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import handoff_service
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+    async def test_execute_synthesized_handoff_action(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        synthesized = {
+            "source": "pr-review-state",
+            "status": "awaiting_action",
+            "issue": "42",
+            "pr_number": 99,
+            "summary": "Synthesized",
+            "next_actions": [
+                {
+                    "id": "address_review",
+                    "label": "Address Review",
+                    "description": "Address review findings",
+                    "style": "approve",
+                    "mode": "agent",
+                    "command": "",
+                    "args": {"issue": "42", "pr": 99, "role": "developer"},
+                    "auto_execute": False,
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.control_service.start_agent",
+            AsyncMock(return_value={"status": "started", "run_id": 1}),
+        )
+        mock_invalidate = MagicMock()
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.invalidate_synthesis_cache",
+            mock_invalidate,
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "address_review"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action"] == "Address Review"
+        mock_invalidate.assert_called_once_with("42", 99)
+
+    async def test_execute_action_not_found(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(
+                return_value={
+                    "source": "pr-review-state",
+                    "next_actions": [{"id": "integrate", "label": "Integrate"}],
+                }
+            ),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "nonexistent"})
+        assert resp.status_code == 404
+
+    async def test_execute_no_handoff(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "anything"})
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# invalidate_synthesis_cache
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateSynthesisCache:
+    def test_clears_both_caches(self) -> None:
+        import time
+
+        from sova.dashboard.services.agent_recovery import (
+            _issue_pr_cache,
+            _synthesis_cache,
+            invalidate_synthesis_cache,
+        )
+
+        now = time.monotonic()
+        _synthesis_cache[("42", 99)] = (now, [{"id": "test"}])
+        _issue_pr_cache["42"] = (now, 99)
+
+        invalidate_synthesis_cache("42", 99)
+
+        assert ("42", 99) not in _synthesis_cache
+        assert "42" not in _issue_pr_cache
+
+
+# ---------------------------------------------------------------------------
+# _fetch_and_interpret_reviews edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAndInterpretReviews:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._synthesis_cache.clear()
+        agent_recovery._issue_pr_cache.clear()
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = type(
+            "Cfg",
+            (),
+            {
+                "github_repo": "user/repo",
+                "github_user": "testuser",
+                "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
+            },
+        )()
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+
+    async def test_caches_none_on_adapter_exception(self, monkeypatch) -> None:
+        from sova.dashboard.services import agent_recovery
+
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        result = await agent_recovery._fetch_and_interpret_reviews("42", 99, ("42", 99))
+        assert result is None
+        assert ("42", 99) in agent_recovery._synthesis_cache
+
+    async def test_caches_none_on_empty_reviews(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = []
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
+
+        result = await agent_recovery._fetch_and_interpret_reviews("42", 99, ("42", 99))
+        assert result is None
+        assert ("42", 99) in agent_recovery._synthesis_cache
+
+
+# ---------------------------------------------------------------------------
+# synthesize_pr_actions cache and edge case paths
+# ---------------------------------------------------------------------------
+
+
+class TestSynthesizePrActionsCachePaths:
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, tmp_path):
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._synthesis_cache.clear()
+        agent_recovery._issue_pr_cache.clear()
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = type(
+            "Cfg",
+            (),
+            {
+                "github_repo": "user/repo",
+                "github_user": "testuser",
+                "task_source": type("TS", (), {"type": "github", "github_project_number": 0})(),
+            },
+        )()
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+
+    async def test_returns_none_when_no_repo_config(self, monkeypatch) -> None:
+        from sova.dashboard.services import agent_recovery
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: None)
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result is None
+
+    async def test_uses_cached_pr_number(self, monkeypatch) -> None:
+        import time
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._issue_pr_cache["42"] = (time.monotonic(), 99)
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = []
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
+
+        mock_find = AsyncMock()
+        monkeypatch.setattr("sova.git.operations.find_pr_for_issue", mock_find)
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result is None
+        mock_find.assert_not_awaited()
+
+    async def test_returns_cached_synthesis_result(self, monkeypatch) -> None:
+        import time
+
+        from sova.dashboard.services import agent_recovery
+
+        now = time.monotonic()
+        agent_recovery._issue_pr_cache["42"] = (now, 99)
+        agent_recovery._synthesis_cache[("42", 99)] = (now, [{"id": "cached_action"}])
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result == [{"id": "cached_action"}]
+
+    async def test_skips_synthesis_when_active_run(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+        from sova.git.pr import PRInfo
+
+        monkeypatch.setattr(
+            "sova.git.operations.find_pr_for_issue",
+            AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery._has_active_run",
+            AsyncMock(return_value=True),
+        )
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result is None
+
+    async def test_continues_when_active_run_check_fails(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services import agent_recovery
+        from sova.git.pr import PRInfo
+
+        monkeypatch.setattr(
+            "sova.git.operations.find_pr_for_issue",
+            AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery._has_active_run",
+            AsyncMock(side_effect=RuntimeError("db error")),
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = [
+            PRReview(reviewer="alice", state="APPROVED", body="ok", submitted_at="2026-01-01T10:00:00Z", is_bot=False),
+        ]
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result is not None
+        assert result[0]["id"] == "integrate"
+
+    async def test_synthesis_cache_hit_after_pr_lookup(self, monkeypatch) -> None:
+        import time
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+        from sova.git.pr import PRInfo
+
+        monkeypatch.setattr(
+            "sova.git.operations.find_pr_for_issue",
+            AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
+        )
+
+        now = time.monotonic()
+        agent_recovery._synthesis_cache[("42", 99)] = (now, [{"id": "cached"}])
+
+        result = await agent_recovery.synthesize_pr_actions("42")
+        assert result == [{"id": "cached"}]
+
+    async def test_strips_hash_from_issue_number(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+        from sova.git.pr import PRInfo
+
+        mock_find = AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99"))
+        monkeypatch.setattr("sova.git.operations.find_pr_for_issue", mock_find)
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = []
+        monkeypatch.setattr("sova.adapters.create_adapter", lambda _: mock_adapter)
+
+        await agent_recovery.synthesize_pr_actions("#42")
+        mock_find.assert_awaited_once_with("42", repo="user/repo", github_user="testuser")
+
+
+# ---------------------------------------------------------------------------
+# get_synthesized_handoff
+# ---------------------------------------------------------------------------
+
+
+class TestGetSynthesizedHandoff:
+    @staticmethod
+    def _mock_session_with_runs(runs, monkeypatch):
+        """Build a mock get_session that returns the given runs from the query."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = runs
+
+        @asynccontextmanager
+        async def fake_begin():
+            yield
+
+        @asynccontextmanager
+        async def fake_session():
+            session = AsyncMock()
+            session.execute.return_value = mock_result
+            session.begin = fake_begin
+            yield session
+
+        async def get_session():
+            return fake_session()
+
+        monkeypatch.setattr("sova.db.session.get_session", get_session)
+
+    async def test_returns_handoff_for_recent_done_run(self, monkeypatch) -> None:
+        from datetime import datetime, timezone
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._synthesis_cache.clear()
+        agent_recovery._issue_pr_cache.clear()
+
+        mock_run = type(
+            "Run",
+            (),
+            {
+                "issue_number": "42",
+                "pr_number": 99,
+                "ended_at": datetime.now(timezone.utc),
+                "started_at": datetime.now(timezone.utc),
+            },
+        )()
+
+        self._mock_session_with_runs([mock_run], monkeypatch)
+
+        mock_actions = [{"id": "integrate", "label": "Integrate PR"}]
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.synthesize_pr_actions",
+            AsyncMock(return_value=mock_actions),
+        )
+
+        result = await agent_recovery.get_synthesized_handoff()
+        assert result is not None
+        assert result["source"] == "pr-review-state"
+        assert result["issue"] == "42"
+        assert result["pr_number"] == 99
+
+    async def test_returns_none_when_no_runs(self, monkeypatch) -> None:
+        from sova.dashboard.services import agent_recovery
+
+        self._mock_session_with_runs([], monkeypatch)
+
+        result = await agent_recovery.get_synthesized_handoff()
+        assert result is None
+
+    async def test_returns_none_on_exception(self, monkeypatch) -> None:
+
+        from sova.dashboard.services import agent_recovery
+
+        monkeypatch.setattr("sova.db.session.get_session", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+
+        result = await agent_recovery.get_synthesized_handoff()
+        assert result is None
+
+    async def test_skips_runs_without_issue_number(self, monkeypatch) -> None:
+        from datetime import datetime, timezone
+
+        from sova.dashboard.services import agent_recovery
+
+        mock_run = type(
+            "Run",
+            (),
+            {
+                "issue_number": None,
+                "pr_number": 99,
+                "ended_at": datetime.now(timezone.utc),
+                "started_at": datetime.now(timezone.utc),
+            },
+        )()
+
+        self._mock_session_with_runs([mock_run], monkeypatch)
+
+        result = await agent_recovery.get_synthesized_handoff()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# execute_handoff_action branch coverage
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteHandoffActionBranches:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import handoff_service
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+    async def test_execute_claude_command_action(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        synthesized = {
+            "source": "pr-review-state",
+            "issue": "42",
+            "pr_number": 99,
+            "next_actions": [
+                {
+                    "id": "approve",
+                    "label": "Merge Only",
+                    "mode": "claude-command",
+                    "command": "/approve-merge 99",
+                    "args": {"issue": "42", "pr": 99},
+                },
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.control_service.start_command",
+            AsyncMock(return_value={"status": "started", "run_id": 2}),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.invalidate_synthesis_cache",
+            lambda *a: None,
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "approve"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action"] == "Merge Only"
+
+    async def test_execute_shell_action_rejected(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        synthesized = {
+            "source": "test",
+            "next_actions": [
+                {"id": "shell_action", "label": "Run Shell", "mode": "shell", "command": "echo hi", "args": {}},
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "shell_action"})
+        assert resp.status_code == 400
+        assert "Shell mode not yet supported" in resp.json()["detail"]
+
+    async def test_execute_unknown_mode_rejected(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        synthesized = {
+            "source": "test",
+            "next_actions": [
+                {"id": "weird", "label": "Weird", "mode": "unknown_mode", "command": "x", "args": {}},
+            ],
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=synthesized),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "weird"})
+        assert resp.status_code == 400
+        assert "Unknown execution type" in resp.json()["detail"]
