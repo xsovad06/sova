@@ -68,10 +68,15 @@ def _milestone_badge(milestone: str) -> str:
 _JIRA_PRIORITY_ORDER: dict[str, int] = {
     "Blocker": 0,
     "Critical": 0,
+    "Highest": 0,
     "Major": 1,
+    "High": 1,
     "Normal": 1,
+    "Medium": 1,
     "Minor": 2,
+    "Low": 2,
     "Trivial": 3,
+    "Lowest": 3,
 }
 
 

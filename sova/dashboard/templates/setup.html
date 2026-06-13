@@ -330,7 +330,7 @@ function prefillForm(data) {
   f('test_cmd', c['test_cmd'] || data.test_cmd);
   f('lint_cmd', c['lint_cmd'] || data.lint_cmd);
   f('format_cmd', c['format_cmd'] || data.format_cmd);
-  fc('ai_coauthor', c['commit.ai_coauthor'] !== 'False');
+  fc('ai_coauthor', c['commit.ai_coauthor'] != null ? c['commit.ai_coauthor'] !== 'False' : c['commit.no_ai_coauthor'] !== 'True');
   fc('pr_auto_link', c['pr.auto_link_issues'] !== 'False');
 }
 
