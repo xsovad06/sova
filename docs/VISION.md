@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-05-25
+> **Last updated**: 2026-06-14
 
 ## What This Becomes
 
@@ -15,7 +15,7 @@ It is not just a script collection. It is a **product** with a CLI, web dashboar
 A unified repository that ships:
 
 1. **Autonomous Agent** (the orchestrator) -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes. Role-based pipeline: Triage -> Researcher -> Developer -> Reviewer, with autonomous Developer-Reviewer chaining.
-2. **Standardized Skills/Commands** -- 25 general-purpose commands (develop, test, review, pr, ship, etc.) that work on any project without customization.
+2. **Standardized Skills/Commands** -- 27 general-purpose commands (develop, test, review, pr, ship, etc.) that work on any project without customization.
 3. **Project Integration Kit** -- generates project-specific instructions, guardrails, and configuration through a guided setup process.
 4. **Dashboard App** -- FastAPI web UI with 14 pages for monitoring, agent control, lifecycle tracking, and configuration.
 5. **Scheduler Daemon** -- watch loop with priority-based task scanning, parallel agent execution, and combined server mode.

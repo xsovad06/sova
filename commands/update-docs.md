@@ -37,14 +37,14 @@ Run the project's actual count verification commands and compare against documen
 TEST_COUNT=$(find tests -name 'test_*.py' -exec grep -c 'def test_\|async def test_' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s}')
 
 # Tests (JS/TS)
-# TEST_COUNT=$(find src -name '*.test.ts' -o -name '*.spec.ts' -exec grep -c 'it(\|test(' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s}')
+# TEST_COUNT=$(find src \( -name '*.test.ts' -o -name '*.spec.ts' \) -exec grep -c 'it(\|test(' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s+0}')
 ```
 
 Search documentation files for count references and compare:
 
 ```bash
-for f in README.md CLAUDE.md AGENTS.md docs/*.md .claude/rules/*.md; do
-  [ -f "$f" ] && grep -nE '[0-9]+ (tests|services|routers|templates|steps|commands|pages|modules|models)' "$f"
+for f in README.md CLAUDE.md AGENTS.md docs/VISION.md .claude/rules/architecture.md docs/*.md .claude/rules/*.md; do
+  [ -f "$f" ] && grep -niE '(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)[[:space:]]*:?[[:space:]]*[0-9][0-9,]*\+?|[0-9][0-9,]*\+?[[:space:]]*(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)' "$f"
 done
 ```
 
@@ -84,7 +84,7 @@ git diff --cached --stat
 
 Report what was updated:
 
-```
+```text
 ## Docs Updated
 
 ### Tracked (will be committed)

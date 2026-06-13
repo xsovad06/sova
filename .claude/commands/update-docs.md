@@ -62,7 +62,7 @@ Search for these counts in the documentation files and flag mismatches:
 ```bash
 # Files that commonly contain counts
 for f in README.md AGENTS.md docs/VISION.md .claude/rules/architecture.md; do
-  [ -f "$f" ] && echo "=== $f ===" && grep -nE '[0-9]+ (tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)' "$f"
+  [ -f "$f" ] && echo "=== $f ===" && grep -niE '(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)[[:space:]]*:?[[:space:]]*[0-9][0-9,]*\+?|[0-9][0-9,]*\+?[[:space:]]*(tests|services|routers|templates|steps|commands|pages|modules|models|subcommands)' "$f"
 done
 ```
 
@@ -110,7 +110,7 @@ git diff --cached --stat
 
 Report what was updated:
 
-```
+```text
 ## Docs Updated
 
 ### Tracked (will be committed)
