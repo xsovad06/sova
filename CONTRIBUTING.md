@@ -169,6 +169,10 @@ Use the [issue templates](https://github.com/xsovad06/sova/issues/new/choose) fo
 
 **Tests fail with import errors**: The package must be installed in editable mode: `pip install -e ".[dev]"`.
 
+## AI-Assisted Development
+
+If you use Claude Code, see [CLAUDE.md](CLAUDE.md) for SOVA-specific slash commands (`/develop`, `/test`, `/review`, `/pr`, etc.) and agent orchestration workflows. The commands work on any project SOVA is installed into.
+
 ## Questions?
 
 File an [issue](https://github.com/xsovad06/sova/issues).
