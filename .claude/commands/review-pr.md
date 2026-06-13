@@ -14,15 +14,21 @@ When reviewing agent-generated PRs, you're extra vigilant about ghost commits, h
 
 PR: $ARGUMENTS
 
-## 0. Identify the Repository
+## 0. Pre-Flight
 
-Detect the GitHub owner/repo from the current git remote:
+Verify auth and identify the repo:
 
 ```bash
+# Verify gh account matches github_user in sova.toml
+gh auth status
+
+# Detect repo
 gh repo view --json nameWithOwner --jq '.nameWithOwner'
 ```
 
-Store this as `REPO` and use it in all `gh api` calls below.
+If the active `gh` account does not match `github_user` in `sova.toml`, switch with `gh auth switch --user <target>` before proceeding. Mismatched accounts cause FORBIDDEN errors when posting reviews.
+
+Store the repo as `REPO` and use it in all `gh api` calls below.
 
 ## 1. Fetch PR State
 
