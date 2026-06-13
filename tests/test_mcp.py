@@ -326,6 +326,104 @@ class TestToolCallIntegration:
         assert len(content) > 0
         assert "Bound project" in content[0].text
 
+    async def test_call_review_tool(self, tmp_path: Path) -> None:
+        mock_result = LLMResult(text="Review done", model="sonnet", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+            patch("sova.mcp.tools.load_config") as mock_config,
+        ):
+            cfg = mock_config.return_value
+            cfg.agent.model = "sonnet"
+            cfg.agent.max_budget = 10
+            cfg.agent.step_timeout = 1800
+
+            from sova.mcp.server import create_server
+
+            server = create_server()
+            content, _ = await server.call_tool("sova_review", {"project_dir": str(tmp_path)})
+
+        assert "Review done" in content[0].text
+
+    async def test_call_test_tool(self, tmp_path: Path) -> None:
+        mock_result = LLMResult(text="Tests passed", model="sonnet", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+            patch("sova.mcp.tools.load_config") as mock_config,
+        ):
+            cfg = mock_config.return_value
+            cfg.agent.model = "sonnet"
+            cfg.agent.max_budget = 10
+            cfg.agent.step_timeout = 1800
+
+            from sova.mcp.server import create_server
+
+            server = create_server()
+            content, _ = await server.call_tool("sova_test", {"project_dir": str(tmp_path)})
+
+        assert "Tests passed" in content[0].text
+
+    async def test_call_simplify_tool(self, tmp_path: Path) -> None:
+        mock_result = LLMResult(text="Simplified", model="sonnet", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+            patch("sova.mcp.tools.load_config") as mock_config,
+        ):
+            cfg = mock_config.return_value
+            cfg.agent.model = "sonnet"
+            cfg.agent.max_budget = 10
+            cfg.agent.step_timeout = 1800
+
+            from sova.mcp.server import create_server
+
+            server = create_server()
+            content, _ = await server.call_tool("sova_simplify", {"project_dir": str(tmp_path)})
+
+        assert "Simplified" in content[0].text
+
+    async def test_call_address_review_tool(self, tmp_path: Path) -> None:
+        mock_result = LLMResult(text="Addressed", model="sonnet", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+            patch("sova.mcp.tools.load_config") as mock_config,
+        ):
+            cfg = mock_config.return_value
+            cfg.agent.model = "sonnet"
+            cfg.agent.max_budget = 10
+            cfg.agent.step_timeout = 1800
+
+            from sova.mcp.server import create_server
+
+            server = create_server()
+            content, _ = await server.call_tool(
+                "sova_address_review",
+                {"pr_number": 5, "project_dir": str(tmp_path)},
+            )
+
+        assert "Addressed" in content[0].text
+
+    async def test_call_create_pr_tool(self, tmp_path: Path) -> None:
+        mock_result = LLMResult(text="PR created", model="sonnet", cost_usd=Decimal("0.05"))
+
+        with (
+            patch("sova.mcp.tools.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+            patch("sova.mcp.tools.load_config") as mock_config,
+        ):
+            cfg = mock_config.return_value
+            cfg.agent.model = "sonnet"
+            cfg.agent.max_budget = 10
+            cfg.agent.step_timeout = 1800
+
+            from sova.mcp.server import create_server
+
+            server = create_server()
+            content, _ = await server.call_tool("sova_create_pr", {"project_dir": str(tmp_path)})
+
+        assert "PR created" in content[0].text
+
 
 # ---------------------------------------------------------------------------
 # CLI command
@@ -354,7 +452,7 @@ class TestMCPCLI:
         from sova.cli.commands.mcp import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--transport", "websocket"])
+        result = runner.invoke(app, ["--transport", "websocket"])
         assert result.exit_code != 0
 
     def test_nonexistent_project_dir(self) -> None:
@@ -363,5 +461,61 @@ class TestMCPCLI:
         from sova.cli.commands.mcp import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["serve", "--project", "/nonexistent/path/xyz"])
+        result = runner.invoke(app, ["--project", "/nonexistent/path/xyz"])
         assert result.exit_code != 0
+
+    def test_serve_stdio_runs_server(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.mcp import app
+
+        mock_server = MagicMock()
+        runner = CliRunner()
+
+        with (
+            patch("sova.mcp.server.create_server", return_value=mock_server),
+            patch("asyncio.run") as mock_run,
+        ):
+            result = runner.invoke(app, ["--transport", "stdio", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+
+    def test_serve_sse_runs_server(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.mcp import app
+
+        mock_server = MagicMock()
+        runner = CliRunner()
+
+        with (
+            patch("sova.mcp.server.create_server", return_value=mock_server),
+            patch("asyncio.run") as mock_run,
+        ):
+            result = runner.invoke(app, ["--transport", "sse", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+
+    def test_serve_keyboard_interrupt(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.mcp import app
+
+        mock_server = MagicMock()
+        runner = CliRunner()
+
+        with (
+            patch("sova.mcp.server.create_server", return_value=mock_server),
+            patch("asyncio.run", side_effect=KeyboardInterrupt),
+        ):
+            result = runner.invoke(app, ["--project", str(tmp_path)])
+
+        assert result.exit_code == 0
