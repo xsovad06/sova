@@ -172,9 +172,14 @@ class MonitorCIStep(BaseStep):
 
         env = await resolve_gh_env(ctx.config.github_user)
         result = await run(
-            "gh", "pr", "view", str(ctx.pr_number),
-            "--repo", ctx.repo,
-            "--json", "headRefOid",
+            "gh",
+            "pr",
+            "view",
+            str(ctx.pr_number),
+            "--repo",
+            ctx.repo,
+            "--json",
+            "headRefOid",
             env=env,
         )
         if not result.success:

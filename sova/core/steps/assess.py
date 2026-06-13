@@ -40,7 +40,9 @@ class AssessStep(BaseStep):
 
         if not ctx.pr_number and not ctx.force:
             existing_pr = await find_pr_for_issue(
-                ctx.issue_number, repo=ctx.repo, github_user=ctx.config.github_user,
+                ctx.issue_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
             )
             if existing_pr:
                 log.warning(

@@ -61,7 +61,11 @@ async def create_worktree(
         head = await run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_path)
         if head.success and head.stdout.strip() == branch:
             ahead = await run(
-                "git", "rev-list", "--count", f"origin/{branch}..HEAD", cwd=worktree_path,
+                "git",
+                "rev-list",
+                "--count",
+                f"origin/{branch}..HEAD",
+                cwd=worktree_path,
             )
             if ahead.success and ahead.stdout.strip() not in ("", "0"):
                 log.warning(
