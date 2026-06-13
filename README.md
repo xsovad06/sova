@@ -5,22 +5,32 @@
 </p>
 
 [![CI](https://github.com/xsovad06/sova/actions/workflows/ci.yml/badge.svg)](https://github.com/xsovad06/sova/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://python.org)
 
 ## What is SOVA?
 
 SOVA is a standalone application that turns GitHub Issues into merged pull requests -- autonomously. Install it into any software project and it will triage issues, research the codebase, develop solutions using TDD, self-review, create PRs, monitor CI, and address review feedback. You stay in control through a web dashboard and a human-in-the-loop handoff system, while SOVA handles the repetitive engineering work.
 
+## Why SOVA?
+
+- **End-to-end automation** -- from issue triage to merged PR, SOVA handles the full development cycle. You approve, it executes.
+- **Quality by design** -- gate checks between every pipeline step catch problems early. Agents refuse to work on issues that haven't been properly triaged and researched.
+- **Learns from mistakes** -- a 4-tier knowledge system captures review feedback, common patterns, and gotchas. Each run is better than the last.
+- **You stay in control** -- agents are ephemeral (spawn, work, handoff, exit). The dashboard shows what they did, what they need, and lets you decide when to merge. Nothing ships without your approval.
+- **Works on any project** -- install once, configure with a TOML file, and SOVA adapts to your stack via persona auto-detection (Django, FastAPI, Odoo, and more).
+
 ## Key Features
 
-- **Role-Based Agents** -- specialized triage, researcher, developer, and reviewer roles with automatic dispatch
-- **Gate-Checked Pipeline** -- every step validates its output before the next begins
-- **Web Dashboard** -- 12-page UI for monitoring runs, costs, agent control, and memory
+- **Role-Based Agents** -- specialized triage, researcher, developer, and reviewer roles with automatic dispatch and autonomous Developer-Reviewer chaining
+- **Gate-Checked Pipeline** -- every step validates its output before the next begins; Developer pipeline (15 steps), Address-Review pipeline (9 steps)
+- **Web Dashboard** -- 14-page UI for monitoring runs, costs, agent control, lifecycle tracking, and configuration
 - **24/7 Server Mode** -- scheduler with priority-based watch loop and parallel execution
-- **Handoff System** -- agents pass state to each other; dashboard renders action buttons for human decisions
-- **25 Standardized Commands** -- develop, test, review, PR, ship, debug, and more -- works on any project
+- **Handoff System** -- per-issue handoff files eliminate race conditions in parallel agent runs; dashboard renders action buttons for human decisions
+- **27 Standardized Commands** -- develop, test, review, PR, ship, debug, and more -- works on any project
 - **4-Tier Knowledge System** -- layered memory with cross-project learning ([details](knowledge/KNOWLEDGE.md))
 - **Persona Auto-Detection** -- detects your tech stack and loads relevant guidance (see [`personas/`](personas/))
-- **Pluggable Task Sources** -- GitHub Issues and Jira Cloud today, Linear planned
+- **Pluggable Task Sources** -- GitHub Issues and Jira Cloud supported, Linear planned
 
 ## Architecture Overview
 
@@ -107,7 +117,21 @@ The web dashboard is SOVA's primary interface for monitoring and controlling age
 sova dashboard --project /path/to/project    # http://localhost:8111
 ```
 
-Pages include: Home, Dashboard (overview), Agents (multi-agent control), Work (issue-centric run history), Run Detail (individual run drill-down), Costs, Queue (batch operations), Logs, Settings, Memory, Setup, and Style Guide.
+| Page | Purpose |
+|------|---------|
+| **Home** | Project list (command center) for multi-project installations |
+| **Dashboard** | Overview with agent status strip, pipeline progress, recent activity |
+| **Agents** | Multi-agent control panel: start/stop, view handoff actions, task browser |
+| **Run Detail** | Per-run step pipeline, logs, and cost breakdown |
+| **Lifecycle** | Issue lifecycle rail (development through post-merge) |
+| **Costs** | Per-task and per-model cost tracking and aggregation |
+| **Queue** | Batch triage/harden operations with progress tracking |
+| **Logs** | Real-time agent output streaming |
+| **Memory** | Browse and search the knowledge base (memories, patterns, extractions) |
+| **Roles** | View and edit custom workflow roles (DAG-based) |
+| **Settings** | Runtime configuration management |
+| **Setup** | Project onboarding wizard with directory browser |
+| **Style Guide** | Design system reference with live component examples |
 
 ## Configuration
 
@@ -121,21 +145,36 @@ github_user = "owner"
 type = "github"
 ```
 
-All other settings have sensible defaults (e.g., `base_branch` defaults to `main`). For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py).
+Key optional sections:
 
-Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
+```toml
+[agent]
+model = "opus"              # LLM model for agent steps
+max_budget = 10.0           # Max USD per run ($10 default)
+
+[ci]
+max_fix_attempts = 2        # Auto-fix CI failures (0 to disable)
+max_wait = 900              # Seconds to wait for CI checks
+
+[pipeline]
+auto_handoff = true         # Developer auto-hands off to Reviewer
+auto_address_review = true  # Reviewer auto-triggers address-review
+```
+
+For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
 ## CLI Reference
 
 | Category | Commands |
 |----------|----------|
-| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>` (enrich issue with implementation details), `sova watch`, `sova parallel` |
+| **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|status` |
-| **Setup** | `sova install <path>`, `sova setup <path>`, `sova init-db` |
+| **Setup** | `sova install <path>`, `sova setup <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |
-| **Knowledge** | `sova memory search <query>`, `sova memory prune` |
-| **Commands** | `sova commands list\|diff\|update` |
+| **Knowledge** | `sova memory search\|prune\|dump\|export\|import` |
+| **Commands** | `sova commands list\|diff\|update\|sync` |
+| **MCP** | `sova mcp serve` |
 | **Maintenance** | `sova cleanup` |
 
 Run `sova --help` for the full list.
@@ -149,7 +188,7 @@ SOVA uses a **role-based architecture** with four specialized agent types:
 3. **Developer** -- implements the solution using TDD, creates a PR, monitors CI
 4. **Reviewer** -- reviews the PR, posts findings, triggers a fix cycle if needed
 
-Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, and exits. The orchestrator (scheduler or dashboard) reads the handoff and spawns the next agent in the chain. This continues autonomously until a human decision is needed, at which point SOVA sends a notification and waits.
+Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, and exits. The orchestrator (scheduler or dashboard) reads the handoff and spawns the next agent in the chain. Developer and Reviewer chain autonomously -- when the Developer finishes, it hands off to the Reviewer, which hands back to the Developer if findings exist. This loop continues until the code is clean, then SOVA notifies you and waits for your merge decision.
 
 ## Task Sources
 
@@ -161,7 +200,7 @@ Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, 
 
 ## Contributing
 
-Contributions are welcome. Development commands:
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR guidelines.
 
 ```bash
 make check    # Lint + test (CI-equivalent)
@@ -169,6 +208,13 @@ make lint     # ShellCheck + Ruff
 make test     # All tests (bash + python)
 make format   # Auto-format Python
 ```
+
+## Getting Help
+
+- Run `sova doctor` to check your environment setup
+- Run `sova --help` or `sova <command> --help` for CLI usage
+- File an [issue](https://github.com/xsovad06/sova/issues) for bugs or questions
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
 
 ## License
 
