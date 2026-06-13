@@ -43,7 +43,7 @@ sova/
     config/                        # Pydantic Settings + TOML config + project registry + request context
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
-  commands/                        # 25 standardized commands (markdown with category frontmatter)
+  commands/                        # 27 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   personas/                        # Tech-stack-specific guidance (markdown)
@@ -51,7 +51,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (1300+ tests)
+  tests/                           # pytest suite (1380+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     design-system.md               # Dashboard design system reference

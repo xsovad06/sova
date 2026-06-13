@@ -17,29 +17,30 @@ A unified repository that ships:
 1. **Autonomous Agent** (the orchestrator) -- picks tasks, develops via TDD, self-reviews, creates PRs, monitors CI, addresses review feedback, learns from mistakes. Role-based pipeline: Triage -> Researcher -> Developer -> Reviewer, with autonomous Developer-Reviewer chaining.
 2. **Standardized Skills/Commands** -- 25 general-purpose commands (develop, test, review, pr, ship, etc.) that work on any project without customization.
 3. **Project Integration Kit** -- generates project-specific instructions, guardrails, and configuration through a guided setup process.
-4. **Dashboard App** -- FastAPI web UI with 13 pages for monitoring, agent control, lifecycle tracking, and configuration.
+4. **Dashboard App** -- FastAPI web UI with 14 pages for monitoring, agent control, lifecycle tracking, and configuration.
 5. **Scheduler Daemon** -- watch loop with priority-based task scanning, parallel agent execution, and combined server mode.
 
 ## Architecture
 
 ```
 sova/
-  sova/                            # Python package (14 modules)
-    cli/                           # Typer CLI (18 subcommands)
-    core/                          # Workflow engine, 16 step implementations, state machine
+  sova/                            # Python package (15 modules)
+    cli/                           # Typer CLI (22 subcommands)
+    core/                          # Workflow engine, 21 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer)
     adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
-    dashboard/                     # FastAPI web UI (14 routers, 20 services, 21 templates)
+    dashboard/                     # FastAPI web UI (15 routers, 21 services, 22 templates)
     scheduler/                     # Watch loop, parallel executor, server daemon
     llm/                           # Claude CLI async wrapper, cost tracking
+    mcp/                           # MCP server for tool integration
     git/                           # Branch, PR, rebase (with LLM conflict resolution), worktree
     ipc/                           # Agent process control, handoff protocol, notifications
     knowledge/                     # Memory CRUD, tier loading, persona detection, extraction
     commands/                      # Command distribution (catalog, templates, manifest)
     config/                        # Pydantic Settings v2 + TOML config + project registry
-    db/                            # SQLAlchemy 2.0 async ORM (9 models), Alembic migrations
+    db/                            # SQLAlchemy 2.0 async ORM (10 models), Alembic migrations
     utils/                         # Logging, shell, formatting
-  commands/                        # 25 standardized commands (markdown with frontmatter)
+  commands/                        # 27 standardized commands (markdown with frontmatter)
   invariants/                      # Pluggable pre-push constraint checks (bash)
   personas/                        # Framework-specific guidance (Django, FastAPI, Odoo)
   knowledge/
@@ -52,7 +53,7 @@ sova/
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name
-  tests/                           # pytest suite (920+ test functions)
+  tests/                           # pytest suite (1,380+ test functions)
   deploy/                          # systemd + launchd service files
 ```
 
@@ -129,8 +130,8 @@ The wizard (CLI or UI) walks the user through these decisions:
 ### Developer Pipeline (15 steps)
 Sync -> Assess -> CreateWorktree -> Develop -> Simplify -> SelfReview -> Commit -> Validate -> Push -> CreatePR -> WaitForExternalReviews -> AddressExternalFindings -> MonitorCI -> ExtractMemory -> HandoffToReviewer
 
-### Address-Review Pipeline (7 steps)
-Rebase -> AddressReview -> Commit -> Validate -> Push -> ExtractMemory -> HandoffToUser
+### Address-Review Pipeline (9 steps)
+Rebase -> AddressReview -> Commit -> Validate -> Push -> MonitorCI -> ResolveExternalReviews -> ExtractMemory -> HandoffToUser
 
 ### Role Chaining
 Developer -> Reviewer -> Developer runs autonomously via `HandoffAction.auto_execute`. The Developer writes a handoff to the Reviewer (auto-spawn), the Reviewer writes back to the Developer if findings exist (auto-spawn) or to the user if clean (manual "Integrate PR" button). Issues stay `IN_REVIEW` until the human merges.
@@ -139,7 +140,7 @@ Developer -> Reviewer -> Developer runs autonomously via `HandoffAction.auto_exe
 
 FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 
-### Pages (13 active)
+### Pages (14 active)
 - **Home**: project list (command center) for multi-project installations
 - **Dashboard**: overview with agent strip, pipeline progress, recent activity
 - **Agents**: multi-agent control panel (start/stop, status, handoff actions)
@@ -152,12 +153,14 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 - **Memory**: knowledge base browser (memories, patterns, extractions)
 - **Settings**: runtime configuration management
 - **Setup**: project onboarding wizard with directory browser
+- **Roles**: role management and custom role configuration
+- **Role Editor**: visual DAG editor for custom workflow roles
 - **Style Guide**: design system reference with live component examples
 
 ### API
-14 routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work.
+15 routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles.
 
-20 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more.
+21 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, and more.
 
 ## Task Source Abstraction
 
@@ -169,7 +172,7 @@ The agent uses a pluggable adapter pattern for task sources:
 type = "github"          # github | jira | linear | manual (planned)
 ```
 
-### TaskAdapter ABC (12 async methods)
+### TaskAdapter ABC (14 async methods)
 - `list_tasks()` -- list available tasks (filtered by state/labels)
 - `get_task(id)` -- get task details (title, description, labels, assignee)
 - `get_state(id)` -- get current task state from labels
@@ -181,9 +184,11 @@ type = "github"          # github | jira | linear | manual (planned)
 - `post_pr_review(pr, body, event, comments)` -- post formal PR review
 - `edit_body(id, body)` -- edit issue body
 - `link_pr(id, pr_url)` -- associate PR with task
+- `get_pr_reviews(pr)` -- get reviews for a pull request
 
 **Implemented**: GitHub (full, including Projects V2 board integration).
-**Planned**: JIRA, Linear, Odoo (via MCP).
+**Supported**: JIRA Cloud (httpx-based, async).
+**Planned**: Linear, Odoo (via MCP).
 
 ## Persona System
 
@@ -202,10 +207,10 @@ Users can also create custom personas or override detection.
 
 ## Command System
 
-**Status: DONE** (25 standardized commands)
+**Status: DONE** (27 standardized commands)
 
 The command library is unified and portable across projects:
-- 25 standardized commands in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
+- 27 standardized commands in `commands/` (general-purpose, work for both interactive Claude Code and the autonomous agent)
 - Agent-specific wrappers (develop-full) compose the general commands, not duplicate them
 - Commands reference CLAUDE.md/AGENTS.md for project conventions -- portable across projects
 - Each project tracks all commands in git (not gitignored) so the agent always has them in worktrees and fresh clones
@@ -266,7 +271,7 @@ Each browser tab is a fully independent workspace -- its own agent status, costs
 | Phase 4 | Dashboard | FastAPI app factory, services, routers, templates, 370 tests |
 | Phase 5 | Scheduler + Server | WatchLoop, ParallelExecutor, SOVAServer, systemd/launchd, 403 tests |
 | Phase 6 | Cutover | Removed ~5,500 lines bash, migration commands, 503 tests |
-| Post-phase | Hardening | Handoff actions, multi-project, batch ops, design system, lifecycle, 858 tests |
+| Post-phase | Hardening | Handoff actions, multi-project, batch ops, design system, lifecycle, 1,380+ tests |
 
 ## Release Roadmap (P3: v0.1 Public Release)
 
