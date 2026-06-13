@@ -95,12 +95,12 @@ gh pr checks <PR_NUMBER>
 
 Poll every 30 seconds, up to 15 minutes.
 
-- **CI passes**: proceed to Phase 5.
-- **No CI checks configured**: proceed to Phase 5 immediately.
-- **CI fails**: analyze the failure output briefly.
-  - If failures look like infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and wait once more. If it fails again, stop and report the diagnosis.
-  - If any failure looks like a real code issue, stop and report the diagnosis with the failing check details.
-- **CI times out** (15 minutes elapsed): stop and report. The user can re-run the command after CI completes.
+- **Passes**: proceed to Phase 5.
+- **No checks configured**: proceed to Phase 5 immediately.
+- **Fails**: analyze the failure output briefly.
+  - For infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and wait once more. On second failure, stop and report the diagnosis.
+  - For real code issues, stop and report the diagnosis with failing check details.
+- **Times out** (15 minutes elapsed): stop and report. The user can re-run after CI completes.
 
 ### Phase 5: Merge
 
