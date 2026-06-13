@@ -65,14 +65,14 @@ def get_handoff(project_dir: Path | None = None, issue: str | None = None) -> di
     With issue: reads handoff-{issue}.json specifically.
     Without: returns the most recently modified handoff file.
     """
-    from sova.ipc.handoff import _handoff_filename
+    from sova.ipc.handoff import handoff_filename
 
     cdir = _control_dir(project_dir)
     if cdir is None:
         return None
 
     if issue:
-        hf = cdir / _handoff_filename(issue)
+        hf = cdir / handoff_filename(issue)
         return _read_cached(hf, project_dir, issue)
 
     candidates = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
@@ -133,14 +133,14 @@ def _read_cached_path(hf: Path, ck: str) -> dict | None:
 
 def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -> dict | None:
     """Move handoff file(s) to the archive directory. Returns the last archived data."""
-    from sova.ipc.handoff import _handoff_filename
+    from sova.ipc.handoff import handoff_filename
 
     cdir = _control_dir(project_dir)
     if cdir is None:
         return None
 
     if issue:
-        files = [cdir / _handoff_filename(issue)]
+        files = [cdir / handoff_filename(issue)]
     else:
         files = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
         legacy = cdir / "handoff.json"
@@ -182,7 +182,7 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
     With issue: clears only that issue's handoff.
     Without: clears all handoff files.
     """
-    from sova.ipc.handoff import _handoff_filename
+    from sova.ipc.handoff import handoff_filename
 
     archive_handoff(project_dir, issue=issue)
 
@@ -192,7 +192,7 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
 
     cleared = False
     if issue:
-        hf = cdir / _handoff_filename(issue)
+        hf = cdir / handoff_filename(issue)
         if hf.exists():
             hf.unlink()
             cleared = True

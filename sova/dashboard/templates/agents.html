@@ -321,10 +321,18 @@ var _actionToRole = {
   develop: 'developer',
   review: 'reviewer',
   resume: 'developer',
-  spec: 'developer',
+};
+
+var _actionToCommand = {
+  spec: 'spec',
 };
 
 async function quickStart(issue, force, action) {
+  var cmd = action ? _actionToCommand[action] : null;
+  if (cmd) {
+    await runCommand(cmd, { issue: String(issue) });
+    return;
+  }
   var role = document.getElementById('agent-role').value || null;
   if (!role && action) {
     role = _actionToRole[action] || null;

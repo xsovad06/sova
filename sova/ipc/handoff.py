@@ -69,7 +69,7 @@ class DashboardHandoff(BaseModel):
     next_actions: list[HandoffAction] = Field(default_factory=list)
 
 
-def _handoff_filename(issue: str | None) -> str:
+def handoff_filename(issue: str | None) -> str:
     """Return the handoff filename for an issue, or the legacy name."""
     if issue:
         safe = issue.lstrip("#").strip()
@@ -86,7 +86,7 @@ def write_handoff_file(project_dir: Path, handoff: DashboardHandoff) -> Path:
     """Write a DashboardHandoff to a per-issue file in agent-control."""
     cdir = _control_dir(project_dir)
     cdir.mkdir(parents=True, exist_ok=True)
-    filename = _handoff_filename(handoff.issue)
+    filename = handoff_filename(handoff.issue)
     if filename == "handoff.json":
         log.warning("handoff_file.no_issue", source=handoff.source)
     path = cdir / filename
@@ -107,11 +107,13 @@ def read_handoff_file(project_dir: Path, issue: str | None = None) -> DashboardH
         return None
 
     if issue:
-        path = cdir / _handoff_filename(issue)
+        path = cdir / handoff_filename(issue)
         if not path.exists():
             legacy = cdir / "handoff.json"
             if legacy.exists():
-                return _parse_handoff(legacy)
+                parsed = _parse_handoff(legacy)
+                if parsed and parsed.issue == issue:
+                    return parsed
             return None
         return _parse_handoff(path)
 
