@@ -24,6 +24,10 @@ When the user asks to "start the next task", "what should we work on", or simila
 - **Module split conflicts: take the refactored facade, preserve functional changes** -- when a PR branch predates a module split on main (e.g., `control_service.py` split into `agent_lifecycle.py` + `agent_output.py`), take main's version of the re-export facade (`git checkout HEAD -- file`). Then verify that the PR's functional changes (new functions, modified logic) are present in the correct submodule. If not, cherry-pick the functional changes into the submodule. Never take the incoming side's monolithic version -- it lacks the split structure that downstream code depends on.
 - **ABC signature conflicts: pick main's interface, adapt feature's implementations** -- when both branches modified the same ABC (e.g., `LLMProvider` with different method signatures), take main's ABC as the authority. Then adapt the feature branch's implementations (new provider classes, tests) to match main's signature. The LLM auto-rebase fails on these because it resolves files independently without enforcing cross-file interface consistency.
 
+## Command Maintenance
+
+- **Mirror changes across SOVA/distributable command pairs**: when a command exists in both `.claude/commands/` (SOVA-specific) and `commands/` (distributable), changes to shared sections must be applied to both files. CodeRabbit only reviews `commands/` (`.claude/` is excluded via path filters), so inconsistencies in the SOVA variant go undetected. After editing one, always diff the pair.
+
 ## Issue State Management
 
 SOVA agents own issue state on the tracker. When working on an issue:
