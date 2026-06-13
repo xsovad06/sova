@@ -174,11 +174,15 @@
   align-items: center;
   justify-content: center;
   opacity: 0;
-  transition: opacity 150ms ease;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 150ms ease, visibility 150ms ease;
 }
 
 .sova-modal-backdrop.sova-modal-visible {
   opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .sova-modal-dialog {
@@ -552,6 +556,11 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 
 .sova-toggle:hover input:checked + .sova-toggle-track {
   background: rgb(var(--ctp-green-rgb) / 0.4);
+}
+
+.sova-toggle input:focus-visible + .sova-toggle-track {
+  outline: 2px solid var(--ctp-blue);
+  outline-offset: 2px;
 }
 
 /* ============================================================

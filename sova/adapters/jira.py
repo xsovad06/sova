@@ -164,19 +164,20 @@ class JiraAdapter(TaskAdapter):
                 state = _LABEL_TO_STATE[label]
                 break
 
-        status_name = status.get("name", "")
-        if state == TaskState.BACKLOG and status_name in self._status_mapping:
-            state = self._status_mapping[status_name]
-        elif state == TaskState.BACKLOG and status_name:
-            log.warning(
-                "status.unmapped",
-                status=status_name,
-                issue=issue_key,
-                hint="Add to [task_source] jira_status_mapping in sova.toml",
-            )
-
-        if status.get("statusCategory", {}).get("name") == "Done":
+        is_done_category = status.get("statusCategory", {}).get("name") == "Done"
+        if is_done_category:
             state = TaskState.DONE
+        elif state == TaskState.BACKLOG:
+            status_name = status.get("name", "")
+            if status_name in self._status_mapping:
+                state = self._status_mapping[status_name]
+            elif status_name:
+                log.warning(
+                    "status.unmapped",
+                    status=status_name,
+                    issue=issue_key,
+                    hint="Add to [task_source] jira_status_mapping in sova.toml",
+                )
 
         return state
 

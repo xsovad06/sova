@@ -1836,7 +1836,7 @@ class TestQueueServiceEnrichment:
         from sova.adapters.base import TaskState
         from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
 
-        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "harden"
+        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "spec"
 
     def test_jira_priority_order_critical_before_minor(self) -> None:
         from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
