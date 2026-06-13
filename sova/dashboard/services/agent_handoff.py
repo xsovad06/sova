@@ -27,7 +27,9 @@ async def _process_auto_handoff(agent: AgentState) -> None:
         if handoff is None or handoff.status != "awaiting_action":
             return
 
-        if handoff.issue and agent.issue and str(handoff.issue) != str(agent.issue):
+        h_issue = str(handoff.issue).lstrip("#").strip() if handoff.issue else ""
+        a_issue = str(agent.issue).lstrip("#").strip() if agent.issue else ""
+        if h_issue and a_issue and h_issue != a_issue:
             log.info(
                 "auto_handoff.issue_mismatch",
                 run_id=agent.run_id,

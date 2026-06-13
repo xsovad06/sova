@@ -1750,6 +1750,8 @@ def _shell_side_effect(*args: str, **kwargs: object) -> MagicMock:
     """Dispatch shell.run mock based on the command being called."""
     if "rev-list" in args:
         return MagicMock(success=True, stdout="1\n")
+    if "rev-parse" in args:
+        return MagicMock(success=True, stdout="abc123def456\n")
     return MagicMock(success=True, stdout="abc1234 fix\n")
 
 
@@ -1782,6 +1784,7 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("1.00"))
                 mock_run.side_effect = _shell_side_effect
@@ -1820,6 +1823,7 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect
@@ -1856,6 +1860,7 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Tried fix", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect
@@ -1992,6 +1997,7 @@ class TestMonitorCIFixLoop:
                 patch("sova.git.operations.push", new_callable=AsyncMock),
                 patch("sova.llm.client.invoke", new_callable=AsyncMock) as mock_invoke,
                 patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+                patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock, return_value=True),
             ):
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = _shell_side_effect

@@ -12,6 +12,7 @@ Two handoff types:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -69,12 +70,17 @@ class DashboardHandoff(BaseModel):
     next_actions: list[HandoffAction] = Field(default_factory=list)
 
 
+_SAFE_ISSUE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
 def handoff_filename(issue: str | None) -> str:
     """Return the handoff filename for an issue, or the legacy name."""
     if issue:
         safe = issue.lstrip("#").strip()
-        if safe:
+        if safe and _SAFE_ISSUE_RE.fullmatch(safe):
             return f"handoff-{safe}.json"
+        if safe:
+            log.warning("handoff_file.invalid_issue", issue=issue)
     return "handoff.json"
 
 

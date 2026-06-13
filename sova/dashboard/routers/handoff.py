@@ -16,6 +16,7 @@ router = APIRouter()
 
 class ExecuteActionRequest(BaseModel):
     action_id: str
+    issue: str | None = None
 
 
 class ClearHandoffRequest(BaseModel):
@@ -23,7 +24,7 @@ class ClearHandoffRequest(BaseModel):
 
 
 @router.get("/handoff")
-async def get_handoff():
+async def get_handoff() -> dict:
     """Get all active handoff files plus synthesized fallback."""
     all_handoffs = handoff_service.get_all_handoffs()
 
@@ -47,7 +48,7 @@ async def get_handoff():
         400: {"description": "Unsupported execution type"},
     },
 )
-async def execute_handoff_action(req: ExecuteActionRequest):
+async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     """Execute a specific action from the current handoff.
 
     Finds the action by ID in next_actions, resolves execution params,
@@ -58,7 +59,10 @@ async def execute_handoff_action(req: ExecuteActionRequest):
     all_handoffs = handoff_service.get_all_handoffs()
     handoff = None
     action = None
+    norm_issue = req.issue.lstrip("#").strip() if req.issue else ""
     for h in all_handoffs:
+        if norm_issue and h.get("issue", "").lstrip("#").strip() != norm_issue:
+            continue
         actions = h.get("next_actions", [])
         match = next((a for a in actions if a.get("id") == req.action_id), None)
         if match:
@@ -69,11 +73,13 @@ async def execute_handoff_action(req: ExecuteActionRequest):
     if not handoff:
         synthesized = await get_synthesized_handoff()
         if synthesized:
-            actions = synthesized.get("next_actions", [])
-            match = next((a for a in actions if a.get("id") == req.action_id), None)
-            if match:
-                handoff = synthesized
-                action = match
+            s_issue = synthesized.get("issue", "").lstrip("#").strip()
+            if not norm_issue or s_issue == norm_issue:
+                actions = synthesized.get("next_actions", [])
+                match = next((a for a in actions if a.get("id") == req.action_id), None)
+                if match:
+                    handoff = synthesized
+                    action = match
 
     if not handoff or not action:
         raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")
@@ -110,7 +116,7 @@ async def execute_handoff_action(req: ExecuteActionRequest):
 
 
 @router.post("/handoff/clear")
-async def clear_handoff(req: ClearHandoffRequest | None = None):
+async def clear_handoff(req: ClearHandoffRequest | None = None) -> dict:
     """Archive and clear handoff file(s).
 
     With {"issue": "N"}: clears only that issue's handoff.

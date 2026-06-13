@@ -764,17 +764,18 @@ class TestPerIssueHandoffFiles:
         assert h.summary == "a"
 
     def test_read_without_issue_returns_most_recent(self, tmp_path: Path) -> None:
-        import time
+        import os
 
         from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
 
-        write_handoff_file(
+        old_path = write_handoff_file(
             tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="old")
         )
-        time.sleep(0.05)
-        write_handoff_file(
+        new_path = write_handoff_file(
             tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="new")
         )
+        os.utime(old_path, (1_700_000_000, 1_700_000_000))
+        os.utime(new_path, (1_700_000_100, 1_700_000_100))
 
         h = read_handoff_file(tmp_path)
         assert h is not None

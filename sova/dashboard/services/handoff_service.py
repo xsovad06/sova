@@ -22,8 +22,8 @@ log = get_logger(component="dashboard.handoff")
 # Default project dir for single-project mode
 _default_project_dir: Path | None = None
 
-# Per-project mtime-based cache: project_dir_str -> (mtime, data)
-_handoff_caches: dict[str, tuple[float, dict | None]] = {}
+# Per-project mtime-based cache: cache_key -> (mtime, path, data)
+_handoff_caches: dict[str, tuple[float, str, dict | None]] = {}
 
 
 def set_project_dir(path: Path) -> None:
@@ -117,15 +117,16 @@ def _read_cached(hf: Path, project_dir: Path | None, issue: str | None) -> dict 
 
 def _read_cached_path(hf: Path, ck: str) -> dict | None:
     if not hf.exists():
-        _handoff_caches[ck] = (0.0, None)
+        _handoff_caches[ck] = (0.0, "", None)
         return None
     try:
         mtime = hf.stat().st_mtime
+        hf_str = str(hf)
         cached = _handoff_caches.get(ck)
-        if cached and mtime == cached[0]:
-            return cached[1]
+        if cached and mtime == cached[0] and hf_str == cached[1]:
+            return cached[2]
         data = json.loads(hf.read_text())
-        _handoff_caches[ck] = (mtime, data)
+        _handoff_caches[ck] = (mtime, hf_str, data)
         return data
     except (json.JSONDecodeError, OSError):
         return None
@@ -197,7 +198,7 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
             hf.unlink()
             cleared = True
         ck = _cache_key(project_dir, issue)
-        _handoff_caches[ck] = (0.0, None)
+        _handoff_caches[ck] = (0.0, "", None)
     else:
         for hf in list(cdir.glob("handoff-*.json")) + [cdir / "handoff.json"]:
             if hf.exists():
@@ -205,9 +206,9 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
                 cleared = True
         keys_to_clear = [k for k in _handoff_caches if str(cdir.parent.parent) in k]
         for k in keys_to_clear:
-            _handoff_caches[k] = (0.0, None)
+            _handoff_caches[k] = (0.0, "", None)
 
-    _handoff_caches[_cache_key(project_dir, None)] = (0.0, None)
+    _handoff_caches[_cache_key(project_dir, None)] = (0.0, "", None)
     return cleared
 
 

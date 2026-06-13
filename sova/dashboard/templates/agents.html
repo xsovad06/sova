@@ -800,7 +800,7 @@ async function checkHandoffForAgents(agents) {
         var btnStyle = action.style === 'approve' ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' :
                        action.style === 'danger' ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' :
                        'bg-accent/20 text-accent hover:bg-accent/30';
-        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\', \'' + escapeHtml(handoff.issue || '') + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs transition-colors ' + btnStyle + '" data-tooltip="' + escapeHtml(action.description || '') + '">' +
           escapeHtml(action.label) + '</button>';
       }).join(' ');
@@ -817,12 +817,14 @@ async function checkHandoffForAgents(agents) {
   } catch (e) { /* ignore */ }
 }
 
-async function executeHandoffAction(actionId) {
+async function executeHandoffAction(actionId, issue) {
   try {
+    var payload = { action_id: actionId };
+    if (issue) payload.issue = issue;
     var res = await fetch(apiUrl('/handoff/execute'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action_id: actionId }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       showToast(await getErrorDetail(res, 'Failed to execute action'), 'error');
@@ -861,7 +863,7 @@ async function checkStandaloneHandoff() {
           : action.style === 'danger'
           ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
           : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
-        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\', \'' + escapeHtml(handoff.issue || '') + '\')" ' +
           'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
           'title="' + escapeHtml(action.description || '') + '">' +
           escapeHtml(action.label) + '</button>';

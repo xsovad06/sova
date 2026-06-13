@@ -183,11 +183,13 @@ class MonitorCIStep(BaseStep):
             env=env,
         )
         if not result.success:
-            return True  # network error -- skip validation, let polling proceed
+            log.warning("step.monitor_ci.sha_check_failed", pr=ctx.pr_number)
+            return False
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return True
+            log.warning("step.monitor_ci.sha_check_parse_failed", pr=ctx.pr_number)
+            return False
         return data.get("headRefOid", "").startswith(expected_sha[:12])
 
     @staticmethod
