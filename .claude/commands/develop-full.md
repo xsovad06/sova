@@ -48,7 +48,18 @@ Follow the `/review` command workflow:
 3. Address all findings (fix or acknowledge with justification).
 4. Re-run tests after fixes.
 
-### Phase 3: Organize Commits
+### Phase 3: Update Documentation
+
+Follow the `/update-docs` workflow:
+
+1. Run structural count verification (tests, services, routers, steps, etc.).
+2. Compare actual counts against values in README.md, AGENTS.md, VISION.md, architecture.md.
+3. If any counts drifted due to the changes in Phase 1, fix them.
+4. Stage doc changes -- they will be included in the commit organization.
+
+Skip this phase if no structural files were added or removed in Phase 1 (e.g., pure logic changes within existing files).
+
+### Phase 4: Organize Commits
 
 Follow the `/rearrange-commits` command approach:
 
@@ -60,7 +71,7 @@ Follow the `/rearrange-commits` command approach:
 4. **NEVER create a single monolithic commit** with all changes.
 5. Commit messages should explain the 'why', not just the 'what'.
 
-### Phase 4: Summary
+### Phase 5: Summary
 
 Write a file at `.agent-summary.md` in the working directory with:
 
@@ -76,7 +87,8 @@ This command orchestrates:
 1. `/develop` -- implement with TDD
 2. `/test` -- verify linter + tests pass
 3. `/review` -- self-review and auto-fix
-4. `/rearrange-commits` -- organize into logical commits
+4. `/update-docs` -- verify and fix documentation counts
+5. `/rearrange-commits` -- organize into logical commits
 
 After this command completes, run `/pr` to create the pull request.
 

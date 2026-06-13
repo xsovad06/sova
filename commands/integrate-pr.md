@@ -68,7 +68,24 @@ git push --force-with-lease
 
 **Stop if push fails** (branch protection, permissions) -- report the error.
 
-### Phase 3: Wait for CI
+### Phase 3: Pre-Merge Documentation Updates
+
+Run this phase on the feature branch BEFORE merge to avoid post-merge commits on main (which branch protection would block).
+
+Only run if `.claude/agent-memory/` exists in the project.
+
+1. **Capture review learnings**: fetch review data from the PR (`gh pr view`, `gh api repos/.../pulls/<N>/comments`). Analyze for actionable findings and update `.claude/agent-memory/cookbook.md` (no duplicates). Promote patterns confirmed in 2+ PRs to `.claude/rules/*.md`.
+
+2. **Update documentation counts**: run verification commands (test count, service count, router count) and fix any drifted values in `AGENTS.md`, `README.md`, or `docs/VISION.md`.
+
+3. **Commit and push** if any files changed:
+   ```bash
+   git add -A .claude/agent-memory/ AGENTS.md README.md docs/VISION.md .claude/rules/
+   git commit -m "docs: update counts and capture learnings from PR #<PR_NUMBER>"
+   git push --force-with-lease
+   ```
+
+### Phase 4: Wait for CI
 
 If the repository has CI checks configured, poll until complete:
 
@@ -78,14 +95,14 @@ gh pr checks <PR_NUMBER>
 
 Poll every 30 seconds, up to 15 minutes.
 
-- **CI passes**: proceed to Phase 4.
-- **No CI checks configured**: proceed to Phase 4 immediately.
+- **CI passes**: proceed to Phase 5.
+- **No CI checks configured**: proceed to Phase 5 immediately.
 - **CI fails**: analyze the failure output briefly.
   - If failures look like infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and wait once more. If it fails again, stop and report the diagnosis.
   - If any failure looks like a real code issue, stop and report the diagnosis with the failing check details.
 - **CI times out** (15 minutes elapsed): stop and report. The user can re-run the command after CI completes.
 
-### Phase 4: Merge
+### Phase 5: Merge
 
 Try merge strategies in order until one succeeds (repo settings may restrict some):
 
@@ -97,7 +114,7 @@ If rebase merge is not allowed, fall back to squash, then regular merge. If all 
 
 **Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 
-### Phase 5: Post-Merge Cleanup (incorporates `/after-merge`)
+### Phase 6: Post-Merge Cleanup (incorporates `/after-merge`)
 
 ```bash
 git checkout <BASE_BRANCH>
@@ -129,55 +146,9 @@ git stash list
 
 If any stash entries reference the merged branch name, report them to the user (do not drop without confirmation).
 
-### Phase 6: Capture Review Learnings (incorporates `/ingest-review`)
+### Phase 7: Report
 
-Only run this phase if `.claude/agent-memory/` exists in the project.
-
-Fetch all review data:
-
-```bash
-OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-gh pr view <PR_NUMBER> --json comments,reviews,body,title
-gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
-gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews"
-```
-
-Analyze ALL review comments (human and bot) for actionable findings:
-- **Patterns to follow** -- things reviewers praised or explicitly requested
-- **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
-- **Test coverage gaps** -- missing assertions, untested scenarios
-- **Bot suggestions worth adopting** -- evaluate critically, but don't dismiss just because the source is a bot. If a bot identifies a real improvement (even in an "outside diff" comment), record it.
-
-Skip only if there are truly zero review comments and zero review bodies with content. A bot approval with suggestions still counts as reviewable content.
-
-Update `.claude/agent-memory/cookbook.md` (if it exists):
-- Append new findings under the matching domain section (no duplicates)
-- Add recurring mistakes to the "Common Mistakes" section with `[Nx]` count
-
-### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
-
-Only run this phase if `.claude/agent-memory/` exists in the project.
-
-1. **Update test count** in `.claude/agent-memory/MEMORY.md` if the PR added or removed tests. Also update any other files that track test counts (README.md, AGENTS.md, etc.).
-
-2. **Promote confirmed patterns to project knowledge**: Review the findings captured in Phase 6. If any pattern was:
-   - Flagged in 2+ PRs, OR
-   - A security/correctness issue with clear prevention rule
-   
-   Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
-
-3. **Add session learnings**: Actively scan these sources for new framework gotchas, testing patterns, operational issues, or development insights:
-   - **PR description and commit messages**: read the PR body and `git log` for investigation context, root cause analysis, or workaround notes
-   - **This conversation**: review the current session for patterns discovered, gotchas hit, or operational issues encountered (e.g., auth failures, permission gaps, tool quirks)
-   - **Errors recovered from during this pipeline**: if the merge, CI, or any phase hit an issue that was resolved, that resolution is a learning
-   
-   For each finding, append to `.claude/agent-memory/cookbook.md` under the matching domain section. Only record actionable, specific lessons -- not generic advice. Check for duplicates before adding.
-
-4. **Check file sizes**: Ensure agent memory stays within limits:
-   - `MEMORY.md` -- under 20 lines (index only)
-   - `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
-
-### Phase 8: Report
+Note: review learnings and doc count updates were captured in Phase 3 (pre-merge). No post-merge git commits are needed.
 
 Output a concise summary covering:
 
