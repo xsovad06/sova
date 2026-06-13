@@ -69,7 +69,7 @@ async def create_worktree(
             )
             if ahead.success and ahead.stdout.strip() not in ("", "0"):
                 log.warning(
-                    "worktree.reuse_with_pushed_commits",
+                    "worktree.reuse_ahead_of_origin",
                     path=str(worktree_path),
                     branch=branch,
                     commits_ahead=ahead.stdout.strip(),

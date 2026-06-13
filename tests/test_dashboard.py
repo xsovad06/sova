@@ -615,7 +615,7 @@ class TestRecoveryMergeCheck:
 class TestAutoHandoffIssueMismatch:
     async def test_skips_when_handoff_issue_mismatches(self) -> None:
         """Auto-handoff should not execute if handoff is for a different issue."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
@@ -637,18 +637,20 @@ class TestAutoHandoffIssueMismatch:
         )
 
         mock_lifecycle = AsyncMock()
+        mock_clear = MagicMock()
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_lifecycle.start_agent),
-            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
         ):
             await _process_auto_handoff(agent)
 
         mock_lifecycle.start_agent.assert_not_awaited()
+        mock_clear.assert_not_called()
 
     async def test_executes_when_handoff_issue_matches(self) -> None:
         """Auto-handoff should execute normally when issues match."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_handoff import _process_auto_handoff
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
@@ -677,14 +679,17 @@ class TestAutoHandoffIssueMismatch:
         )
 
         mock_start = AsyncMock(return_value={"run_id": 2})
+        mock_clear = MagicMock()
         with (
             patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
             patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
         ):
             await _process_auto_handoff(agent)
 
         mock_start.assert_awaited_once()
+        mock_clear.assert_called_once()
+        assert mock_clear.call_args[1].get("issue") == "113"
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +800,20 @@ class TestPerIssueHandoffFiles:
         h = read_handoff_file(tmp_path, issue="99")
         assert h is not None
         assert h.issue == "99"
+
+    def test_read_with_issue_ignores_legacy_for_different_issue(self, tmp_path: Path) -> None:
+        import json
+
+        cdir = tmp_path / ".claude" / "agent-control"
+        cdir.mkdir(parents=True)
+        (cdir / "handoff.json").write_text(
+            json.dumps({"id": "x", "source": "dev", "status": "completed", "issue": "114", "summary": "other"})
+        )
+
+        from sova.ipc.handoff import read_handoff_file
+
+        h = read_handoff_file(tmp_path, issue="113")
+        assert h is None
 
     def test_read_all_returns_all_files(self, tmp_path: Path) -> None:
         from sova.ipc.handoff import DashboardHandoff, read_all_handoff_files, write_handoff_file

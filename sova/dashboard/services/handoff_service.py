@@ -142,6 +142,14 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
 
     if issue:
         files = [cdir / handoff_filename(issue)]
+        legacy = cdir / "handoff.json"
+        if legacy.exists() and legacy not in files:
+            try:
+                data = json.loads(legacy.read_text())
+                if data.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                    files.append(legacy)
+            except (json.JSONDecodeError, OSError):
+                pass
     else:
         files = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
         legacy = cdir / "handoff.json"
@@ -193,10 +201,19 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
 
     cleared = False
     if issue:
-        hf = cdir / handoff_filename(issue)
-        if hf.exists():
-            hf.unlink()
-            cleared = True
+        for hf in [cdir / handoff_filename(issue)]:
+            if hf.exists():
+                hf.unlink()
+                cleared = True
+        legacy = cdir / "handoff.json"
+        if legacy.exists():
+            try:
+                data = json.loads(legacy.read_text())
+                if data.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                    legacy.unlink()
+                    cleared = True
+            except (json.JSONDecodeError, OSError):
+                pass
         ck = _cache_key(project_dir, issue)
         _handoff_caches[ck] = (0.0, "", None)
     else:
@@ -204,7 +221,8 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
             if hf.exists():
                 hf.unlink()
                 cleared = True
-        keys_to_clear = [k for k in _handoff_caches if str(cdir.parent.parent) in k]
+        prefix = str(project_dir or _resolve_project_dir()) + ":"
+        keys_to_clear = [k for k in _handoff_caches if k.startswith(prefix)]
         for k in keys_to_clear:
             _handoff_caches[k] = (0.0, "", None)
 
