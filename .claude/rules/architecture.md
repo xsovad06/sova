@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `mcp`
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `config`, `mcp`
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -95,7 +95,7 @@ The project's full name is **SOVA** (Software Orchestration Via Agents).
 - **Issue state ownership is human**: agents never auto-move issues to DONE. Issues stay IN_REVIEW until the human merges via `/integrate-pr` or `/approve-merge`. The agent prepares the PR; the human approves and merges.
 - **Handoff protocol**: JSON-based inter-agent state passing via file + DB
 - **Short-lived agent model**: agents run, write handoff, exit; dashboard provides the interactive bridge
-- **Markdown commands**: Claude Code loads them as slash commands, 28 commands with category frontmatter
+- **Markdown commands**: Claude Code loads them as slash commands, 27 commands with category frontmatter
 - **Persona auto-detection**: detects project tech stack and loads relevant guidance
 - **DB persistence**: TaskRun, CostRecord, StepExecution tracked in SQLite/PostgreSQL
 - **Unified TaskRun via `--run-id` passthrough**: the dashboard creates a TaskRun (with PID for process management), passes `--run-id {id}` to the subprocess, and WorkflowEngine adopts it via `_adopt_task_run()` instead of creating a second record. This eliminates the "wrapper agent" confusion on the Work page. `_adopt_task_run()` clears the `current_step="agent"` sentinel and preserves the dashboard's PID. The dashboard's `_finalize_task_run()` only updates status if not already terminal (the engine may finalize first), but always writes stream cost (more accurate). CLI runs without `--run-id` still create their own TaskRun.
