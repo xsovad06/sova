@@ -508,6 +508,386 @@ class TestControlServiceRecovery:
 
 
 # ---------------------------------------------------------------------------
+# Recovery -- merge-role runs check PR merged
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryMergeCheck:
+    async def test_recover_merge_role_checks_pr_merged(self) -> None:
+        """Merge-role runs should be marked 'done' if PR was actually merged."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="113",
+                role="command:integrate-pr",
+                status="running",
+                pid=999999,
+                pr_number=130,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 0
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "done"
+            assert "merged successfully" in updated.error_message
+
+    async def test_recover_merge_role_not_merged_stays_interrupted(self) -> None:
+        """Merge-role runs where PR was NOT merged stay interrupted."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="113",
+                role="command:integrate-pr",
+                status="running",
+                pid=999999,
+                pr_number=130,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_recover_non_merge_role_ignores_pr(self) -> None:
+        """Non-merge roles should not check PR status even if pr_number is set."""
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="running",
+                pid=999999,
+                pr_number=130,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# Auto-handoff -- issue mismatch guard
+# ---------------------------------------------------------------------------
+
+
+class TestAutoHandoffIssueMismatch:
+    async def test_skips_when_handoff_issue_mismatches(self) -> None:
+        """Auto-handoff should not execute if handoff is for a different issue."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 1, "issue": "114", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="113",
+            summary="test",
+            next_actions=[
+                HandoffAction(id="review", label="Review", auto_execute=True, mode="agent"),
+            ],
+        )
+
+        mock_lifecycle = AsyncMock()
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_lifecycle.start_agent),
+            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_lifecycle.start_agent.assert_not_awaited()
+
+    async def test_executes_when_handoff_issue_matches(self) -> None:
+        """Auto-handoff should execute normally when issues match."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 1, "issue": "113", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="113",
+            pr_number=130,
+            summary="test",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "113", "role": "reviewer"},
+                ),
+            ],
+        )
+
+        mock_start = AsyncMock(return_value={"run_id": 2})
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Queue service -- cross-run PR number lookup
+# ---------------------------------------------------------------------------
+
+
+class TestQueueServicePrLookup:
+    async def test_pr_number_from_earlier_run(self) -> None:
+        """PR number should be found from earlier developer run even when latest is reviewer."""
+        from sova.dashboard.services.queue_service import _get_last_runs_by_issue
+
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="114", role="developer", status="done", pr_number=131))
+            session.add(TaskRun(issue_number="114", role="reviewer", status="done", pr_number=None))
+
+        result = await _get_last_runs_by_issue(None)
+        assert result["114"]["pr_number"] == 131
+        assert result["114"]["role"] == "reviewer"
+
+    async def test_pr_number_from_latest_run(self) -> None:
+        """When latest run has pr_number, it should be used directly."""
+        from sova.dashboard.services.queue_service import _get_last_runs_by_issue
+
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="113", role="developer", status="done", pr_number=130))
+
+        result = await _get_last_runs_by_issue(None)
+        assert result["113"]["pr_number"] == 130
+
+    async def test_no_pr_number_when_none_exists(self) -> None:
+        """Issues with no PR across any run should return None."""
+        from sova.dashboard.services.queue_service import _get_last_runs_by_issue
+
+        session = await get_session()
+        async with session.begin():
+            session.add(TaskRun(issue_number="50", role="triage", status="done", pr_number=None))
+
+        result = await _get_last_runs_by_issue(None)
+        assert result["50"]["pr_number"] is None
+
+
+# ---------------------------------------------------------------------------
+# Per-issue handoff file I/O
+# ---------------------------------------------------------------------------
+
+
+class TestPerIssueHandoffFiles:
+    def test_write_creates_per_issue_file(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        h = DashboardHandoff(source="developer", status="awaiting_action", issue="113", summary="test")
+        write_handoff_file(tmp_path, h)
+
+        assert (tmp_path / ".claude" / "agent-control" / "handoff-113.json").exists()
+        assert not (tmp_path / ".claude" / "agent-control" / "handoff.json").exists()
+
+    def test_write_falls_back_to_legacy_when_no_issue(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        h = DashboardHandoff(source="developer", status="completed", issue="", summary="test")
+        write_handoff_file(tmp_path, h)
+
+        assert (tmp_path / ".claude" / "agent-control" / "handoff.json").exists()
+
+    def test_read_with_issue_reads_correct_file(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
+
+        h = read_handoff_file(tmp_path, issue="113")
+        assert h is not None
+        assert h.issue == "113"
+        assert h.summary == "a"
+
+    def test_read_without_issue_returns_most_recent(self, tmp_path: Path) -> None:
+        import time
+
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        write_handoff_file(
+            tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="old")
+        )
+        time.sleep(0.05)
+        write_handoff_file(
+            tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="new")
+        )
+
+        h = read_handoff_file(tmp_path)
+        assert h is not None
+        assert h.issue == "114"
+
+    def test_read_falls_back_to_legacy(self, tmp_path: Path) -> None:
+        import json
+
+        cdir = tmp_path / ".claude" / "agent-control"
+        cdir.mkdir(parents=True)
+        (cdir / "handoff.json").write_text(
+            json.dumps({"id": "x", "source": "dev", "status": "completed", "issue": "99", "summary": "legacy"})
+        )
+
+        from sova.ipc.handoff import read_handoff_file
+
+        h = read_handoff_file(tmp_path, issue="99")
+        assert h is not None
+        assert h.issue == "99"
+
+    def test_read_all_returns_all_files(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_all_handoff_files, write_handoff_file
+
+        for issue in ["113", "114", "115"]:
+            write_handoff_file(
+                tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue=issue, summary=f"#{issue}")
+            )
+
+        all_h = read_all_handoff_files(tmp_path)
+        assert len(all_h) == 3
+        issues = {h.issue for h in all_h}
+        assert issues == {"113", "114", "115"}
+
+    def test_parallel_writes_coexist(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        for issue in ["113", "114", "115"]:
+            write_handoff_file(
+                tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue=issue, summary=f"#{issue}")
+            )
+
+        cdir = tmp_path / ".claude" / "agent-control"
+        assert (cdir / "handoff-113.json").exists()
+        assert (cdir / "handoff-114.json").exists()
+        assert (cdir / "handoff-115.json").exists()
+
+
+class TestPerIssueHandoffService:
+    def test_clear_specific_issue(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services import handoff_service
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
+
+        cleared = handoff_service.clear_handoff(issue="113")
+        assert cleared is True
+
+        cdir = tmp_path / ".claude" / "agent-control"
+        assert not (cdir / "handoff-113.json").exists()
+        assert (cdir / "handoff-114.json").exists()
+
+    def test_clear_all(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services import handoff_service
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
+
+        cleared = handoff_service.clear_handoff()
+        assert cleared is True
+
+        cdir = tmp_path / ".claude" / "agent-control"
+        assert not (cdir / "handoff-113.json").exists()
+        assert not (cdir / "handoff-114.json").exists()
+
+    def test_get_all_handoffs(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services import handoff_service
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
+
+        all_h = handoff_service.get_all_handoffs()
+        assert len(all_h) == 2
+        issues = {h["issue"] for h in all_h}
+        assert issues == {"113", "114"}
+
+    def test_get_handoff_with_issue(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services import handoff_service
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="113", summary="a"))
+        write_handoff_file(tmp_path, DashboardHandoff(source="dev", status="awaiting_action", issue="114", summary="b"))
+
+        h = handoff_service.get_handoff(issue="113")
+        assert h is not None
+        assert h["issue"] == "113"
+
+
+# ---------------------------------------------------------------------------
 # Control Service -- duplicate agent prevention
 # ---------------------------------------------------------------------------
 
@@ -1139,7 +1519,7 @@ class TestHandoffAPI:
         )
         assert resp.status_code == 404
         data = resp.json()
-        assert data["detail"] == "No active handoff"
+        assert "not found" in data["detail"]
 
     async def test_execute_action_not_found(self, client: AsyncClient, tmp_path) -> None:
         import json
@@ -2268,6 +2648,7 @@ class TestFinalizeTaskRunGuard:
         mock_agent = MagicMock(spec=AgentState)
         mock_agent.last_result_cost = 7.50
         mock_agent.project_dir = None
+        mock_agent.issue = "90"
 
         await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
 

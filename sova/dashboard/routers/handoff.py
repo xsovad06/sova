@@ -18,19 +18,26 @@ class ExecuteActionRequest(BaseModel):
     action_id: str
 
 
+class ClearHandoffRequest(BaseModel):
+    issue: str | None = None
+
+
 @router.get("/handoff")
 async def get_handoff():
-    """Get the current handoff state."""
-    handoff = handoff_service.get_handoff()
-    if handoff is not None:
-        return {"has_handoff": True, "handoff": handoff}
+    """Get all active handoff files plus synthesized fallback."""
+    all_handoffs = handoff_service.get_all_handoffs()
 
-    # Fallback: synthesize from PR review state
-    synthesized = await get_synthesized_handoff()
-    if synthesized is not None:
-        return {"has_handoff": True, "handoff": synthesized}
+    if not all_handoffs:
+        synthesized = await get_synthesized_handoff()
+        if synthesized is not None:
+            return {"has_handoff": True, "handoff": synthesized, "handoffs": [synthesized]}
+        return {"has_handoff": False, "handoffs": []}
 
-    return {"has_handoff": False}
+    return {
+        "has_handoff": True,
+        "handoff": all_handoffs[0],
+        "handoffs": all_handoffs,
+    }
 
 
 @router.post(
@@ -47,26 +54,35 @@ async def execute_handoff_action(req: ExecuteActionRequest):
     archives the handoff, and starts the appropriate agent or command.
     Supports both file-backed and synthesized (PR state) handoffs.
     """
-    # Try file-backed handoff first
-    handoff = handoff_service.get_handoff()
+    # Search across all file-backed handoffs for the action
+    all_handoffs = handoff_service.get_all_handoffs()
+    handoff = None
+    action = None
+    for h in all_handoffs:
+        actions = h.get("next_actions", [])
+        match = next((a for a in actions if a.get("id") == req.action_id), None)
+        if match:
+            handoff = h
+            action = match
+            break
 
     if not handoff:
-        # Fall back to synthesized handoff
-        handoff = await get_synthesized_handoff()
+        synthesized = await get_synthesized_handoff()
+        if synthesized:
+            actions = synthesized.get("next_actions", [])
+            match = next((a for a in actions if a.get("id") == req.action_id), None)
+            if match:
+                handoff = synthesized
+                action = match
 
-    if not handoff:
-        raise HTTPException(status_code=404, detail="No active handoff")
-
-    actions = handoff.get("next_actions", [])
-    action = next((a for a in actions if a.get("id") == req.action_id), None)
-    if not action:
-        raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in handoff")
+    if not handoff or not action:
+        raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")
 
     exec_params = handoff_service.build_action_command(action)
 
-    # Clear file-backed handoff; for synthesized, invalidate cache
     if handoff.get("source") != "pr-review-state":
-        handoff_service.clear_handoff()
+        issue = handoff.get("issue", "") or None
+        handoff_service.clear_handoff(issue=issue)
     else:
         issue = handoff.get("issue", "")
         pr = handoff.get("pr_number")
@@ -94,7 +110,12 @@ async def execute_handoff_action(req: ExecuteActionRequest):
 
 
 @router.post("/handoff/clear")
-async def clear_handoff():
-    """Archive and clear the current handoff."""
-    cleared = handoff_service.clear_handoff()
+async def clear_handoff(req: ClearHandoffRequest | None = None):
+    """Archive and clear handoff file(s).
+
+    With {"issue": "N"}: clears only that issue's handoff.
+    Without body or null issue: clears all handoffs.
+    """
+    issue = req.issue if req else None
+    cleared = handoff_service.clear_handoff(issue=issue)
     return {"cleared": cleared}

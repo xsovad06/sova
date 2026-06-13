@@ -14,9 +14,9 @@ from sova.utils.shell import run
 log = get_logger(component="step.address_review")
 
 
-def _load_review_findings(project_dir: Path) -> list[dict]:
+def _load_review_findings(project_dir: Path, issue: str = "") -> list[dict]:
     """Load review findings from the reviewer's handoff file."""
-    handoff = read_handoff_file(project_dir)
+    handoff = read_handoff_file(project_dir, issue=issue or None)
     if handoff is None:
         return []
     return handoff.details.get("findings", [])
@@ -145,7 +145,7 @@ class AddressReviewStep(BaseStep):
             self._head_before_llm = head_result.stdout.strip()
 
         # Load findings: file -> resumed run -> most recent reviewer for this issue
-        findings = _load_review_findings(ctx.project_dir)
+        findings = _load_review_findings(ctx.project_dir, issue=ctx.issue_number)
         if not findings:
             findings = await _load_review_findings_from_db(ctx.resume_run_id)
         if not findings:

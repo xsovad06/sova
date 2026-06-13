@@ -93,12 +93,12 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
 _TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
 
 
-def _read_file_handoff(project_dir: Path) -> dict | None:
+def _read_file_handoff(project_dir: Path, issue: str = "") -> dict | None:
     """Read file-based handoff details (sync I/O, call outside async transactions)."""
     try:
         from sova.ipc.handoff import read_handoff_file
 
-        handoff = read_handoff_file(project_dir)
+        handoff = read_handoff_file(project_dir, issue=issue or None)
         if handoff is None:
             return None
         return {
@@ -137,7 +137,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 
         status = "done" if exit_code == 0 else "failed"
         cost = Decimal(str(agent.last_result_cost)) if agent.last_result_cost else Decimal("0")
-        file_handoff = _read_file_handoff(agent.project_dir)
+        file_handoff = _read_file_handoff(agent.project_dir, issue=agent.issue)
 
         async with await get_session(project_dir=agent.project_dir) as session:
             async with session.begin():
