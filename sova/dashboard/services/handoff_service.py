@@ -141,12 +141,15 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
         return None
 
     if issue:
-        files = [cdir / handoff_filename(issue)]
+        fname = handoff_filename(issue)
+        files = []
+        if fname != "handoff.json":
+            files.append(cdir / fname)
         legacy = cdir / "handoff.json"
-        if legacy.exists() and legacy not in files:
+        if legacy.exists():
             try:
-                data = json.loads(legacy.read_text())
-                if data.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                ldata = json.loads(legacy.read_text())
+                if ldata.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
                     files.append(legacy)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -174,7 +177,8 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
             source = data.get("source", "unknown")
             h_issue = data.get("issue", "")
             suffix = f"_{h_issue}" if h_issue else ""
-            archive_name = f"{ts}_{source}{suffix}.json"
+            stem = hf.stem
+            archive_name = f"{ts}_{source}{suffix}_{stem}.json"
             shutil.copy2(hf, archive / archive_name)
 
     if archive is not None and archive.exists():
@@ -201,7 +205,9 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
 
     cleared = False
     if issue:
-        for hf in [cdir / handoff_filename(issue)]:
+        fname = handoff_filename(issue)
+        if fname != "handoff.json":
+            hf = cdir / fname
             if hf.exists():
                 hf.unlink()
                 cleared = True
