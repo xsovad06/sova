@@ -512,6 +512,64 @@ class TestAssessStep:
         step = AssessStep()
         assert await step.can_skip(ctx)
 
+    async def test_existing_pr_blocks_developer_run(self) -> None:
+        from sova.core.steps.assess import AssessStep
+        from sova.git.pr import PRInfo
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+            mock_find.return_value = PRInfo(number=99, url="https://github.com/test/repo/pull/99")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "PR #99 already exists" in result.summary
+
+    async def test_existing_pr_allowed_when_pr_number_set(self) -> None:
+        from sova.core.steps.assess import AssessStep
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        ctx = _make_ctx(adapter=adapter, pr_number=99)
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+            result = await step.execute(ctx)
+
+        mock_find.assert_not_called()
+        assert result.success
+
+    async def test_existing_pr_allowed_with_force(self) -> None:
+        from sova.core.steps.assess import AssessStep
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        ctx = _make_ctx(adapter=adapter, force=True)
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+            result = await step.execute(ctx)
+
+        mock_find.assert_not_called()
+        assert result.success
+
+    async def test_no_existing_pr_passes(self) -> None:
+        from sova.core.steps.assess import AssessStep
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.RESEARCHED
+        ctx = _make_ctx(adapter=adapter)
+        step = AssessStep()
+
+        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+            mock_find.return_value = None
+            result = await step.execute(ctx)
+
+        assert result.success
+
 
 class TestWorktreeStep:
     async def test_creates_worktree(self) -> None:
@@ -644,6 +702,60 @@ class TestCommitStep:
             gate = await step.validate_output(ctx)
 
         assert gate.passed
+
+    async def test_address_review_uses_fix_prefix(self) -> None:
+        """Address-review commits should use 'fix:' not 'feat:'."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            worktree_dir=Path("/tmp/worktree"),
+            pr_number=130,
+            completed_steps=frozenset({"address_review"}),
+        )
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),  # diff --stat
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # untracked
+                MagicMock(success=True, stdout=""),  # log
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("fix:")
+        assert "#42" in msg
+        assert "Closes" not in msg
+
+    async def test_developer_commit_without_task_uses_issue_number(self) -> None:
+        """When ctx.task is None (no adapter fetch), falls back to issue number."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.task = None
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert "feat: issue #42" in msg
+        assert "Closes #42" in msg
 
 
 class TestValidateStep:
@@ -1596,6 +1708,30 @@ class TestMonitorCIStep:
 
         assert not result.success
         assert "no pr" in result.summary.lower()
+
+    async def test_poll_ci_waits_for_sha_match(self) -> None:
+        """When expected_sha is set, poll waits until PR head matches before checking CI."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 60
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed_check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        with (
+            patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock) as mock_verify,
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_verify.side_effect = [False, False, True]
+            mock_checks.return_value = [passed_check]
+            result, _ = await step._poll_ci(ctx, expected_sha="abc123def456")
+
+        assert result.success
+        assert mock_verify.call_count == 3
+        assert mock_checks.call_count == 1
 
 
 # ---------------------------------------------------------------------------

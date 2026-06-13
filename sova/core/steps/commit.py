@@ -43,9 +43,13 @@ class CommitStep(BaseStep):
                 return StepResult(success=True, summary="Nothing to commit, commits already exist")
             return StepResult(success=False, summary="No changes to commit", error="No changes to commit")
 
+        is_address_review = ctx.pr_number is not None and "address_review" in ctx.completed_steps
         task = ctx.task
-        title = task.title if task else f"issue #{ctx.issue_number}"
-        message = f"feat: {title}\n\nCloses #{ctx.issue_number}"
+        if is_address_review:
+            message = f"fix: address review findings for #{ctx.issue_number}"
+        else:
+            title = task.title if task else f"issue #{ctx.issue_number}"
+            message = f"feat: {title}\n\nCloses #{ctx.issue_number}"
 
         try:
             await git_ops.commit(message, cwd=ctx.working_dir)
