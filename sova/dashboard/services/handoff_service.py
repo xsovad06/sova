@@ -22,8 +22,8 @@ log = get_logger(component="dashboard.handoff")
 # Default project dir for single-project mode
 _default_project_dir: Path | None = None
 
-# Per-project mtime-based cache: project_dir_str -> (mtime, data)
-_handoff_caches: dict[str, tuple[float, dict | None]] = {}
+# Per-project mtime-based cache: cache_key -> (mtime, path, data)
+_handoff_caches: dict[str, tuple[float, str, dict | None]] = {}
 
 
 def set_project_dir(path: Path) -> None:
@@ -40,11 +40,11 @@ def _resolve_project_dir() -> Path | None:
     return _default_project_dir
 
 
-def _handoff_file(project_dir: Path | None = None) -> Path | None:
+def _control_dir(project_dir: Path | None = None) -> Path | None:
     d = project_dir or _resolve_project_dir()
     if d is None:
         return None
-    return d / ".claude" / "agent-control" / "handoff.json"
+    return d / ".claude" / "agent-control"
 
 
 def _archive_dir(project_dir: Path | None = None) -> Path | None:
@@ -54,66 +54,186 @@ def _archive_dir(project_dir: Path | None = None) -> Path | None:
     return d / ".claude" / "agent-control" / "handoff-archive"
 
 
-def get_handoff(project_dir: Path | None = None) -> dict | None:
-    """Read the current handoff file with mtime-based caching."""
-    hf = _handoff_file(project_dir)
-    if hf is None:
-        return None
-    cache_key = str(hf.parent.parent)
+def _cache_key(project_dir: Path | None, issue: str | None) -> str:
+    d = project_dir or _resolve_project_dir()
+    return f"{d}:{issue or 'all'}"
 
+
+def get_handoff(project_dir: Path | None = None, issue: str | None = None) -> dict | None:
+    """Read a handoff file with mtime-based caching.
+
+    With issue: reads handoff-{issue}.json specifically.
+    Without: returns the most recently modified handoff file.
+    """
+    from sova.ipc.handoff import handoff_filename
+
+    cdir = _control_dir(project_dir)
+    if cdir is None:
+        return None
+
+    if issue:
+        hf = cdir / handoff_filename(issue)
+        return _read_cached(hf, project_dir, issue)
+
+    candidates = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
+    legacy = cdir / "handoff.json"
+    if legacy.exists():
+        candidates.append(legacy)
+    if not candidates:
+        return None
+
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    ck = _cache_key(project_dir, None)
+    return _read_cached_path(newest, ck)
+
+
+def get_all_handoffs(project_dir: Path | None = None) -> list[dict]:
+    """Return all active handoff files as dicts."""
+    cdir = _control_dir(project_dir)
+    if cdir is None or not cdir.exists():
+        return []
+
+    candidates = list(cdir.glob("handoff-*.json"))
+    legacy = cdir / "handoff.json"
+    if legacy.exists():
+        candidates.append(legacy)
+
+    results = []
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text())
+            results.append(data)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+    results.sort(key=lambda h: h.get("created_at", ""), reverse=True)
+    return results
+
+
+def _read_cached(hf: Path, project_dir: Path | None, issue: str | None) -> dict | None:
+    ck = _cache_key(project_dir, issue)
+    return _read_cached_path(hf, ck)
+
+
+def _read_cached_path(hf: Path, ck: str) -> dict | None:
     if not hf.exists():
-        _handoff_caches[cache_key] = (0.0, None)
+        _handoff_caches[ck] = (0.0, "", None)
         return None
-
     try:
         mtime = hf.stat().st_mtime
-        cached = _handoff_caches.get(cache_key)
-        if cached and mtime == cached[0]:
-            return cached[1]
-
+        hf_str = str(hf)
+        cached = _handoff_caches.get(ck)
+        if cached and mtime == cached[0] and hf_str == cached[1]:
+            return cached[2]
         data = json.loads(hf.read_text())
-        _handoff_caches[cache_key] = (mtime, data)
+        _handoff_caches[ck] = (mtime, hf_str, data)
         return data
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def archive_handoff(project_dir: Path | None = None) -> dict | None:
-    """Move the current handoff to the archive directory. Returns the archived data."""
-    hf = _handoff_file(project_dir)
-    if hf is None or not hf.exists():
+def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -> dict | None:
+    """Move handoff file(s) to the archive directory. Returns the last archived data."""
+    from sova.ipc.handoff import handoff_filename
+
+    cdir = _control_dir(project_dir)
+    if cdir is None:
         return None
 
-    handoff = get_handoff(project_dir)
-    if not handoff:
-        return None
+    if issue:
+        fname = handoff_filename(issue)
+        files = []
+        if fname != "handoff.json":
+            files.append(cdir / fname)
+        legacy = cdir / "handoff.json"
+        if legacy.exists():
+            try:
+                ldata = json.loads(legacy.read_text())
+                if ldata.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                    files.append(legacy)
+            except (json.JSONDecodeError, OSError):
+                pass
+    else:
+        files = list(cdir.glob("handoff-*.json")) if cdir.exists() else []
+        legacy = cdir / "handoff.json"
+        if legacy.exists():
+            files.append(legacy)
 
     archive = _archive_dir(project_dir)
-    archive.mkdir(parents=True, exist_ok=True)
+    last_data = None
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    source = handoff.get("source", "unknown")
-    archive_name = f"{ts}_{source}.json"
-    shutil.copy2(hf, archive / archive_name)
+    for hf in files:
+        if not hf.exists():
+            continue
+        try:
+            data = json.loads(hf.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
 
-    # Prune old archives (keep last 50)
-    archives = sorted(archive.glob("*.json"), key=lambda p: p.name)
-    for old in archives[:-50]:
-        old.unlink(missing_ok=True)
+        last_data = data
+        if archive is not None:
+            archive.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            source = data.get("source", "unknown")
+            h_issue = data.get("issue", "")
+            suffix = f"_{h_issue}" if h_issue else ""
+            stem = hf.stem
+            archive_name = f"{ts}_{source}{suffix}_{stem}.json"
+            shutil.copy2(hf, archive / archive_name)
 
-    return handoff
+    if archive is not None and archive.exists():
+        archives = sorted(archive.glob("*.json"), key=lambda p: p.name)
+        for old in archives[:-50]:
+            old.unlink(missing_ok=True)
+
+    return last_data
 
 
-def clear_handoff(project_dir: Path | None = None) -> bool:
-    """Archive and remove the current handoff file."""
-    archive_handoff(project_dir)
-    hf = _handoff_file(project_dir)
-    if hf is not None and hf.exists():
-        hf.unlink()
-        cache_key = str(hf.parent.parent)
-        _handoff_caches[cache_key] = (0.0, None)
-        return True
-    return False
+def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> bool:
+    """Archive and remove handoff file(s).
+
+    With issue: clears only that issue's handoff.
+    Without: clears all handoff files.
+    """
+    from sova.ipc.handoff import handoff_filename
+
+    archive_handoff(project_dir, issue=issue)
+
+    cdir = _control_dir(project_dir)
+    if cdir is None:
+        return False
+
+    cleared = False
+    if issue:
+        fname = handoff_filename(issue)
+        if fname != "handoff.json":
+            hf = cdir / fname
+            if hf.exists():
+                hf.unlink()
+                cleared = True
+        legacy = cdir / "handoff.json"
+        if legacy.exists():
+            try:
+                data = json.loads(legacy.read_text())
+                if data.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                    legacy.unlink()
+                    cleared = True
+            except (json.JSONDecodeError, OSError):
+                pass
+        ck = _cache_key(project_dir, issue)
+        _handoff_caches[ck] = (0.0, "", None)
+    else:
+        for hf in list(cdir.glob("handoff-*.json")) + [cdir / "handoff.json"]:
+            if hf.exists():
+                hf.unlink()
+                cleared = True
+        prefix = str(project_dir or _resolve_project_dir()) + ":"
+        keys_to_clear = [k for k in _handoff_caches if k.startswith(prefix)]
+        for k in keys_to_clear:
+            _handoff_caches[k] = (0.0, "", None)
+
+    _handoff_caches[_cache_key(project_dir, None)] = (0.0, "", None)
+    return cleared
 
 
 def build_action_command(action: dict) -> dict:

@@ -9,6 +9,7 @@ pre-existing behaviour).
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable
 from typing import Any
@@ -69,16 +70,36 @@ class MonitorCIStep(BaseStep):
     # CI polling (shared between initial check and post-fix re-checks)
     # ------------------------------------------------------------------
 
-    async def _poll_ci(self, ctx: ExecutionContext) -> tuple[StepResult, list[CICheck]]:
-        """Poll CI checks until completion. Returns (result, failed_checks)."""
+    async def _poll_ci(
+        self,
+        ctx: ExecutionContext,
+        *,
+        expected_sha: str = "",
+    ) -> tuple[StepResult, list[CICheck]]:
+        """Poll CI checks until completion. Returns (result, failed_checks).
+
+        When *expected_sha* is provided (e.g. after a force-push), the first
+        poll verifies the PR's head SHA matches.  Stale checks from a prior
+        commit are treated as "no checks yet" until GitHub registers the push.
+        """
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
         elapsed = 0
+        sha_validated = not expected_sha
 
-        log.info("step.monitor_ci.poll", pr=ctx.pr_number, max_wait=max_wait)
+        sha_short = expected_sha[:8] if expected_sha else ""
+        log.info("step.monitor_ci.poll", pr=ctx.pr_number, max_wait=max_wait, expected_sha=sha_short)
 
         while elapsed < max_wait:
+            if not sha_validated:
+                sha_validated = await self._verify_pr_head_sha(ctx, expected_sha)
+                if not sha_validated:
+                    log.debug("step.monitor_ci.sha_mismatch", elapsed=elapsed)
+                    await asyncio.sleep(poll_interval)
+                    elapsed += poll_interval
+                    continue
+
             checks = await get_ci_checks(
                 ctx.pr_number,
                 repo=ctx.repo,
@@ -143,6 +164,42 @@ class MonitorCIStep(BaseStep):
             [],
         )
 
+    @staticmethod
+    async def _verify_pr_head_sha(ctx: ExecutionContext, expected_sha: str) -> bool:
+        """Check that the PR's head commit matches *expected_sha*."""
+        from sova.utils.gh import resolve_gh_env
+        from sova.utils.shell import run
+
+        env = await resolve_gh_env(ctx.config.github_user)
+        result = await run(
+            "gh",
+            "pr",
+            "view",
+            str(ctx.pr_number),
+            "--repo",
+            ctx.repo,
+            "--json",
+            "headRefOid",
+            env=env,
+        )
+        if not result.success:
+            log.warning("step.monitor_ci.sha_check_failed", pr=ctx.pr_number)
+            return False
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            log.warning("step.monitor_ci.sha_check_parse_failed", pr=ctx.pr_number)
+            return False
+        return data.get("headRefOid", "").startswith(expected_sha[:12])
+
+    @staticmethod
+    async def _get_local_head_sha(ctx: ExecutionContext) -> str:
+        """Get the current HEAD SHA in the working directory."""
+        from sova.utils.shell import run
+
+        result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        return result.stdout.strip() if result.success else ""
+
     # ------------------------------------------------------------------
     # CI fix loop
     # ------------------------------------------------------------------
@@ -185,6 +242,8 @@ class MonitorCIStep(BaseStep):
             if skip:
                 continue
 
+            head_sha = await self._get_local_head_sha(ctx)
+
             try:
                 await git_ops.push(
                     ctx.branch_name,
@@ -197,7 +256,7 @@ class MonitorCIStep(BaseStep):
                 msg = f"CI fix push failed on attempt {attempt}: {exc}"
                 return StepResult(success=False, summary=msg, error=str(exc))
 
-            result, new_failed = await self._poll_ci(ctx)
+            result, new_failed = await self._poll_ci(ctx, expected_sha=head_sha)
             if result.success:
                 return StepResult(
                     success=True,

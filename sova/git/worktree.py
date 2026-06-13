@@ -60,6 +60,20 @@ async def create_worktree(
     if worktree_path.exists():
         head = await run("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=worktree_path)
         if head.success and head.stdout.strip() == branch:
+            ahead = await run(
+                "git",
+                "rev-list",
+                "--count",
+                f"origin/{branch}..HEAD",
+                cwd=worktree_path,
+            )
+            if ahead.success and ahead.stdout.strip() not in ("", "0"):
+                log.warning(
+                    "worktree.reuse_ahead_of_origin",
+                    path=str(worktree_path),
+                    branch=branch,
+                    commits_ahead=ahead.stdout.strip(),
+                )
             log.info("worktree.reuse", path=str(worktree_path), branch=branch)
             return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
         # Stale or wrong-branch worktree -- remove and recreate

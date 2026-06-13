@@ -79,7 +79,7 @@ class CIConfig(BaseSettings):
     """CI monitoring configuration."""
 
     poll_interval: int = Field(60, gt=0)
-    max_wait: int = Field(600, gt=0)
+    max_wait: int = Field(900, gt=0)
     no_checks_grace_period: int = Field(120, ge=0)
     max_fix_attempts: int = Field(2, ge=0)
     flaky_checks: list[str] = Field(default_factory=list)

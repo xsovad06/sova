@@ -19,6 +19,8 @@ _synthesis_cache: dict[tuple[str, int], tuple[float, list[dict] | None]] = {}
 _issue_pr_cache: dict[str, tuple[float, int | None]] = {}
 _SYNTHESIS_TTL_SECONDS = 60
 
+_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge", "ship-pr"})
+
 
 def _check_ttl_cache(cache: dict, key: object) -> tuple[bool, object]:
     """Check a TTL cache entry. Returns (hit, value)."""
@@ -106,23 +108,47 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         continue
 
                     was_status = run.status
-                    run.status = "interrupted"
-                    run.error_message = f"Stale run recovered on startup (was {was_status!r})"
-                    run.ended_at = datetime.now(timezone.utc)
-                    interrupted.append(
-                        {
-                            "run_id": run.id,
-                            "issue": run.issue_number,
-                            "role": run.role,
-                            "pid": run.pid,
-                        }
+                    final_status = "interrupted"
+
+                    if run.pr_number and run.role:
+                        cmd_name = run.role.removeprefix("command:").removeprefix("/").split()[0]
+                        if cmd_name in _MERGE_ROLES:
+                            try:
+                                from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
+
+                                if await _check_pr_merged_on_failure(run.pr_number, project_dir):
+                                    final_status = "done"
+                                    log.info(
+                                        "recovery.merge_succeeded_despite_crash",
+                                        run_id=run.id,
+                                        pr=run.pr_number,
+                                    )
+                            except Exception:
+                                log.debug("recovery.merge_check_failed", run_id=run.id, exc_info=True)
+
+                    run.status = final_status
+                    run.error_message = (
+                        f"Stale run recovered on startup (was {was_status!r})"
+                        if final_status == "interrupted"
+                        else f"Agent process died but PR #{run.pr_number} was merged successfully"
                     )
+                    run.ended_at = datetime.now(timezone.utc)
+                    if final_status == "interrupted":
+                        interrupted.append(
+                            {
+                                "run_id": run.id,
+                                "issue": run.issue_number,
+                                "role": run.role,
+                                "pid": run.pid,
+                            }
+                        )
                     log.warning(
-                        "recovery.interrupted",
+                        "recovery.stale_run",
                         run_id=run.id,
                         issue=run.issue_number,
                         pid=run.pid,
                         was_status=was_status,
+                        final_status=final_status,
                     )
 
         if interrupted:

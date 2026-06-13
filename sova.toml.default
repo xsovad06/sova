@@ -40,7 +40,7 @@ max_rounds = 2
 # How often to poll CI checks (seconds)
 poll_interval = 60
 # Max time to wait for CI (seconds)
-max_wait = 600
+max_wait = 900
 # Known flaky check names (list of regex patterns)
 flaky_checks = []
 

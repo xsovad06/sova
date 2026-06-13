@@ -12,10 +12,13 @@ log = get_logger(component="dashboard.queue")
 
 # Priority mapping (lower = higher priority), same as scheduler
 _STATE_PRIORITY: dict[TaskState, int] = {
+    TaskState.IN_REVIEW: -1,
     TaskState.RESEARCHED: 0,
     TaskState.IN_PROGRESS: 1,
     TaskState.TRIAGED: 2,
     TaskState.BACKLOG: 3,
+    TaskState.NEEDS_SPEC: 4,
+    TaskState.HUMAN_ONLY: 5,
 }
 
 _ACTIONABLE_STATES = frozenset(
@@ -24,6 +27,9 @@ _ACTIONABLE_STATES = frozenset(
         TaskState.TRIAGED,
         TaskState.RESEARCHED,
         TaskState.IN_PROGRESS,
+        TaskState.IN_REVIEW,
+        TaskState.NEEDS_SPEC,
+        TaskState.HUMAN_ONLY,
     }
 )
 
@@ -39,6 +45,9 @@ _RECOMMENDED_ACTION: dict[TaskState, str] = {
     TaskState.TRIAGED: "research",
     TaskState.RESEARCHED: "develop",
     TaskState.IN_PROGRESS: "resume",
+    TaskState.IN_REVIEW: "review",
+    TaskState.NEEDS_SPEC: "spec",
+    TaskState.HUMAN_ONLY: "triage",
 }
 
 _PRIORITY_LABEL_ORDER: dict[str, int] = {
@@ -125,6 +134,7 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
     """Get the most recent TaskRun for each issue number.
 
     Uses a subquery to find max(id) per issue, avoiding loading all rows.
+    Also finds pr_number across ALL runs (reviewer runs often lack it).
     """
     try:
         from sqlalchemy import func, select
@@ -139,11 +149,20 @@ async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
                 result = await session.execute(stmt)
                 runs = result.scalars().all()
 
+                pr_stmt = (
+                    select(TaskRun.issue_number, func.max(TaskRun.pr_number).label("pr"))
+                    .where(TaskRun.pr_number.isnot(None))
+                    .group_by(TaskRun.issue_number)
+                )
+                pr_result = await session.execute(pr_stmt)
+                pr_by_issue = {row.issue_number: row.pr for row in pr_result}
+
         return {
             r.issue_number: {
                 "id": r.id,
                 "status": r.status,
                 "role": r.role,
+                "pr_number": r.pr_number or pr_by_issue.get(r.issue_number),
                 "ended_at": iso_utc(r.ended_at),
                 "started_at": iso_utc(r.started_at),
             }

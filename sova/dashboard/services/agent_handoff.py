@@ -23,8 +23,19 @@ async def _process_auto_handoff(agent: AgentState) -> None:
         from sova.dashboard.services import agent_lifecycle, handoff_service
         from sova.ipc.handoff import read_handoff_file
 
-        handoff = read_handoff_file(agent.project_dir)
+        handoff = read_handoff_file(agent.project_dir, issue=agent.issue)
         if handoff is None or handoff.status != "awaiting_action":
+            return
+
+        h_issue = str(handoff.issue).lstrip("#").strip() if handoff.issue else ""
+        a_issue = str(agent.issue).lstrip("#").strip() if agent.issue else ""
+        if h_issue and a_issue and h_issue != a_issue:
+            log.info(
+                "auto_handoff.issue_mismatch",
+                run_id=agent.run_id,
+                agent_issue=agent.issue,
+                handoff_issue=handoff.issue,
+            )
             return
 
         for action in handoff.next_actions:
@@ -39,7 +50,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 issue=handoff.issue,
             )
 
-            handoff_service.clear_handoff(agent.project_dir)
+            handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
 
             if action.mode == "agent":
                 args = action.args or {}
