@@ -195,7 +195,12 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         cfg = load_config(project_dir)
         provider_type = cfg.llm.provider
         try:
-            provider = create_provider(provider_type)
+            provider = create_provider(
+                provider_type,
+                model=cfg.llm.model,
+                fallback_model=cfg.llm.fallback_model,
+                api_base=cfg.llm.api_base,
+            )
         except ValueError as exc:
             # Only ValueError from create_provider (unknown provider type).
             # pydantic.ValidationError also inherits ValueError in v2 but

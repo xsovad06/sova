@@ -88,11 +88,20 @@ class LLMProvider(ABC):
         ...
 
 
-def create_provider(provider_type: str = "claude-code") -> LLMProvider:
+def create_provider(
+    provider_type: str = "claude-code",
+    *,
+    model: str = "",
+    fallback_model: str = "",
+    api_base: str = "",
+) -> LLMProvider:
     """Create an LLM provider instance by type name.
 
     Args:
         provider_type: Provider identifier (e.g., "claude-code", "litellm").
+        model: Model name to use (LiteLLM only; ignored for claude-code).
+        fallback_model: Fallback model on primary failure (LiteLLM only).
+        api_base: Custom API base URL (LiteLLM only).
 
     Returns:
         An LLMProvider instance.
@@ -109,7 +118,11 @@ def create_provider(provider_type: str = "claude-code") -> LLMProvider:
     if provider_type == "litellm":
         from sova.llm.litellm_provider import LiteLLMProvider
 
-        return LiteLLMProvider()
+        return LiteLLMProvider(
+            model=model or "claude-sonnet-4-6",
+            fallback_model=fallback_model or None,
+            api_base=api_base or None,
+        )
 
     available = ["claude-code", "litellm"]
     raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")

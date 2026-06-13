@@ -93,10 +93,31 @@ class LiteLLMProvider(LLMProvider):
         target_model = model or self.model
         start = time.monotonic()
 
-        messages = _build_messages(prompt)
-        kwargs = self._base_kwargs(target_model)
+        try:
+            async for event in self._stream(target_model, prompt, start):
+                yield event
+        except Exception:
+            if not self.fallback_model or target_model == self.fallback_model:
+                raise
+            log.warning(
+                "llm.litellm.stream_fallback",
+                primary=target_model,
+                fallback=self.fallback_model,
+            )
+            start = time.monotonic()
+            async for event in self._stream(self.fallback_model, prompt, start):
+                yield event
 
-        log.info("llm.litellm.stream", model=target_model, prompt_len=len(prompt))
+    async def _stream(
+        self,
+        model: str,
+        prompt: str,
+        start: float,
+    ) -> AsyncIterator[StreamEvent]:
+        messages = _build_messages(prompt)
+        kwargs = self._base_kwargs(model)
+
+        log.info("llm.litellm.stream", model=model, prompt_len=len(prompt))
 
         response = await litellm.acompletion(  # type: ignore[union-attr]
             messages=messages,
@@ -107,7 +128,7 @@ class LiteLLMProvider(LLMProvider):
         text_parts: list[str] = []
         input_tokens = 0
         output_tokens = 0
-        response_model = target_model
+        response_model = model
 
         try:
             async for chunk in response:
@@ -123,7 +144,7 @@ class LiteLLMProvider(LLMProvider):
                 if hasattr(chunk, "model") and chunk.model:
                     response_model = chunk.model
         except Exception:
-            log.error("llm.litellm.stream_error", model=target_model, exc_info=True)
+            log.error("llm.litellm.stream_error", model=model, exc_info=True)
             accumulated_text = "".join(text_parts)
             cost = _get_cost(response_model, input_tokens, output_tokens)
             yield StreamEvent(
@@ -213,7 +234,11 @@ def _build_messages(prompt: str) -> list[dict[str, str]]:
 
 
 def _get_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
-    """Get cost from LiteLLM's cost tracking."""
+    """Get cost from LiteLLM's cost tracking.
+
+    Returns Decimal('0') when the model is not in LiteLLM's pricing database
+    (common for custom/local models). Programming errors propagate normally.
+    """
     try:
         cost = litellm.completion_cost(  # type: ignore[union-attr]
             model=model,
@@ -221,6 +246,6 @@ def _get_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
             completion_tokens=output_tokens,
         )
         return Decimal(str(cost))
-    except Exception:
-        log.warning("llm.litellm.cost_fallback", model=model, exc_info=True)
+    except (ValueError, KeyError, TypeError):
+        log.warning("llm.litellm.cost_unknown", model=model, exc_info=True)
         return Decimal("0")

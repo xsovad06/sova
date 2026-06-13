@@ -866,7 +866,7 @@ class TestClaudeCodeProvider:
         provider = ClaudeCodeProvider()
         with patch("sova.llm.providers.claude_code.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout="1.0.0\n", stderr="")
-            with patch("shutil.which", return_value="/usr/local/bin/claude"):
+            with patch("sova.llm.providers.claude_code.shutil.which", return_value="/usr/local/bin/claude"):
                 available, detail = await provider.check_available()
 
         assert available is True
@@ -1148,6 +1148,69 @@ class TestLiteLLMProvider:
 
         provider = create_provider("litellm")
         assert isinstance(provider, LiteLLMProvider)
+
+    async def test_invoke_streaming_fallback(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        chunks = [
+            _MockStreamChunk(content="Fallback ", model="ollama/qwen3-coder"),
+            _MockStreamChunk(content="response", model="ollama/qwen3-coder"),
+            _MockStreamChunk(
+                content="",
+                model="ollama/qwen3-coder",
+                usage=_MockUsage(prompt_tokens=30, completion_tokens=10),
+            ),
+        ]
+
+        async def mock_fallback_stream():
+            for chunk in chunks:
+                yield chunk
+
+        # Primary model fails at acompletion() call, fallback succeeds
+        mock_litellm.acompletion.side_effect = [
+            RuntimeError("Primary model unavailable"),
+            mock_fallback_stream(),
+        ]
+
+        provider = LiteLLMProvider(model="gpt-4o", fallback_model="ollama/qwen3-coder")
+        events = []
+        async for event in provider.invoke_streaming("Hello"):
+            events.append(event)
+
+        content_events = [e for e in events if e.type == "content"]
+        assert len(content_events) == 2
+        assert content_events[0].text == "Fallback "
+
+        result_events = [e for e in events if e.type == "result"]
+        assert len(result_events) == 1
+        assert result_events[0].result is not None
+        assert result_events[0].result.text == "Fallback response"
+        assert mock_litellm.acompletion.call_count == 2
+
+    async def test_invoke_streaming_no_fallback_raises(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+
+        mock_litellm.acompletion.side_effect = RuntimeError("Model unavailable")
+
+        provider = LiteLLMProvider(model="gpt-4o")
+        with pytest.raises(RuntimeError, match="Model unavailable"):
+            async for _ in provider.invoke_streaming("Hello"):
+                pass
+
+    async def test_create_provider_forwards_config(self, mock_litellm: MagicMock) -> None:
+        from sova.llm.litellm_provider import LiteLLMProvider
+        from sova.llm.provider import create_provider
+
+        provider = create_provider(
+            "litellm",
+            model="gpt-4o",
+            fallback_model="ollama/qwen3-coder",
+            api_base="http://localhost:4000",
+        )
+        assert isinstance(provider, LiteLLMProvider)
+        assert provider.model == "gpt-4o"
+        assert provider.fallback_model == "ollama/qwen3-coder"
+        assert provider.api_base == "http://localhost:4000"
 
     async def test_check_available(self, mock_litellm: MagicMock) -> None:
         from sova.llm.litellm_provider import LiteLLMProvider
