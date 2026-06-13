@@ -48,25 +48,8 @@
   </div>
 </div>
 
-<!-- Handoff Action Panel (shown when no agents running but handoff awaits action) -->
-<div id="handoff-panel" class="hidden mb-6">
-  <div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span>
-      <span class="text-sm text-accent-yellow font-medium">Review Complete -- Action Required</span>
-    </div>
-    <div id="handoff-panel-details" class="mb-3">
-      <p id="handoff-panel-summary" class="text-sm text-gray-300"></p>
-      <p id="handoff-panel-meta" class="text-xs text-gray-500 mt-1"></p>
-    </div>
-    <div id="handoff-panel-actions" class="flex flex-wrap gap-2"></div>
-    <div class="mt-3 border-t border-gray-700/30 pt-3">
-      <button onclick="dismissHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss this handoff">
-        Dismiss
-      </button>
-    </div>
-  </div>
-</div>
+<!-- Handoff Action Panel(s) (shown when no agents running but handoff awaits action) -->
+<div id="handoff-panel" class="hidden mb-6 space-y-3"></div>
 
 <!-- Running Agents Grid -->
 <div id="agents-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
@@ -148,6 +131,8 @@ function stateTag(state) {
     researched: 'bg-accent-purple/20 text-accent-purple',
     in_progress: 'bg-accent/20 text-accent',
     in_review: 'bg-accent-green/20 text-accent-green',
+    needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
+    human_only: 'bg-gray-600/30 text-gray-500',
     done: 'bg-accent-green/30 text-accent-green',
   };
   var cls = colors[state] || 'bg-gray-600/30 text-gray-400';
@@ -160,6 +145,7 @@ var _actionLabels = {
   develop: { text: 'Develop', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
   review: { text: 'Review', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
   resume: { text: 'Resume', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
+  spec: { text: 'Spec', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
 };
 
 var _TIER2_PAGE_SIZE = 15;
@@ -203,6 +189,7 @@ function _extractPriority(labels) {
 var _priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function renderTaskCards() {
+  if (document.querySelector('[id^="card-menu-"]:not(.hidden)')) return;
   var grid = document.getElementById('task-grid');
   var q = (document.getElementById('task-search').value || '').trim().toLowerCase().replace(/^#/, '');
 
@@ -266,7 +253,7 @@ function renderTaskCards() {
       actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
         '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>Running</span>';
     } else {
-      actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\')" ' +
+      actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', false, \'' + escapeHtml(t.action) + '\')" ' +
         'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
         escapeHtml(action.text) + '</button>';
     }
@@ -291,6 +278,11 @@ function renderTaskCards() {
         '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
         '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
         '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>' +
+        (t.state === 'in_review' && t.last_run && t.last_run.pr_number
+          ? '<hr class="border-gray-700/50 my-1">' +
+            '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'developer\', ' + t.last_run.pr_number + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + t.last_run.pr_number + ')</button>' +
+            '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeHtml(t.issue) + '\', pr: ' + t.last_run.pr_number + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + t.last_run.pr_number + '</button>'
+          : '') +
       '</div>' +
     '</div>';
   }).join('');
@@ -323,21 +315,35 @@ document.addEventListener('click', function() {
   document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
 });
 
-async function quickStart(issue, force) {
+var _actionToRole = {
+  triage: 'triage',
+  research: 'researcher',
+  develop: 'developer',
+  review: 'reviewer',
+  resume: 'developer',
+  spec: 'developer',
+};
+
+async function quickStart(issue, force, action) {
   var role = document.getElementById('agent-role').value || null;
+  if (!role && action) {
+    role = _actionToRole[action] || null;
+  }
   await _doStartAgent(issue, role, force || false);
 }
 
-async function quickStartRole(issue, role) {
-  await _doStartAgent(issue, role, false);
+async function quickStartRole(issue, role, prNumber) {
+  await _doStartAgent(issue, role, false, prNumber);
 }
 
-async function _doStartAgent(issue, role, force) {
+async function _doStartAgent(issue, role, force, prNumber) {
   try {
+    var payload = { issue: String(issue), role: role, force: force };
+    if (prNumber) payload.pr_number = prNumber;
     var res = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issue: String(issue), role: role, force: force }),
+      body: JSON.stringify(payload),
     });
     if (!res.ok) {
       showToast(await getErrorDetail(res, 'Failed to start agent'), 'error');
@@ -777,7 +783,7 @@ async function checkHandoffForAgents(agents) {
       var container = document.getElementById('handoff-inline-' + agent.run_id);
       if (!container) return;
 
-      if (targetIssue && targetIssue !== agent.issue) {
+      if (targetIssue) {
         container.innerHTML = '';
         return;
       }
@@ -828,37 +834,50 @@ async function checkStandaloneHandoff() {
     if (!res.ok) { hideHandoffPanel(); return; }
     var data = await res.json();
 
-    if (!data.has_handoff || !data.handoff || data.handoff.status !== 'awaiting_action') {
+    var handoffs = (data.handoffs || []).filter(function(h) { return h.status === 'awaiting_action'; });
+    if (handoffs.length === 0) {
       hideHandoffPanel();
       return;
     }
 
-    var handoff = data.handoff;
     var panel = document.getElementById('handoff-panel');
-    var summary = document.getElementById('handoff-panel-summary');
-    var meta = document.getElementById('handoff-panel-meta');
-    var actionsDiv = document.getElementById('handoff-panel-actions');
+    panel.innerHTML = handoffs.map(function(handoff) {
+      var metaParts = [];
+      if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
+      if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
+      if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
 
-    summary.textContent = handoff.summary || 'Review completed';
-    var metaParts = [];
-    if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
-    if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
-    if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
-    meta.textContent = metaParts.join('  |  ');
+      var actions = (handoff.next_actions || []).map(function(action) {
+        var btnStyle = action.style === 'approve'
+          ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
+          : action.style === 'danger'
+          ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
+          : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
+        return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+          'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
+          'title="' + escapeHtml(action.description || '') + '">' +
+          escapeHtml(action.label) + '</button>';
+      }).join(' ');
 
-    var actions = (handoff.next_actions || []).map(function(action) {
-      var btnStyle = action.style === 'approve'
-        ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
-        : action.style === 'danger'
-        ? 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30 border border-accent-red/30'
-        : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30';
-      return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
-        'class="px-4 py-2 rounded text-sm font-medium transition-colors ' + btnStyle + '" ' +
-        'title="' + escapeHtml(action.description || '') + '">' +
-        escapeHtml(action.label) + '</button>';
-    }).join(' ');
+      var issueLabel = handoff.issue ? ' #' + handoff.issue : '';
+      return '<div class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-4">' +
+        '<div class="flex items-center gap-2 mb-3">' +
+          '<span class="w-2.5 h-2.5 rounded-full bg-accent-yellow animate-pulse"></span>' +
+          '<span class="text-sm text-accent-yellow font-medium">Review Complete' + issueLabel + ' -- Action Required</span>' +
+        '</div>' +
+        '<div class="mb-3">' +
+          '<p class="text-sm text-gray-300">' + escapeHtml(handoff.summary || 'Review completed') + '</p>' +
+          '<p class="text-xs text-gray-500 mt-1">' + escapeHtml(metaParts.join('  |  ')) + '</p>' +
+        '</div>' +
+        '<div class="flex flex-wrap gap-2">' + actions + '</div>' +
+        '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
+          '<button onclick="dismissHandoff(\'' + escapeHtml(handoff.issue || '') + '\')" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss this handoff">' +
+            'Dismiss' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
 
-    actionsDiv.innerHTML = actions;
     panel.classList.remove('hidden');
   } catch (e) {
     hideHandoffPanel();
@@ -869,14 +888,16 @@ function hideHandoffPanel() {
   document.getElementById('handoff-panel').classList.add('hidden');
 }
 
-async function dismissHandoff() {
+async function dismissHandoff(issue) {
   try {
+    var body = issue ? { issue: issue } : {};
     await fetch(apiUrl('/handoff/clear'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     });
   } catch (e) { /* ignore */ }
-  hideHandoffPanel();
+  loadAgents();
 }
 
 // -- Interrupted runs --
