@@ -71,7 +71,45 @@ git push --force-with-lease
 
 **Hard stop** if push fails (branch protection, permissions).
 
-### Phase 3: Wait for CI
+### Phase 3: Pre-Merge Documentation Updates
+
+Run this phase on the feature branch BEFORE merge. This avoids post-merge commits on main (which branch protection would block).
+
+Only run if `.claude/agent-memory/` exists in the project.
+
+1. **Capture review learnings**: fetch all review data from the PR:
+   ```bash
+   OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+   gh pr view <PR_NUMBER> --json comments,reviews,body,title
+   gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
+   gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews"
+   ```
+   Analyze ALL review comments (human and bot) for actionable findings:
+   - Patterns to follow, mistakes to avoid, test coverage gaps, bot suggestions worth adopting
+   - Skip only if there are truly zero review comments. A bot approval with suggestions still counts.
+   - Update `.claude/agent-memory/cookbook.md` (append new findings, no duplicates).
+   - Promote confirmed patterns (flagged in 2+ PRs, or security/correctness) to `.claude/rules/*.md`.
+
+2. **Update documentation counts**: run verification commands and fix any drifted counts:
+   ```bash
+   pytest tests/ --collect-only -q 2>/dev/null | tail -1   # test count
+   ls sova/dashboard/services/*.py | grep -v __init__ | wc -l  # service count
+   ls sova/dashboard/routers/*.py | grep -v __init__ | wc -l   # router count
+   ```
+   If any count in `AGENTS.md`, `README.md`, or `docs/VISION.md` has drifted, update it.
+
+3. **Add session learnings**: scan the PR description, commit messages, and this conversation for new framework gotchas, testing patterns, or operational issues. Append to `.claude/agent-memory/cookbook.md`.
+
+4. **Check file sizes**: `cookbook.md` under 200 lines (prune oldest `[confirmed: 0]` if needed).
+
+5. **Commit and push** if any files changed:
+   ```bash
+   git add -A .claude/agent-memory/ AGENTS.md README.md docs/VISION.md .claude/rules/
+   git commit -m "docs: update counts and capture learnings from PR #<PR_NUMBER>"
+   git push --force-with-lease
+   ```
+
+### Phase 4: Wait for CI
 
 After pushing, CI needs to re-run. Poll until complete:
 
@@ -81,7 +119,7 @@ gh pr checks <PR_NUMBER>
 
 Poll every 30 seconds, up to 15 minutes total.
 
-**If CI passes**: proceed to Phase 4.
+**If CI passes**: proceed to Phase 5.
 
 **If CI fails**: analyze the failures briefly.
 - If all failures look like infrastructure/flaky (network timeouts, resource limits), post a `/retest` comment and retry once. If it fails again, write a failed handoff and stop.
@@ -89,7 +127,7 @@ Poll every 30 seconds, up to 15 minutes total.
 
 **If CI times out** (15 minutes): write an `awaiting_action` handoff with "Wait for CI" and "Abort" actions, then stop.
 
-### Phase 4: Merge
+### Phase 5: Merge
 
 Try merge strategies in order until one succeeds (repo settings may restrict some):
 
@@ -101,7 +139,7 @@ If rebase merge is not allowed, fall back to `--squash`, then `--merge`. If all 
 
 **Hard stop** if merge fails -- write a failed handoff with the error.
 
-### Phase 5: Post-Merge Cleanup (incorporates `/after-merge`)
+### Phase 6: Post-Merge Cleanup (incorporates `/after-merge`)
 
 ```bash
 # Switch to base branch and sync
@@ -131,55 +169,9 @@ git stash list
 
 If any stash entries reference the merged branch name, log them in the handoff. In autonomous mode, do not drop stashes -- report them. In interactive mode, ask the user.
 
-### Phase 6: Capture Review Learnings (incorporates `/ingest-review`)
+### Phase 7: Write Completion Handoff
 
-Only run this phase if `.claude/agent-memory/` exists in the project.
-
-Fetch all review data:
-
-```bash
-OWNER_REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-gh pr view <PR_NUMBER> --json comments,reviews,body,title
-gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/comments"
-gh api "repos/${OWNER_REPO}/pulls/<PR_NUMBER>/reviews"
-```
-
-Analyze ALL review comments (human and bot) for actionable findings:
-- **Patterns to follow** -- things reviewers praised or explicitly requested
-- **Mistakes to avoid** -- bugs caught, missing edge cases, style violations
-- **Test coverage gaps** -- missing assertions, untested scenarios
-- **Bot suggestions worth adopting** -- evaluate critically, but don't dismiss just because the source is a bot. If a bot identifies a real improvement (even in an "outside diff" comment), record it.
-
-Skip only if there are truly zero review comments and zero review bodies with content. A bot approval with suggestions still counts as reviewable content.
-
-Update `.claude/agent-memory/cookbook.md` (if it exists):
-- Append new findings under the matching domain section (no duplicates)
-- Add recurring mistakes to the "Common Mistakes" section with `[Nx]` count
-
-### Phase 7: Extract and Promote Knowledge (incorporates `/extract-knowledge`)
-
-Only run this phase if `.claude/agent-memory/` exists in the project.
-
-1. **Update test count** in `.claude/agent-memory/MEMORY.md` if the PR added or removed tests. Also update any other files that track test counts (README.md, AGENTS.md, etc.).
-
-2. **Promote confirmed patterns to project knowledge**: Review the findings captured in Phase 6. If any pattern was:
-   - Flagged in 2+ PRs, OR
-   - A security/correctness issue with clear prevention rule
-   
-   Then add it to the appropriate project knowledge file (the project's rules, guidelines, or conventions docs).
-
-3. **Add session learnings**: Actively scan these sources for new framework gotchas, testing patterns, operational issues, or development insights:
-   - **PR description and commit messages**: read the PR body and `git log` for investigation context, root cause analysis, or workaround notes
-   - **This conversation**: review the current session for patterns discovered, gotchas hit, or operational issues encountered (e.g., auth failures, permission gaps, tool quirks)
-   - **Errors recovered from during this pipeline**: if the merge, CI, or any phase hit an issue that was resolved, that resolution is a learning
-   
-   For each finding, append to `.claude/agent-memory/cookbook.md` under the matching domain section. Only record actionable, specific lessons -- not generic advice. Check for duplicates before adding.
-
-4. **Check file sizes**: Ensure agent memory stays within limits:
-   - `MEMORY.md` -- under 20 lines (index only)
-   - `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
-
-### Phase 8: Write Completion Handoff
+Note: review learnings and doc count updates were already captured in Phase 3 (pre-merge). This phase only writes the completion handoff -- no git commits on main.
 
 Write the final handoff to `.claude/agent-control/handoff.json`:
 
@@ -200,7 +192,7 @@ mkdir -p .claude/agent-control
   - `ci_status`: `"passed"`
 - `next_actions`: empty (pipeline is complete)
 
-### Phase 9: Report
+### Phase 8: Report
 
 Output a summary:
 - PR merged into base branch (merge strategy used)
@@ -218,26 +210,27 @@ When writing a failed handoff at any phase, include:
 - `source`: `"integrate-pr"`
 - `status`: `"failed"`
 - `summary`: what failed and at which phase
-- `details.failed_phase`: which phase failed (1-7)
+- `details.failed_phase`: which phase failed (1-6)
 - `details.error`: the error message
 - `next_actions` based on failure type:
 
 **Merge conflicts (Phase 2)**:
+Note: Phase 3 (doc updates) runs after rebase, Phase 4 (CI), Phase 5 (merge).
 1. "Resolve Conflicts" (style: `neutral`) -- manual resolution needed
 2. "Retry Integration" (style: `neutral`) -- mode: `claude-command`, command: `/integrate-pr`, args: `{pr}` -- re-run after main changes
 3. "Abort" (style: `danger`) -- clear handoff
 
-**CI failures (Phase 3)**:
+**CI failures (Phase 4)**:
 1. "Retry CI" (style: `neutral`) -- post `/retest` and wait
 2. "Investigate CI" (style: `neutral`) -- mode: `claude-command`, command: `/agent-resume`, args: `{pr, investigate_ci: true}`
 3. "Abort" (style: `danger`)
 
-**CI timeout (Phase 3)**:
+**CI timeout (Phase 4)**:
 1. "Wait for CI" (style: `neutral`) -- mode: `claude-command`, command: `/agent-resume`, args: `{pr, wait_for: "ci"}`
 2. "Merge Now" (style: `approve`) -- mode: `claude-command`, command: `/approve-merge`, args: `{pr}`
 3. "Abort" (style: `danger`)
 
-**Merge failure (Phase 4)**:
+**Merge failure (Phase 5)**:
 1. "Retry Merge" (style: `neutral`) -- mode: `claude-command`, command: `/approve-merge`, args: `{pr}`
 2. "Abort" (style: `danger`)
 

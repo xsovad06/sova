@@ -15,58 +15,54 @@ Ensure all documentation matches the current code state. Updates both git-tracke
 
 Context: $ARGUMENTS
 
-## Phase 1: Discover Project Structure
+## Phase 1: Discover What Changed
 
 ```bash
 # Find the base branch
 BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
 
-# Changed files on this branch
-git diff --name-only $(git merge-base HEAD origin/$BASE)..HEAD
-
-# All tracked markdown docs
-git ls-files '*.md'
-
-# Local-only markdown docs (exist on disk but not tracked)
-find . -name '*.md' -not -path './.git/*' | while read f; do
-  git ls-files --error-unmatch "$f" 2>/dev/null || echo "$f"
-done
+# Changed files on this branch (determines which docs to check)
+CHANGED=$(git diff --name-only $(git merge-base HEAD origin/$BASE)..HEAD)
+echo "$CHANGED"
 ```
 
-Read the project's CLAUDE.md or README.md to understand the documentation conventions.
+Read the project's CLAUDE.md or AGENTS.md to understand documentation conventions and which files track counts.
 
-## Phase 2: Identify What Needs Updating
+## Phase 2: Verify Structural Counts
 
-For each doc file (tracked or local), check if any of its factual claims are stale:
+Run the project's actual count verification commands and compare against documented values. Adapt the commands below to the project's structure.
 
-### Test counts
 ```bash
-# Find all test files and count tests
-find . -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.ts' -o -name '*.spec.ts' | while read f; do
-  dir=$(dirname "$f")
-  count=$(grep -cE '(def test_|it\(|test\()' "$f" 2>/dev/null || echo 0)
-  echo "$dir: $count"
+# Tests (Python)
+TEST_COUNT=$(find tests -name 'test_*.py' -exec grep -c 'def test_\|async def test_' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s}')
+
+# Tests (JS/TS)
+# TEST_COUNT=$(find src -name '*.test.ts' -o -name '*.spec.ts' -exec grep -c 'it(\|test(' {} + 2>/dev/null | awk -F: '{s+=$2}END{print s}')
+```
+
+Search documentation files for count references and compare:
+
+```bash
+for f in README.md CLAUDE.md AGENTS.md docs/*.md .claude/rules/*.md; do
+  [ -f "$f" ] && grep -nE '[0-9]+ (tests|services|routers|templates|steps|commands|pages|modules|models)' "$f"
 done
 ```
 
-Compare against documented test counts in README.md, CLAUDE.md, or similar files.
+Flag any documented count that doesn't match the actual count.
 
-### API references
-If the project has API documentation, check that:
-- Endpoint URLs match the current code
-- Request/response shapes match
-- Auth patterns match
+## Phase 3: Check Scope-Specific Docs
 
-### Architecture docs
-If the project has architecture documentation, check that:
-- Module/component lists are complete
-- Dependency descriptions are accurate
-- Pattern descriptions match the code
+Based on which files changed, check related documentation:
 
-### Configuration docs
-Check that documented config values, environment variables, and settings match the code.
+- **Source code structure changed** (new files, renamed modules) -- verify architecture docs, module lists, project tree
+- **Tests added/removed** -- verify test counts in all docs
+- **CLI commands changed** -- verify command lists and help text references
+- **Configuration changed** -- verify config docs, env var references, default values
+- **API endpoints changed** -- verify API references, request/response shapes
 
-## Phase 3: Apply Updates
+Only check docs related to the changed code paths. Skip unchanged areas.
+
+## Phase 4: Apply Updates
 
 For each stale doc:
 1. Read the full current file
@@ -74,7 +70,7 @@ For each stale doc:
 3. Update only the factual content -- never rewrite prose
 4. Preserve the existing format and structure
 
-## Phase 4: Stage and Report
+## Phase 5: Stage and Report
 
 ```bash
 # Stage tracked docs only
@@ -84,7 +80,6 @@ done
 
 # Show what changed
 git diff --cached --stat
-git status
 ```
 
 Report what was updated:
@@ -93,9 +88,6 @@ Report what was updated:
 ## Docs Updated
 
 ### Tracked (will be committed)
-- <file>: <what changed>
-
-### Local (stays on disk)
 - <file>: <what changed>
 
 ### No changes needed
@@ -110,5 +102,5 @@ Report what was updated:
 - **Two-tier staging** -- stage tracked docs; update local-only docs on disk without staging
 - **Minimal changes** -- don't reorganize or reformat docs that aren't stale
 - **Preserve structure** -- match existing format and section headers
-- **Skip unchanged areas** -- only check docs related to changed code
+- **Scope-driven** -- only check docs related to changed code paths, not the entire project
 - NEVER use emojis in any output
