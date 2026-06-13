@@ -142,7 +142,14 @@ def create_app(
         from sova.llm.provider import create_provider
 
         cfg = load_config(resolved)
-        set_provider(create_provider(cfg.llm.provider))
+        set_provider(
+            create_provider(
+                cfg.llm.provider,
+                model=cfg.llm.model,
+                fallback_model=cfg.llm.fallback_model,
+                api_base=cfg.llm.api_base,
+            )
+        )
 
         if is_multi:
             for _slug, path_str in list_projects().items():
