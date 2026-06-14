@@ -161,7 +161,7 @@ async function loadConfig() {
     container.innerHTML = html;
 
     // Restore previously expanded groups, or auto-expand first on initial load
-    var toExpand = expanded.length > 0 ? expanded : [groups[0].id];
+    var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
     toExpand.forEach(function(id) { toggleGroup(id); });
 
     // Load invariants and personas into their containers
