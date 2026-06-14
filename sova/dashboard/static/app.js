@@ -46,6 +46,11 @@ function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function escapeJsStr(str) {
+  if (!str) return '';
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 function formatDuration(ms) {
   if (!ms || ms <= 0) return '--';
   if (ms < 1000) return ms + 'ms';
