@@ -19,7 +19,7 @@ function formatValue(val, type, key) {
     var isTrue = (val === true || val === 'true');
     return '<label class="sova-toggle">' +
       '<input type="checkbox"' + (isTrue ? ' checked' : '') +
-        ' onchange="toggleBool(\'' + escapeHtml(key) + '\', this.checked)">' +
+        ' onchange="toggleBool(\'' + escapeJsStr(key) + '\', this.checked)">' +
       '<span class="sova-toggle-track"></span>' +
     '</label>';
   }
@@ -58,9 +58,9 @@ function renderSettingRow(s) {
   var descHtml = s.description
     ? '<div class="text-xs text-gray-600 mt-0.5">' + escapeHtml(s.description) + '</div>'
     : '';
-  var clickAttr = editable ? ' onclick="editConfig(\'' + escapeHtml(s.key) + '\')" style="cursor:pointer"' : '';
+  var clickAttr = editable ? ' onclick="editConfig(\'' + escapeJsStr(s.key) + '\')" style="cursor:pointer"' : '';
   var editBtn = editable
-    ? '<button onclick="event.stopPropagation(); editConfig(\'' + escapeHtml(s.key) + '\')" ' +
+    ? '<button onclick="event.stopPropagation(); editConfig(\'' + escapeJsStr(s.key) + '\')" ' +
       'class="text-xs text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">' +
       'edit' +
     '</button>'
@@ -104,8 +104,7 @@ async function loadConfig() {
     var groups = data.groups;
 
     if (!groups || groups.length === 0) {
-      container.innerHTML = '<p class="text-gray-500 text-sm lg:col-span-2">No configuration found</p>';
-      return;
+      groups = [];
     }
 
     // Remember which groups are expanded before rebuilding DOM

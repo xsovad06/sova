@@ -375,7 +375,8 @@ async function quickStart(issue, force, action) {
     await runCommand(cmd, { issue: String(issue) });
     return;
   }
-  var role = document.getElementById('agent-role').value || null;
+  var roleEl = document.getElementById('agent-role');
+  var role = (roleEl && roleEl.value) || null;
   if (!role && action) {
     role = _actionToRole[action] || null;
   }
