@@ -93,7 +93,7 @@ If the repository has CI checks configured, poll until complete:
 gh pr checks <PR_NUMBER>
 ```
 
-Poll every 30 seconds, up to 15 minutes.
+Poll every 30 seconds, up to 15 minutes. This includes external review bots (e.g., CodeRabbit) that appear as pending StatusContext checks. After all checks pass, also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision`) -- `gh pr checks` monitors CI status only, not review decisions.
 
 - **Passes**: proceed to Phase 5.
 - **No checks configured**: proceed to Phase 5 immediately.

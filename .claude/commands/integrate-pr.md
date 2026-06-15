@@ -117,7 +117,7 @@ After pushing, CI needs to re-run. Poll until complete:
 gh pr checks <PR_NUMBER>
 ```
 
-Poll every 30 seconds, up to 15 minutes total.
+Poll every 30 seconds, up to 15 minutes total. **This includes CodeRabbit** -- it appears as a `pending` StatusContext. After all checks pass, also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision`) -- `gh pr checks` monitors CI status only, not review decisions. Do NOT merge while any check or review bot is still pending.
 
 **If CI passes**: proceed to Phase 5.
 
