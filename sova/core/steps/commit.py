@@ -15,7 +15,7 @@ log = get_logger(component="step.commit")
 _AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-")
 
 _CONVENTIONAL_COMMIT_RE = re.compile(
-    r"^(feat|fix|refactor|test|docs|chore)\([a-z-]+\): .+$"
+    r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*"
 )
 
 
@@ -33,7 +33,7 @@ def _normalize_commit_subject(
     """Normalize a commit subject to conventional commit format."""
     subject = " ".join(subject.strip().split())
     subject = re.sub(r"^(feat|fix|refactor|test|docs|chore):\s*", "", subject)
-    subject = re.sub(r"^(feat|fix|refactor|test|docs|chore)\([a-z-]+\):\s*", "", subject)
+    subject = re.sub(r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*", "", subject)
 
     if not subject:
         subject = "update issue implementation"
@@ -98,4 +98,3 @@ class CommitStep(BaseStep):
         if has_commits:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="No commits ahead of base branch after commit step")
-        

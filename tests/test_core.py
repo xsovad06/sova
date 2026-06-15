@@ -668,6 +668,30 @@ class TestCommitStep:
         assert msg.startswith("feat(core): validate commit messages")
         assert "feat(core): feat(core):" not in msg
         assert "Closes #42" in msg
+    async def test_normalizes_scope_with_digits(self) -> None:
+        """Generated commit messages should normalize scopes containing digits."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.task = Task(id="73", title="feat(api2): validate commit messages")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" commit.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("feat(core): validate commit messages")
+        assert "Closes #42" in msg
 
     async def test_skips_when_already_committed(self) -> None:
         from sova.core.steps.commit import CommitStep
