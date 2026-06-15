@@ -66,7 +66,7 @@ Extract from the metadata:
 
 ## 1.5. Catalog Existing Bot Findings
 
-If the PR has reviews or inline comments from automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.), extract their actionable findings before starting your own analysis. Identify bots from the reviews and inline comments fetched in Step 1 -- look for `user.type == "Bot"` or known bot logins (`coderabbitai`, `sonarqubecloud`, `dependabot`). If no bot reviews exist, skip this step.
+Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.). Identify bots from the reviews and inline comments fetched in Step 1 -- look for `user.type == "Bot"` or known bot logins (`coderabbitai`, `sonarqubecloud`, `dependabot`).
 
 For each bot finding, record:
 - **Source**: which bot (e.g., CodeRabbit, SonarCloud)

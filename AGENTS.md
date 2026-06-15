@@ -161,6 +161,10 @@ Examples:
 - Use emojis in code, documentation, or commit messages
 - Skip pre-commit hooks (`--no-verify`)
 
+### Role Chaining and Circuit Breaker
+
+Agents chain autonomously: Developer -> Reviewer -> Developer (address review). The address-review circuit breaker prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address-review runs by querying `TaskRun` records with an `address_review` `StepExecution`, filtered by issue and PR number. When the count reaches `pipeline.max_address_review_cycles` (default 2, 0=unlimited), auto-execution is blocked and a manual-only handoff is written so the dashboard shows "Address Review (manual)" and "Integrate PR" buttons. See `.claude/rules/architecture.md` for full details.
+
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key
 - **Before any push**: ask the user for explicit approval
