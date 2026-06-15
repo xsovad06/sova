@@ -166,6 +166,7 @@ var _actionLabels = {
 
 var _TIER2_PAGE_SIZE = 15;
 var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
+var _cardMenuOpen = false;
 
 async function loadTaskCards() {
   try {
@@ -257,6 +258,7 @@ function renderTaskCard(t) {
 }
 
 function renderTaskCards() {
+  _cardMenuOpen = false;
   var grid = document.getElementById('task-grid');
   var q = (document.getElementById('task-search').value || '').trim().toLowerCase().replace(/^#/, '');
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
@@ -351,10 +353,19 @@ function toggleCardMenu(event, issue) {
   var wasHidden = menu.classList.contains('hidden');
   document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
   if (wasHidden) menu.classList.remove('hidden');
+  _cardMenuOpen = wasHidden;
 }
 
 document.addEventListener('click', function() {
   document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
+  _cardMenuOpen = false;
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _cardMenuOpen) {
+    document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
+    _cardMenuOpen = false;
+  }
 });
 
 var _actionToRole = {
@@ -612,7 +623,7 @@ async function loadAgents() {
     slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots';
 
     _runningIssues = new Set(data.agents.map(function(a) { return String(a.issue_number); }));
-    renderTaskCards();
+    if (!_cardMenuOpen) renderTaskCards();
 
     var fp = agentFingerprint(data);
     if (fp === lastAgentFingerprint) {
