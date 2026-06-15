@@ -98,3 +98,4 @@ class CommitStep(BaseStep):
         if has_commits:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="No commits ahead of base branch after commit step")
+        
