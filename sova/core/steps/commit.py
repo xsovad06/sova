@@ -14,9 +14,7 @@ log = get_logger(component="step.commit")
 
 _AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-")
 
-_CONVENTIONAL_COMMIT_RE = re.compile(
-    r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*"
-)
+_CONVENTIONAL_COMMIT_RE = re.compile(r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*")
 
 
 def _is_agent_artifact(path: str) -> bool:
@@ -44,6 +42,7 @@ def _normalize_commit_subject(
         raise ValueError(f"Invalid conventional commit message: {normalized}")
 
     return normalized
+
 
 class CommitStep(BaseStep):
     name = "commit"
@@ -79,7 +78,7 @@ class CommitStep(BaseStep):
                 subject,
                 commit_type="fix",
                 default_scope="core",
-        )
+            )
         else:
             title = task.title if task else f"issue {ctx.issue_number}"
             subject = title

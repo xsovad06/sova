@@ -643,6 +643,7 @@ class TestCommitStep:
         msg = mock_commit.call_args[0][0]
         assert "LLM provider abstraction" in msg
         assert "Closes #42" in msg
+
     async def test_normalizes_double_prefixed_task_title(self) -> None:
         """Generated commit messages should not contain duplicate conventional prefixes."""
         from sova.core.steps.commit import CommitStep
@@ -668,6 +669,7 @@ class TestCommitStep:
         assert msg.startswith("feat(core): validate commit messages")
         assert "feat(core): feat(core):" not in msg
         assert "Closes #42" in msg
+
     async def test_normalizes_scope_with_digits(self) -> None:
         """Generated commit messages should normalize scopes containing digits."""
         from sova.core.steps.commit import CommitStep
