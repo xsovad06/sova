@@ -1757,6 +1757,138 @@ class TestReviewerLLMReview:
         assert not result.success
         assert "Network error" in result.error
 
+    async def test_clears_current_step_sentinel(self) -> None:
+        """After execute(), current_step should be cleared from 'agent' to None."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        # Create a TaskRun with current_step="agent" (mimics dashboard creation)
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number="42",
+                    role="reviewer",
+                    status="running",
+                    current_step="agent",
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=10,
+            task_run_id=run_id,
+        )
+
+        llm_result = LLMResult(
+            text='{"findings": [], "summary": "Clean"}',
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+
+        # Verify sentinel was cleared
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.current_step is None
+
+    async def test_clear_current_step_db_failure_non_fatal(self) -> None:
+        """DB errors in _clear_current_step should not block the review."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=10,
+            task_run_id=999,  # non-existent, but we'll mock get_session to fail
+        )
+
+        llm_result = LLMResult(
+            text='{"findings": [], "summary": "Clean"}',
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.get_session", side_effect=RuntimeError("DB down")),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        # Should still succeed despite DB error
+        assert result.success
+
+    async def test_no_clear_without_task_run_id(self) -> None:
+        """When task_run_id is None, _clear_current_step is not called."""
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=10,
+        )
+        assert ctx.task_run_id is None
+
+        llm_result = LLMResult(
+            text='{"findings": [], "summary": "Clean"}',
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
+
+        mock_get_session = AsyncMock()
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.get_session", mock_get_session),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        # get_session should not have been called for clearing sentinel
+        # (it may be called for handoff, but handoff is also guarded by task_run_id)
+        mock_get_session.assert_not_awaited()
+
 
 class TestReviewerParsing:
     """Tests for reviewer pure functions."""
