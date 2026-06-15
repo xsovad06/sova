@@ -51,7 +51,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (1418+ tests)
+  tests/                           # pytest suite (1427+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     design-system.md               # Dashboard design system reference
