@@ -660,6 +660,53 @@ class TestLLMProvider:
 
 
 # ---------------------------------------------------------------------------
+# _assert_command_exists
+# ---------------------------------------------------------------------------
+
+
+class TestAssertCommandExists:
+    def test_valid_command_exists(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "develop.md").write_text("# develop")
+        _assert_command_exists("/develop", tmp_path)
+
+    def test_command_file_missing(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        with pytest.raises(RuntimeError, match="not found"):
+            _assert_command_exists("/develop", tmp_path)
+
+    def test_empty_name_rejected(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        with pytest.raises(RuntimeError, match="Invalid slash command"):
+            _assert_command_exists("/", tmp_path)
+
+    def test_path_traversal_rejected(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        with pytest.raises(RuntimeError, match="Invalid slash command"):
+            _assert_command_exists("/../../etc/passwd", tmp_path)
+
+    def test_slash_in_name_rejected(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        with pytest.raises(RuntimeError, match="Invalid slash command"):
+            _assert_command_exists("/foo/bar", tmp_path)
+
+    def test_backslash_in_name_rejected(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        with pytest.raises(RuntimeError, match="Invalid slash command"):
+            _assert_command_exists("/foo\\bar", tmp_path)
+
+
+# ---------------------------------------------------------------------------
 # Config: LLMConfig
 # ---------------------------------------------------------------------------
 
