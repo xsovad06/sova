@@ -1,53 +1,87 @@
 ---
 name: review
-description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them.
+description: Review changed code as a senior engineer before pushing. Scores findings by priority and addresses all of them. Run before /pr to catch issues early.
 user-invocable: true
+category: core
+inputs:
+  - scope
+outputs:
+  - review_score
+  - findings
 ---
 
 # Code Review
 
-Review the current branch changes as a senior engineer. Catch issues before pushing, score them by priority, and address every finding.
+Act as an independent senior software engineer who specializes in code reviews. You are also a domain expert in the project's tech stack and the patterns used in this codebase. Your job is to find real problems -- not to nitpick style or add noise.
 
-## Instructions
+Scope: $ARGUMENTS
 
-### Step 1: Get the Changes
+## 1. Gather the Diff
 
-```bash
-git diff main..HEAD
-git log --oneline main..HEAD
-git diff main..HEAD --stat
-```
+Determine the review scope:
 
-If there are no commits ahead of main, fall back to uncommitted changes:
-```bash
-git diff HEAD
-git diff --cached
-```
+- **No arguments**: review all commits on the current branch vs the main branch (`git diff main...HEAD`) plus any uncommitted changes (`git diff`)
+- **PR number**: fetch that PR's diff via `gh pr diff <number>`
+- **File paths or module names**: focus review on those files only, but still read full diff for context
 
-### Step 2: Review Each Changed File
+Run `git log --oneline main..HEAD` to understand the commit structure and intent.
 
-Analyze every changed file for:
+## 2. Read Changed Files in Full
 
-- **Bugs**: logic errors, off-by-one, null/nil handling, race conditions, error swallowing
-- **Security**: injection vulnerabilities, auth bypass, secrets in code, unsafe deserialization
-- **Performance**: N+1 patterns, unbounded operations, missing indexes, hot-path bloat
-- **Test coverage**: are new code paths tested? Edge cases? Are tests meaningful or just smoke?
-- **Consistency**: does new code follow existing patterns in the module? Naming, structure, error handling style?
-- **Missing changes**: if a schema changed, are migrations created? If an API changed, is the spec updated?
-- **Doc freshness**: do the changes affect project structure, features, commands, or workflow? If so, verify these docs are updated:
-  - `README.md` -- project tree, feature list, usage examples
-  - `CLAUDE.md` -- run commands, knowledge tiers
-  - `AGENTS.md` -- conventions, testing instructions
-  - `.claude/rules/architecture.md` -- component overview, design decisions
-  - `docs/VISION.md` -- roadmap phases (if applicable)
-  Score stale docs as 4/10 minimum and auto-fix.
-- **Code reuse**: does new code duplicate existing utilities or helpers in the codebase?
-- **Efficiency**: redundant computations, repeated file reads, duplicate API calls, missed concurrency
-- **Error handling**: are errors propagated correctly? Are failure modes tested? Silent failures?
-- **Simplicity**: is the solution more complex than necessary? Over-abstracted? Could be done in fewer lines?
-- **Scout rule**: are there pre-existing issues in the files you are reviewing? Failing tests, lint warnings, dead imports, obvious bugs adjacent to the changed lines? Fix them as part of this review. Keep scout fixes small and low-risk.
+For every file touched in the diff:
+- Read the **entire file** (not just the diff hunk) to understand surrounding context
+- Identify the module's role in the architecture
+- Note any related files that interact with the changed code
 
-### Step 3: Score Each Finding
+Read related files as needed -- the goal is to review with full understanding, not in isolation.
+
+## 3. Deep Analysis
+
+Review across these dimensions, in priority order. Reference the project's guidelines (`AGENTS.md`, `docs/*-guidelines.md`) for project-specific rules.
+
+### Security (Critical)
+- Input validation on all user-provided data?
+- No injection risks (SQL, XSS, command injection)?
+- Auth/permission checks in place?
+- No secrets or credentials in code or logs?
+- Tenant/scope isolation correct?
+
+### Correctness (Critical)
+- Does the logic actually solve the stated problem?
+- Off-by-one errors, null reference risks, type mismatches?
+- Edge cases: empty inputs, missing params, boundary values?
+- Error paths handled -- what happens when things go wrong?
+- Backward compatibility -- does existing behavior still work?
+
+### Performance (High)
+- N+1 query patterns? Missing eager loading?
+- Queries or IO inside loops?
+- Large datasets loaded into memory without pagination?
+- Unnecessary computation or duplicate work?
+
+### Test Coverage (Medium)
+- Are new code paths covered by tests?
+- Are edge cases and error paths tested?
+- Do tests assert meaningful behavior (not just status codes)?
+- Are there missing tests for important scenarios?
+
+### Code Quality (Medium)
+- Consistent with existing codebase patterns and conventions?
+- Business logic in the right layer?
+- DRY -- duplicated logic that should be extracted?
+- Dead code, unused imports, debug artifacts?
+
+### Doc Freshness (Medium)
+- Do changes affect project structure, features, commands, or workflow?
+- If so, verify these docs are updated: README.md, CLAUDE.md, AGENTS.md, .claude/rules/*.md
+- Score stale docs as 4/10 minimum and auto-fix
+
+### Scout Rule (Medium)
+- Are there pre-existing issues in the touched files? Failing tests, lint warnings, dead imports, obvious bugs adjacent to the changed lines?
+- Fix them as part of this review -- leave every file better than you found it
+- Keep scout fixes small and low-risk. If a fix is non-trivial, note it for a separate task.
+
+## 4. Score Each Finding
 
 For each issue found, assign a **fix value score from 1-10**:
 
@@ -58,20 +92,7 @@ For each issue found, assign a **fix value score from 1-10**:
 | 6-8 | Important: prevents bugs, security issues, tech debt | **Address**: fix in code |
 | 9-10 | Critical: data loss, security vulnerability, broken functionality | **Address**: fix in code |
 
-**Scoring criteria** -- higher scores for findings that:
-- Prevent a runtime failure or data corruption
-- Close a security hole
-- Remove code that will confuse the next reader
-- Eliminate a performance cliff (not a micro-optimization)
-- Fix incorrect behavior vs. just suboptimal behavior
-
-**Lower scores** for findings that:
-- Are purely stylistic (formatting, naming preferences)
-- Add comments or documentation
-- Refactor working code for marginal improvement
-- Are subjective ("I would have done it differently")
-
-### Step 4: Report Findings
+## 5. Report Findings
 
 For each finding, report:
 
@@ -84,7 +105,7 @@ For each finding, report:
 **Fix**: What to change (or "Fixed" / "Acknowledged -- [justification]")
 ```
 
-### Step 5: Address All Findings
+## 6. Address All Findings
 
 Fix each finding directly in the code, starting with the highest severity. For each finding:
 - **Default**: Fix it in the code.
@@ -93,27 +114,17 @@ Fix each finding directly in the code, starting with the highest severity. For e
 If a fix is risky or ambiguous, flag it for human review instead of auto-fixing.
 
 After all fixes:
+
 ```bash
-# Verify nothing is broken
 git diff  # review your own fixes
 ```
 
-### Step 6: Commit Review Fixes
+## 7. Run CI Checks Locally
 
-If you made any fixes, stage and commit them:
-```bash
-git add -A
-git commit -m "fix: address review findings"
-```
+Run the same checks the pipeline will run (see CLAUDE.md for commands).
+Only run checks for modules with changed files. If any check fails, fix the issue and loop back to Step 6.
 
-Skip this step if no fixes were made.
-
-### Step 7: Run CI Checks Locally
-
-Run the same checks the pipeline will run, scoped to modules that have changes (see CLAUDE.md for commands).
-Only run checks for modules with changed files. If any check fails, fix the issue and loop back to Step 5 before proceeding.
-
-### Step 8: Summary
+## 8. Summary
 
 ```
 ## Review Summary
@@ -132,12 +143,24 @@ Only run checks for modules with changed files. If any check fails, fix the issu
 - Items that need human decision or are too risky to auto-fix
 ```
 
+## 9. Extract Knowledge
+
+After fixes are applied, review the session for reusable patterns. Skip this step if no new patterns were found.
+
+Run `/extract-knowledge` to capture any reusable patterns, gotchas, or lessons into the project's knowledge system.
+
+## Cross-References
+
+- **Came from**: `/develop-full` (Phase 2) or manual pre-push check
+- **Next step**: `/pr` to create the pull request
+- **Reviewing someone else's PR?** Use `/review-pr` instead
+
 ## Rules
 
 - All findings are addressed by default. A finding may only be acknowledged (not fixed) if it is a false positive, not applicable in context, or requires a human decision. Each acknowledged finding must include a one-line justification.
 - Be thorough but not pedantic. Don't flag things that are correct and clear.
 - Search the codebase for existing patterns before suggesting a new one.
-- If a finding requires understanding of business logic you don't have, flag it for human review rather than guessing.
+- If a finding requires understanding of business logic you don't have, flag it for human review.
 - Do NOT add comments, docstrings, or type annotations unless they fix a real issue.
 - Do NOT reformat code that wasn't changed in this branch.
 - NEVER use emojis in any output.

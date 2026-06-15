@@ -2,6 +2,14 @@
 name: develop
 description: Develop a feature or fix based on the provided description, then run tests to verify.
 user-invocable: true
+category: core
+inputs:
+  - issue_number
+  - task_description
+outputs:
+  - files_changed
+  - test_results
+  - branch_name
 ---
 
 Develop the requested feature or fix, then verify with tests.
@@ -47,13 +55,13 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 Follow existing codebase conventions:
 - Use the project's established architecture layers (see AGENTS.md)
 - Match naming conventions, error handling style, and code structure
-- Keep business logic in the appropriate layer
+- Keep business logic in the appropriate layer (services, not controllers/views)
 - Use existing utilities and helpers -- check before creating new ones
 
 ### Step 4: Scout Check
 
 For every file you touched, scan for pre-existing issues and fix them:
-- Failing or flaky tests in the same test file (e.g., tests reading real filesystem instead of using `tmp_path`)
+- Failing or flaky tests in the same test file
 - Lint warnings or type errors in the same module
 - Obvious bugs adjacent to your changes (off-by-one, missing None checks)
 - Stale imports, dead code, or leftover debug prints in the same file
@@ -75,19 +83,7 @@ Run the project's linter and test suite (see CLAUDE.md for commands):
 
 If tests fail, fix and re-run (up to 3 attempts).
 
-### Step 6: Commit Your Work
-
-Stage and commit all changes using the conventional commits format from AGENTS.md:
-```bash
-git add -A
-git commit -m "type(scope): short description
-
-Closes #<issue_number>"
-```
-
-Use the appropriate type (`feat`, `fix`, `refactor`, `test`, etc.) and scope for the change. Split into logical commits if the change spans multiple concerns (e.g., separate commits for new module, tests, config changes).
-
-### Step 7: Self-Check
+### Step 5: Self-Check
 
 Before declaring done:
 - [ ] All tests pass
@@ -95,7 +91,6 @@ Before declaring done:
 - [ ] No debug code or print statements left
 - [ ] No unnecessary changes outside the task scope
 - [ ] New code follows existing patterns exactly
-- [ ] All changes are committed (no uncommitted files)
 
 ## Cross-References
 

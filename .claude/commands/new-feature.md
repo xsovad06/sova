@@ -2,6 +2,11 @@
 name: new-feature
 description: Set up a new feature branch and prepare for development.
 user-invocable: true
+category: pr
+inputs:
+  - feature_description
+outputs:
+  - branch_name
 ---
 
 # Start New Feature
@@ -19,13 +24,14 @@ Set up a new feature branch and prepare for development.
 
 ### 2. Create Feature Branch
 - Derive a branch name from the description (lowercase, hyphenated)
-  - Features: `feat/<name>` (e.g., `feat/linear-adapter`)
-  - Fixes: `fix/<name>` (e.g., `fix/config-parsing`)
-  - Refactors: `refactor/<name>` (e.g., `refactor/orchestrator-steps`)
+  - Features: `feat/<name>` (e.g., `feat/income-crud`)
+  - Fixes: `fix/<name>` (e.g., `fix/currency-conversion`)
+  - Refactors: `refactor/<name>` (e.g., `refactor/auth-flow`)
 - Create and switch: `git checkout -b <branch-name>`
 
 ### 3. Review Context
 - Read CLAUDE.md and AGENTS.md for project conventions
+- Read agent memory files if they exist (`.claude/agent-memory/`)
 - Identify which existing modules/files will be affected
 
 ### 4. Plan
@@ -43,8 +49,8 @@ Tell the user:
 
 ## Cross-References
 
-- **Ready to implement?** Run `/develop <description>`
-- **Full workflow later**: `/develop` -> `/test` -> `/review` -> `/pr`
+- **Ready to implement?** Run `/develop <description>` or `/develop-full <description>`
+- **Need to understand approaches first?** Run `/develop-explain <description>`
 
 ## Rules
 

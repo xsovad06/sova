@@ -3,6 +3,11 @@ name: spec
 description: Produce a structured specification document for an issue before development starts.
 user-invocable: true
 category: core
+inputs:
+  - issue_number
+  - task_description
+outputs:
+  - spec_document
 ---
 
 # Specification
@@ -13,14 +18,24 @@ Produce a structured specification document for a task before development starts
 
 ## Instructions
 
-### Step 1: Fetch the Issue
+### Step 1: Fetch the Task
 
-If `$ARGUMENTS` is a number, fetch the issue:
+If `$ARGUMENTS` is a text description (not a number or ticket key), use it directly as the problem statement and skip to Step 2.
+
+Determine the task source by reading `sova.toml` (if it exists) and checking `[task_source] type`.
+
+**GitHub** (default, or no sova.toml):
 ```bash
 gh issue view $ARGUMENTS --json number,title,body,labels,milestone
 ```
 
-If `$ARGUMENTS` is a text description (not a number), use it directly as the problem statement.
+**JIRA** (`task_source.type = "jira"`):
+```bash
+jira issue view $ARGUMENTS --plain
+```
+Extract: title, description, status, linked/blocked tickets, components.
+
+Save the original description verbatim -- it will be preserved in the spec.
 
 ### Step 2: Read Project Context
 
@@ -36,6 +51,7 @@ Based on the issue, identify the affected areas:
 2. Read existing patterns in those areas -- match them, don't invent new ones
 3. Identify reusable components, utilities, and test fixtures
 4. Check for related prior work (similar features, relevant tests)
+5. Find the closest precedent -- which prior task or file implements something similar? Note specific file paths and line numbers as the pattern reference.
 
 Be thorough here. The spec's value comes from grounding decisions in the actual code, not from generic planning.
 
@@ -51,7 +67,7 @@ Generate a slug from the issue title (lowercase, hyphens, max 40 chars). Write t
 ```markdown
 # Spec: {Issue title}
 
-**Issue**: #{number}
+**Issue**: #{number} (or JIRA key)
 **Status**: draft
 **Created**: {YYYY-MM-DD}
 **Complexity**: simple | moderate | complex
@@ -63,6 +79,13 @@ What problem does this solve? 1-3 sentences from the user's perspective.
 ## Solution
 
 High-level approach in 2-4 sentences. What changes and why.
+
+## Pattern Reference
+
+Which existing implementation to follow as a model:
+- Ticket/PR that implemented something similar
+- File paths with line numbers for the reference implementation
+- Key classes, methods, or patterns to reuse
 
 ## Data Model
 
@@ -95,6 +118,23 @@ Reference specific files to create/modify.
 1. Step one -- what and where
 2. Step two -- what and where
 3. ...
+
+## Design Decisions
+
+Pre-answered questions for every ambiguity found during exploration.
+The implementing agent should not need to make architectural choices.
+
+1. **Question?** -- Answer with rationale.
+2. **Question?** -- Answer with rationale.
+
+(Omit if no ambiguities exist.)
+
+## Scope Boundaries
+
+Explicit limits to prevent over-engineering.
+
+- Do NOT {thing that seems related but is out of scope}
+- Out of scope: {related concern for a future task}
 
 ## Edge Cases
 
@@ -143,6 +183,38 @@ If the user gives feedback:
 When the user approves, update the spec:
 - Change `**Status**: draft` to `**Status**: approved`
 - Confirm: "Spec approved. Run `/develop {issue-number}` to start implementation."
+
+### Step 8: Write Back to Tracker (optional)
+
+After approval, ask: "Write the spec back to the issue/ticket description?"
+
+If the user agrees, update the tracker with the spec appended to the original description:
+
+**GitHub**:
+```bash
+echo "<updated body>" > /tmp/issue_body.md
+gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
+```
+
+**JIRA** (requires `jira-cli` by ankitpokhrel):
+```bash
+jira issue edit $ARGUMENTS -b "<updated body>" --no-input
+```
+
+Format the updated body as:
+```markdown
+## Original Description
+
+{original description preserved verbatim}
+
+---
+
+## Implementation Spec
+
+{spec content from Step 4, without the frontmatter header}
+```
+
+If the user declines, skip this step -- the spec file in `.claude/specs/` is the primary artifact.
 
 ## Cross-References
 

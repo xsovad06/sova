@@ -1,7 +1,13 @@
 ---
 name: test
-description: Run tests and linter for the current module until all issues are fixed.
+description: Run tests and linter for the current project until all issues are fixed.
 user-invocable: true
+category: core
+inputs:
+  - project_dir
+outputs:
+  - test_results
+  - lint_results
 ---
 
 # Test Runner
@@ -10,19 +16,14 @@ Run tests and linter, fixing issues iteratively until everything passes.
 
 ## Instructions
 
-### Step 1: Identify the Module
+### Step 1: Identify the Scope
 
-Determine which module to test from `$ARGUMENTS` or the current directory.
+Determine what to test from `$ARGUMENTS` or the current directory.
 If unclear, check `git diff --name-only` to see which modules have changes.
 
 ### Step 2: Run Linter
 
 Run the project's lint command (see CLAUDE.md for the exact command).
-
-For bash scripts:
-```bash
-shellcheck invariants/*.sh
-```
 
 If linter fails:
 - Analyze the errors
@@ -33,16 +34,6 @@ If linter fails:
 
 Run the project's test command (see CLAUDE.md for the exact command).
 
-For dashboard:
-```bash
-cd dashboard && .venv/bin/python -m pytest 2>/dev/null || echo "No test suite yet"
-```
-
-For invariants:
-```bash
-for f in invariants/*.sh; do bash -n "$f"; done
-```
-
 If tests fail:
 - Analyze the test failures
 - Fix the code or tests as needed
@@ -51,13 +42,17 @@ If tests fail:
 ### Step 4: Scout Check
 
 While fixing test or lint failures, scan each touched file for pre-existing
-issues: flaky test patterns (reading real filesystem instead of tmp_path, missing
-monkeypatch isolation), stale imports, dead code. Fix them alongside the
+issues: flaky test patterns, stale imports, dead code. Fix them alongside the
 failures. Keep scout fixes small and low-risk.
 
 ### Step 5: Iterate
 
 Repeat Steps 2-4 until both linter and tests pass completely.
+
+## Cross-References
+
+- **After tests pass**: Run `/review` to self-review before pushing
+- **Full workflow**: Use `/develop-full` for the complete develop-test-review-pr cycle
 
 ## Rules
 

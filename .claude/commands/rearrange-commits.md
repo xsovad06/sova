@@ -2,6 +2,10 @@
 name: rearrange-commits
 description: Reorganize current branch commits into small, logical, well-documented steps.
 user-invocable: true
+category: core
+inputs: []
+outputs:
+  - commits_reorganized
 ---
 
 # Rearrange Commits
@@ -38,11 +42,11 @@ git status
 
 Group changes by logical unit and commit in order:
 
-1. Core infrastructure changes first (CLI, config)
-2. Agent/orchestrator changes second
-3. Commands/personas/knowledge third
-4. Dashboard changes fourth
-5. Documentation/misc last
+1. Schema/model/migration changes first
+2. Core logic/services second
+3. API/views/controllers third
+4. Tests fourth
+5. Configuration/misc last
 
 ### Commit Message Format
 
@@ -53,7 +57,6 @@ Detailed explanation of WHAT, WHY, and HOW.
 ```
 
 Types: feat, fix, refactor, test, docs, chore, perf
-Scopes: agent, dashboard, commands, personas, invariants, knowledge, cli, docs
 
 ### Step 4: Verify
 
@@ -68,10 +71,14 @@ Ensure:
 - Commits are in logical order
 - The total diff matches what it was before reorganization
 
-## Important
+## Cross-References
+
+- **Called by**: `/develop-full` (Phase 3) and `/pr` (commit organization step)
+- **Before PR**: Run `/review` after rearranging, then `/pr`
+
+## Rules
 
 - Each commit = ONE logical change
 - Earlier commits should not depend on later ones
 - Keep commits small -- easier to review and revert
-- Always include DCO sign-off (`-s` flag) if the project requires it
 - NEVER use emojis in any output

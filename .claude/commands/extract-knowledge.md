@@ -2,6 +2,11 @@
 name: extract-knowledge
 description: Extract reusable knowledge from this session into the project's knowledge system.
 user-invocable: true
+category: learning
+inputs:
+  - session_context
+outputs:
+  - memories_extracted
 ---
 
 # Extract Knowledge
@@ -10,15 +15,12 @@ Review this session's work and extract reusable knowledge into the project's kno
 
 ## Knowledge Architecture
 
-This project uses a four-tier knowledge system:
+This project uses a three-tier knowledge system:
 
-### Tier 0: `~/.claude/shared-knowledge/` (cross-project, shared across all repos)
-Universal patterns confirmed across 2+ projects. Git workflows, review heuristics, debugging techniques. Not project-specific.
+### Tier 1: `docs/*-guidelines.md` (canonical, always loaded via CLAUDE.md)
+Domain-specific guidelines loaded into every session. Primary destination for patterns that apply to all contributors (human and agent).
 
-### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
-Project-specific conventions loaded into every session. Primary destination for patterns that apply to all contributors (human and agent). Files: `architecture.md`, `bash-patterns.md`, `workflow.md`.
-
-### Tier 2: `.claude/agent-memory/` (agent learnings, gitignored)
+### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
 
 - **`MEMORY.md`** -- Index file
@@ -39,7 +41,7 @@ For each finding, determine the right destination:
 
 | Finding type | Destination |
 |---|---|
-| Domain-specific patterns (security, performance, etc.) | `.claude/rules/*.md` |
+| Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
 | ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
@@ -52,58 +54,33 @@ Before writing anything:
 3. Update existing entries rather than adding duplicates
 4. Remove entries that are now outdated or wrong
 
-### 4. Confirm Existing Patterns
+### 4. Write Knowledge
 
-Before writing new entries, scan `cookbook.md` for patterns you **relied on or validated** this session. For each one, bump its confirmation counter:
-- `[confirmed: 0]` -> `[confirmed: 1]`
-- `[confirmed: 1]` -> `[confirmed: 2]` (now eligible for promotion)
-
-**What counts as "confirmed":**
-- You relied on the pattern during this session (used it, encountered the same scenario)
-- The pattern prevented a mistake (you checked it and it saved time)
-- A review or test validated the pattern was correct
-
-**What does NOT count:**
-- Simply reading the entry without using it
-- The entry existing in the file
-
-### 5. Write New Knowledge
-
-**For `.claude/rules/*.md` (Tier 1):**
+**For `docs/*-guidelines.md` (Tier 1):**
 - Follow the existing structure and formatting
 - Write full explanations with code examples where helpful
 - These are for all contributors -- avoid agent-specific jargon
-- Only write here directly for patterns already confirmed across 2+ sessions
 
 **For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern -- bold label, then the lesson
 - Include the "why" -- not just what to do, but why it matters
 - Include file paths when relevant
-- **Always append `[confirmed: 0]` at the end of new entries**
 
 **For user auto-memory (Tier 3):**
 - Follow the two-step process: write topic file, then update `MEMORY.md` index
 - Only for genuinely new user preferences or workflow changes
 
-### 6. Promote Mature Patterns (Tier 2 -> Tier 1)
-
-Scan `cookbook.md` for entries with `[confirmed: 2]` or higher. For each:
-1. Move the pattern to the appropriate `.claude/rules/*.md` file (architecture.md, bash-patterns.md, or a new rules file if needed)
-2. Expand it into a full guideline with context and examples (Tier 1 entries are more detailed than Tier 2 one-liners)
-3. Replace the entry in `cookbook.md` with a `[promoted]` one-liner pointing to the target file
-4. Report the promotion in the summary
-
-This counter-based promotion is the ONLY mechanism for Tier 2 -> Tier 1 graduation. It works across sessions because the counter persists in the file.
-
-### 7. Verify Sizes
+### 5. Verify Sizes
 
 Agent memory files should stay concise:
 - `MEMORY.md` -- under 20 lines (index only)
-- `cookbook.md` -- under 200 lines (prune oldest with `[confirmed: 0]` first if needed)
+- `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
-### 8. Summary
+If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `docs/*-guidelines.md` file and remove the agent-memory entry.
 
-List what was extracted, where it was saved, and any patterns promoted from Tier 2 to Tier 1.
+### 6. Summary
+
+List what was extracted and where it was saved. Flag any patterns promoted from Tier 2 to Tier 1.
 
 ## What to Look For
 
@@ -127,7 +104,5 @@ List what was extracted, where it was saved, and any patterns promoted from Tier
 - Update existing entries when the pattern evolved
 - Keep entries actionable -- someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)
-- **New learnings always start at `[confirmed: 0]`** -- never skip the counter
-- **Promote at `[confirmed: 2]`** -- move to `.claude/rules/*.md`, remove from learnings
-- **When pruning for size**: remove `[confirmed: 0]` entries (oldest first) before removing confirmed ones
+- **Promote mature patterns** from agent-memory to `docs/*-guidelines.md`
 - NEVER use emojis in any output
