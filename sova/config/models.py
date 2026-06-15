@@ -198,6 +198,7 @@ class PipelineConfig(BaseSettings):
 
     auto_handoff: bool = True
     auto_address_review: bool = True
+    max_address_review_cycles: int = Field(2, ge=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_PIPELINE_")
 

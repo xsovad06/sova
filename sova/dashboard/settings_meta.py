@@ -139,6 +139,13 @@ _REGISTRY: list[SettingMeta] = [
         "pipeline",
         "boolean",
     ),
+    SettingMeta(
+        "pipeline.max_address_review_cycles",
+        "Max address-review cycles",
+        "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
+        "pipeline",
+        "number",
+    ),
     # -- Task Source --
     SettingMeta("task_source.type", "Source type", "Where tasks come from (github, jira, linear)", "task_source"),
     SettingMeta("task_source.config", "Config", "Source-specific configuration string", "task_source"),
