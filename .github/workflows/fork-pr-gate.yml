@@ -1,0 +1,132 @@
+name: Fork PR Safety Gate
+
+# Runs in the base-repo context (pull_request_target), so:
+#   - Always executes without manual approval (even for fork PRs)
+#   - Workflow YAML comes from main branch (fork cannot tamper)
+#   - GITHUB_TOKEN has write permissions to approve other runs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  actions: write
+  pull-requests: write
+
+jobs:
+  gate:
+    name: Fork PR Safety Gate
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.author_association == 'NONE'
+      || github.event.pull_request.author_association == 'FIRST_TIMER'
+      || github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    steps:
+      - name: Check changed files for sensitive paths
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate --jq '.[].filename')
+
+          sensitive_files=""
+          safe=true
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              .github/workflows/*|.github/actions/*)
+                sensitive_files="${sensitive_files}- \`${file}\` (CI workflow definition)\n"
+                safe=false ;;
+              pyproject.toml|setup.py|setup.cfg)
+                sensitive_files="${sensitive_files}- \`${file}\` (build/packaging config)\n"
+                safe=false ;;
+              requirements*.txt|*.lock|Pipfile*)
+                sensitive_files="${sensitive_files}- \`${file}\` (dependency file)\n"
+                safe=false ;;
+              Makefile)
+                sensitive_files="${sensitive_files}- \`${file}\` (build targets)\n"
+                safe=false ;;
+              invariants/*|.githooks/*)
+                sensitive_files="${sensitive_files}- \`${file}\` (CI/hook scripts)\n"
+                safe=false ;;
+              deploy/*)
+                sensitive_files="${sensitive_files}- \`${file}\` (deployment config)\n"
+                safe=false ;;
+            esac
+          done <<< "$files"
+
+          echo "safe=${safe}" >> "$GITHUB_OUTPUT"
+
+          # Write sensitive file list to a temp file for the comment step
+          echo -e "$sensitive_files" > /tmp/sensitive_files.txt
+
+          if [ "$safe" = "true" ]; then
+            echo "All changed files are safe -- will auto-approve CI"
+          else
+            echo "Sensitive files detected -- manual approval required:"
+            echo -e "$sensitive_files"
+          fi
+
+      - name: Auto-approve CI workflow run
+        if: steps.check.outputs.safe == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head_sha="${{ github.event.pull_request.head.sha }}"
+
+          for attempt in 1 2 3 4 5; do
+            run_ids=$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${head_sha}&status=action_required" \
+              --jq '.workflow_runs[].id' 2>/dev/null || echo "")
+
+            if [ -n "$run_ids" ]; then
+              break
+            fi
+
+            echo "Attempt ${attempt}/5: no pending runs yet, waiting 15s..."
+            sleep 15
+          done
+
+          if [ -z "$run_ids" ]; then
+            echo "No workflow runs awaiting approval (may already be approved or not yet queued)"
+            exit 0
+          fi
+
+          for run_id in $run_ids; do
+            echo "Approving workflow run ${run_id}"
+            gh api "repos/${{ github.repository }}/actions/runs/${run_id}/approve" -X POST || true
+          done
+
+          echo "CI auto-approved for PR #${{ github.event.pull_request.number }}"
+
+      - name: Flag sensitive PR for manual review
+        if: steps.check.outputs.safe == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number="${{ github.event.pull_request.number }}"
+
+          # Skip if we already posted a safety gate comment on this PR
+          existing=$(gh api "repos/${{ github.repository }}/issues/${pr_number}/comments" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Fork PR Safety Gate")))] | length')
+
+          if [ "$existing" -gt "0" ]; then
+            echo "Safety gate comment already posted -- skipping"
+            exit 0
+          fi
+
+          sensitive_list=$(cat /tmp/sensitive_files.txt)
+
+          body="## Fork PR Safety Gate -- Manual Approval Required"
+          body="${body}"$'\n\n'"This PR modifies files that affect the CI pipeline or build infrastructure."
+          body="${body}"$'\n'"A maintainer must review these changes and manually click **Approve workflows to run**."
+          body="${body}"$'\n\n'"**Sensitive files detected:**"
+          body="${body}"$'\n'"${sensitive_list}"
+          body="${body}"$'\n'"**Review checklist before approving:**"
+          body="${body}"$'\n'"- [ ] No secrets exfiltration (curl, wget, or network calls sending env vars)"
+          body="${body}"$'\n'"- [ ] No workflow trigger changes (pull_request to pull_request_target escalation)"
+          body="${body}"$'\n'"- [ ] Dependencies are legitimate (check new packages on PyPI)"
+          body="${body}"$'\n'"- [ ] No CI resource abuse (crypto mining, infinite loops)"
+
+          gh pr comment "$pr_number" --body "$body"
