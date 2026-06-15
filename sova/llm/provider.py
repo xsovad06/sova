@@ -18,6 +18,18 @@ from sova.utils.logging import get_logger
 log = get_logger(component="llm.provider")
 
 
+def _assert_command_exists(command: str, cwd: Path) -> None:
+    """Fail fast if a slash command file is missing from the target project."""
+    name = command.lstrip("/")
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise RuntimeError(f"Invalid slash command: {command!r}")
+    cmd_path = cwd / ".claude" / "commands" / f"{name}.md"
+    if not cmd_path.is_file():
+        raise RuntimeError(
+            f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
+        )
+
+
 class LLMProvider(ABC):
     """Abstract interface for LLM providers.
 
@@ -66,6 +78,8 @@ class LLMProvider(ABC):
         Default implementation constructs a prompt and delegates to invoke().
         Providers that support native command dispatch can override this.
         """
+        if command.startswith("/") and cwd:
+            _assert_command_exists(command, Path(cwd))
         prompt = f"{command} {args}".strip() if args else command
         log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
         return await self.invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
