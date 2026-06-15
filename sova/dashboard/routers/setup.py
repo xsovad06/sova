@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.config.registry import register_project
+from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import setup_service
 
 router = APIRouter(tags=["setup"])
@@ -112,3 +113,32 @@ async def configure_project(req: ConfigureRequest):
 
     slug = register_project(project)
     return {"status": "ok", "config_path": str(toml_file), "slug": slug}
+
+
+@router.post("/setup/commands/sync")
+async def sync_commands() -> dict[str, object]:
+    """Sync canonical SOVA commands into the active project."""
+    from sova.commands.catalog import get_canonical_dir
+    from sova.commands.distribution import update_commands
+    from sova.config.loader import load_config
+
+    project_dir = get_project_dir()
+    if not project_dir or not project_dir.is_dir():
+        raise HTTPException(status_code=400, detail="No active project")
+
+    canonical_dir = get_canonical_dir()
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=f"Failed to load project config: {e}") from e
+    target_dir = project_dir / ".claude" / "commands"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    result = await asyncio.to_thread(update_commands, canonical_dir, target_dir, cfg)
+
+    return {
+        "status": "ok",
+        "updated": result.updated,
+        "skipped": result.skipped,
+        "conflicts": result.conflicts,
+    }

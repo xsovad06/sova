@@ -2391,6 +2391,40 @@ class TestSetupAPI:
         data = resp.json()
         assert "Directory not found" in data["detail"]
 
+    async def test_sync_commands_success(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        from sova.commands.distribution import UpdateResult
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        fake_result = UpdateResult(updated=3, skipped=1, conflicts=["foo.md"])
+        with patch("sova.dashboard.routers.setup.asyncio.to_thread", return_value=fake_result):
+            resp = await client.post("/api/setup/commands/sync")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["updated"] == 3
+        assert data["skipped"] == 1
+        assert data["conflicts"] == ["foo.md"]
+
+    async def test_sync_commands_no_project(self, client: AsyncClient, monkeypatch) -> None:
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: None)
+        resp = await client.post("/api/setup/commands/sync")
+        assert resp.status_code == 400
+        assert "No active project" in resp.json()["detail"]
+
+    async def test_sync_commands_bad_config(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
+        from unittest.mock import patch
+
+        monkeypatch.setattr("sova.dashboard.routers.setup.get_project_dir", lambda: tmp_path)
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=FileNotFoundError("sova.toml not found"),
+        ):
+            resp = await client.post("/api/setup/commands/sync")
+        assert resp.status_code == 400
+        assert "Failed to load project config" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Work Service -- direct service tests
