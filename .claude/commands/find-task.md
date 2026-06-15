@@ -1,65 +1,81 @@
 ---
 name: find-task
-description: Browse the SOVA project board, show priority-ordered tasks, and suggest what to work on next.
+description: Browse GitHub Issues backlog, prioritize sprint work, and suggest next tasks.
 user-invocable: true
+category: management
+inputs:
+  - project_board
+outputs:
+  - suggested_issue
 ---
 
 # Find Next Task
 
-Browse the SOVA Roadmap project board (priority-ordered) and suggest the next task.
+Browse the GitHub Issues backlog, review sprint priorities, and suggest what to work on next.
 
 **Scope**: $ARGUMENTS
 
 ## Instructions
 
-### 1. Fetch Tasks from Project Board (Priority Order)
+### 1. Fetch Open Issues
 
 ```bash
-gh api graphql -f query='query { user(login:"xsovad06") { projectV2(number:2) { items(first:30) { nodes { content { ... on Issue { number title state labels(first:10) { nodes { name } } } } order: fieldValueByName(name:"Priority Order") { ... on ProjectV2ItemFieldNumberValue { number } } phase: fieldValueByName(name:"Phase") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } } } }' --jq '.data.user.projectV2.items.nodes | sort_by(.order.number) | .[] | select(.content.state == "OPEN")'
+# Assigned issues first
+gh issue list --assignee @me --state open --limit 50 --json number,title,labels,milestone,updatedAt,body
+
+# If no assigned issues, broaden to all open
+gh issue list --state open --limit 30 --json number,title,labels,milestone,updatedAt
 ```
 
-If `$ARGUMENTS` contains a phase filter (e.g., "phase 1"), narrow to that phase.
-
-### 2. Present in Priority Order
-
-Show a table:
-
-| Order | Issue | Phase | Labels | Status |
-|-------|-------|-------|--------|--------|
-
-Group by phase. Mark the **top unblocked issue** as the recommended next task.
-
-### 3. Check Dependencies
-
-For the top 3-5 candidates, read their issue bodies:
+If `$ARGUMENTS` contains filters (label, milestone), incorporate them:
 ```bash
-gh issue view <NUMBER> --json body --jq '.body'
+gh issue list --state open --label "<label>" --milestone "<milestone>" --limit 30
 ```
 
-Check the "Dependencies" section. If a dependency issue is still open, mark it as blocked and skip to the next.
+### 2. Categorize by Status
 
-### 4. Recommend
+- **Active work**: issues with in-progress labels or linked open PRs
+- **Queued**: assigned but not started (backlog, ready)
+- **Quick wins**: small, well-scoped tasks (look for size/effort labels)
+- **Medium effort**: refactors, feature work with clear scope
+- **Needs refinement**: issues with vague descriptions or missing acceptance criteria
+- **Blocked**: issues with blocker labels or dependency on other issues
 
-Present the recommended task with:
-- Why it's next (priority order, no blockers, phase sequencing)
-- Brief summary of what it involves (from issue body)
-- Link to the relevant section in `docs/VISION.md`
-- Estimated scope (from issue acceptance criteria count)
+### 3. Analyze Each Issue
 
-### 5. When the User Selects
+For each issue, provide:
+- Issue number, title, current labels
+- Estimated effort: small / medium / large (based on title and description)
+- Dependencies: does it block or depend on other issues?
+- Suggested priority based on labels, dependencies, and effort
 
-- Read `.claude/rules/architecture.md` and `docs/VISION.md` for architectural context
-- Read the full issue body for implementation details
-- Suggest: "Run `/develop-full <ISSUE_NUMBER>` to start working"
+### 4. Suggest a Plan
+
+- What to finish first (active work)
+- What to pick up next (from queued, prioritized by labels and dependencies)
+- Quick wins that can be done between larger tasks
+- What needs refinement before starting
+
+### 5. Present and Wait
+
+Present the summary and wait for the user to choose.
+
+### 6. When the User Selects an Issue
+
+- Assign it (if not already): `gh issue edit <NUMBER> --add-assignee @me`
+- Suggest creating a feature branch: `git checkout -b feat/<short-name> main`
+
+### 7. Re-prioritize (if requested)
+
+- Add/remove labels: `gh issue edit <NUMBER> --add-label "priority:high"`
+- Unassign to defer: `gh issue edit <NUMBER> --remove-assignee @me`
 
 ## Cross-References
 
-- **Architecture & plan**: `.claude/rules/architecture.md`, `docs/VISION.md`
-- **After selecting a task**: Run `/develop-full <ISSUE_NUMBER>`
-- **Daily overview**: Run `/standup`
+- **After selecting a task**: Run `/develop-full <ISSUE_NUMBER>` to start working
+- **Want a deeper look at an issue?** Run `/issue <ISSUE_NUMBER>`
+- **Daily overview**: Run `/standup` for full context
 
 ## Rules
 
 - NEVER use emojis in any output
-- Always show tasks in Priority Order (from project board), not arbitrary sorting
-- The lowest-numbered open, unblocked task is the default recommendation

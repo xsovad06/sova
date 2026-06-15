@@ -2,6 +2,12 @@
 name: debug
 description: Systematic debugging workflow -- reproduce, locate, diagnose, fix, verify, prevent.
 user-invocable: true
+category: meta
+inputs:
+  - issue_description
+outputs:
+  - root_cause
+  - fix_applied
 ---
 
 # Systematic Debugging
@@ -14,11 +20,12 @@ Debug an issue in the project.
 
 ### 1. Reproduce
 - Understand the problem from the description
-- Try to reproduce the issue (run the script, check output)
+- Check application logs for errors
+- Try to reproduce the issue (via test, curl, or browser)
 - If the issue is unclear, ask the user for more details
 
 ### 2. Locate
-- Identify the relevant code path
+- Identify the relevant code path (URL -> view/controller -> service -> model)
 - Read the relevant source files to understand the flow
 - Check recent changes with `git log --oneline -10` and `git diff` -- was something recently changed?
 - Search for related error messages in the codebase
@@ -27,12 +34,12 @@ Debug an issue in the project.
 - Trace the execution flow from entry point to the error
 - Identify the root cause -- not just the symptom
 - Check common issues:
-  - Unquoted variables or word splitting
-  - Missing file/directory checks
-  - Wrong exit codes propagating through `set -e`
-  - Config file not found or malformed
-  - Missing dependencies (git, gh, jq, claude)
-  - macOS vs Linux compatibility (GNU vs BSD flags)
+  - Missing migrations or schema changes
+  - Import errors / circular imports
+  - Configuration mismatches between environments
+  - Authentication/permission issues
+  - Database constraint violations
+  - Race conditions or state management bugs
 
 ### 4. Fix
 - Apply the minimal fix that addresses the root cause
@@ -41,13 +48,14 @@ Debug an issue in the project.
 - **Scout rule**: while in each file, fix any pre-existing issues you notice (lint warnings, dead imports, obvious bugs adjacent to your fix). Keep scout fixes small and low-risk.
 
 ### 5. Verify
-- Run ShellCheck on changed bash scripts
-- Test the fixed script manually
+- Write a test that reproduces the original issue (should fail before fix, pass after)
+- Run the project's test suite (see CLAUDE.md for commands)
 - Check that no regressions were introduced
+- Verify application logs are clean
 
 ### 6. Prevent
-- If this bug class could recur, suggest a convention update
-- If it was caused by a missing pattern, suggest updating `.claude/rules/bash-patterns.md`
+- If this bug class could recur, suggest a test that would catch it
+- If it was caused by a missing convention, suggest updating AGENTS.md or project guidelines
 
 ## Cross-References
 

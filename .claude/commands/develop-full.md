@@ -2,6 +2,15 @@
 name: develop-full
 description: Full development workflow -- TDD, lint, test, self-review, commit organization. Provide a ticket ID or task description.
 user-invocable: true
+category: core
+inputs:
+  - issue_number
+  - task_description
+outputs:
+  - files_changed
+  - test_results
+  - branch_name
+  - pr_number
 ---
 
 # Full Development Workflow
@@ -17,11 +26,17 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
    ```bash
    gh issue view <ISSUE_NUMBER> --json number,title,body,labels,milestone
    ```
-3. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
-4. Read agent memory files if they exist:
+3. **Claim the issue** (GitHub Issues only):
+   ```bash
+   # Assign to self
+   gh issue edit <ISSUE_NUMBER> --add-assignee @me
+   ```
+   If the project uses a GitHub Projects board, move the issue to "In Progress".
+4. Read the project's CLAUDE.md and AGENTS.md for conventions and patterns.
+5. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/cookbook.md`
-5. Identify which module(s) this work touches and read relevant source code.
+6. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)
 
@@ -48,18 +63,7 @@ Follow the `/review` command workflow:
 3. Address all findings (fix or acknowledge with justification).
 4. Re-run tests after fixes.
 
-### Phase 3: Update Documentation
-
-Follow the `/update-docs` workflow:
-
-1. Run structural count verification (tests, services, routers, steps, etc.).
-2. Compare actual counts against values in README.md, AGENTS.md, VISION.md, architecture.md.
-3. If any counts drifted due to the changes in Phase 1, fix them.
-4. Stage doc changes -- they will be included in the commit organization.
-
-Skip this phase if no structural files were added or removed in Phase 1 (e.g., pure logic changes within existing files).
-
-### Phase 4: Organize Commits
+### Phase 3: Organize Commits
 
 Follow the `/rearrange-commits` command approach:
 
@@ -67,11 +71,11 @@ Follow the `/rearrange-commits` command approach:
 2. **Each commit should be self-contained** and reviewable on its own.
 3. **Commit message format**: `type(scope): description`
    - Types: feat, fix, refactor, test, docs, chore, perf
-   - Example: `feat(agent): add token refresh endpoint`
+   - Example: `feat(auth): add token refresh endpoint`
 4. **NEVER create a single monolithic commit** with all changes.
 5. Commit messages should explain the 'why', not just the 'what'.
 
-### Phase 5: Summary
+### Phase 4: Summary
 
 Write a file at `.agent-summary.md` in the working directory with:
 
@@ -87,8 +91,7 @@ This command orchestrates:
 1. `/develop` -- implement with TDD
 2. `/test` -- verify linter + tests pass
 3. `/review` -- self-review and auto-fix
-4. `/update-docs` -- verify and fix documentation counts
-5. `/rearrange-commits` -- organize into logical commits
+4. `/rearrange-commits` -- organize into logical commits
 
 After this command completes, run `/pr` to create the pull request.
 

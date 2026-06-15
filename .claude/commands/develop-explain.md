@@ -2,6 +2,11 @@
 name: develop-explain
 description: Explain how to implement a feature with learning context, covering all approaches and technologies.
 user-invocable: true
+category: learning
+inputs:
+  - topic
+outputs:
+  - implementation_plan
 ---
 
 Explain how the requested feature/fix could be implemented, with deep learning context and technology explanations.
@@ -98,7 +103,7 @@ End with questions the user should be able to answer:
 ## Cross-References
 
 - **Ready to implement?** Run `/develop` or `/develop-full` with the chosen approach
-- **Need to understand the codebase first?** Check the project's AGENTS.md and `.claude/rules/*.md`
+- **Need to understand the codebase first?** Check the project's AGENTS.md and `docs/*-guidelines.md`
 
 ## Rules
 
