@@ -23,6 +23,11 @@ async def _count_address_review_runs(issue: str, pr_number: int, project_dir: Pa
     ``_sync_task_run_context()`` after CreatePRStep, so filtering on
     ``pr_number`` alone would include it and trigger the breaker one
     cycle too early.
+
+    NOTE: This relies on ``StepExecution.step_name == "address_review"``
+    matching the name used by ``AddressReviewStep`` in
+    ``sova.core.steps.address_review``.  If that step is renamed, this
+    query must be updated to match.
     """
     from sqlalchemy import func, select
 
@@ -31,18 +36,15 @@ async def _count_address_review_runs(issue: str, pr_number: int, project_dir: Pa
     from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session:
-        address_review_ids = (
-            select(StepExecution.task_run_id).where(StepExecution.step_name == "address_review").scalar_subquery()
-        )
         stmt = (
-            select(func.count())
-            .select_from(TaskRun)
+            select(func.count(TaskRun.id.distinct()))
+            .join(StepExecution, StepExecution.task_run_id == TaskRun.id)
             .where(
+                StepExecution.step_name == "address_review",
                 TaskRun.issue_number == issue,
                 TaskRun.role == "developer",
                 TaskRun.pr_number == pr_number,
                 TaskRun.status.in_(TASK_RUN_TERMINAL),
-                TaskRun.id.in_(address_review_ids),
             )
         )
         result = await session.execute(stmt)
@@ -112,7 +114,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 args = action.args or {}
                 raw_pr = args.get("pr") or handoff.pr_number
                 target_role = args.get("role")
-                target_issue = str(args.get("issue", handoff.issue))
+                target_issue = str(args.get("issue", handoff.issue)).lstrip("#").strip()
                 pr_num = int(raw_pr) if raw_pr is not None else None
 
                 # Check circuit breaker for address-review spawns
@@ -133,14 +135,14 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                     blocked_handoff = DashboardHandoff(
                         source="circuit_breaker",
                         status="awaiting_action",
-                        issue=handoff.issue,
-                        pr_number=handoff.pr_number,
+                        issue=target_issue,
+                        pr_number=pr_num,
                         branch=handoff.branch,
                         summary=reason,
                         next_actions=[
                             HandoffAction(
                                 id="address_review",
-                                label="Address Review (force)",
+                                label="Address Review (manual)",
                                 mode="agent",
                                 args=args,
                                 auto_execute=False,

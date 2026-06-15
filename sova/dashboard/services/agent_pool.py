@@ -25,7 +25,7 @@ log = get_logger(component="dashboard.pool")
 _DEFAULT_SLUG = "__default__"
 
 MAX_RECENTLY_COMPLETED = 5
-RECENTLY_COMPLETED_TTL = 60.0
+RECENTLY_COMPLETED_TTL = 30.0
 
 
 @dataclass
@@ -105,3 +105,14 @@ def _prune_completed(pa: ProjectAgents, now: float | None = None) -> None:
         now = time.monotonic()
     while pa.recently_completed and (now - pa.recently_completed[0].completed_at) > RECENTLY_COMPLETED_TTL:
         pa.recently_completed.popleft()
+
+
+def _evict_completed_for_issue(pa: ProjectAgents, issue: str) -> None:
+    """Remove completed entries for *issue* so they don't linger when a new run starts.
+
+    Must be called inside ``pa._lock``.
+    """
+    pa.recently_completed = deque(
+        (ca for ca in pa.recently_completed if ca.issue != issue),
+        maxlen=MAX_RECENTLY_COMPLETED,
+    )

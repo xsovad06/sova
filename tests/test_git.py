@@ -500,6 +500,20 @@ class TestGetCIChecks:
             checks = await get_ci_checks(42, repo="user/repo")
             assert checks is None
 
+    async def test_skipped_state_maps_to_completed(self) -> None:
+        checks_json = json.dumps([{"name": "Fork Gate", "state": "SKIPPED", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.SKIPPED
+            assert checks[0].is_completed
+            assert not checks[0].is_passed
+            assert not checks[0].is_failed
+
 
 # ---------------------------------------------------------------------------
 # CI failure log fetching

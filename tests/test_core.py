@@ -1646,7 +1646,7 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10)
         step = MonitorCIStep()
 
-        check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
             mock_checks.return_value = [check]
             result = await step.execute(ctx)
@@ -1662,7 +1662,7 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        check = MagicMock(is_completed=True, is_passed=False, details_url="")
+        check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
         check.name = "lint"
         with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
             mock_checks.return_value = [check]
@@ -1696,7 +1696,7 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
             patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
@@ -1718,7 +1718,7 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        passed_check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
             patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
             patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
@@ -1770,7 +1770,7 @@ class TestMonitorCIStep:
         ctx = _make_ctx(pr_number=10, config=config)
         step = MonitorCIStep()
 
-        passed_check = MagicMock(is_completed=True, is_passed=True, name="CI")
+        passed_check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
         with (
             patch.object(step, "_verify_pr_head_sha", new_callable=AsyncMock) as mock_verify,
             patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
@@ -1784,6 +1784,21 @@ class TestMonitorCIStep:
         assert mock_verify.call_count == 3
         assert mock_checks.call_count == 1
 
+    async def test_skipped_checks_do_not_block_or_fail(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="Tests")
+        skipped = MagicMock(is_completed=True, is_passed=False, is_failed=False, name="Fork Gate")
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [passed, skipped]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "2 CI checks passed" in result.summary
+
 
 # ---------------------------------------------------------------------------
 # MonitorCIStep -- CI fix loop
@@ -1792,7 +1807,7 @@ class TestMonitorCIStep:
 
 def _make_ci_check(name: str = "Tests", passed: bool = False, details_url: str = "") -> MagicMock:
     """Create a mock CICheck for CI fix tests."""
-    check = MagicMock(is_completed=True, is_passed=passed, details_url=details_url)
+    check = MagicMock(is_completed=True, is_passed=passed, is_failed=not passed, details_url=details_url)
     check.name = name
     return check
 

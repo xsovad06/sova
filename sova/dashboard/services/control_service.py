@@ -107,6 +107,9 @@ from sova.dashboard.services.agent_pool import (
     _default_project_dir as _default_project_dir,
 )
 from sova.dashboard.services.agent_pool import (
+    _evict_completed_for_issue as _evict_completed_for_issue,
+)
+from sova.dashboard.services.agent_pool import (
     _get_project_agents as _get_project_agents,
 )
 from sova.dashboard.services.agent_pool import (

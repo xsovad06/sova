@@ -598,6 +598,7 @@ async function runCommand(command, args) {
     showToast('Failed to run command: ' + e.message, 'error');
   }
   loadAgents();
+  loadTaskCards();
 }
 
 var logCursor = 0;
@@ -871,6 +872,11 @@ async function checkHandoffForAgents(agents) {
 }
 
 async function executeHandoffAction(actionId) {
+  hideHandoffPanel();
+  document.querySelectorAll('[id^="handoff-inline-"]').forEach(function(el) {
+    el.innerHTML = '';
+  });
+
   try {
     var res = await fetch(apiUrl('/handoff/execute'), {
       method: 'POST',
@@ -879,11 +885,16 @@ async function executeHandoffAction(actionId) {
     });
     if (!res.ok) {
       showToast(await getErrorDetail(res, 'Failed to execute action'), 'error');
+      loadAgents();
       return;
     }
+    var result = await res.json();
+    if (result.run_id) viewLogs(result.run_id);
     loadAgents();
+    loadTaskCards();
   } catch (e) {
     showToast('Failed to execute action: ' + e.message, 'error');
+    loadAgents();
   }
 }
 

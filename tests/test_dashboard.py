@@ -1039,6 +1039,72 @@ class TestAutoHandoffCircuitBreaker:
         # Should proceed: only 1 address-review run counted (not 2)
         mock_start.assert_awaited_once()
 
+    async def test_circuit_breaker_isolates_by_issue(self) -> None:
+        """Runs for issue 115 should not block address-review for issue 121."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy import select
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.db.session import get_session as real_get_session
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        # Seed 3 completed address-review runs for issue 115 (over limit)
+        async with await get_session() as session:
+            async with session.begin():
+                for _ in range(3):
+                    r = TaskRun(issue_number="115", role="developer", status="done", pr_number=140)
+                    session.add(r)
+            await session.flush()
+            async with session.begin():
+                for r in (await session.execute(select(TaskRun).where(TaskRun.pr_number == 140))).scalars():
+                    session.add(StepExecution(task_run_id=r.id, step_name="address_review", status="done"))
+
+        # Handoff is for issue 121 (no prior runs)
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 21, "issue": "121", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="121",
+            pr_number=141,
+            summary="Findings to address",
+            next_actions=[
+                HandoffAction(
+                    id="address",
+                    label="Address Review",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "121", "role": "developer", "pr": 141},
+                ),
+            ],
+        )
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        mock_start = AsyncMock(return_value={"run_id": 22})
+        mock_clear = MagicMock()
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 2
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            await _process_auto_handoff(agent)
+
+        # Issue 121 should NOT be blocked by issue 115's runs
+        mock_start.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Queue service -- cross-run PR number lookup

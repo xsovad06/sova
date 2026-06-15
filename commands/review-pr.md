@@ -49,7 +49,7 @@ Extract: author, linked issue, whether AI-generated (bot prefixes, agent comment
 
 ## 1.5. Catalog Existing Bot Findings
 
-Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.) from the reviews and inline comments fetched in Step 1. Identify bots by `user.type == "Bot"` or known bot logins.
+If the PR has reviews or inline comments from automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.), extract their actionable findings before starting your own analysis. Identify bots by `user.type == "Bot"` or known bot logins. If no bot reviews exist, skip this step.
 
 For each bot finding, record the source, file:line, and a one-line description. Hold this as a reference table for deduplication in Step 4.
 

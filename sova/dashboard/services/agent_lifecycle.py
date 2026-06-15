@@ -26,6 +26,7 @@ from sova.dashboard.services.agent_pool import (
     AgentState,
     CompletedAgent,
     ProjectAgents,
+    _evict_completed_for_issue,
     _get_project_agents,
     _prune_completed,
 )
@@ -264,6 +265,8 @@ async def start_agent(
         if conflict:
             return conflict
 
+        _evict_completed_for_issue(pa, issue)
+
         cwd = pa.project_dir
 
         if not force:
@@ -430,6 +433,8 @@ async def start_command(
         conflict = await _check_issue_conflict(issue, pa)
         if conflict:
             return conflict
+
+        _evict_completed_for_issue(pa, issue)
 
         cwd = pa.project_dir
         prompt = _resolve_command_prompt(command, args, cwd)
