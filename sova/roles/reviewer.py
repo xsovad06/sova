@@ -13,6 +13,8 @@ from decimal import Decimal
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.db.models import TaskRun
+from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines
 from sova.git.operations import find_pr_for_issue, get_pr_branch, get_pr_diff, get_pr_files
 from sova.ipc.handoff import AgentHandoff, DashboardHandoff, HandoffAction, write_handoff, write_handoff_file
@@ -411,6 +413,10 @@ class ReviewerRole(AgentRole):
         except Exception:
             log.warning("reviewer.extract_memory_failed", exc_info=True)
 
+        # Clear the "agent" sentinel so DB accurately reflects completion
+        if ctx.task_run_id:
+            await self._clear_current_step(ctx)
+
         total_count = len(review.findings)
         log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
 
@@ -420,6 +426,22 @@ class ReviewerRole(AgentRole):
             output_state=TaskState.IN_REVIEW,
             findings=[f.description for f in review.findings],
         )
+
+    async def _clear_current_step(self, ctx: ExecutionContext) -> None:
+        """Clear the current_step sentinel on the TaskRun.
+
+        ReviewerRole bypasses WorkflowEngine so _adopt_task_run() is never
+        called. This leaves current_step="agent" permanently. Clear it here
+        so the DB record accurately reflects that the reviewer has finished.
+        """
+        try:
+            async with await get_session() as session:
+                async with session.begin():
+                    task_run = await session.get(TaskRun, ctx.task_run_id)
+                    if task_run:
+                        task_run.current_step = None
+        except Exception:
+            log.warning("reviewer.clear_step_failed", exc_info=True)
 
     async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> None:
         """Post review findings as inline PR review comments, with fallback."""
