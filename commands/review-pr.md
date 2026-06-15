@@ -47,6 +47,12 @@ Extract: author, linked issue, whether AI-generated (bot prefixes, agent comment
 
 **CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
+## 1.5. Catalog Existing Bot Findings
+
+Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.) from the reviews and inline comments fetched in Step 1. Identify bots by `user.type == "Bot"` or known bot logins.
+
+For each bot finding, record the source, file:line, and a one-line description. Hold this as a reference table for deduplication in Step 4.
+
 ## 2. Cross-Reference Comment Threads vs Actual Code
 
 For AI-generated PRs where agents may claim to have pushed fixes that never landed:
@@ -68,6 +74,8 @@ For every file touched in the diff:
 Read related files as needed -- review with full understanding, not in isolation.
 
 ## 4. Deep Analysis
+
+**Bot deduplication**: before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding -- note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
 
 Review across these dimensions, in priority order. Reference `AGENTS.md` and `docs/*-guidelines.md` for project-specific rules.
 
@@ -138,6 +146,16 @@ Scoring guidance -- bump to 3+ (not 1-2) if the finding:
 
 Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
 
+### Confirmed Bot Findings
+
+If any bot findings from Step 1.5 are valid, list them here as one-liners instead of restating them as full findings:
+
+```
+Agree with {bot} on {file}:{line} -- {short description}. See their inline comment.
+```
+
+These do NOT get scored and do NOT count toward the verdict. Omit if no bot findings exist.
+
 ### Verdict
 
 - **Approve** -- no blockers, findings are minor
@@ -176,5 +194,6 @@ Report the review URL after posting.
 - Do not invent problems. If the code is solid, say so.
 - Do not review generated files (migrations, lock files) unless they look wrong.
 - Respect the author's approach -- suggest alternatives only when there's a concrete problem.
+- Do not restate findings already posted by bot reviewers (CodeRabbit, SonarCloud, etc.). Acknowledge agreement in the "Confirmed Bot Findings" section instead.
 - Keep the review concise.
 - NEVER use emojis or icons in the review output.

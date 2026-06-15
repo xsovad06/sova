@@ -51,7 +51,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (1427+ tests)
+  tests/                           # pytest suite (1438+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     design-system.md               # Dashboard design system reference
@@ -160,6 +160,10 @@ Examples:
 - Create separate doc commits for changes in the same PR
 - Use emojis in code, documentation, or commit messages
 - Skip pre-commit hooks (`--no-verify`)
+
+### Role Chaining and Circuit Breaker
+
+Agents chain autonomously: Developer -> Reviewer -> Developer (address review). The address-review circuit breaker prevents infinite bot re-review loops (e.g., CodeRabbit repeatedly requesting changes). It counts completed address-review runs by querying `TaskRun` records with an `address_review` `StepExecution`, filtered by issue and PR number. When the count reaches `pipeline.max_address_review_cycles` (default 2, 0=unlimited), auto-execution is blocked and a manual-only handoff is written so the dashboard shows "Address Review (manual)" and "Integrate PR" buttons. See `.claude/rules/architecture.md` for full details.
 
 ## Development Workflow
 - **SSH**: repo-level `core.sshCommand` is configured for the personal key

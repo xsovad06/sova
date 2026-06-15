@@ -133,7 +133,7 @@ class MonitorCIStep(BaseStep):
 
             all_completed = all(c.is_completed for c in checks)
             if all_completed:
-                failed = [c for c in checks if not c.is_passed]
+                failed = [c for c in checks if c.is_failed]
                 if failed:
                     names = ", ".join(c.name for c in failed)
                     return (

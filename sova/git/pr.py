@@ -89,6 +89,13 @@ class CICheck:
     def is_passed(self) -> bool:
         return self.is_completed and self.conclusion == CheckConclusion.SUCCESS
 
+    @property
+    def is_failed(self) -> bool:
+        return self.is_completed and self.conclusion in (
+            CheckConclusion.FAILURE,
+            CheckConclusion.TIMED_OUT,
+        )
+
 
 # ---------------------------------------------------------------------------
 # PR operations
@@ -267,8 +274,10 @@ _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
     "STARTUP_FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
     "PENDING": (CheckStatus.IN_PROGRESS, None),
     "SKIPPING": (CheckStatus.COMPLETED, CheckConclusion.SKIPPED),
+    "SKIPPED": (CheckStatus.COMPLETED, CheckConclusion.SKIPPED),
     "CANCELLED": (CheckStatus.COMPLETED, CheckConclusion.CANCELLED),
     "EXPECTED": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
+    "STALE": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
 }
 
 
@@ -340,6 +349,8 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
     checks: list[CICheck] = []
     for item in checks_data:
         state_raw = item.get("state", "PENDING")
+        if state_raw not in _GH_STATE_MAP:
+            log.warning("git.ci_checks.unknown_state", check=item.get("name"), state=state_raw)
         status, conclusion = _GH_STATE_MAP.get(state_raw, (CheckStatus.IN_PROGRESS, None))
 
         checks.append(
