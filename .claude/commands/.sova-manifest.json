@@ -102,7 +102,11 @@
       "managed": true
     },
     "spec.md": {
-      "hash": "345c0662016fe3fa",
+      "hash": "f9377c8521702037",
+      "managed": true
+    },
+    "research.md": {
+      "hash": "2ef7bef3717d6370",
       "managed": true
     }
   }

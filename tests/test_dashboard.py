@@ -707,10 +707,16 @@ class TestAutoHandoffCircuitBreaker:
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
         # Seed 2 completed address-review runs for issue 115, PR 130
+        # Each needs an "address_review" StepExecution to be counted
         async with await get_session() as session:
             async with session.begin():
-                session.add(TaskRun(issue_number="115", role="developer", status="done", pr_number=130))
-                session.add(TaskRun(issue_number="115", role="developer", status="done", pr_number=130))
+                r1 = TaskRun(issue_number="115", role="developer", status="done", pr_number=130)
+                r2 = TaskRun(issue_number="115", role="developer", status="done", pr_number=130)
+                session.add_all([r1, r2])
+            await session.flush()
+            async with session.begin():
+                session.add(StepExecution(task_run_id=r1.id, step_name="address_review", status="done"))
+                session.add(StepExecution(task_run_id=r2.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -775,7 +781,11 @@ class TestAutoHandoffCircuitBreaker:
         # Seed only 1 completed address-review run (limit is 2)
         async with await get_session() as session:
             async with session.begin():
-                session.add(TaskRun(issue_number="116", role="developer", status="done", pr_number=131))
+                r1 = TaskRun(issue_number="116", role="developer", status="done", pr_number=131)
+                session.add(r1)
+            await session.flush()
+            async with session.begin():
+                session.add(StepExecution(task_run_id=r1.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -910,11 +920,18 @@ class TestAutoHandoffCircuitBreaker:
         from sova.db.session import get_session as real_get_session
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
-        # Seed many completed runs
+        # Seed many completed address-review runs
         async with await get_session() as session:
+            runs = []
             async with session.begin():
                 for _ in range(10):
-                    session.add(TaskRun(issue_number="119", role="developer", status="done", pr_number=133))
+                    r = TaskRun(issue_number="119", role="developer", status="done", pr_number=133)
+                    session.add(r)
+                    runs.append(r)
+            await session.flush()
+            async with session.begin():
+                for r in runs:
+                    session.add(StepExecution(task_run_id=r.id, step_name="address_review", status="done"))
 
         agent = type(
             "AgentState",
@@ -957,6 +974,69 @@ class TestAutoHandoffCircuitBreaker:
         ):
             await _process_auto_handoff(agent)
 
+        mock_start.assert_awaited_once()
+
+    async def test_initial_dev_run_not_counted(self) -> None:
+        """Initial developer run (with pr_number but no address_review step) should not count."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.db.session import get_session as real_get_session
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        # Seed: 1 initial dev run (no address_review step) + 1 address-review run
+        async with await get_session() as session:
+            async with session.begin():
+                initial = TaskRun(issue_number="120", role="developer", status="done", pr_number=134)
+                ar1 = TaskRun(issue_number="120", role="developer", status="done", pr_number=134)
+                session.add_all([initial, ar1])
+            await session.flush()
+            async with session.begin():
+                # Only the address-review run has the step record
+                session.add(StepExecution(task_run_id=ar1.id, step_name="address_review", status="done"))
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 19, "issue": "120", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="120",
+            pr_number=134,
+            summary="Findings to address",
+            next_actions=[
+                HandoffAction(
+                    id="address",
+                    label="Address Review",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "120", "role": "developer", "pr": 134},
+                ),
+            ],
+        )
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        mock_start = AsyncMock(return_value={"run_id": 20})
+        mock_clear = MagicMock()
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 2
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            await _process_auto_handoff(agent)
+
+        # Should proceed: only 1 address-review run counted (not 2)
         mock_start.assert_awaited_once()
 
 

@@ -17,17 +17,25 @@ log = get_logger(component="dashboard.control.handoff")
 async def _count_address_review_runs(issue: str, pr_number: int, project_dir: Path) -> int:
     """Count completed address-review runs for the given issue+PR.
 
-    Address-review runs are developer runs with a pr_number set (developer
-    runs without pr_number are initial development, not address-review).
+    Only counts runs that actually executed the address-review pipeline
+    (identified by having an ``address_review`` StepExecution).  The
+    initial developer run also acquires ``pr_number`` mid-pipeline via
+    ``_sync_task_run_context()`` after CreatePRStep, so filtering on
+    ``pr_number`` alone would include it and trigger the breaker one
+    cycle too early.
     """
     from sqlalchemy import func, select
 
-    from sova.db.models import TaskRun
+    from sova.core.state import TASK_RUN_TERMINAL
+    from sova.db.models import StepExecution, TaskRun
     from sova.db.session import get_session
 
-    terminal = {"done", "failed", "rejected", "interrupted", "paused"}
-
     async with await get_session(project_dir=project_dir) as session:
+        address_review_ids = (
+            select(StepExecution.task_run_id)
+            .where(StepExecution.step_name == "address_review")
+            .scalar_subquery()
+        )
         stmt = (
             select(func.count())
             .select_from(TaskRun)
@@ -35,7 +43,8 @@ async def _count_address_review_runs(issue: str, pr_number: int, project_dir: Pa
                 TaskRun.issue_number == issue,
                 TaskRun.role == "developer",
                 TaskRun.pr_number == pr_number,
-                TaskRun.status.in_(terminal),
+                TaskRun.status.in_(TASK_RUN_TERMINAL),
+                TaskRun.id.in_(address_review_ids),
             )
         )
         result = await session.execute(stmt)
@@ -100,7 +109,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
             if not action.auto_execute:
                 continue
 
-            # Check circuit breaker for address-review spawns
+            # Extract args once for agent-mode actions
             if action.mode == "agent":
                 args = action.args or {}
                 raw_pr = args.get("pr") or handoff.pr_number
@@ -108,6 +117,7 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 target_issue = str(args.get("issue", handoff.issue))
                 pr_num = int(raw_pr) if raw_pr is not None else None
 
+                # Check circuit breaker for address-review spawns
                 reason = await _check_address_review_circuit_breaker(
                     target_issue, pr_num, target_role, agent.project_dir
                 )
@@ -161,12 +171,10 @@ async def _process_auto_handoff(agent: AgentState) -> None:
             handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
 
             if action.mode == "agent":
-                args = action.args or {}
-                raw_pr = args.get("pr") or handoff.pr_number
                 result = await agent_lifecycle.start_agent(
-                    str(args.get("issue", handoff.issue)),
-                    role=args.get("role"),
-                    pr_number=int(raw_pr) if raw_pr is not None else None,
+                    target_issue,
+                    role=target_role,
+                    pr_number=pr_num,
                     slug=None,
                 )
                 log.info("auto_handoff.agent_started", result=result)
