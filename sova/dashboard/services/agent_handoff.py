@@ -32,9 +32,7 @@ async def _count_address_review_runs(issue: str, pr_number: int, project_dir: Pa
 
     async with await get_session(project_dir=project_dir) as session:
         address_review_ids = (
-            select(StepExecution.task_run_id)
-            .where(StepExecution.step_name == "address_review")
-            .scalar_subquery()
+            select(StepExecution.task_run_id).where(StepExecution.step_name == "address_review").scalar_subquery()
         )
         stmt = (
             select(func.count())
