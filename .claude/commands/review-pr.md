@@ -64,6 +64,17 @@ Extract from the metadata:
 
 **CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
+## 1.5. Catalog Existing Bot Findings
+
+Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.). Identify bots from the reviews and inline comments fetched in Step 1 -- look for `user.type == "Bot"` or known bot logins (`coderabbitai`, `sonarqubecloud`, `dependabot`).
+
+For each bot finding, record:
+- **Source**: which bot (e.g., CodeRabbit, SonarCloud)
+- **File:line**: location of the finding
+- **Description**: one-line summary of what the bot flagged
+
+Hold this as a reference table. You will cross-reference it in Step 4 to avoid restating findings bots already caught.
+
 ## 2. Cross-Reference Comment Threads vs Actual Code
 
 This is critical for AI-generated PRs where agents may claim to have pushed fixes that never landed.
@@ -110,6 +121,8 @@ For every file touched in the diff:
 Read related files as needed -- review with full understanding, not in isolation.
 
 ## 4. Deep Analysis
+
+**Bot deduplication**: before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding -- note it for the "Confirmed Bot Findings" section in Step 6 instead. Still independently assess whether the bot's suggestion is correct; if you disagree with a bot, record your disagreement as a regular finding.
 
 Review across these dimensions, in priority order. Reference `CLAUDE.md`, `AGENTS.md`, and `.claude/rules/` for project conventions.
 
@@ -229,6 +242,16 @@ Scoring guidance -- bump to 3+ (not 1-2) if the finding:
 
 Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
 
+### Confirmed Bot Findings
+
+If any bot findings from Step 1.5 are valid, list them here as one-liners instead of restating them as full findings:
+
+```
+Agree with {bot} on {file}:{line} -- {short description}. See their inline comment.
+```
+
+These do NOT get Value scores and do NOT count toward the verdict (the bot already requested changes). If no bot findings exist or none are valid, omit this section.
+
 ### Verdict
 
 State one of:
@@ -289,4 +312,5 @@ After posting, report the review URL.
 - Keep the review concise. Reviewers who write novels get ignored.
 - Never include emojis or icons in the review output.
 - Always check `.claude/rules/architecture.md` for known design decisions and gotchas before finalizing findings.
+- Do not restate findings already posted by bot reviewers (CodeRabbit, SonarCloud, etc.). Acknowledge agreement in the "Confirmed Bot Findings" section instead. Only create a standalone finding if you disagree with a bot's assessment.
 - Sign every review as "-- Koda" at the bottom.
