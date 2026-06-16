@@ -101,8 +101,67 @@ function renderRoles(roles) {
   }).join('');
 }
 
-function showCreateModal() { document.getElementById('create-modal').classList.remove('hidden'); }
-function hideCreateModal() { document.getElementById('create-modal').classList.add('hidden'); }
+let createModalTrigger = null;
+
+function getFocusableElements(container) {
+  return Array.from(container.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter(el => !el.disabled);
+}
+
+function trapCreateModalFocus(event) {
+  if (event.key !== 'Tab') return;
+
+  const modal = document.getElementById('create-modal');
+  const focusableElements = getFocusableElements(modal);
+  if (!focusableElements.length) return;
+
+  const first = focusableElements[0];
+  const last = focusableElements[focusableElements.length - 1];
+
+  if (!modal.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function handleCreateModalKeydown(event) {
+  if (event.key === 'Escape') {
+    hideCreateModal();
+    return;
+  }
+
+  trapCreateModalFocus(event);
+}
+
+function showCreateModal() {
+  createModalTrigger = document.activeElement;
+  const modal = document.getElementById('create-modal');
+  modal.classList.remove('hidden');
+  modal.setAttribute('tabindex', '-1');
+  document.addEventListener('keydown', handleCreateModalKeydown);
+  setTimeout(() => { document.getElementById('new-role-name').focus(); }, 0);
+}
+
+function hideCreateModal() {
+  const modal = document.getElementById('create-modal');
+  modal.classList.add('hidden');
+  document.removeEventListener('keydown', handleCreateModalKeydown);
+
+  if (createModalTrigger) {
+    createModalTrigger.focus();
+    createModalTrigger = null;
+  }
+}
 
 async function createRole() {
   const name = document.getElementById('new-role-name').value.trim();
