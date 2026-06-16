@@ -32,12 +32,12 @@ def set_project_dir(path: Path) -> None:
     _default_project_dir = path
 
 
-def _resolve_project_dir() -> Path | None:
+def _resolve_project_dir() -> Path:
     """Resolve the active project directory."""
     ctx_dir = get_project_dir()
     if ctx_dir is not None:
         return ctx_dir
-    return _default_project_dir
+    return _default_project_dir or Path.cwd()
 
 
 def _control_dir(project_dir: Path | None = None) -> Path | None:

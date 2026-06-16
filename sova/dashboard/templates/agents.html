@@ -876,6 +876,7 @@ async function executeHandoffAction(actionId) {
   document.querySelectorAll('[id^="handoff-inline-"]').forEach(function(el) {
     el.innerHTML = '';
   });
+  lastAgentFingerprint = null;
 
   try {
     var res = await fetch(apiUrl('/handoff/execute'), {
@@ -1099,7 +1100,7 @@ function renderHistoryTable(tasks, targetId, showError) {
     '</tr></thead><tbody>' +
     tasks.map(function(t) {
       var colors = roleColor(t.role);
-      var stepsText = t.steps_completed + '/' + t.total_steps_possible;
+      var stepsText = t.total_steps_possible ? (t.steps_completed + '/' + t.total_steps_possible) : '--';
 
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
         '<td class="p-3 text-accent">#' + escapeHtml(t.issue_number) + '</td>' +

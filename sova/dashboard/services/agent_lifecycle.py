@@ -278,6 +278,13 @@ async def start_agent(
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
+        try:
+            from sova.dashboard.services import handoff_service
+
+            handoff_service.clear_handoff(cwd, issue=issue)
+        except Exception:
+            log.debug("agent.clear_handoff_failed", issue=issue, exc_info=True)
+
         cmd_parts = ["sova", "run", shlex.quote(issue), "--run-id", str(run_id)]
         if resume_run_id:
             cmd_parts.extend(["--resume", str(resume_run_id)])
@@ -441,6 +448,13 @@ async def start_command(
 
         raw_pr = (args or {}).get("pr")
         pr_number = int(raw_pr) if raw_pr is not None else None
+
+        try:
+            from sova.dashboard.services import handoff_service
+
+            handoff_service.clear_handoff(cwd, issue=issue)
+        except Exception:
+            log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         gh_env = await _resolve_project_gh_env(cwd)
         process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)

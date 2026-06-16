@@ -15,13 +15,23 @@ from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services.control_service import (
     _ADDRESS_REVIEW_ONLY,
     _RESEARCHER_ONLY,
+    ADDRESS_REVIEW_PIPELINE,
     DEVELOPER_PIPELINE,
+    RESEARCHER_PIPELINE,
     get_step_progress,
 )
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import iso_utc
 
 _TERMINAL = TASK_RUN_TERMINAL
+
+_PIPELINE_LENGTHS: dict[str, int] = {
+    "developer": len(DEVELOPER_PIPELINE),
+    "address_review": len(ADDRESS_REVIEW_PIPELINE),
+    "researcher": len(RESEARCHER_PIPELINE),
+}
+
+_PIPELINE_ROLES = frozenset({"developer", "researcher"})
 
 
 async def get_active_work(session: AsyncSession) -> list[dict]:
@@ -127,7 +137,7 @@ async def get_work_history(
                 "pipeline_variant": variant,
                 "steps_completed": completed_steps or 0,
                 "steps_total": step_count or 0,
-                "total_steps_possible": len(DEVELOPER_PIPELINE),
+                "total_steps_possible": (_PIPELINE_LENGTHS.get(variant) if r.role in _PIPELINE_ROLES else None),
                 "branch_name": r.branch_name,
                 "pr_number": r.pr_number,
                 "total_cost_usd": float(r.total_cost_usd or 0),
