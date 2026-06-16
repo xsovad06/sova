@@ -92,6 +92,15 @@ For each issue found, assign a **fix value score from 1-10**:
 | 6-8 | Important: prevents bugs, security issues, tech debt | **Address**: fix in code |
 | 9-10 | Critical: data loss, security vulnerability, broken functionality | **Address**: fix in code |
 
+Scoring guidance -- bump to 3+ (not 1-2) if the finding:
+- Prevents a runtime failure or data corruption
+- Removes code or reduces duplication (less code = fewer bugs)
+- Improves error handling (catches specific exceptions, removes silent failures)
+- Fixes a doc inconsistency that misleads contributors or agents
+- Eliminates dead code or unused imports
+
+Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
+
 ## 5. Report Findings
 
 For each finding, report:

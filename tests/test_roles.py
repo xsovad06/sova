@@ -1841,7 +1841,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file"),
-            patch("sova.roles.reviewer.get_session", side_effect=RuntimeError("DB down")),
+            patch("sova.roles.reviewer.get_session", side_effect=OSError("DB connection refused")),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -1888,6 +1888,126 @@ class TestReviewerLLMReview:
         # get_session should not have been called for clearing sentinel
         # (it may be called for handoff, but handoff is also guarded by task_run_id)
         mock_get_session.assert_not_awaited()
+
+    async def test_sentinel_cleared_on_precondition_failure(self) -> None:
+        """Sentinel is cleared even when preconditions fail (try/finally)."""
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.roles.reviewer import ReviewerRole
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number="42",
+                    role="reviewer",
+                    status="running",
+                    current_step="agent",
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
+
+        # Task is in BACKLOG, not IN_REVIEW -- precondition will fail
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.BACKLOG,
+            adapter=adapter,
+            task_run_id=run_id,
+        )
+
+        role = ReviewerRole()
+        result = await role.execute(ctx)
+
+        assert not result.success
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.current_step is None
+
+    async def test_sentinel_cleared_on_pr_not_found(self) -> None:
+        """Sentinel is cleared when no PR is found for the issue."""
+        from unittest.mock import patch
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.roles.reviewer import ReviewerRole
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number="42",
+                    role="reviewer",
+                    status="running",
+                    current_step="agent",
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            task_run_id=run_id,
+        )
+        # No pr_number set, and find_pr_for_issue returns None
+        assert ctx.pr_number is None
+
+        with patch("sova.roles.reviewer.find_pr_for_issue", new_callable=AsyncMock, return_value=None):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "no linked PR" in result.summary
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.current_step is None
+
+    async def test_sentinel_cleared_on_diff_fetch_failure(self) -> None:
+        """Sentinel is cleared when diff fetch raises an exception."""
+        from unittest.mock import patch
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.roles.reviewer import ReviewerRole
+
+        async with await get_session() as session:
+            async with session.begin():
+                task_run = TaskRun(
+                    issue_number="42",
+                    role="reviewer",
+                    status="running",
+                    current_step="agent",
+                )
+                session.add(task_run)
+                await session.flush()
+                run_id = task_run.id
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            adapter=adapter,
+            pr_number=10,
+            task_run_id=run_id,
+        )
+
+        with patch(
+            "sova.roles.reviewer.get_pr_diff",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("Network error"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert not result.success
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, run_id)
+            assert task_run.current_step is None
 
 
 class TestReviewerParsing:

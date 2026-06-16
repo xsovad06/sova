@@ -47,7 +47,9 @@ Extract: author, linked issue, whether AI-generated (bot prefixes, agent comment
 
 **CI failures do NOT block the review.** If CI checks are failing, note the failures briefly in the review summary (what failed, likely cause if obvious) but proceed with the full code review. CI issues are a separate concern -- the review's job is to evaluate code quality, correctness, and design. A PR with failing CI still needs its code reviewed.
 
-## 1.5. Catalog Existing Bot Findings
+## 1.5. Catalog Existing Bot Findings (if external reviews are configured)
+
+Skip this step if the project does not use automated reviewers (no `[external_reviews]` section in `sova.toml`).
 
 Before starting your own analysis, extract actionable findings already posted by automated reviewers (CodeRabbit, SonarCloud, Dependabot, etc.) from the reviews and inline comments fetched in Step 1. Identify bots by `user.type == "Bot"` or known bot logins.
 
@@ -75,7 +77,7 @@ Read related files as needed -- review with full understanding, not in isolation
 
 ## 4. Deep Analysis
 
-**Bot deduplication**: before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding -- note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
+**Bot deduplication** (when Step 1.5 was performed): before recording a finding, check the bot findings table from Step 1.5. If a bot already flagged the same issue (same file, same concern), do NOT create a standalone finding -- note it for the "Confirmed Bot Findings" section in Step 6 instead. If you disagree with a bot, record your disagreement as a regular finding.
 
 Review across these dimensions, in priority order. Reference `AGENTS.md` and `docs/*-guidelines.md` for project-specific rules.
 
@@ -146,7 +148,7 @@ Scoring guidance -- bump to 3+ (not 1-2) if the finding:
 
 Reserve 1-2 only for purely subjective preferences: naming style, comment wording, formatting not caught by linter.
 
-### Confirmed Bot Findings
+### Confirmed Bot Findings (if Step 1.5 was performed)
 
 If any bot findings from Step 1.5 are valid, list them here as one-liners instead of restating them as full findings:
 
