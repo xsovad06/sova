@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.db.models import TaskRun
@@ -324,6 +326,15 @@ class ReviewerRole(AgentRole):
         )
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
+        try:
+            return await self._execute(ctx)
+        finally:
+            # Clear the "agent" sentinel on ALL exit paths (success, failure,
+            # exception) so the DB record never shows a perpetual "agent" step.
+            if ctx.task_run_id:
+                await self._clear_current_step(ctx)
+
+    async def _execute(self, ctx: ExecutionContext) -> RoleResult:
         task = await ctx.adapter.get_task(ctx.issue_number)
 
         if not self.validate_preconditions(task, force=ctx.force):
@@ -413,13 +424,13 @@ class ReviewerRole(AgentRole):
         except Exception:
             log.warning("reviewer.extract_memory_failed", exc_info=True)
 
-        # Clear the "agent" sentinel so DB accurately reflects completion
-        if ctx.task_run_id:
-            await self._clear_current_step(ctx)
-
         total_count = len(review.findings)
         log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
 
+        # IN_REVIEW is correct for all outcomes: architecture doc says "Issue
+        # state ownership is human -- agents never auto-move issues to DONE.
+        # Issues stay IN_REVIEW until the human merges." Even a clean review
+        # (0 findings) requires human approval before integration.
         return RoleResult(
             success=True,
             summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings",
@@ -440,7 +451,7 @@ class ReviewerRole(AgentRole):
                     task_run = await session.get(TaskRun, ctx.task_run_id)
                     if task_run:
                         task_run.current_step = None
-        except Exception:
+        except (OSError, SQLAlchemyError):
             log.warning("reviewer.clear_step_failed", exc_info=True)
 
     async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> None:
