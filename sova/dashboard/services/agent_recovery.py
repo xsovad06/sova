@@ -110,6 +110,38 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     was_status = run.status
                     final_status = "interrupted"
 
+                    # Check if agent completed and wrote a handoff before dying
+                    try:
+                        from sova.dashboard.services import handoff_service
+
+                        hf = handoff_service.get_handoff(project_dir, issue=run.issue_number)
+                        if hf and hf.get("status") == "awaiting_action":
+                            hf_time_str = hf.get("created_at")
+                            run_start = run.started_at or datetime.min.replace(tzinfo=timezone.utc)
+                            if run_start.tzinfo is None:
+                                run_start = run_start.replace(tzinfo=timezone.utc)
+                            if hf_time_str:
+                                hf_dt = datetime.fromisoformat(hf_time_str.replace("Z", "+00:00"))
+                                if hf_dt.tzinfo is None:
+                                    hf_dt = hf_dt.replace(tzinfo=timezone.utc)
+                            else:
+                                hf_dt = None
+                            if hf_dt is not None and hf_dt >= run_start:
+                                final_status = "done"
+                                cost = hf.get("details", {}).get("cost_usd")
+                                if cost is not None:
+                                    from decimal import Decimal
+
+                                    run.total_cost_usd = Decimal(str(cost))
+                                run.error_message = None
+                                log.info(
+                                    "recovery.completed_with_handoff",
+                                    run_id=run.id,
+                                    issue=run.issue_number,
+                                )
+                    except Exception:
+                        log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
+
                     if run.pr_number and run.role:
                         cmd_name = run.role.removeprefix("command:").removeprefix("/").split()[0]
                         if cmd_name in _MERGE_ROLES:
@@ -118,6 +150,9 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
                                 if await _check_pr_merged_on_failure(run.pr_number, project_dir):
                                     final_status = "done"
+                                    run.error_message = (
+                                        f"Agent process died but PR #{run.pr_number} was merged successfully"
+                                    )
                                     log.info(
                                         "recovery.merge_succeeded_despite_crash",
                                         run_id=run.id,
@@ -127,11 +162,8 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                                 log.debug("recovery.merge_check_failed", run_id=run.id, exc_info=True)
 
                     run.status = final_status
-                    run.error_message = (
-                        f"Stale run recovered on startup (was {was_status!r})"
-                        if final_status == "interrupted"
-                        else f"Agent process died but PR #{run.pr_number} was merged successfully"
-                    )
+                    if final_status == "interrupted":
+                        run.error_message = f"Stale run recovered on startup (was {was_status!r})"
                     run.ended_at = datetime.now(timezone.utc)
                     if final_status == "interrupted":
                         interrupted.append(

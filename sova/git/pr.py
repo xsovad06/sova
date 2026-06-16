@@ -270,6 +270,7 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
 _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
     "SUCCESS": (CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
     "FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
+    "TIMED_OUT": (CheckStatus.COMPLETED, CheckConclusion.TIMED_OUT),
     "ERROR": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
     "STARTUP_FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
     "PENDING": (CheckStatus.IN_PROGRESS, None),

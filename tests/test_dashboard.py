@@ -2937,6 +2937,19 @@ class TestWorkServiceDirect:
         assert len(result["tasks"]) == 0
         assert result["total"] == 1
 
+    async def test_get_work_history_non_pipeline_role_shows_none_steps(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_history
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            session.add(TaskRun(issue_number="50", role="triage", status="done", started_at=now, ended_at=now))
+            session.add(TaskRun(issue_number="51", role="developer", status="done", started_at=now, ended_at=now))
+
+        result = await get_work_history(session)
+        tasks_by_issue = {t["issue_number"]: t for t in result["tasks"]}
+        assert tasks_by_issue["50"]["total_steps_possible"] is None
+        assert tasks_by_issue["51"]["total_steps_possible"] == 15
+
     async def test_work_history_endpoint_pagination(self, client: AsyncClient) -> None:
         resp = await client.get("/api/work/history?limit=15&offset=0")
         assert resp.status_code == 200
@@ -3713,6 +3726,123 @@ class TestAgentRecoveryDirect:
         assert result["verdict"] == "block"
         assert result["finding_count"] == 2
         assert result["reviewed_at"] is not None
+
+    async def test_recover_stale_runs_marks_done_with_handoff(self) -> None:
+        """recover_stale_runs should mark a dead-PID run as 'done' when a valid handoff exists."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        now = datetime.now(timezone.utc)
+        run_start = now - timedelta(minutes=10)
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="200",
+                role="developer",
+                status="running",
+                pid=999999,
+                started_at=run_start,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        handoff_data = {
+            "status": "awaiting_action",
+            "created_at": now.isoformat(),
+            "details": {"cost_usd": 1.23},
+        }
+        with patch(
+            "sova.dashboard.services.handoff_service.get_handoff",
+            return_value=handoff_data,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 0
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "done"
+            assert updated.error_message is None
+            from decimal import Decimal
+
+            assert updated.total_cost_usd == Decimal("1.23")
+
+    async def test_recover_stale_runs_stays_interrupted_with_old_handoff(self) -> None:
+        """recover_stale_runs should NOT mark as done when handoff predates the run."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        now = datetime.now(timezone.utc)
+        run_start = now - timedelta(minutes=5)
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="201",
+                role="developer",
+                status="running",
+                pid=999999,
+                started_at=run_start,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        old_handoff = {
+            "status": "awaiting_action",
+            "created_at": (now - timedelta(minutes=20)).isoformat(),
+            "details": {"cost_usd": 0.50},
+        }
+        with patch(
+            "sova.dashboard.services.handoff_service.get_handoff",
+            return_value=old_handoff,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_recover_stale_runs_handoff_no_created_at(self) -> None:
+        """recover_stale_runs stays interrupted when handoff has no created_at field."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="202",
+                role="developer",
+                status="running",
+                pid=999999,
+                started_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        handoff_data = {"status": "awaiting_action", "details": {}}
+        with patch(
+            "sova.dashboard.services.handoff_service.get_handoff",
+            return_value=handoff_data,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
 
 
 class TestReadFileHandoff:

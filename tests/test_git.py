@@ -514,6 +514,52 @@ class TestGetCIChecks:
             assert not checks[0].is_passed
             assert not checks[0].is_failed
 
+    async def test_timed_out_state_maps_to_failed(self) -> None:
+        checks_json = json.dumps([{"name": "Slow Test", "state": "TIMED_OUT", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.TIMED_OUT
+            assert checks[0].is_completed
+            assert not checks[0].is_passed
+            assert checks[0].is_failed
+
+    async def test_stale_state_maps_to_neutral(self) -> None:
+        checks_json = json.dumps([{"name": "Old Check", "state": "STALE", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.NEUTRAL
+            assert not checks[0].is_passed
+            assert not checks[0].is_failed
+
+    async def test_unknown_state_logged_and_defaults_to_in_progress(self) -> None:
+        checks_json = json.dumps([{"name": "Mystery", "state": "WEIRD_STATE", "link": ""}])
+        with (
+            patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.pr.log.warning") as mock_warning,
+        ):
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.IN_PROGRESS
+            assert checks[0].conclusion is None
+            mock_warning.assert_called_once_with(
+                "git.ci_checks.unknown_state",
+                check="Mystery",
+                state="WEIRD_STATE",
+            )
+
 
 # ---------------------------------------------------------------------------
 # CI failure log fetching
