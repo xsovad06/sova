@@ -14,10 +14,10 @@ SOVA has four main components:
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/output.py` -- OutputWriter for per-run log file persistence (moved from dashboard/services/)
-- `core/steps/` -- 21 BaseStep implementations with execute/validate_output/can_skip. Three pipeline variants:
+- `core/steps/` -- 22 BaseStep implementations with execute/validate_output/can_skip. Three pipeline variants:
   - **Developer pipeline** (15 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (9 steps): rebase -> address_review -> commit -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
-  - **Researcher pipeline** (3 steps): fetch_task -> research -> extract_memory
+  - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
 - `core/dag.py` -- DAGExecutor: runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
 - `roles/` -- AgentRole ABC with 5 implementations: triage, researcher, developer, reviewer, custom
 - `roles/custom.py` -- CustomRole: executes user-defined DAG workflows via DAGExecutor
@@ -30,10 +30,10 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
-- 14 pages: dashboard, agents, run_detail, lifecycle, costs, queue, logs, settings, memory, setup, home, style_guide, roles, role_editor
+- 15 pages: dashboard, agents, run_detail, lifecycle, costs, queue, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
-- 15 API routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles
-- 21 services: run, cost, memory, control (facade), handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output (re-export facade for core/output), role
+- 16 API routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles, spec
+- 22 services: run, cost, memory, control (facade), handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output (re-export facade for core/output), role, spec
 - Old pages (overview, control, runs, tasks, work) redirect to current equivalents (dashboard or agents)
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup. Both `start_agent()` and `start_command()` call `_check_issue_conflict()` which rejects duplicates via two checks: in-memory (`pa.agents`) and DB (`TaskRun` with alive PID). The DB check catches CLI-spawned agents not tracked in-memory. The `max_concurrent` slot check alone doesn't prevent same-issue duplicates. `_check_issue_conflict()` auto-recovers dead-PID DB runs by marking them "interrupted" on detection. When `force=True` (passed through from `start_agent`), both in-memory and live external conflicts are skipped so `--force` retries are not blocked by stale state.
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh
