@@ -60,9 +60,13 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     created_match = re.search(r"\*\*Created\*\*:\s*([\d-]+)", text)
     result["created"] = created_match.group(1) if created_match else ""
 
-    # Extract title from first heading
-    title_match = re.match(r"^#\s+(?:Spec: )?(.+)$", text, re.MULTILINE)
-    result["title"] = title_match.group(1).strip() if title_match else f"Spec for #{issue_number}"
+    # Extract title from first heading -- avoid regex backtracking (S5852)
+    title = f"Spec for #{issue_number}"
+    title_match = re.search(r"^# (.+)", text)
+    if title_match:
+        raw = title_match.group(1).strip()
+        title = raw.removeprefix("Spec: ") if raw.startswith("Spec: ") else raw
+    result["title"] = title
 
     # Extract open questions
     result["open_questions"] = _extract_open_questions(text)
