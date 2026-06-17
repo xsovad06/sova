@@ -154,6 +154,8 @@ def create_app(
         set_runtime(create_runtime(cfg.agent.runtime))
 
         if is_multi:
+            log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
+
             for _slug, path_str in list_projects().items():
                 p = Path(path_str)
                 if p.is_dir():

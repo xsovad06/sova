@@ -81,6 +81,7 @@ class LLMConfig(BaseSettings):
 class AgentConfig(BaseSettings):
     """Agent behavior configuration."""
 
+    # Keep in sync with sova/ipc/runtime.py:_RUNTIMES registry
     runtime: Literal["claude-code", "aider"] = "claude-code"
     model: str = "opus"
     max_budget: Decimal = Field(Decimal("10.00"), gt=0)

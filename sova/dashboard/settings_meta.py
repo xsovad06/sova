@@ -109,7 +109,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "agent.runtime",
         "Agent runtime",
-        "Coding agent backend to use (claude-code, aider)",
+        "Coding agent backend to use (see sova.toml [agent] for available runtimes)",
         "agent",
     ),
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
@@ -126,7 +126,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "agent.step_timeout",
         "Step timeout (s)",
-        "Maximum seconds per pipeline step before killing the agent (0 = no limit)",
+        "Maximum seconds per pipeline step before killing the agent (must be > 0)",
         "agent",
         "number",
     ),
