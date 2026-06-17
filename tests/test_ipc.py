@@ -1036,7 +1036,7 @@ class TestAiderRuntime:
         from sova.ipc.runtime import AiderRuntime
 
         rt = AiderRuntime()
-        prompt = 'Run the following command:\n```bash\nsova run 28 --run-id 161\n```'
+        prompt = "Run the following command:\n```bash\nsova run 28 --run-id 161\n```"
         result = rt.transform_prompt(prompt)
         assert result == "sova run 28 --run-id 161"
 
@@ -1045,7 +1045,7 @@ class TestAiderRuntime:
         from sova.ipc.runtime import AiderRuntime
 
         rt = AiderRuntime()
-        prompt = 'Run:\n```bash\nls -la\n```'
+        prompt = "Run:\n```bash\nls -la\n```"
         assert rt.transform_prompt(prompt) == prompt
 
     async def test_spawn_shell_prompt_executes_directly(self) -> None:
@@ -1059,7 +1059,7 @@ class TestAiderRuntime:
         mock_proc.stderr = AsyncMock()
 
         rt = AiderRuntime()
-        prompt = 'Run the following command:\n```bash\nsova run 28\n```'
+        prompt = "Run the following command:\n```bash\nsova run 28\n```"
         with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
             ap = await rt.spawn(prompt, Path("/tmp"))
 
@@ -1193,14 +1193,16 @@ class TestClaudeCodeParseEdgeCases:
         from sova.ipc.runtime import ClaudeCodeRuntime
 
         rt = ClaudeCodeRuntime()
-        line = json.dumps({
-            "type": "result",
-            "result": "done",
-            "total_cost_usd": 0.05,
-            "model": "opus",
-            "usage": {"input_tokens": 100, "output_tokens": 50},
-            "session_id": "abc123",
-        })
+        line = json.dumps(
+            {
+                "type": "result",
+                "result": "done",
+                "total_cost_usd": 0.05,
+                "model": "opus",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "session_id": "abc123",
+            }
+        )
         event = rt.parse_output(line)
         assert event is not None
         assert event.type == "result"
