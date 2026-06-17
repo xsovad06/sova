@@ -2266,6 +2266,26 @@ class TestQueueServiceEnrichment:
 class TestBatchAPI:
     """Tests for the batch queue API endpoints."""
 
+    async def test_start_batch_rejects_empty_issues(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/queue/batch",
+            json={"issues": [], "action": "triage"},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "issues"
+
+    async def test_start_batch_rejects_non_numeric_issue(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/queue/batch",
+            json={"issues": ["abc"], "action": "triage"},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "issues"
+
     async def test_batch_status_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/api/queue/batch/nonexistent/status")
         assert resp.status_code == 404
@@ -2277,9 +2297,10 @@ class TestBatchAPI:
             "/api/queue/batch",
             json={"issues": ["1"], "action": "invalid_action"},
         )
-        assert resp.status_code == 400
-        data = resp.json()
-        assert "detail" in data
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "action"
 
     async def test_cancel_nonexistent_batch(self, client: AsyncClient) -> None:
         resp = await client.post("/api/queue/batch/nonexistent/cancel")
@@ -2306,9 +2327,70 @@ class TestBatchAPI:
         finally:
             _active_batches.pop("test_active", None)
 
+    async def test_start_from_queue_rejects_non_numeric_issue(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/queue/start/abc",
+            json={},
+        )
+        assert resp.status_code == 422
+
+    async def test_start_from_queue_rejects_empty_role(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/queue/start/123",
+            json={"role": "   "},
+        )
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "role"
+
 
 class TestAgentsAPI:
     """Tests for the new agents API endpoints."""
+
+    async def test_start_agent_rejects_empty_issue(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/agents/start",
+            json={"issue": ""},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "issue"
+
+    async def test_start_agent_rejects_non_numeric_issue(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/agents/start",
+            json={"issue": "abc"},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "issue"
+
+    async def test_start_agent_rejects_empty_role(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/agents/start",
+            json={"issue": "123", "role": "   "},
+        )
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail[0]["loc"][-1] == "role"
+
+    async def test_start_agent_accepts_custom_role(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            __import__("sova.dashboard.services.control_service", fromlist=["start_agent"]),
+            "start_agent",
+            new_callable=AsyncMock,
+            return_value={"run_id": 1, "status": "started"},
+        ):
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "123", "role": "custom-workflow"},
+            )
+            assert resp.status_code == 200
 
     async def test_agents_active_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/active")

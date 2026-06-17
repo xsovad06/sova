@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Path
+from pydantic import BaseModel, Field, field_validator
 
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import batch_service
@@ -17,11 +19,34 @@ class StartFromQueueRequest(BaseModel):
     role: str | None = None
     force: bool = False
 
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip().lower()
+        if not value:
+            raise ValueError("role cannot be empty")
+        return value
+
 
 class BatchRequest(BaseModel):
-    issues: list[str]
-    action: str
-    options: dict = {}
+    issues: list[str] = Field(..., min_length=1)
+    action: Literal["run", "triage", "harden"]
+    options: dict = Field(default_factory=dict)
+
+    @field_validator("issues")
+    @classmethod
+    def validate_issues(cls, v: list[str]) -> list[str]:
+        cleaned = []
+        for issue in v:
+            value = issue.strip()
+            if not value:
+                raise ValueError("issue values cannot be empty")
+            if not value.isdigit():
+                raise ValueError(f"invalid issue {value!r}: must be numeric")
+            cleaned.append(value)
+        return cleaned
 
 
 @router.get("/queue")
@@ -33,22 +58,19 @@ async def queue():
 
 
 @router.post("/queue/start/{issue}")
-async def start_from_queue(issue: str, req: StartFromQueueRequest):
+async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pattern=r"^\d+$")):
     """Start an agent run for an issue from the queue."""
     result = await start_agent(issue=issue, role=req.role, force=req.force)
     return result
 
 
-@router.post("/queue/batch", responses={400: {"description": "Unknown batch action"}})
+@router.post("/queue/batch")
 async def start_batch(req: BatchRequest):
     """Start a batch action on selected issues."""
     project_dir = get_project_dir()
 
     if req.action == "run":
         return await batch_service.start_batch_run(req.issues, project_dir)
-
-    if req.action not in ("triage", "harden"):
-        raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
     batch_id = batch_service.start_batch(
         action=req.action,

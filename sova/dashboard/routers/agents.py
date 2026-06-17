@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from sova.dashboard.services import control_service
 from sova.utils.logging import get_logger
@@ -13,11 +13,31 @@ log = get_logger(component="dashboard.agents")
 
 
 class StartAgentRequest(BaseModel):
-    issue: str
+    issue: str = Field(..., min_length=1)
     role: str | None = None
     force: bool = False
     resume_run_id: int | None = None
     pr_number: int | None = None
+
+    @field_validator("issue")
+    @classmethod
+    def validate_issue(cls, v: str) -> str:
+        value = v.strip()
+        if not value:
+            raise ValueError("issue cannot be empty")
+        if not value.isdigit():
+            raise ValueError("issue must be a numeric string")
+        return value
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip().lower()
+        if not value:
+            raise ValueError("role cannot be empty")
+        return value
 
 
 class RunCommandRequest(BaseModel):
