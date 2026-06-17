@@ -162,7 +162,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     cost_record = CostRecord(
                         task_run_id=run_id,
                         phase="agent",
-                        issue=task_run.issue_number or task_run.run_label or "",
+                        issue=task_run.issue_number or "",
                         model="claude",
                         cost_usd=cost,
                     )

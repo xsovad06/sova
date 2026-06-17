@@ -56,14 +56,12 @@ def downgrade() -> None:
     if not _table_exists("task_runs"):
         return
 
-    if _column_exists("task_runs", "run_label"):
-        with op.batch_alter_table("task_runs") as batch_op:
-            if _index_exists("task_runs", "ix_task_runs_run_label"):
-                batch_op.drop_index("ix_task_runs_run_label")
-            batch_op.drop_column("run_label")
-
     # Backfill NULL issue_number values before restoring NOT NULL constraint
     op.execute(sa.text("UPDATE task_runs SET issue_number = '0' WHERE issue_number IS NULL"))
 
     with op.batch_alter_table("task_runs") as batch_op:
+        if _column_exists("task_runs", "run_label"):
+            if _index_exists("task_runs", "ix_task_runs_run_label"):
+                batch_op.drop_index("ix_task_runs_run_label")
+            batch_op.drop_column("run_label")
         batch_op.alter_column("issue_number", existing_type=sa.String(50), nullable=False)
