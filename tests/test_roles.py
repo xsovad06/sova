@@ -260,7 +260,7 @@ class TestResearcherRole:
         role = ResearcherRole()
         steps = role.get_steps()
         names = [s.name for s in steps]
-        assert names == ["fetch_task", "research", "extract_memory"]
+        assert names == ["fetch_task", "research", "spec", "extract_memory"]
 
 
 # ---------------------------------------------------------------------------

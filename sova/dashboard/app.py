@@ -35,6 +35,7 @@ from sova.dashboard.routers import (
     runs,
     settings,
     setup,
+    spec,
     tasks,
     work,
 )
@@ -320,6 +321,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_role_detail(request: Request, slug: str, name: str):
         return _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
 
+    @app.get("/p/{slug}/spec/{issue_number}")
+    async def project_spec(request: Request, slug: str, issue_number: str):
+        return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -427,6 +432,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def role_detail_page(request: Request, name: str):
         return templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
 
+    @app.get("/spec/{issue_number}")
+    async def spec_page(request: Request, issue_number: str):
+        return templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
+
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
@@ -449,3 +458,4 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(work.router, prefix=prefix)
     app.include_router(lifecycle.router, prefix=prefix)
     app.include_router(roles.router, prefix=prefix)
+    app.include_router(spec.router, prefix=prefix)

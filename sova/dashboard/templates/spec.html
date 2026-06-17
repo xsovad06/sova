@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}Spec #{{ issue_number }} - SOVA{% endblock %}
+{% block content %}
+{% from "_icons.html" import icon %}
+
+<div class="flex items-center gap-3 mb-6">
+  <a href="{{ prefix|default('') }}/agents" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Agents</a>
+  <h2 class="text-2xl font-semibold">Spec Review: Issue #{{ issue_number }}</h2>
+  <span id="spec-status-badge" class="ml-auto px-3 py-1 text-xs rounded-full"></span>
+</div>
+
+<!-- Spec Metadata -->
+<div id="spec-meta" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Status</p>
+    <p class="text-xl font-bold" id="meta-status">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Complexity</p>
+    <p class="text-xl font-bold" id="meta-complexity">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Open Questions</p>
+    <p class="text-xl font-bold" id="meta-questions">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <p class="text-xs text-gray-500 uppercase tracking-wide">Created</p>
+    <p class="text-xl font-bold" id="meta-created">--</p>
+  </div>
+</div>
+
+<!-- Open Questions Section (shown only when there are questions) -->
+<div id="questions-section" class="bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg p-6 mb-6 hidden">
+  <h3 class="text-lg font-semibold text-accent-yellow mb-4">Open Questions</h3>
+  <div id="questions-list" class="space-y-4"></div>
+</div>
+
+<!-- Spec Content -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-6 mb-6">
+  <h3 class="text-lg font-semibold mb-4">Specification</h3>
+  <div id="spec-content" class="prose prose-invert max-w-none text-sm leading-relaxed">
+    <p class="text-gray-500">Loading spec...</p>
+  </div>
+</div>
+
+<!-- Action Buttons -->
+<div id="spec-actions" class="flex items-center gap-3 mb-6 hidden">
+  <button onclick="approveSpec()" class="px-5 py-2 text-sm bg-accent-green/20 text-accent-green border border-accent-green/40 rounded-lg hover:bg-accent-green/30 transition-colors font-medium">
+    Approve
+  </button>
+  <button onclick="reviseSpec()" class="px-5 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded-lg hover:bg-accent/30 transition-colors font-medium">
+    Revise
+  </button>
+  <button onclick="skipSpec()" class="px-5 py-2 text-sm bg-gray-700 text-gray-300 border border-gray-600 rounded-lg hover:bg-gray-600 transition-colors">
+    Skip Spec
+  </button>
+  <button onclick="rejectSpec()" class="px-5 py-2 text-sm bg-accent-red/20 text-accent-red border border-accent-red/40 rounded-lg hover:bg-accent-red/30 transition-colors ml-auto">
+    Reject
+  </button>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _specData = null;
+var _issueNumber = '{{ issue_number }}';
+
+function complexityColor(c) {
+  switch (c) {
+    case 'trivial': return 'text-gray-400';
+    case 'simple': return 'text-accent-green';
+    case 'moderate': return 'text-accent-yellow';
+    case 'complex': return 'text-accent-red';
+    default: return 'text-gray-400';
+  }
+}
+
+function statusBadge(status) {
+  var el = document.getElementById('spec-status-badge');
+  switch (status) {
+    case 'draft':
+      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-yellow/20 text-accent-yellow border border-accent-yellow/40';
+      break;
+    case 'approved':
+      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-green/20 text-accent-green border border-accent-green/40';
+      break;
+    case 'rejected':
+      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-accent-red/20 text-accent-red border border-accent-red/40';
+      break;
+    default:
+      el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-400';
+  }
+  el.textContent = status;
+}
+
+function renderMarkdown(text) {
+  // Simple markdown rendering for spec content
+  var html = escapeHtml(text);
+
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h4 class="text-base font-semibold mt-4 mb-2 text-gray-200">$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3 class="text-lg font-semibold mt-6 mb-3 text-gray-100 border-b border-gray-700/50 pb-2">$1</h3>');
+  html = html.replace(/^# (.+)$/gm, '<h2 class="text-xl font-bold mt-6 mb-3 text-gray-100">$1</h2>');
+
+  // Bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-gray-200">$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Code blocks
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="bg-surface rounded p-3 my-3 text-xs overflow-x-auto border border-gray-700/50"><code>$2</code></pre>');
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code class="bg-surface px-1.5 py-0.5 rounded text-accent text-xs">$1</code>');
+
+  // Lists
+  html = html.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-gray-300">$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal text-gray-300">$1</li>');
+
+  // Paragraphs (double newline)
+  html = html.replace(/\n\n/g, '</p><p class="mb-3 text-gray-300">');
+
+  // Single newlines in context
+  html = html.replace(/\n/g, '<br>');
+
+  return '<p class="mb-3 text-gray-300">' + html + '</p>';
+}
+
+function renderQuestions(questions) {
+  var section = document.getElementById('questions-section');
+  var list = document.getElementById('questions-list');
+
+  if (!questions || questions.length === 0) {
+    section.classList.add('hidden');
+    return;
+  }
+
+  section.classList.remove('hidden');
+  var html = '';
+  for (var i = 0; i < questions.length; i++) {
+    var q = questions[i];
+    html += '<div class="bg-surface rounded-lg p-4 border border-gray-700/50">';
+    html += '<p class="text-sm text-gray-200 mb-2 font-medium">' + escapeHtml(q.text) + '</p>';
+    html += '<textarea id="answer-' + q.id + '" rows="2" placeholder="Enter your answer..." class="w-full bg-surface-card border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-accent focus:outline-none resize-y">' + escapeHtml(q.answer || '') + '</textarea>';
+    html += '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function renderSpec(data) {
+  _specData = data;
+
+  // Metadata
+  document.getElementById('meta-status').textContent = data.status || 'draft';
+  document.getElementById('meta-status').className = 'text-xl font-bold';
+
+  var complexEl = document.getElementById('meta-complexity');
+  complexEl.textContent = data.complexity || 'unknown';
+  complexEl.className = 'text-xl font-bold ' + complexityColor(data.complexity);
+
+  var qCount = (data.open_questions || []).length;
+  var qEl = document.getElementById('meta-questions');
+  qEl.textContent = qCount > 0 ? qCount : 'None';
+  qEl.className = 'text-xl font-bold ' + (qCount > 0 ? 'text-accent-yellow' : 'text-accent-green');
+
+  document.getElementById('meta-created').textContent = data.created || '--';
+
+  statusBadge(data.status);
+
+  // Questions
+  renderQuestions(data.open_questions);
+
+  // Content
+  document.getElementById('spec-content').innerHTML = renderMarkdown(data.raw_content || '');
+
+  // Show actions only for draft specs
+  var actionsEl = document.getElementById('spec-actions');
+  if (data.status === 'draft') {
+    actionsEl.classList.remove('hidden');
+  } else {
+    actionsEl.classList.add('hidden');
+  }
+}
+
+function collectAnswers() {
+  var answers = {};
+  if (_specData && _specData.open_questions) {
+    for (var i = 0; i < _specData.open_questions.length; i++) {
+      var q = _specData.open_questions[i];
+      var el = document.getElementById('answer-' + q.id);
+      if (el && el.value.trim()) {
+        answers[String(q.id)] = el.value.trim();
+      }
+    }
+  }
+  return answers;
+}
+
+async function approveSpec() {
+  var ok = await sovaConfirm('Approve this spec and start development?', { confirmText: 'Approve' });
+  if (!ok) return;
+  try {
+    var answers = collectAnswers();
+    var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/approve'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: answers })
+    });
+    var data = await resp.json();
+    if (data.error) {
+      showToast('Failed: ' + data.error, 'error');
+    } else {
+      showToast('Spec approved -- developer agent starting', 'success');
+      loadSpec();
+    }
+  } catch (e) {
+    showToast('Failed to approve spec: ' + e.message, 'error');
+  }
+}
+
+async function reviseSpec() {
+  var ok = await sovaConfirm('Re-run spec generation for this issue?', { confirmText: 'Revise' });
+  if (!ok) return;
+  try {
+    var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/revise'), { method: 'POST' });
+    var data = await resp.json();
+    showToast('Spec revision started', 'info');
+  } catch (e) {
+    showToast('Failed to revise spec: ' + e.message, 'error');
+  }
+}
+
+async function skipSpec() {
+  var ok = await sovaConfirm('Skip spec review and proceed directly to development?', { confirmText: 'Skip' });
+  if (!ok) return;
+  try {
+    var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/skip'), { method: 'POST' });
+    var data = await resp.json();
+    showToast('Spec skipped -- developer agent starting', 'info');
+    setTimeout(function() { window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents'; }, 1500);
+  } catch (e) {
+    showToast('Failed to skip spec: ' + e.message, 'error');
+  }
+}
+
+async function rejectSpec() {
+  var ok = await sovaConfirm('Reject this spec? The issue will be marked as needs_spec.', { confirmText: 'Reject', confirmClass: 'danger' });
+  if (!ok) return;
+  try {
+    var resp = await fetch(apiUrl('/spec/' + _issueNumber + '/reject'), { method: 'POST' });
+    var data = await resp.json();
+    showToast('Spec rejected', 'warning');
+    loadSpec();
+  } catch (e) {
+    showToast('Failed to reject spec: ' + e.message, 'error');
+  }
+}
+
+async function loadSpec() {
+  try {
+    var data = await fetchAPI(apiUrl('/spec/' + _issueNumber));
+    if (data.error) {
+      document.getElementById('spec-content').innerHTML = '<p class="text-gray-500">' + escapeHtml(data.error || data.detail || 'Spec not found') + '</p>';
+      return;
+    }
+    renderSpec(data);
+  } catch (e) {
+    document.getElementById('spec-content').innerHTML = '<p class="text-accent-red text-sm">Failed to load spec: ' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+loadSpec();
+</script>
+{% endblock %}
