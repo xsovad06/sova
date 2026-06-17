@@ -46,6 +46,7 @@ async def _doctor(project: Path | None) -> None:
     checks.append(await _check_git_hooks(project_dir))
     checks.extend(await _check_sova_config(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
+    checks.extend(await _check_agent_runtime(project_dir))
 
     _render_results(checks)
 
@@ -213,6 +214,28 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         checks.append(("llm provider", available, f"{provider_type}: {detail}", True))
     except Exception as exc:
         checks.append(("llm provider", False, str(exc)[:80], False))
+    return checks
+
+
+async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
+    """Check configured agent runtime availability."""
+    checks: list[_Check] = []
+    try:
+        from sova.config.loader import load_config
+        from sova.ipc.runtime import create_runtime
+
+        cfg = load_config(project_dir)
+        runtime_type = cfg.agent.runtime
+        try:
+            runtime = create_runtime(runtime_type)
+        except ValueError as exc:
+            checks.append(("agent runtime", False, str(exc), True))
+            return checks
+
+        available, detail = await runtime.check_available()
+        checks.append(("agent runtime", available, f"{runtime_type}: {detail}", True))
+    except Exception as exc:
+        checks.append(("agent runtime", False, str(exc)[:80], False))
     return checks
 
 

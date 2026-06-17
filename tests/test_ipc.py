@@ -822,3 +822,200 @@ class TestNotify:
             # Wait for background task to complete
             await asyncio.sleep(0.1)
             assert call_order == ["notify_returned", "desktop_done"]
+
+
+# ---------------------------------------------------------------------------
+# AgentRuntime
+# ---------------------------------------------------------------------------
+
+
+class TestAgentRuntimeABC:
+    def test_claude_code_runtime_name(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        assert rt.name == "claude-code"
+
+    def test_aider_runtime_name(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        assert rt.name == "aider"
+
+    def test_create_runtime_claude_code(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime, create_runtime
+
+        rt = create_runtime("claude-code")
+        assert isinstance(rt, ClaudeCodeRuntime)
+
+    def test_create_runtime_aider(self) -> None:
+        from sova.ipc.runtime import AiderRuntime, create_runtime
+
+        rt = create_runtime("aider")
+        assert isinstance(rt, AiderRuntime)
+
+    def test_create_runtime_unknown_raises(self) -> None:
+        from sova.ipc.runtime import create_runtime
+
+        with pytest.raises(ValueError, match="Unknown agent runtime"):
+            create_runtime("nonexistent")
+
+    def test_get_set_runtime(self) -> None:
+        from sova.ipc.runtime import AiderRuntime, ClaudeCodeRuntime, get_runtime, set_runtime
+
+        # Default is ClaudeCodeRuntime
+        set_runtime(ClaudeCodeRuntime())
+        assert isinstance(get_runtime(), ClaudeCodeRuntime)
+
+        # Switch to Aider
+        set_runtime(AiderRuntime())
+        assert isinstance(get_runtime(), AiderRuntime)
+
+        # Reset for other tests
+        set_runtime(ClaudeCodeRuntime())
+
+
+class TestClaudeCodeRuntime:
+    async def test_spawn_delegates_to_agent_process(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 42
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = ClaudeCodeRuntime()
+        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await rt.spawn("test prompt", Path("/tmp"))
+
+        assert ap.pid == 42
+
+    def test_parse_output_empty(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        assert rt.parse_output("") is None
+        assert rt.parse_output("   ") is None
+
+    def test_parse_output_plain_text(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        event = rt.parse_output("not json")
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "not json"
+
+    def test_parse_output_assistant_event(self) -> None:
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({"type": "assistant", "content": [{"type": "text", "text": "Hello"}]})
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "Hello"
+
+    def test_parse_output_result_event(self) -> None:
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({"type": "result", "result": "done"})
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "result"
+
+    async def test_check_available_found(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"1.0.0\n", b""))
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/claude"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "1.0.0" in detail
+
+    async def test_check_available_not_found(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            ok, detail = await rt.check_available()
+
+        assert ok is False
+        assert "not found" in detail
+
+
+class TestAiderRuntime:
+    async def test_spawn_builds_correct_args(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 99
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = AiderRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await rt.spawn("fix bug", Path("/tmp"), model="gpt-4o")
+
+        assert ap.pid == 99
+        call_args = mock_exec.call_args[0]
+        assert call_args[0] == "aider"
+        assert "--message" in call_args
+        assert "--model" in call_args
+        model_idx = list(call_args).index("--model")
+        assert call_args[model_idx + 1] == "gpt-4o"
+
+    def test_parse_output_plain_text(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        event = rt.parse_output("editing file.py")
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "editing file.py"
+
+    def test_parse_output_empty(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        assert rt.parse_output("") is None
+
+    async def test_check_available_found(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"aider v0.50.0\n", b""))
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/aider"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            ok, detail = await rt.check_available()
+
+        assert ok is True
+        assert "0.50.0" in detail
+
+    async def test_check_available_not_found(self) -> None:
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        with patch("sova.ipc.runtime.shutil.which", return_value=None):
+            ok, detail = await rt.check_available()
+
+        assert ok is False
+        assert "not found" in detail

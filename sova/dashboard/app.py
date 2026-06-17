@@ -138,6 +138,7 @@ def create_app(
         # NOTE: in multi_project mode this uses the first resolved dir's config.
         # Per-project provider selection requires threading through ExecutionContext.
         from sova.config.loader import load_config
+        from sova.ipc.runtime import create_runtime, set_runtime
         from sova.llm.client import set_provider
         from sova.llm.provider import create_provider
 
@@ -150,6 +151,7 @@ def create_app(
                 api_base=cfg.llm.api_base,
             )
         )
+        set_runtime(create_runtime(cfg.agent.runtime))
 
         if is_multi:
             for _slug, path_str in list_projects().items():
