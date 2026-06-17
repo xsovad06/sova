@@ -13,8 +13,8 @@ log = get_logger(component="dashboard.api.spec")
 router = APIRouter(prefix="/spec", tags=["spec"])
 
 
-class ReviseRequest(BaseModel):
-    feedback: str = ""
+class ApproveRequest(BaseModel):
+    answers: dict[str, str] = {}
 
 
 # -- Read endpoints -----------------------------------------------------------
@@ -40,55 +40,60 @@ async def get_spec(issue_number: str) -> dict:
 
 
 @router.post("/{issue_number}/approve", responses={404: {"description": "Spec not found or not in draft state"}})
-async def approve_spec(issue_number: str) -> dict:
+async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> dict:
     """Approve a spec and resume pipeline (spawns developer agent)."""
+    # Write answers into spec before approving
+    answers = req.answers if req else {}
+    if answers:
+        spec_service.write_answers(issue_number, answers)
+
     result = spec_service.approve_spec(issue_number)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
 
-    # Clear any spec-related handoff for this issue
+    # Spawn developer agent, then clear handoff only on success
+    try:
+        agent_result = await control_service.start_agent(issue_number, role="developer")
+    except Exception:
+        log.warning("spec.approve.agent_spawn_failed", issue=issue_number, exc_info=True)
+        raise
     handoff_service.clear_handoff(issue=issue_number)
-
-    # Spawn developer agent for the approved issue
-    agent_result = await control_service.start_agent(issue_number, role="developer")
     result["agent"] = agent_result
     return result
 
 
 @router.post("/{issue_number}/revise")
-async def revise_spec(issue_number: str, req: ReviseRequest | None = None) -> dict:
-    """Re-run spec generation with feedback.
-
-    Note: feedback is not yet passed to the spawned agent (requires
-    prompt-injection support in start_agent). The researcher re-runs
-    /spec from scratch for now.
-    """
-    # Clear existing handoff
+async def revise_spec(issue_number: str) -> dict:
+    """Re-run spec generation. Respawns researcher to run /spec from scratch."""
+    # Respawn researcher to re-run /spec, then clear handoff on success
+    try:
+        agent_result = await control_service.start_agent(issue_number, role="researcher")
+    except Exception:
+        log.warning("spec.revise.agent_spawn_failed", issue=issue_number, exc_info=True)
+        raise
     handoff_service.clear_handoff(issue=issue_number)
-
-    # Respawn researcher to re-run /spec
-    agent_result = await control_service.start_agent(issue_number, role="researcher")
     return {"status": "revision_started", "agent": agent_result}
 
 
 @router.post("/{issue_number}/skip")
 async def skip_spec(issue_number: str) -> dict:
     """Skip spec review and proceed to development."""
-    # Clear handoff
+    # Spawn developer without spec, then clear handoff on success
+    try:
+        agent_result = await control_service.start_agent(issue_number, role="developer")
+    except Exception:
+        log.warning("spec.skip.agent_spawn_failed", issue=issue_number, exc_info=True)
+        raise
     handoff_service.clear_handoff(issue=issue_number)
-
-    # Spawn developer without spec
-    agent_result = await control_service.start_agent(issue_number, role="developer")
     return {"status": "skipped", "agent": agent_result}
 
 
 @router.post("/{issue_number}/reject", responses={404: {"description": "Spec not found"}})
 async def reject_spec(issue_number: str) -> dict:
-    """Reject spec and mark issue as needs_spec."""
+    """Reject spec."""
     result = spec_service.reject_spec(issue_number)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
 
-    # Clear handoff
     handoff_service.clear_handoff(issue=issue_number)
     return result

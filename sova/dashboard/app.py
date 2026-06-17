@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -322,7 +322,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
 
     @app.get("/p/{slug}/spec/{issue_number}")
-    async def project_spec(request: Request, slug: str, issue_number: str):
+    async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
         return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
 
     @app.get("/p/{slug}/style-guide")
@@ -433,7 +433,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
 
     @app.get("/spec/{issue_number}")
-    async def spec_page(request: Request, issue_number: str):
+    async def spec_page(request: Request, issue_number: str) -> Response:
         return templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
 
     @app.get("/style-guide")

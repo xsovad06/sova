@@ -1,4 +1,4 @@
-"""Tests for sova.core.steps.spec and sova.dashboard.services.spec_service."""
+"""Tests for sova.core.steps.spec, sova.dashboard.services.spec_service, and spec router."""
 
 from __future__ import annotations
 
@@ -439,7 +439,9 @@ class TestSpecConfig:
             assert config.threshold == value
 
     def test_invalid_threshold_raises(self) -> None:
-        with pytest.raises(Exception):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
             SpecConfig(threshold="invalid")
 
     def test_settings_meta_exists(self) -> None:
@@ -458,3 +460,146 @@ class TestSpecConfig:
         from sova.config.loader import _NESTED_SECTIONS
 
         assert "spec" in _NESTED_SECTIONS
+
+
+# ---------------------------------------------------------------------------
+# Router endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestSpecRouter:
+    @pytest.fixture()
+    def _spec_dir(self, tmp_path: Path) -> Path:
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        return specs_dir
+
+    async def test_approve_clears_handoff_after_spawn(self, tmp_path: Path, _spec_dir: Path) -> None:
+        """Handoff is only cleared AFTER start_agent succeeds."""
+        spec = _spec_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n**Complexity**: simple\n")
+
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        call_order: list[str] = []
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                return_value={"pid": 123},
+                side_effect=lambda *a, **kw: call_order.append("start_agent") or {"pid": 123},
+            ),
+            patch.object(
+                handoff_service,
+                "clear_handoff",
+                side_effect=lambda **kw: call_order.append("clear_handoff"),
+            ),
+        ):
+            result = await approve_spec("42")
+
+        assert "agent" in result
+        assert call_order == ["start_agent", "clear_handoff"]
+
+    async def test_approve_preserves_handoff_on_spawn_failure(self, tmp_path: Path, _spec_dir: Path) -> None:
+        """Handoff is NOT cleared if start_agent raises."""
+        spec = _spec_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n**Complexity**: simple\n")
+
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Budget exceeded"),
+            ),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            with pytest.raises(RuntimeError, match="Budget exceeded"):
+                await approve_spec("42")
+
+        mock_clear.assert_not_called()
+
+    async def test_approve_passes_answers(self, _spec_dir: Path) -> None:
+        """Approve endpoint passes answers to write_answers."""
+        spec = _spec_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n**Complexity**: simple\n")
+
+        from sova.dashboard.routers.spec import ApproveRequest, approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers") as mock_write,
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 1}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            req = ApproveRequest(answers={"0": "Use X"})
+            await approve_spec("42", req=req)
+
+        mock_write.assert_called_once_with("42", {"0": "Use X"})
+
+    async def test_revise_clears_handoff_after_spawn(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        call_order: list[str] = []
+
+        with (
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                side_effect=lambda *a, **kw: call_order.append("start_agent") or {"pid": 1},
+            ),
+            patch.object(
+                handoff_service,
+                "clear_handoff",
+                side_effect=lambda **kw: call_order.append("clear_handoff"),
+            ),
+        ):
+            await revise_spec("42")
+
+        assert call_order == ["start_agent", "clear_handoff"]
+
+    async def test_skip_preserves_handoff_on_failure(self) -> None:
+        from sova.dashboard.routers.spec import skip_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        with (
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Conflict"),
+            ),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            with pytest.raises(RuntimeError, match="Conflict"):
+                await skip_spec("42")
+
+        mock_clear.assert_not_called()
+
+    async def test_reject_spec_not_found(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import reject_spec
+        from sova.dashboard.services import handoff_service, spec_service
+
+        with (
+            patch.object(spec_service, "reject_spec", return_value={"error": "Not found"}),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            with pytest.raises(HTTPException):
+                await reject_spec("99")
+
+        mock_clear.assert_not_called()

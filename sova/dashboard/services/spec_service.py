@@ -86,18 +86,21 @@ def _extract_section(text: str, heading: str) -> str:
 def _extract_open_questions(text: str) -> list[dict]:
     """Extract open questions from the spec."""
     content = _extract_section(text, "Open Questions")
-    if not content or content.lower().startswith("(omit") or content == "None":
+    normalized = content.strip().lower() if content else ""
+    if not normalized or normalized.startswith("(omit") or normalized == "none":
         return []
 
     questions = []
-    for i, line in enumerate(content.split("\n")):
+    question_id = 0
+    for line in content.split("\n"):
         line = line.strip()
         if not line or line.startswith("("):
             continue
         # Strip list markers
         cleaned = re.sub(r"^[-*\d.]+\s*", "", line)
         if cleaned:
-            questions.append({"id": i, "text": cleaned, "answer": ""})
+            questions.append({"id": question_id, "text": cleaned, "answer": ""})
+            question_id += 1
 
     return questions
 
@@ -122,8 +125,8 @@ def approve_spec(
     if current_status != "draft":
         return {"error": f"Spec is already '{current_status}', cannot approve"}
 
-    # Update status to approved
-    text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text)
+    # Update status to approved (count=1: only replace the first/frontmatter occurrence)
+    text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
     path.write_text(text)
 
     log.info("spec.approved", issue=issue_number, path=str(path))
@@ -137,7 +140,14 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
         return {"error": f"No spec file found for issue #{issue_number}"}
 
     text = path.read_text()
-    text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: rejected", text)
+
+    # Guard: only reject draft specs (consistent with approve_spec)
+    status_match = re.search(r"\*\*Status\*\*:\s*(\w+)", text, re.IGNORECASE)
+    current_status = status_match.group(1).lower() if status_match else "draft"
+    if current_status not in ("draft", "rejected"):
+        return {"error": f"Spec is '{current_status}', cannot reject"}
+
+    text = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: rejected", text, count=1)
     path.write_text(text)
 
     log.info("spec.rejected", issue=issue_number, path=str(path))
@@ -157,9 +167,40 @@ def list_pending_specs(project_dir: Path | None = None) -> list[dict]:
         issue_match = re.match(r"(\d+)-", f.name)
         if not issue_match:
             continue
-        text = f.read_text()
-        parsed = _parse_spec(text, f, issue_match.group(1))
+        try:
+            text = f.read_text()
+            parsed = _parse_spec(text, f, issue_match.group(1))
+        except Exception:
+            log.warning("spec.parse_failed", file=str(f), exc_info=True)
+            continue
         if parsed["status"] == "draft":
             results.append(parsed)
 
     return results
+
+
+def write_answers(
+    issue_number: str,
+    answers: dict[str, str],
+    project_dir: Path | None = None,
+) -> None:
+    """Write user-provided answers into the spec's Open Questions section.
+
+    Each answer replaces the original question line with 'Q: ... A: ...' format.
+    """
+    path = find_spec_file(issue_number, project_dir)
+    if path is None or not answers:
+        return
+
+    text = path.read_text()
+    questions = _extract_open_questions(text)
+    if not questions:
+        return
+
+    for q in questions:
+        answer = answers.get(str(q["id"]), "")
+        if answer:
+            # Replace the question line with Q/A format
+            text = text.replace(q["text"], f"Q: {q['text']} A: {answer}")
+
+    path.write_text(text)

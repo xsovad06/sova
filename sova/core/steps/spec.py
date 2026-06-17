@@ -57,7 +57,8 @@ def _extract_section(text: str, heading: str) -> str:
 def _text_has_open_questions(text: str) -> bool:
     """Check if text contains an Open Questions section with content."""
     content = _extract_section(text, "Open Questions")
-    if not content or content.lower().startswith("(omit") or content == "None":
+    normalized = content.strip().lower() if content else ""
+    if not normalized or normalized.startswith("(omit") or normalized == "none":
         return False
     return True
 
@@ -95,7 +96,7 @@ class SpecStep(BaseStep):
             result = await invoke_command(
                 "/spec",
                 args=ctx.issue_number,
-                model=ctx.config.agent.model,
+                model=ctx.config.roles.researcher_model or ctx.config.agent.model,
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,
@@ -121,8 +122,23 @@ class SpecStep(BaseStep):
         if ctx.config.spec.auto_approve_simple and not has_questions:
             if _complexity_rank(spec_complexity) <= _complexity_rank("simple"):
                 # Mark as approved in the spec file
-                updated = text.replace("**Status**: draft", "**Status**: approved")
-                spec_path.write_text(updated)
+                updated = re.sub(
+                    r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1
+                )
+                if updated == text:
+                    return StepResult(
+                        success=False,
+                        summary="Auto-approval failed: status line not found in spec",
+                        error="Could not find **Status**: <value> pattern in spec file",
+                    )
+                try:
+                    spec_path.write_text(updated)
+                except IOError as exc:
+                    return StepResult(
+                        success=False,
+                        summary="Failed to update spec file",
+                        error=str(exc),
+                    )
                 return StepResult(
                     success=True,
                     summary=f"Spec auto-approved (complexity: {spec_complexity}, no open questions)",
