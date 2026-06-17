@@ -122,9 +122,7 @@ class SpecStep(BaseStep):
         if ctx.config.spec.auto_approve_simple and not has_questions:
             if _complexity_rank(spec_complexity) <= _complexity_rank("simple"):
                 # Mark as approved in the spec file
-                updated = re.sub(
-                    r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1
-                )
+                updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
                 if updated == text:
                     return StepResult(
                         success=False,
