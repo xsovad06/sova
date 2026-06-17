@@ -273,18 +273,26 @@ async def start_agent(
             budget_error = await _check_issue_budget(issue, cwd)
             if budget_error:
                 return budget_error
+        elif not issue:
+            log.info(
+                "agent.issueless_budget_skip",
+                role=role,
+                detail="Per-issue budget N/A; per-run budget still applies",
+            )
 
         run_id = await _create_task_run(issue or None, role or "developer", cwd, pr_number=pr_number)
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
-        if issue:
-            try:
-                from sova.dashboard.services import handoff_service
+        try:
+            from sova.dashboard.services import handoff_service
 
+            if issue:
                 handoff_service.clear_handoff(cwd, issue=issue)
-            except Exception:
-                log.debug("agent.clear_handoff_failed", issue=issue, exc_info=True)
+            else:
+                handoff_service.clear_handoff(cwd, issue=role or "run")
+        except Exception:
+            log.debug("agent.clear_handoff_failed", issue=issue or role, exc_info=True)
 
         cmd_parts = ["sova", "run"]
         if issue:

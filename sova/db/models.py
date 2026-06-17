@@ -22,7 +22,7 @@ class TaskRun(Base):
     __tablename__ = "task_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True, default="")
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     run_label: Mapped[str] = mapped_column(String(200), default="")
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="developer")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")

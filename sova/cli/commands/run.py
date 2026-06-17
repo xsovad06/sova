@@ -76,17 +76,19 @@ async def _run_workflow(
             f"(skipping {len(checkpoint.get('completed_steps', set()))} completed steps)[/bold]"
         )
 
+    actual_role = role_name or checkpoint.get("role") or config.roles.default
+
     # Generate a run_label for issue-less runs
     run_label = ""
     if not issue:
-        run_label = f"{role_name or 'run'}-{int(time.time())}"
+        run_label = f"{actual_role}-{int(time.time())}"
 
     ctx = ExecutionContext(
         project_dir=resolved_dir,
         config=config,
         adapter=adapter,
         issue_number=issue,
-        role=role_name or checkpoint.get("role") or config.roles.default,
+        role=actual_role,
         run_label=run_label,
         force=force or bool(resume_run_id),
         resume_run_id=resume_run_id,
@@ -125,6 +127,10 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
             if task_run is None:
                 return {"error": f"Run #{run_id} not found"}
 
+            if issue and not task_run.issue_number:
+                return {"error": f"Run #{run_id} is an issue-less run, cannot resume with issue #{issue}"}
+            if not issue and task_run.issue_number:
+                return {"error": f"Run #{run_id} is for issue #{task_run.issue_number}, cannot resume without an issue"}
             if issue and task_run.issue_number and task_run.issue_number != issue.lstrip("#").strip():
                 return {"error": f"Run #{run_id} is for issue #{task_run.issue_number}, not #{issue}"}
 

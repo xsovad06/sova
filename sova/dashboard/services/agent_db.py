@@ -118,7 +118,7 @@ def _apply_file_handoff(task_run: object, file_handoff: dict | None, run_id: int
         return
     handoff_issue = str(file_handoff["issue"]).lstrip("#").strip() if file_handoff["issue"] else ""
     run_issue = str(task_run.issue_number).lstrip("#").strip() if task_run.issue_number else ""
-    issue_match = handoff_issue and run_issue and handoff_issue == run_issue
+    issue_match = (handoff_issue and run_issue and handoff_issue == run_issue) or (not handoff_issue and not run_issue)
     pr_match = file_handoff["pr_number"] and file_handoff["pr_number"] == task_run.pr_number
     if issue_match or pr_match:
         task_run.handoff_json = file_handoff["details"]
@@ -162,7 +162,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     cost_record = CostRecord(
                         task_run_id=run_id,
                         phase="agent",
-                        issue=task_run.issue_number or "",
+                        issue=task_run.issue_number or task_run.run_label or "",
                         model="claude",
                         cost_usd=cost,
                     )

@@ -16,7 +16,7 @@ log = get_logger(component="step.create_pr")
 
 _PLACEHOLDER = "(none)"
 
-_PR_BODY_PROMPT = """\
+_PR_BODY_PROMPT_BASE = """\
 Generate a pull request description for the changes below. Output ONLY the \
 markdown body (no fences, no commentary). Use this structure:
 
@@ -31,7 +31,9 @@ What should a reviewer focus on? Any trade-offs or shortcuts?
 
 ## Test plan
 How were these changes verified?
+"""
 
+_PR_BODY_ISSUE_SECTION = """
 Closes #{issue_number}
 
 ---
@@ -39,6 +41,15 @@ Issue #{issue_number}: {issue_title}
 
 {issue_body}
 
+"""
+
+_PR_BODY_NO_ISSUE_SECTION = """
+---
+Task: {issue_title}
+
+"""
+
+_PR_BODY_CONTEXT = """\
 Commits on this branch:
 {commit_log}
 
@@ -135,16 +146,19 @@ class CreatePRStep(BaseStep):
         commit_log = log_result.stdout.strip() if log_result.success else "(unavailable)"
         diff_stat = diff_result.stdout.strip() if diff_result.success else "(unavailable)"
 
-        issue_ref = ctx.issue_number or _PLACEHOLDER
-        prompt = _PR_BODY_PROMPT.format(
-            issue_number=issue_ref,
-            issue_title=task_title,
-            issue_body=issue_body or "(no description)",
+        if ctx.has_issue:
+            middle = _PR_BODY_ISSUE_SECTION.format(
+                issue_number=ctx.issue_number,
+                issue_title=task_title,
+                issue_body=issue_body or "(no description)",
+            )
+        else:
+            middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
+
+        prompt = _PR_BODY_PROMPT_BASE + middle + _PR_BODY_CONTEXT.format(
             commit_log=commit_log,
             diff_stat=diff_stat,
         )
-        if not ctx.has_issue:
-            prompt = prompt.replace(f"Closes #{issue_ref}\n\n", "")
 
         try:
             result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)

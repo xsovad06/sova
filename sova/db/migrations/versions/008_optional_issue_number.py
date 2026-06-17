@@ -32,17 +32,22 @@ def _table_exists(table_name: str) -> bool:
     return table_name in inspector.get_table_names()
 
 
+def _index_exists(table_name: str, index_name: str) -> bool:
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    indexes = [idx["name"] for idx in inspector.get_indexes(table_name)]
+    return index_name in indexes
+
+
 def upgrade() -> None:
     if not _table_exists("task_runs"):
         return
 
-    # Make issue_number nullable (SQLite requires batch mode for ALTER COLUMN)
+    needs_run_label = not _column_exists("task_runs", "run_label")
+
     with op.batch_alter_table("task_runs") as batch_op:
         batch_op.alter_column("issue_number", existing_type=sa.String(50), nullable=True)
-
-    # Add run_label column for human-readable identification of issue-less runs
-    if not _column_exists("task_runs", "run_label"):
-        with op.batch_alter_table("task_runs") as batch_op:
+        if needs_run_label:
             batch_op.add_column(sa.Column("run_label", sa.String(200), server_default=""))
             batch_op.create_index("ix_task_runs_run_label", ["run_label"])
 
@@ -53,7 +58,8 @@ def downgrade() -> None:
 
     if _column_exists("task_runs", "run_label"):
         with op.batch_alter_table("task_runs") as batch_op:
-            batch_op.drop_index("ix_task_runs_run_label")
+            if _index_exists("task_runs", "ix_task_runs_run_label"):
+                batch_op.drop_index("ix_task_runs_run_label")
             batch_op.drop_column("run_label")
 
     # Backfill NULL issue_number values before restoring NOT NULL constraint

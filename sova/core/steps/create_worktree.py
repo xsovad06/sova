@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -28,7 +29,7 @@ class WorktreeStep(BaseStep):
                 safe_label = _sanitize_label(ctx.run_label) if ctx.run_label else "run"
                 ctx.branch_name = f"feat/{safe_label}"
 
-        raw_id = ctx.issue_number or ctx.run_label or f"run-{ctx.task_run_id or 'tmp'}"
+        raw_id = ctx.issue_number or ctx.run_label or f"run-{ctx.task_run_id or uuid.uuid4().hex[:8]}"
         worktree_id = _sanitize_label(raw_id) if not ctx.issue_number else raw_id
         log.info("step.worktree", label=ctx.display_label, branch=ctx.branch_name)
 
