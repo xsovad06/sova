@@ -11,7 +11,14 @@ if [[ "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-branch=$(git -C "$WORKTREE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+# In CI (detached HEAD), use GITHUB_HEAD_REF (PR) or GITHUB_REF_NAME (push)
+if [[ -n "${GITHUB_HEAD_REF:-}" ]]; then
+  branch="$GITHUB_HEAD_REF"
+elif [[ -n "${GITHUB_REF_NAME:-}" ]]; then
+  branch="$GITHUB_REF_NAME"
+else
+  branch=$(git -C "$WORKTREE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+fi
 [[ -z "$branch" ]] && exit 0
 
 # main/master are always allowed
