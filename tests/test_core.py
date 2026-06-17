@@ -2196,6 +2196,161 @@ class TestCommitStepAgentArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# CommitStep -- issueless runs
+# ---------------------------------------------------------------------------
+
+
+class TestCommitStepIssueless:
+    async def test_issueless_commit_uses_run_label(self) -> None:
+        """Issueless runs should use run_label in commit message, no Closes line."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(issue_number="", run_label="sprint-planning", worktree_dir=Path("/tmp/worktree"))
+        ctx.task = None
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert "sprint-planning" in msg
+        assert "Closes" not in msg
+
+    async def test_issueless_commit_fallback_title(self) -> None:
+        """When no task, no issue, and no run_label, commit uses 'run'."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(issue_number="", run_label="", worktree_dir=Path("/tmp/worktree"))
+        ctx.task = None
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert "feat(core): run" in msg
+        assert "Closes" not in msg
+
+    async def test_issueless_address_review_uses_run_label(self) -> None:
+        """Address-review without issue uses run_label for commit message."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            issue_number="",
+            run_label="sprint-planning",
+            worktree_dir=Path("/tmp/worktree"),
+            pr_number=200,
+            completed_steps=frozenset({"address_review"}),
+        )
+        ctx.task = None
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert msg.startswith("fix(core):")
+        assert "sprint-planning" in msg
+
+    async def test_commit_failure_returns_error(self) -> None:
+        """RuntimeError during git commit should return a failed StepResult."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" fix.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            mock_commit.side_effect = RuntimeError("suspicious file staged")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Commit failed" in result.summary
+
+
+# ---------------------------------------------------------------------------
+# CreatePRStep -- issueless runs
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePRStepIssueless:
+    async def test_issueless_pr_title_has_no_issue_ref(self) -> None:
+        """Issueless PRs should not include '#(none)' in the title."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ctx = _make_ctx(
+            issue_number="",
+            run_label="sprint-planning",
+            branch_name="feat/sprint-plan",
+            worktree_dir=Path("/tmp/worktree"),
+        )
+        ctx.task = None
+        step = CreatePRStep()
+
+        pr_info = MagicMock(number=99, url="https://github.com/test/repo/pull/99")
+
+        with (
+            patch("sova.core.steps.create_pr.run") as mock_run,
+            patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=pr_info),
+            patch("sova.core.steps.create_pr.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat: plan\n"),
+                MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+            ]
+            mock_invoke.return_value = MagicMock(text="## Summary\nSprint plan", cost_usd=Decimal("0.01"))
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 99
+        assert "(#" not in result.summary or "99" in result.summary
+
+    async def test_issueless_fallback_body_has_no_closes(self) -> None:
+        """Fallback PR body for issueless runs should omit Closes line."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ctx = _make_ctx(issue_number="", run_label="sprint-planning")
+        ctx.task = None
+        body = CreatePRStep._build_fallback_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
+        assert "Closes" not in body
+        assert "sprint plan" in body
+
+
+# ---------------------------------------------------------------------------
 # RebaseStep
 # ---------------------------------------------------------------------------
 
