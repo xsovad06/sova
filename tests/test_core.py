@@ -946,6 +946,29 @@ class TestValidateStep:
 
         assert gate.passed
 
+    async def test_auto_detects_githooks_directory(self, tmp_path: Path) -> None:
+        from sova.core.steps.validate import find_pre_push_hook
+
+        hooks_dir = tmp_path / ".githooks"
+        hooks_dir.mkdir()
+        hook_file = hooks_dir / "pre-push"
+        hook_file.write_text("#!/bin/bash\nexit 0\n")
+        hook_file.chmod(0o755)
+
+        with patch("sova.core.steps.validate.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=False, stdout=""),  # core.hooksPath not set
+                MagicMock(success=True, stdout=f"{tmp_path}\n"),  # git rev-parse --show-toplevel
+                MagicMock(success=True),  # git config core.hooksPath .githooks
+                MagicMock(success=True),  # test -x .githooks/pre-push
+            ]
+
+            result = await find_pre_push_hook(tmp_path)
+
+        assert result == ".githooks/pre-push"
+        config_call = mock_run.call_args_list[2]
+        assert config_call[0] == ("git", "config", "core.hooksPath", ".githooks")
+
 
 class TestPushStep:
     async def test_gate_check_requires_commits_ahead(self) -> None:

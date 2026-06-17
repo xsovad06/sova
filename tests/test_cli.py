@@ -231,6 +231,46 @@ class TestProjectCommands:
         result = runner.invoke(app, ["setup", "--help"])
         assert result.exit_code == 0
 
+    async def test_install_configures_githooks(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        (tmp_path / ".githooks").mkdir()
+
+        with (
+            patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_run.side_effect = [
+                MagicMock(success=False, stdout=""),  # git config --get
+                MagicMock(success=True),  # git config set
+            ]
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        set_call = mock_run.call_args_list[1]
+        assert set_call[0] == ("git", "config", "core.hooksPath", ".githooks")
+
+    async def test_install_skips_when_hooks_configured(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+
+        (tmp_path / ".githooks").mkdir()
+
+        with (
+            patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_run.return_value = MagicMock(success=True, stdout=".githooks\n")
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        assert mock_run.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # Run command enhancements
@@ -354,6 +394,42 @@ class TestDoctorHelpers:
         check = await _check_git_hooks(tmp_path)
         assert check[0] == "git hooks"
         assert isinstance(check[1], bool)
+
+    async def test_check_git_hooks_no_githooks_dir(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_git_hooks
+
+        check = await _check_git_hooks(tmp_path)
+        assert check[0] == "git hooks"
+        assert check[1] is True
+        assert "not applicable" in check[2]
+        assert check[3] is False
+
+    async def test_check_git_hooks_misconfigured(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_git_hooks
+
+        (tmp_path / ".githooks").mkdir()
+
+        with patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="")
+            check = await _check_git_hooks(tmp_path)
+
+        assert check[0] == "git hooks"
+        assert check[1] is False
+        assert "not set" in check[2]
+        assert check[3] is True
+
+    async def test_check_git_hooks_configured(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_git_hooks
+
+        (tmp_path / ".githooks").mkdir()
+
+        with patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=".githooks\n")
+            check = await _check_git_hooks(tmp_path)
+
+        assert check[0] == "git hooks"
+        assert check[1] is True
+        assert check[2] == ".githooks"
 
     async def test_check_sova_config_no_toml(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_sova_config

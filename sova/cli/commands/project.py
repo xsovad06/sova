@@ -41,6 +41,18 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         toml_file.write_text(_default_toml())
         console.print(f"[green]Created {toml_file}[/green]")
 
+    # Configure git hooks if .githooks/ exists
+    githooks_dir = project_dir / ".githooks"
+    if githooks_dir.is_dir():
+        hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
+        current = hooks_result.stdout.strip() if hooks_result.success else ""
+        if current != ".githooks":
+            config_result = await run("git", "config", "core.hooksPath", ".githooks", cwd=str(project_dir))
+            if config_result.success:
+                console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
+            else:
+                console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
+
     # Initialize database
     from sova.db.session import init_db
 
