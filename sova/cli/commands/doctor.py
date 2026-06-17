@@ -219,6 +219,7 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
 
 async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
     """Check configured agent runtime availability."""
+    _LABEL = "agent runtime"
     checks: list[_Check] = []
     try:
         from sova.config.loader import load_config
@@ -229,13 +230,13 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
         try:
             runtime = create_runtime(runtime_type)
         except ValueError as exc:
-            checks.append(("agent runtime", False, str(exc), True))
+            checks.append((_LABEL, False, str(exc), True))
             return checks
 
         available, detail = await runtime.check_available()
-        checks.append(("agent runtime", available, f"{runtime_type}: {detail}", True))
+        checks.append((_LABEL, available, f"{runtime_type}: {detail}", True))
     except Exception as exc:
-        checks.append(("agent runtime", False, str(exc)[:80], False))
+        checks.append((_LABEL, False, str(exc)[:80], False))
     return checks
 
 
