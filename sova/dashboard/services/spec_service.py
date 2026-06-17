@@ -71,13 +71,21 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     return result
 
 
+def _extract_section(text: str, heading: str) -> str:
+    """Extract the content of a markdown section (between ## heading and next ## or EOF)."""
+    pattern = rf"^## {re.escape(heading)}\s*$"
+    match = re.search(pattern, text, re.MULTILINE)
+    if not match:
+        return ""
+    start = match.end()
+    next_heading = re.search(r"^## ", text[start:], re.MULTILINE)
+    section = text[start : start + next_heading.start()] if next_heading else text[start:]
+    return section.strip()
+
+
 def _extract_open_questions(text: str) -> list[dict]:
     """Extract open questions from the spec."""
-    match = re.search(r"## Open Questions\s*\n(.+?)(?:\n##|\Z)", text, re.DOTALL)
-    if not match:
-        return []
-
-    content = match.group(1).strip()
+    content = _extract_section(text, "Open Questions")
     if not content or content.lower().startswith("(omit") or content == "None":
         return []
 

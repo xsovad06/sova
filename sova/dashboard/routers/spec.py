@@ -27,7 +27,7 @@ async def list_pending() -> dict:
     return {"specs": specs}
 
 
-@router.get("/{issue_number}")
+@router.get("/{issue_number}", responses={404: {"description": "No spec found for this issue"}})
 async def get_spec(issue_number: str) -> dict:
     """Get the spec for a specific issue."""
     spec = spec_service.read_spec(issue_number)
@@ -39,7 +39,7 @@ async def get_spec(issue_number: str) -> dict:
 # -- Action endpoints ---------------------------------------------------------
 
 
-@router.post("/{issue_number}/approve")
+@router.post("/{issue_number}/approve", responses={404: {"description": "Spec not found or not in draft state"}})
 async def approve_spec(issue_number: str) -> dict:
     """Approve a spec and resume pipeline (spawns developer agent)."""
     result = spec_service.approve_spec(issue_number)
@@ -82,7 +82,7 @@ async def skip_spec(issue_number: str) -> dict:
     return {"status": "skipped", "agent": agent_result}
 
 
-@router.post("/{issue_number}/reject")
+@router.post("/{issue_number}/reject", responses={404: {"description": "Spec not found"}})
 async def reject_spec(issue_number: str) -> dict:
     """Reject spec and mark issue as needs_spec."""
     result = spec_service.reject_spec(issue_number)
