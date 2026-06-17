@@ -118,13 +118,15 @@ This project uses **GitHub Issues** with a project board.
 
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`.
 Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`.
+The `ci` type is scopeless (repo-wide infrastructure); all other types require a scope.
 
 Examples:
 - `feat(adapters): add Linear task source adapter`
 - `fix(dashboard): correct cost tracking calculation`
 - `refactor(cli): simplify argument parsing`
+- `ci: add invariants job to CI pipeline`
 - `docs(readme): update installation instructions`
 
 ### Pull Requests

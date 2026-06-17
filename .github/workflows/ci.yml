@@ -124,6 +124,36 @@ jobs:
 
           echo "Integration test passed"
 
+  invariants:
+    name: Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin main:refs/remotes/origin/main || true
+
+      - name: Run invariant checks
+        run: |
+          errors=0
+          for script in invariants/*.sh; do
+            name=$(basename "$script" .sh)
+            echo "--- $name ---"
+            if bash "$script" . main; then
+              echo "  PASS"
+            else
+              echo "  FAIL"
+              errors=$((errors + 1))
+            fi
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "=== $errors invariant(s) failed ==="
+            exit 1
+          fi
+          echo "=== All invariants passed ==="
+
   permissions:
     name: File Permissions
     runs-on: ubuntu-latest
