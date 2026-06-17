@@ -63,7 +63,11 @@ class CreatePRStep(BaseStep):
 
         try:
             pr_info = await git_ops.create_pr(
-                title=title, body=body, base=ctx.base_branch, head=ctx.branch_name, repo=ctx.repo,
+                title=title,
+                body=body,
+                base=ctx.base_branch,
+                head=ctx.branch_name,
+                repo=ctx.repo,
             )
             ctx.pr_number = pr_info.number
             ctx.pr_url = pr_info.url
@@ -76,7 +80,9 @@ class CreatePRStep(BaseStep):
         if not ctx.has_issue:
             return None
         existing = await git_ops.find_pr_for_issue(
-            ctx.issue_number, repo=ctx.repo, github_user=ctx.config.github_user,
+            ctx.issue_number,
+            repo=ctx.repo,
+            github_user=ctx.config.github_user,
         )
         if not existing:
             return None
@@ -93,7 +99,10 @@ class CreatePRStep(BaseStep):
         if ctx.config.github_user:
             try:
                 await git_ops.assign_pr(
-                    pr_number, assignee=ctx.config.github_user, repo=ctx.repo, github_user=ctx.config.github_user,
+                    pr_number,
+                    assignee=ctx.config.github_user,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
                 )
             except Exception:
                 log.warning("step.create_pr.assign_failed", exc_info=True)
