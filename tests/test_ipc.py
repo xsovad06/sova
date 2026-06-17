@@ -936,6 +936,7 @@ class TestClaudeCodeRuntime:
         rt = ClaudeCodeRuntime()
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"1.0.0\n", b""))
+        mock_proc.returncode = 0
 
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/claude"),
@@ -975,6 +976,8 @@ class TestAiderRuntime:
         call_args = mock_exec.call_args[0]
         assert call_args[0] == "aider"
         assert "--message" in call_args
+        msg_idx = list(call_args).index("--message")
+        assert call_args[msg_idx + 1] == "fix bug"
         assert "--model" in call_args
         model_idx = list(call_args).index("--model")
         assert call_args[model_idx + 1] == "gpt-4o"
@@ -1000,6 +1003,7 @@ class TestAiderRuntime:
         rt = AiderRuntime()
         mock_proc = AsyncMock()
         mock_proc.communicate = AsyncMock(return_value=(b"aider v0.50.0\n", b""))
+        mock_proc.returncode = 0
 
         with (
             patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/aider"),
@@ -1020,6 +1024,51 @@ class TestAiderRuntime:
         assert ok is False
         assert "not found" in detail
 
+    def test_transform_prompt_plain_text(self) -> None:
+        """Plain task descriptions pass through unchanged."""
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        assert rt.transform_prompt("fix the bug in file.py") == "fix the bug in file.py"
+
+    def test_transform_prompt_shell_command(self) -> None:
+        """Shell-command-formatted prompts are extracted to the sova command."""
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        prompt = 'Run the following command:\n```bash\nsova run 28 --run-id 161\n```'
+        result = rt.transform_prompt(prompt)
+        assert result == "sova run 28 --run-id 161"
+
+    def test_transform_prompt_non_sova_shell(self) -> None:
+        """Non-sova shell commands pass through unchanged."""
+        from sova.ipc.runtime import AiderRuntime
+
+        rt = AiderRuntime()
+        prompt = 'Run:\n```bash\nls -la\n```'
+        assert rt.transform_prompt(prompt) == prompt
+
+    async def test_spawn_shell_prompt_executes_directly(self) -> None:
+        """Shell-command prompts with sova should be executed as subprocess."""
+        from sova.ipc.runtime import AiderRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 42
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = AiderRuntime()
+        prompt = 'Run the following command:\n```bash\nsova run 28\n```'
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await rt.spawn(prompt, Path("/tmp"))
+
+        assert ap.pid == 42
+        call_args = mock_exec.call_args[0]
+        assert call_args[0] == "sova"
+        assert "run" in call_args
+        assert "28" in call_args
+
     async def test_spawn_with_budget_logs_warning(self) -> None:
         from decimal import Decimal
 
@@ -1032,10 +1081,15 @@ class TestAiderRuntime:
         mock_proc.stderr = AsyncMock()
 
         rt = AiderRuntime()
-        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
+        with (
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("sova.ipc.runtime.log") as mock_log,
+        ):
             ap = await rt.spawn("fix bug", Path("/tmp"), max_budget_usd=Decimal("5.00"))
 
         assert ap.pid == 99
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args[0][0] == "aider.budget_not_enforced"
 
 
 class TestCheckCliAvailable:
@@ -1050,6 +1104,39 @@ class TestCheckCliAvailable:
 
         assert ok is False
         assert "error checking version" in detail
+
+    async def test_version_check_nonzero_exit(self) -> None:
+        """Non-zero exit from --version should report unavailable."""
+        from sova.ipc.runtime import _check_cli_available
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"error\n"))
+        mock_proc.returncode = 1
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/tool"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            ok, detail = await _check_cli_available("tool", "install hint")
+
+        assert ok is False
+        assert "exited with code 1" in detail
+
+    async def test_version_check_timeout(self) -> None:
+        """Hanging --version check should timeout gracefully."""
+        from sova.ipc.runtime import _check_cli_available
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/tool"),
+            patch(
+                "sova.ipc.runtime.asyncio.wait_for",
+                side_effect=asyncio.TimeoutError,
+            ),
+        ):
+            ok, detail = await _check_cli_available("tool", "install hint")
+
+        assert ok is False
+        assert "timed out" in detail
 
 
 class TestClaudeCodeParseEdgeCases:
@@ -1085,6 +1172,44 @@ class TestClaudeCodeParseEdgeCases:
         rt = ClaudeCodeRuntime()
         line = json.dumps({"type": "system", "data": "info"})
         assert rt.parse_output(line) is None
+
+    def test_parse_output_non_dict_json(self) -> None:
+        """JSON array should not crash parse_output (AttributeError on .get())."""
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps([1, 2, 3])
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == line
+
+    def test_parse_output_result_populates_llm_result(self) -> None:
+        """Result events should populate StreamEvent.result with LLMResult."""
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({
+            "type": "result",
+            "result": "done",
+            "total_cost_usd": 0.05,
+            "model": "opus",
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+            "session_id": "abc123",
+        })
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "result"
+        assert event.text == "done"
+        assert event.result is not None
+        assert event.result.model == "opus"
+        assert event.result.input_tokens == 100
+        assert event.result.output_tokens == 50
+        assert event.result.session_id == "abc123"
 
     def test_get_runtime_default(self) -> None:
         import sova.ipc.runtime as rt_mod

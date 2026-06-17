@@ -9,16 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from pathlib import Path
 
 from sova.ipc.control import AgentProcess
-from sova.llm.models import StreamEvent
+from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
 log = get_logger(component="ipc.runtime")
+
+
+_VERSION_CHECK_TIMEOUT = 5.0
 
 
 async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, str]:
@@ -30,15 +34,22 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
     if not path:
         return False, f"{cli_name} not found -- install: {install_hint}"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            cli_name,
-            "--version",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                cli_name,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            ),
+            timeout=_VERSION_CHECK_TIMEOUT,
         )
-        stdout, _ = await proc.communicate()
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_VERSION_CHECK_TIMEOUT)
+        if proc.returncode != 0:
+            return False, f"{cli_name} --version exited with code {proc.returncode}"
         version = stdout.decode().strip().split("\n")[0] if stdout else "unknown"
         return True, version
+    except asyncio.TimeoutError:
+        return False, f"{cli_name} --version timed out"
     except Exception as exc:
         return False, f"error checking version: {exc}"
 
@@ -90,6 +101,16 @@ class AgentRuntime(ABC):
         """
         ...
 
+    def transform_prompt(self, prompt: str) -> str:
+        """Transform a prompt before passing to the runtime.
+
+        The default implementation returns the prompt unchanged. Runtimes
+        that cannot execute shell commands (e.g., Aider) should override
+        this to detect shell-command-formatted prompts and extract the
+        task description.
+        """
+        return prompt
+
     @abstractmethod
     async def check_available(self) -> tuple[bool, str]:
         """Check if this runtime's CLI tool is installed.
@@ -130,6 +151,8 @@ class ClaudeCodeRuntime(AgentRuntime):
             return None
         try:
             data = json.loads(stripped)
+            if not isinstance(data, dict):
+                return StreamEvent(type="content", text=line)
         except ValueError:
             return StreamEvent(type="content", text=line)
 
@@ -146,7 +169,21 @@ class ClaudeCodeRuntime(AgentRuntime):
             return StreamEvent(type="content", text=text) if text else None
 
         if event_type == "result":
-            return StreamEvent(type="result", text=data.get("result", ""))
+            result_text = data.get("result", "")
+            cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
+            usage = data.get("usage", {})
+            llm_result = LLMResult(
+                text=result_text,
+                model=data.get("model", ""),
+                cost_usd=cost_usd,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                cache_read_tokens=usage.get("cache_read_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_tokens", 0),
+                duration_ms=data.get("duration_ms", 0),
+                session_id=data.get("session_id", ""),
+            )
+            return StreamEvent(type="result", text=result_text, result=llm_result)
 
         return None
 
@@ -165,6 +202,30 @@ class AiderRuntime(AgentRuntime):
     def name(self) -> str:
         return "aider"
 
+    # Pattern matching shell-command prompts from start_agent() / start_command().
+    # Format: "Run the following command...\n```bash\nsova run 28\n```"
+    _SHELL_CMD_RE = re.compile(r"```(?:bash|sh)\s*\n(.+?)\n```", re.DOTALL)
+
+    def transform_prompt(self, prompt: str) -> str:
+        """Detect shell-command-formatted prompts and extract the sova command.
+
+        Aider cannot execute shell commands. When the prompt contains a
+        fenced bash block with a ``sova`` CLI invocation, it must be run
+        via subprocess rather than passed as an Aider ``--message``.
+        """
+        match = self._SHELL_CMD_RE.search(prompt)
+        if match:
+            cmd = match.group(1).strip()
+            if cmd.startswith("sova "):
+                log.warning(
+                    "aider.shell_prompt_detected",
+                    hint="Aider cannot execute shell commands; the sova command "
+                    "will be executed via subprocess instead of aider --message",
+                    cmd=cmd,
+                )
+                return cmd
+        return prompt
+
     async def spawn(
         self,
         prompt: str,
@@ -174,10 +235,28 @@ class AiderRuntime(AgentRuntime):
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
     ) -> AgentProcess:
+        transformed = self.transform_prompt(prompt)
+
+        # If the prompt was a sova CLI command, execute it directly
+        # instead of passing to Aider (which cannot run shell commands).
+        if transformed != prompt and transformed.startswith("sova "):
+            log.info("aider.exec_sova_cmd", cwd=str(cwd), cmd=transformed)
+            import shlex as _shlex
+
+            cmd_parts = _shlex.split(transformed)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_parts,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=env,
+            )
+            return AgentProcess(proc)
+
         args: list[str] = [
             "aider",
             "--message",
-            prompt,
+            transformed,
             "--yes-always",
             "--no-pretty",
             "--no-suggest-shell-commands",
@@ -187,9 +266,13 @@ class AiderRuntime(AgentRuntime):
             args.extend(["--model", model])
 
         if max_budget_usd is not None:
-            log.warning("aider.budget_not_enforced", budget=str(max_budget_usd))
+            log.warning(
+                "aider.budget_not_enforced",
+                budget=str(max_budget_usd),
+                hint="Aider does not support budget caps; cost is not limited",
+            )
 
-        log.info("aider.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
+        log.info("aider.spawn", cwd=str(cwd), model=model, prompt_len=len(transformed))
 
         proc = await asyncio.create_subprocess_exec(
             *args,
