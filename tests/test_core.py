@@ -3666,3 +3666,72 @@ class TestIssuelessWorkflow:
         ctx = _make_ctx(issue_number="")
         with pytest.raises(ValueError, match="Issue-less runs require"):
             await dispatch(ctx)
+
+
+# ---------------------------------------------------------------------------
+# Resume validation -- _load_checkpoint issue/issueless mismatch
+# ---------------------------------------------------------------------------
+
+
+class TestResumeValidation:
+    """Verify _load_checkpoint catches issue/issueless resume mismatches."""
+
+    async def test_resume_issue_run_without_issue_arg_fails(self) -> None:
+        """Resuming an issue-based run without providing an issue should fail."""
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="42", role="developer", status="paused")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "")
+        assert "error" in result
+        assert "cannot resume without an issue" in result["error"]
+
+    async def test_resume_issueless_run_with_issue_arg_fails(self) -> None:
+        """Resuming an issue-less run with an issue arg should fail."""
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number=None, role="planner", status="paused")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "42")
+        assert "error" in result
+        assert "issue-less run" in result["error"]
+
+    async def test_resume_matching_issue_succeeds(self) -> None:
+        """Resuming with the correct issue should succeed."""
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="42", role="developer", status="paused")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "42")
+        assert "error" not in result
+        assert result["role"] == "developer"
+
+    async def test_resume_issueless_without_issue_succeeds(self) -> None:
+        """Resuming an issue-less run without an issue arg should succeed."""
+        from sova.cli.commands.run import _load_checkpoint
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number=None, role="planner", status="paused")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        result = await _load_checkpoint(run_id, "")
+        assert "error" not in result
+        assert result["role"] == "planner"
