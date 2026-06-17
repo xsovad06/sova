@@ -44,12 +44,34 @@ def _normalize_commit_subject(
     return normalized
 
 
+def _resolve_task_title(ctx: ExecutionContext) -> str:
+    """Resolve a human-readable title from context, preferring task.title."""
+    if ctx.task:
+        return ctx.task.title
+    if ctx.has_issue:
+        return f"issue {ctx.issue_number}"
+    return ctx.run_label or "run"
+
+
 class CommitStep(BaseStep):
     name = "commit"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.commit", issue=ctx.issue_number, cwd=str(ctx.working_dir))
 
+        has_changes = await self._detect_changes(ctx)
+        if not has_changes:
+            return await self._handle_no_changes(ctx)
+
+        message = self._build_commit_message(ctx)
+
+        try:
+            await git_ops.commit(message, cwd=ctx.working_dir)
+            return StepResult(success=True, summary=f"Committed: {message}")
+        except RuntimeError as exc:
+            return StepResult(success=False, summary="Commit failed", error=str(exc))
+
+    async def _detect_changes(self, ctx: ExecutionContext) -> bool:
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
         untracked = await run("git", "ls-files", "--others", "--exclude-standard", cwd=ctx.working_dir)
@@ -59,44 +81,30 @@ class CommitStep(BaseStep):
 
         untracked_files = [f for f in untracked.stdout.strip().splitlines() if f.strip()] if untracked.success else []
         meaningful_untracked = [f for f in untracked_files if not _is_agent_artifact(f)]
-        has_meaningful_untracked = bool(meaningful_untracked)
 
+        return has_unstaged or has_staged or bool(meaningful_untracked)
+
+    async def _handle_no_changes(self, ctx: ExecutionContext) -> StepResult:
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
+        if has_commits:
+            return StepResult(success=True, summary="Nothing to commit, commits already exist")
+        return StepResult(success=False, summary="No changes to commit", error="No changes to commit")
 
-        if not has_unstaged and not has_staged and not has_meaningful_untracked:
-            if has_commits:
-                return StepResult(success=True, summary="Nothing to commit, commits already exist")
-            return StepResult(success=False, summary="No changes to commit", error="No changes to commit")
-
+    @staticmethod
+    def _build_commit_message(ctx: ExecutionContext) -> str:
         is_address_review = ctx.pr_number is not None and "address_review" in ctx.completed_steps
-        task = ctx.task
 
         if is_address_review:
-            if ctx.has_issue:
-                label = f"issue {ctx.issue_number}"
-            else:
-                label = ctx.run_label or "run"
+            label = f"issue {ctx.issue_number}" if ctx.has_issue else (ctx.run_label or "run")
             subject = f"address review findings for {label}"
-            message = _normalize_commit_subject(
-                subject,
-                commit_type="fix",
-                default_scope="core",
-            )
-        else:
-            title = task.title if task else (f"issue {ctx.issue_number}" if ctx.has_issue else ctx.run_label or "run")
-            subject = title
-            normalized = _normalize_commit_subject(subject, default_scope="core")
-            if ctx.has_issue:
-                message = f"{normalized}\n\nCloses #{ctx.issue_number}"
-            else:
-                message = normalized
+            return _normalize_commit_subject(subject, commit_type="fix", default_scope="core")
 
-        try:
-            await git_ops.commit(message, cwd=ctx.working_dir)
-            return StepResult(success=True, summary=f"Committed: {message}")
-        except RuntimeError as exc:
-            return StepResult(success=False, summary="Commit failed", error=str(exc))
+        title = _resolve_task_title(ctx)
+        normalized = _normalize_commit_subject(title, default_scope="core")
+        if ctx.has_issue:
+            return f"{normalized}\n\nCloses #{ctx.issue_number}"
+        return normalized
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: branch must have at least one commit ahead of base."""
