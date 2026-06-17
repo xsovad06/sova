@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Optional
@@ -14,7 +15,7 @@ console = Console(stderr=True)
 
 
 def run_issue(
-    issue: Annotated[str, typer.Argument(help="Issue number to develop.")],
+    issue: Annotated[Optional[str], typer.Argument(help="Issue number (optional for project-scope roles).")] = None,
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     role: Annotated[Optional[str], typer.Option("--role", "-r", help="Force a specific role.")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip pipeline gate checks.")] = False,
@@ -22,10 +23,13 @@ def run_issue(
     pr: Annotated[Optional[int], typer.Option("--pr", help="PR number (skips PR discovery).")] = None,
     run_id: Annotated[Optional[int], typer.Option("--run-id", help="Reuse an existing TaskRun.")] = None,
 ) -> None:
-    """Run the agent workflow for a single issue."""
+    """Run the agent workflow for a single issue or a project-scope role."""
+    if not issue and not role:
+        console.print("[red]Either an issue number or --role is required.[/red]")
+        raise typer.Exit(code=2)
     asyncio.run(
         _run_workflow(
-            issue,
+            issue or "",
             project_dir=project,
             role_name=role,
             force=force,
@@ -72,12 +76,18 @@ async def _run_workflow(
             f"(skipping {len(checkpoint.get('completed_steps', set()))} completed steps)[/bold]"
         )
 
+    # Generate a run_label for issue-less runs
+    run_label = ""
+    if not issue:
+        run_label = f"{role_name or 'run'}-{int(time.time())}"
+
     ctx = ExecutionContext(
         project_dir=resolved_dir,
         config=config,
         adapter=adapter,
         issue_number=issue,
         role=role_name or checkpoint.get("role") or config.roles.default,
+        run_label=run_label,
         force=force or bool(resume_run_id),
         resume_run_id=resume_run_id,
         completed_steps=frozenset(checkpoint.get("completed_steps", set())),
@@ -89,9 +99,9 @@ async def _run_workflow(
     )
 
     if resume_run_id:
-        console.print(f"[bold]Resuming workflow for issue #{issue} from run #{resume_run_id}[/bold]")
+        console.print(f"[bold]Resuming workflow for {ctx.display_label} from run #{resume_run_id}[/bold]")
     else:
-        console.print(f"[bold]Starting workflow for issue #{issue}[/bold]")
+        console.print(f"[bold]Starting workflow for {ctx.display_label}[/bold]")
 
     role, result = await dispatch(ctx, role_name=role_name, config=config.roles)
 
@@ -115,7 +125,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
             if task_run is None:
                 return {"error": f"Run #{run_id} not found"}
 
-            if task_run.issue_number != issue.lstrip("#").strip():
+            if issue and task_run.issue_number and task_run.issue_number != issue.lstrip("#").strip():
                 return {"error": f"Run #{run_id} is for issue #{task_run.issue_number}, not #{issue}"}
 
             resumable = {"paused", "failed", "interrupted", "done"}

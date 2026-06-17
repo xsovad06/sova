@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -47,25 +49,29 @@ class CreatePRStep(BaseStep):
     name = "create_pr"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
-        log.info("step.create_pr", issue=ctx.issue_number, branch=ctx.branch_name)
+        log.info("step.create_pr", label=ctx.display_label, branch=ctx.branch_name)
 
-        existing = await git_ops.find_pr_for_issue(
-            ctx.issue_number,
-            repo=ctx.repo,
-            github_user=ctx.config.github_user,
-        )
-        if existing:
-            log.info("step.create_pr.existing_found", pr=existing.number)
-            ctx.pr_number = existing.number
-            ctx.pr_url = existing.url
-            try:
-                await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
-            except Exception:
-                log.warning("step.create_pr.tracker_update_failed", exc_info=True)
-            return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
+        if ctx.has_issue:
+            existing = await git_ops.find_pr_for_issue(
+                ctx.issue_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
+            if existing:
+                log.info("step.create_pr.existing_found", pr=existing.number)
+                ctx.pr_number = existing.number
+                ctx.pr_url = existing.url
+                try:
+                    await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
+                except Exception:
+                    log.warning("step.create_pr.tracker_update_failed", exc_info=True)
+                return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
 
         task_title = ctx.task.title if ctx.task else ctx.branch_name
-        title = f"feat(#{ctx.issue_number}): {task_title}"
+        if ctx.has_issue:
+            title = f"feat(#{ctx.issue_number}): {task_title}"
+        else:
+            title = f"feat: {task_title}"
 
         body = await self._generate_pr_body(ctx, task_title)
 
@@ -91,49 +97,55 @@ class CreatePRStep(BaseStep):
                 except Exception:
                     log.warning("step.create_pr.assign_failed", exc_info=True)
 
-            try:
-                await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
-            except Exception:
-                log.warning("step.create_pr.tracker_update_failed", exc_info=True)
+            if ctx.has_issue:
+                try:
+                    await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
+                except Exception:
+                    log.warning("step.create_pr.tracker_update_failed", exc_info=True)
 
             return StepResult(success=True, summary=f"Created PR #{pr_info.number}")
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to create PR", error=str(exc))
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
-        log_result = await run(
-            "git",
-            "log",
-            f"{ctx.base_branch}..HEAD",
-            "--format=%h %s%n%b",
-            "--no-merges",
-            cwd=ctx.working_dir,
-        )
-        diff_result = await run(
-            "git",
-            "diff",
-            f"{ctx.base_branch}..HEAD",
-            "--stat",
-            cwd=ctx.working_dir,
+        log_result, diff_result = await asyncio.gather(
+            run(
+                "git",
+                "log",
+                f"{ctx.base_branch}..HEAD",
+                "--format=%h %s%n%b",
+                "--no-merges",
+                cwd=ctx.working_dir,
+            ),
+            run(
+                "git",
+                "diff",
+                f"{ctx.base_branch}..HEAD",
+                "--stat",
+                cwd=ctx.working_dir,
+            ),
         )
 
         issue_body = ctx.task.body if ctx.task else ""
         commit_log = log_result.stdout.strip() if log_result.success else "(unavailable)"
         diff_stat = diff_result.stdout.strip() if diff_result.success else "(unavailable)"
 
+        issue_ref = ctx.issue_number or "(none)"
         prompt = _PR_BODY_PROMPT.format(
-            issue_number=ctx.issue_number,
+            issue_number=issue_ref,
             issue_title=task_title,
             issue_body=issue_body or "(no description)",
             commit_log=commit_log,
             diff_stat=diff_stat,
         )
+        if not ctx.has_issue:
+            prompt = prompt.replace(f"Closes #{issue_ref}\n\n", "")
 
         try:
             result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
             ctx.add_cost(result.cost_usd)
             body = result.text
-            if f"#{ctx.issue_number}" not in body:
+            if ctx.has_issue and f"#{ctx.issue_number}" not in body:
                 body += f"\n\nCloses #{ctx.issue_number}"
             return body
         except RuntimeError:
@@ -147,20 +159,25 @@ class CreatePRStep(BaseStep):
             "",
             f"Automated changes for: {task_title}",
             "",
-            f"Closes #{ctx.issue_number}",
-            "",
-            "## Commits",
-            "",
-            "```",
-            commit_log or "(none)",
-            "```",
-            "",
-            "## Files changed",
-            "",
-            "```",
-            diff_stat or "(none)",
-            "```",
         ]
+        if ctx.has_issue:
+            lines.append(f"Closes #{ctx.issue_number}")
+            lines.append("")
+        lines.extend(
+            [
+                "## Commits",
+                "",
+                "```",
+                commit_log or "(none)",
+                "```",
+                "",
+                "## Files changed",
+                "",
+                "```",
+                diff_stat or "(none)",
+                "```",
+            ]
+        )
         return "\n".join(lines)
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

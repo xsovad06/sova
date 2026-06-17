@@ -17,7 +17,10 @@ class FetchTaskStep(BaseStep):
     name = "fetch_task"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
-        log.info("step.fetch_task", issue=ctx.issue_number)
+        log.info("step.fetch_task", label=ctx.display_label)
+
+        if not ctx.has_issue:
+            return StepResult(success=True, summary="Skipped: no issue for this run")
 
         task = await ctx.adapter.get_task(ctx.issue_number)
         ctx.task = task
@@ -28,6 +31,6 @@ class FetchTaskStep(BaseStep):
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        if ctx.task is not None:
+        if ctx.task is not None or not ctx.has_issue:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="Task not populated in context")

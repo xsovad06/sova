@@ -16,7 +16,7 @@ log = get_logger(component="dashboard.agent_db")
 
 
 async def _create_task_run(
-    issue: str, role: str, project_dir: Path, *, pid: int | None = None, pr_number: int | None = None
+    issue: str | None, role: str, project_dir: Path, *, pid: int | None = None, pr_number: int | None = None
 ) -> int | None:
     """Create a TaskRun record and return its ID."""
     try:
@@ -26,7 +26,7 @@ async def _create_task_run(
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
                 task_run = TaskRun(
-                    issue_number=issue,
+                    issue_number=issue or None,
                     role=role,
                     status="running",
                     current_step="agent",
@@ -36,7 +36,7 @@ async def _create_task_run(
                 session.add(task_run)
                 await session.flush()
                 run_id = task_run.id
-        log.info("task_run.created", run_id=run_id, issue=issue)
+        log.info("task_run.created", run_id=run_id, issue=issue or "(none)")
         return run_id
     except Exception:
         log.warning("task_run.create_failed", exc_info=True)
@@ -117,7 +117,8 @@ def _apply_file_handoff(task_run: object, file_handoff: dict | None, run_id: int
     if not file_handoff:
         return
     handoff_issue = str(file_handoff["issue"]).lstrip("#").strip() if file_handoff["issue"] else ""
-    issue_match = handoff_issue and handoff_issue == str(task_run.issue_number).lstrip("#").strip()
+    run_issue = str(task_run.issue_number).lstrip("#").strip() if task_run.issue_number else ""
+    issue_match = handoff_issue and run_issue and handoff_issue == run_issue
     pr_match = file_handoff["pr_number"] and file_handoff["pr_number"] == task_run.pr_number
     if issue_match or pr_match:
         task_run.handoff_json = file_handoff["details"]
@@ -161,7 +162,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     cost_record = CostRecord(
                         task_run_id=run_id,
                         phase="agent",
-                        issue=task_run.issue_number,
+                        issue=task_run.issue_number or "",
                         model="claude",
                         cost_usd=cost,
                     )

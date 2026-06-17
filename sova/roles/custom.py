@@ -42,30 +42,31 @@ class CustomRole(AgentRole):
         )
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
+        if ctx.has_issue:
+            task = await ctx.adapter.get_task(ctx.issue_number)
 
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not ready for custom role '{self.name}'",
-                error=f"Issue must be in one of {[s.value for s in self.allowed_input_states]} "
-                f"(current: {task.state}). Use --force to bypass.",
-            )
+            if not self.validate_preconditions(task, force=ctx.force):
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} not ready for custom role '{self.name}'",
+                    error=f"Issue must be in one of {[s.value for s in self.allowed_input_states]} "
+                    f"(current: {task.state}). Use --force to bypass.",
+                )
 
-        log.info("custom.start", issue=ctx.issue_number, role=self.name)
+        log.info("custom.start", label=ctx.display_label, role=self.name)
 
         executor = DAGExecutor(self._definition, ctx)
         dag_result = await executor.execute()
 
         if dag_result.success:
-            log.info("custom.done", issue=ctx.issue_number, role=self.name)
+            log.info("custom.done", label=ctx.display_label, role=self.name)
             return RoleResult(
                 success=True,
                 summary=dag_result.summary,
                 output_state=self.output_state,
             )
 
-        log.error("custom.failed", issue=ctx.issue_number, error=dag_result.error)
+        log.error("custom.failed", label=ctx.display_label, error=dag_result.error)
         return RoleResult(
             success=False,
             summary=dag_result.summary,

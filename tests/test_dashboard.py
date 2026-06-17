@@ -2445,15 +2445,15 @@ class TestBatchAPI:
 class TestAgentsAPI:
     """Tests for the new agents API endpoints."""
 
-    async def test_start_agent_rejects_empty_issue(self, client: AsyncClient) -> None:
+    async def test_start_agent_rejects_empty_issue_without_role(self, client: AsyncClient) -> None:
         resp = await client.post(
             "/api/agents/start",
             json={"issue": ""},
         )
 
-        assert resp.status_code == 422
-        detail = resp.json()["detail"]
-        assert detail[0]["loc"][-1] == "issue"
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
 
     async def test_start_agent_rejects_non_numeric_issue(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -2464,6 +2464,23 @@ class TestAgentsAPI:
         assert resp.status_code == 422
         detail = resp.json()["detail"]
         assert detail[0]["loc"][-1] == "issue"
+
+    async def test_start_agent_allows_empty_issue_with_role(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            __import__("sova.dashboard.services.control_service", fromlist=["start_agent"]),
+            "start_agent",
+            new_callable=AsyncMock,
+            return_value={"run_id": 1, "status": "started"},
+        ):
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "", "role": "planner"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data.get("status") == "started"
 
     async def test_start_agent_rejects_empty_role(self, client: AsyncClient) -> None:
         resp = await client.post(

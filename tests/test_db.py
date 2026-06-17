@@ -325,3 +325,74 @@ class TestMigrationFallback:
         assert row[0] != ""
 
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Issue-less TaskRun (nullable issue_number + run_label)
+# ---------------------------------------------------------------------------
+
+
+async def test_create_issueless_task_run() -> None:
+    """Create a TaskRun with no issue_number (project-scope role)."""
+    async with await get_session() as session:
+        run = TaskRun(
+            issue_number=None,
+            run_label="planner-1718640000",
+            role="planner",
+            status="pending",
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+
+        assert run.id is not None
+        assert not run.issue_number  # None or empty string
+        assert run.run_label == "planner-1718640000"
+        assert run.role == "planner"
+
+
+async def test_issueless_task_run_empty_string() -> None:
+    """Create a TaskRun with empty string issue_number."""
+    async with await get_session() as session:
+        run = TaskRun(
+            issue_number="",
+            run_label="sprint-planner",
+            role="planner",
+            status="running",
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+
+        assert run.issue_number == ""
+        assert run.run_label == "sprint-planner"
+
+
+async def test_normalize_issue_number_handles_none() -> None:
+    """The validator should accept None for issue-less runs."""
+    run = TaskRun(issue_number=None, role="planner", status="pending")
+    assert not run.issue_number  # None or empty string
+
+
+async def test_normalize_issue_number_strips_hash() -> None:
+    """The validator should strip '#' prefix."""
+    run = TaskRun(issue_number="#42", role="developer", status="pending")
+    assert run.issue_number == "42"
+
+
+async def test_query_issueless_runs() -> None:
+    """Query runs with NULL issue_number."""
+    async with await get_session() as session:
+        session.add(TaskRun(issue_number=None, run_label="plan-a", role="planner", status="done"))
+        session.add(TaskRun(issue_number="42", role="developer", status="done"))
+        session.add(TaskRun(issue_number=None, run_label="plan-b", role="planner", status="running"))
+        await session.commit()
+
+        # Query runs without a real issue number (None or empty)
+        result = await session.execute(
+            select(TaskRun).where(TaskRun.issue_number.is_(None) | (TaskRun.issue_number == ""))
+        )
+        issueless = result.scalars().all()
+        assert len(issueless) == 2
+        labels = {r.run_label for r in issueless}
+        assert labels == {"plan-a", "plan-b"}

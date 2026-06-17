@@ -15,7 +15,8 @@ class HandoffToUserStep(BaseStep):
     name = "handoff_to_user"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
-        log.info("step.handoff_to_user", issue=ctx.issue_number, pr=ctx.pr_number)
+        label = ctx.display_label
+        log.info("step.handoff_to_user", label=label, pr=ctx.pr_number)
 
         return await write_step_handoff(
             ctx,
@@ -47,7 +48,7 @@ class HandoffToUserStep(BaseStep):
                 ),
             ],
             notification_message=f"PR #{ctx.pr_number} reviewed, ready for integration",
-            notification_subtitle=f"Reviewer finished #{ctx.issue_number}",
+            notification_subtitle=f"Reviewer finished {label}",
             result_summary=f"PR #{ctx.pr_number} ready for human review",
         )
 

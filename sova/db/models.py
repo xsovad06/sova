@@ -22,7 +22,8 @@ class TaskRun(Base):
     __tablename__ = "task_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    issue_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True, default="")
+    run_label: Mapped[str] = mapped_column(String(200), default="")
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="developer")
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     current_step: Mapped[str | None] = mapped_column(String(50))
@@ -45,8 +46,10 @@ class TaskRun(Base):
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="task_run")
 
     @validates("issue_number")
-    def _normalize_issue_number(self, _key: str, value: str) -> str:
+    def _normalize_issue_number(self, _key: str, value: str | None) -> str | None:
         """Strip '#' prefix so '#67' and '67' are stored consistently."""
+        if value is None:
+            return None
         return value.lstrip("#").strip() if value else value
 
     lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"))
