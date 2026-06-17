@@ -125,7 +125,7 @@ async function loadRunDetail() {
     var steps = data.steps;
     var pipeline = data.pipeline;
 
-    document.getElementById('detail-issue').textContent = '#' + run.issue_number;
+    document.getElementById('detail-issue').innerHTML = issueLink(run.issue_number);
 
     var colors = roleColor(run.role);
     var roleEl = document.getElementById('detail-role');

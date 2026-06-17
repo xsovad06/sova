@@ -53,17 +53,17 @@ async function loadTasks() {
       container.innerHTML = '<p class="text-gray-500 text-sm">No active tasks</p>';
     } else {
       container.innerHTML = activeData.tasks.map(function(t) {
-        var prLink = t.pr_number ? '<span class="text-xs text-accent">PR #' + t.pr_number + '</span>' : '';
+        var prBadge = t.pr_number ? '<span class="text-xs">' + prLink(t.pr_number) + '</span>' : '';
         return '<div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">' +
           '<div class="flex items-center justify-between mb-2">' +
-            '<span class="text-sm font-medium">#' + escapeHtml(String(t.issue_number || t.id)) + '</span>' +
+            '<span class="text-sm font-medium">' + issueLink(t.issue_number || t.id) + '</span>' +
             statusBadge(t.status) +
           '</div>' +
           '<div class="space-y-1 text-xs text-gray-400">' +
             '<p>Role: <span class="text-gray-300">' + escapeHtml(t.role || 'unknown') + '</span></p>' +
             '<p>Step: <span class="text-gray-300">' + escapeHtml(t.current_step || '--') + '</span></p>' +
             (t.branch_name ? '<p>Branch: <span class="text-gray-300 font-mono">' + escapeHtml(t.branch_name) + '</span></p>' : '') +
-            (prLink ? '<p>' + prLink + '</p>' : '') +
+            (prBadge ? '<p>' + prBadge + '</p>' : '') +
             '<p>Time: <span class="text-gray-300">' + escapeHtml(t.time_in_state || '--') + '</span></p>' +
             '<p>Cost: <span class="text-accent-green">$' + (t.total_cost_usd || 0).toFixed(4) + '</span></p>' +
           '</div>' +
@@ -79,7 +79,7 @@ async function loadTasks() {
       var rows = historyData.tasks.map(function(t) {
         var endedAt = t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--';
         return '<tr class="border-b border-gray-700/30 hover:bg-surface-hover/50">' +
-          '<td class="px-4 py-2 text-sm">#' + escapeHtml(String(t.issue_number || t.id)) + '</td>' +
+          '<td class="px-4 py-2 text-sm">' + issueLink(t.issue_number || t.id) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.role || '--') + '</td>' +
           '<td class="px-4 py-2 text-sm">' + statusBadge(t.status) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.current_step || '--') + '</td>' +

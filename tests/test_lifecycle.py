@@ -304,7 +304,7 @@ class TestLifecycleRouter:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/lifecycle/42")
             assert resp.status_code == 200
-            assert "Issue #42" in resp.text
+            assert "Issue " in resp.text and "#42" in resp.text
 
     async def test_full_lifecycle_flow(self, app, session: AsyncSession):
         async with session.begin():

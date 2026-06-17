@@ -234,7 +234,7 @@ function renderTaskCard(t) {
 
   return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
     pDot +
-    '<span class="text-accent text-xs font-medium shrink-0">' + (t.jira_key ? escapeHtml(t.jira_key) : '#' + escapeHtml(t.issue)) + '</span>' +
+    '<span class="text-xs font-medium shrink-0">' + (t.jira_key ? escapeHtml(t.jira_key) : issueLink(t.issue)) + '</span>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(t.title) + '</span>' +
     failedDot +
     stateTag(t.state) +
@@ -681,7 +681,7 @@ function renderAgentCard(agent) {
     '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
-        '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(agent.issue) + '</span>' +
+        '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role, agent.pipeline_variant)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
         prBadge +
@@ -722,7 +722,7 @@ function renderCompletedCard(agent) {
     '<div class="flex items-center justify-between">' +
       '<div class="flex items-center gap-2">' +
         '<span class="w-2 h-2 rounded-full ' + statusDotClass + '"></span>' +
-        '<span class="text-sm font-medium text-gray-300">#' + escapeHtml(agent.issue) + '</span>' +
+        '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + escapeHtml(agent.status) + '</span>' +
         prBadge +
@@ -752,7 +752,7 @@ function updateLogTabs(agents) {
     var isActive = activeLogRunId === a.run_id;
     var activeClass = isActive ? 'bg-surface text-white border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300';
     return '<button onclick="viewLogs(' + a.run_id + ')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
-      '#' + escapeHtml(a.issue) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
+      escapeHtml('#' + a.issue) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
     '</button>';
   }).join('');
 }
@@ -920,10 +920,10 @@ async function checkStandaloneHandoff() {
 
     summary.textContent = handoff.summary || 'Review completed';
     var metaParts = [];
-    if (handoff.issue) metaParts.push('Issue #' + handoff.issue);
-    if (handoff.pr_number) metaParts.push('PR #' + handoff.pr_number);
+    if (handoff.issue) metaParts.push('Issue ' + issueLink(handoff.issue));
+    if (handoff.pr_number) metaParts.push('PR ' + prLink(handoff.pr_number));
     if (handoff.details && handoff.details.cost_usd) metaParts.push('Cost: $' + parseFloat(handoff.details.cost_usd).toFixed(4));
-    meta.textContent = metaParts.join('  |  ');
+    meta.innerHTML = metaParts.join('&nbsp; | &nbsp;');
 
     var actions = (handoff.next_actions || []).map(function(action) {
       var btnStyle = action.style === 'approve'
@@ -937,7 +937,15 @@ async function checkStandaloneHandoff() {
         escapeHtml(action.label) + '</button>';
     }).join(' ');
 
-    actionsDiv.innerHTML = actions;
+    var specLink = '';
+    if (handoff.issue) {
+      var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+      specLink = '<a href="' + prefix + '/spec/' + escapeHtml(handoff.issue) + '" ' +
+        'class="px-4 py-2 rounded text-sm font-medium transition-colors bg-gray-700 text-gray-300 hover:bg-gray-600 border border-gray-600">' +
+        'View Spec</a>';
+    }
+
+    actionsDiv.innerHTML = actions + specLink;
     panel.classList.remove('hidden');
   } catch (e) {
     hideHandoffPanel();
@@ -1103,7 +1111,7 @@ function renderHistoryTable(tasks, targetId, showError) {
       var stepsText = t.total_steps_possible ? (t.steps_completed + '/' + t.total_steps_possible) : '--';
 
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
-        '<td class="p-3 text-accent">#' + escapeHtml(t.issue_number) + '</td>' +
+        '<td class="p-3">' + issueLink(t.issue_number) + '</td>' +
         '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(t.role, t.pipeline_variant)) + '</span></td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(t.status) + '"></span><span class="' + statusColor(t.status) + '">' + escapeHtml(t.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + stepsText + '</td>' +

@@ -5,7 +5,7 @@
 
 <div class="flex items-center gap-3 mb-6">
   <a href="{{ prefix|default('') }}/agents" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Agents</a>
-  <h2 class="text-2xl font-semibold">Issue #{{ issue_number }}</h2>
+  <h2 class="text-2xl font-semibold">Issue <span id="lc-issue-link">#{{ issue_number }}</span></h2>
   <span id="lc-cost" class="text-sm text-accent-green ml-auto"></span>
 </div>
 
@@ -272,6 +272,9 @@ async function loadLifecycle() {
       document.getElementById('phase-rail').innerHTML = '<p class="text-gray-500">' + escapeHtml(data.error) + '</p>';
       return;
     }
+    var lcLink = document.getElementById('lc-issue-link');
+    if (lcLink) lcLink.innerHTML = issueLink('{{ issue_number }}');
+
     // Skip re-render if nothing changed
     if (_lastUpdated && data.updated_at === _lastUpdated) return;
     _lastUpdated = data.updated_at;
