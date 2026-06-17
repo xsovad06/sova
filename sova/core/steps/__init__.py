@@ -24,6 +24,7 @@ from sova.core.steps.research import ResearchStep
 from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
+from sova.core.steps.spec import SpecStep
 from sova.core.steps.sync import SyncStep
 from sova.core.steps.validate import ValidateStep
 from sova.core.steps.wait_for_external_reviews import WaitForExternalReviewsStep
@@ -82,6 +83,7 @@ def get_researcher_steps() -> list[BaseStep]:
     return [
         FetchTaskStep(),
         ResearchStep(),
+        SpecStep(),
         ExtractMemoryStep(),
     ]
 

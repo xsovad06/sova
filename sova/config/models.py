@@ -195,6 +195,15 @@ class RolesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_ROLES_")
 
 
+class SpecConfig(BaseSettings):
+    """Specification step configuration."""
+
+    threshold: Literal["always", "trivial", "simple", "moderate", "complex", "never"] = "moderate"
+    auto_approve_simple: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_SPEC_")
+
+
 class PipelineConfig(BaseSettings):
     """Pipeline orchestration configuration."""
 
@@ -277,6 +286,7 @@ class ProjectConfig(BaseSettings):
     triage: TriageConfig = Field(default_factory=TriageConfig)
     roles: RolesConfig = Field(default_factory=RolesConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    spec: SpecConfig = Field(default_factory=SpecConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)

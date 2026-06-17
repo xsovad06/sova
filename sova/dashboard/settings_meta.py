@@ -27,6 +27,7 @@ GROUPS: dict[str, str] = {
     "commit": "Commits & PRs",
     "triage": "Triage",
     "roles": "Roles",
+    "spec": "Specification",
     "notification": "Notifications",
     "server": "Server",
     "external_reviews": "External Reviews",
@@ -37,6 +38,7 @@ GROUP_ORDER: list[str] = [
     "llm",
     "agent",
     "pipeline",
+    "spec",
     "roles",
     "task_source",
     "commit",
@@ -165,6 +167,20 @@ _REGISTRY: list[SettingMeta] = [
         "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
         "pipeline",
         "number",
+    ),
+    # -- Spec --
+    SettingMeta(
+        "spec.threshold",
+        "Complexity threshold",
+        "Minimum task complexity to trigger spec generation (always/trivial/simple/moderate/complex/never)",
+        "spec",
+    ),
+    SettingMeta(
+        "spec.auto_approve_simple",
+        "Auto-approve simple specs",
+        "Automatically approve specs for simple tasks with no open questions",
+        "spec",
+        "boolean",
     ),
     # -- Task Source --
     SettingMeta("task_source.type", "Source type", "Where tasks come from (github, jira, linear)", "task_source"),
