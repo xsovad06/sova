@@ -13,7 +13,6 @@ Behavior depends on complexity threshold and open questions:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from sova.core.context import ExecutionContext
 from sova.core.steps._handoff_helpers import write_step_handoff
@@ -42,12 +41,22 @@ def _extract_complexity(text: str) -> str:
     return match.group(1).lower() if match else "moderate"
 
 
+def _extract_section(text: str, heading: str) -> str:
+    """Extract the content of a markdown section (between ## heading and next ## or EOF)."""
+    pattern = rf"^## {re.escape(heading)}\s*$"
+    match = re.search(pattern, text, re.MULTILINE)
+    if not match:
+        return ""
+    start = match.end()
+    # Find the next ## heading or end of text
+    next_heading = re.search(r"^## ", text[start:], re.MULTILINE)
+    section = text[start : start + next_heading.start()] if next_heading else text[start:]
+    return section.strip()
+
+
 def _text_has_open_questions(text: str) -> bool:
     """Check if text contains an Open Questions section with content."""
-    match = re.search(r"## Open Questions\s*\n(.+?)(?:\n##|\Z)", text, re.DOTALL)
-    if not match:
-        return False
-    content = match.group(1).strip()
+    content = _extract_section(text, "Open Questions")
     if not content or content.lower().startswith("(omit") or content == "None":
         return False
     return True
@@ -121,12 +130,11 @@ class SpecStep(BaseStep):
                 )
 
         # Needs human review -- write handoff and pause pipeline
-        return await self._write_approval_handoff(ctx, spec_path, spec_complexity, has_questions)
+        return await self._write_approval_handoff(ctx, spec_complexity, has_questions)
 
     async def _write_approval_handoff(
         self,
         ctx: ExecutionContext,
-        spec_path: Path,
         complexity: str,
         has_questions: bool,
     ) -> StepResult:
