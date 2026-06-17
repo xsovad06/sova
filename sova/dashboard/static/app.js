@@ -609,12 +609,15 @@ async function _pollGlobalBatch() {
     }
   } catch (e) {
     console.error('Failed to poll global batch:', e);
+    _clearGlobalBatch();
   }
 }
 
 function cancelGlobalBatch() {
   if (!_globalBatchId) return;
-  fetch(apiUrl('/queue/batch/' + _globalBatchId + '/cancel'), { method: 'POST' }).catch(function(e) {
+  var id = _globalBatchId;
+  _clearGlobalBatch();
+  fetch(apiUrl('/queue/batch/' + id + '/cancel'), { method: 'POST' }).catch(function(e) {
     console.error('Failed to cancel batch:', e);
   });
 }
