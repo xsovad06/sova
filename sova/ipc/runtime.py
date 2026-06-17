@@ -33,6 +33,7 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
     path = shutil.which(cli_name)
     if not path:
         return False, f"{cli_name} not found -- install: {install_hint}"
+    proc: asyncio.subprocess.Process | None = None
     try:
         proc = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
@@ -49,6 +50,12 @@ async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, 
         version = stdout.decode().strip().split("\n")[0] if stdout else "unknown"
         return True, version
     except asyncio.TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
         return False, f"{cli_name} --version timed out"
     except Exception as exc:
         return False, f"error checking version: {exc}"
@@ -160,7 +167,9 @@ class ClaudeCodeRuntime(AgentRuntime):
         if event_type == "assistant":
             content = data.get("content", "")
             if isinstance(content, list):
-                parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                parts = [
+                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                ]
                 text = "".join(parts)
             elif isinstance(content, str):
                 text = content
@@ -169,19 +178,24 @@ class ClaudeCodeRuntime(AgentRuntime):
             return StreamEvent(type="content", text=text) if text else None
 
         if event_type == "result":
-            result_text = data.get("result", "")
-            cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
+            result_text = str(data.get("result", ""))
+            try:
+                cost_usd = Decimal(str(data.get("total_cost_usd", 0)))
+            except Exception:
+                cost_usd = Decimal(0)
             usage = data.get("usage", {})
+            if not isinstance(usage, dict):
+                usage = {}
             llm_result = LLMResult(
                 text=result_text,
-                model=data.get("model", ""),
+                model=str(data.get("model", "")),
                 cost_usd=cost_usd,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
                 cache_read_tokens=usage.get("cache_read_tokens", 0),
                 cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                 duration_ms=data.get("duration_ms", 0),
-                session_id=data.get("session_id", ""),
+                session_id=str(data.get("session_id", "")),
             )
             return StreamEvent(type="result", text=result_text, result=llm_result)
 
