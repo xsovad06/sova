@@ -41,8 +41,20 @@
 {% block scripts %}
 <script>
 var milestoneStyles = {
+  'Phase 1': { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
+  'Phase 2': { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
+  'Phase 3': { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
+  'Phase 4': { badge: 'bg-accent-purple/20 text-accent-purple', border: 'border-accent-purple/30' },
+  'Phase 5': { badge: 'bg-accent-green/20 text-accent-green', border: 'border-accent-green/30' },
+  'Phase 6': { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30' },
+  'Phase 7': { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
+  P1: { badge: 'bg-accent-red/20 text-accent-red', border: 'border-accent-red/30' },
+  P2: { badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
   P3: { badge: 'bg-accent/20 text-accent', border: 'border-accent/30' },
-  P4: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
+  P4: { badge: 'bg-accent-purple/20 text-accent-purple', border: 'border-accent-purple/30' },
+  P5: { badge: 'bg-accent-green/20 text-accent-green', border: 'border-accent-green/30' },
+  P6: { badge: 'bg-blue-500/20 text-blue-400', border: 'border-blue-500/30' },
+  P7: { badge: 'bg-gray-500/20 text-gray-400', border: 'border-gray-600/30' },
   '--': { badge: 'bg-gray-700/20 text-gray-500', border: 'border-gray-700/30' },
 };
 
@@ -352,8 +364,31 @@ async function loadQueue() {
         '</div>' +
         '<div class="space-y-2' + groupClasses + '">';
 
+      var phaseGroups = {};
+      var phaseOrder = [];
       items.forEach(function(item) {
-        html += renderQueueCard(item);
+        var po = item.phase_order || 99;
+        if (!phaseGroups[po]) {
+          phaseGroups[po] = [];
+          phaseOrder.push(po);
+        }
+        phaseGroups[po].push(item);
+      });
+      phaseOrder.sort(function(a, b) { return a - b; });
+
+      var hasMultiplePhases = phaseOrder.length > 1 || (phaseOrder.length === 1 && phaseOrder[0] !== 99);
+      phaseOrder.forEach(function(po) {
+        var phaseItems = phaseGroups[po];
+        if (hasMultiplePhases) {
+          var phaseLabel = po < 99 ? 'Phase ' + po : 'No phase';
+          html += '<div class="ml-2 mt-3 first:mt-0 mb-1">' +
+            '<span class="text-xs font-medium text-gray-500">' + escapeHtml(phaseLabel) + '</span>' +
+            '<span class="text-xs text-gray-600 ml-1">(' + phaseItems.length + ')</span>' +
+          '</div>';
+        }
+        phaseItems.forEach(function(item) {
+          html += renderQueueCard(item);
+        });
       });
 
       html += '</div></div>';

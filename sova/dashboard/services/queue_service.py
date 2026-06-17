@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sova.adapters.base import TaskState
@@ -81,11 +82,29 @@ _JIRA_PRIORITY_ORDER: dict[str, int] = {
 
 
 def _extract_label_priority(labels: list[str]) -> int:
-    """Extract numeric priority from priority: labels. Lower = higher priority."""
+    """Extract numeric priority from priority: labels. Lower = higher priority.
+
+    Handles both spaced ("priority: high") and compact ("priority:high") formats.
+    """
     for label in labels:
-        if label in _PRIORITY_LABEL_ORDER:
-            return _PRIORITY_LABEL_ORDER[label]
+        normalized = label.replace(" ", "")
+        if normalized in _PRIORITY_LABEL_ORDER:
+            return _PRIORITY_LABEL_ORDER[normalized]
     return 99
+
+
+_PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
+
+
+def _extract_phase_order(milestone: str | None) -> int:
+    """Extract phase number from milestone title. Lower = earlier phase.
+
+    Supports: 'Phase 1: Ship It', 'Phase 2', 'P1: ...', 'P2'.
+    """
+    if not milestone:
+        return 99
+    m = _PHASE_RE.match(milestone.strip())
+    return int(m.group(1)) if m else 99
 
 
 async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
@@ -117,6 +136,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     actionable.sort(
         key=lambda t: (
             _STATE_PRIORITY.get(t.state, 99),
+            _extract_phase_order(t.milestone),
             _extract_label_priority(t.labels),
             _JIRA_PRIORITY_ORDER.get(t.metadata.get("jira_priority", ""), 99),
             t.metadata.get("created_at", "9999"),
@@ -128,6 +148,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     queue = []
     for t in actionable:
         priority = _STATE_PRIORITY.get(t.state, 99)
+        phase_order = _extract_phase_order(t.milestone)
         queue.append(
             {
                 "issue": t.id,
@@ -135,6 +156,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "state": t.state.value,
                 "priority": priority,
                 "priority_label": _milestone_badge(t.milestone),
+                "phase_order": phase_order,
                 "action": _RECOMMENDED_ACTION.get(t.state, "triage"),
                 "labels": t.labels,
                 "url": t.url,
