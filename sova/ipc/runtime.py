@@ -216,7 +216,7 @@ class AiderRuntime(AgentRuntime):
 
     # Pattern matching shell-command prompts from start_agent() / start_command().
     # Format: "Run the following command...\n```bash\nsova run 28\n```"
-    _SHELL_CMD_RE = re.compile(r"```(?:bash|sh)\s*\n(.+?)\n```", re.DOTALL)
+    _SHELL_CMD_RE = re.compile(r"```(?:bash|sh)\s*\n([^`]+)\n```")
 
     def transform_prompt(self, prompt: str) -> str:
         """Detect shell-command-formatted prompts and extract the sova command.
