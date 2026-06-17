@@ -127,12 +127,14 @@ async def dispatch(
     """
     if role_name:
         role = await get_role_async(role_name, config=config)
-    else:
+    elif ctx.has_issue:
         # Auto-select based on tracker state
         state = await ctx.adapter.get_state(ctx.issue_number)
         role = resolve_role_for_state(state)
+    else:
+        raise ValueError("Issue-less runs require an explicit --role")
 
-    log.info("dispatch", issue=ctx.issue_number, role=role.name)
+    log.info("dispatch", issue=ctx.issue_number or "", label=ctx.display_label, role=role.name)
     ctx.role = role.name
     result = await role.execute(ctx)
     return role, result

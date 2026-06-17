@@ -101,9 +101,7 @@ class WorkflowEngine:
 
         self._output_writer = OutputWriter(self._ctx.project_dir, self._task_run_id)
         await self._set_output_file_path(str(self._output_writer.path))
-        self._output_writer.write_line(
-            f"=== Workflow started: issue #{self._ctx.issue_number}, role={self._ctx.role} ==="
-        )
+        self._output_writer.write_line(f"=== Workflow started: {self._ctx.display_label}, role={self._ctx.role} ===")
 
         result = WorkflowResult(
             success=False,
@@ -111,7 +109,12 @@ class WorkflowEngine:
             task_run_id=self._task_run_id,
         )
 
-        log.info("workflow.start", issue=self._ctx.issue_number, run_id=self._task_run_id)
+        log.info(
+            "workflow.start",
+            issue=self._ctx.issue_number or "",
+            label=self._ctx.display_label,
+            run_id=self._task_run_id,
+        )
 
         for step in self._steps:
             if not await self._execute_step(step, result):
@@ -169,12 +172,13 @@ class WorkflowEngine:
 
             role_label = self._ctx.role.capitalize()
             project_name = self._ctx.project_dir.name
+            label = self._ctx.display_label
             notify(
                 self._ctx.config.notification,
                 "SOVA",
                 f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
-                subtitle=f"{role_label} failed #{self._ctx.issue_number}",
-                group=f"sova-{self._ctx.issue_number}",
+                subtitle=f"{role_label} failed {label}",
+                group=self._ctx.notification_group,
             )
 
             log.error(
@@ -206,15 +210,16 @@ class WorkflowEngine:
 
         role_label = self._ctx.role.capitalize()
         project_name = self._ctx.project_dir.name
+        label = self._ctx.display_label
         notify(
             self._ctx.config.notification,
             "SOVA",
             f"{project_name} | ${result.total_cost_usd}",
-            subtitle=f"{role_label} finished #{self._ctx.issue_number}",
-            group=f"sova-{self._ctx.issue_number}",
+            subtitle=f"{role_label} finished {label}",
+            group=self._ctx.notification_group,
         )
 
-        log.info("workflow.done", issue=self._ctx.issue_number, cost=str(result.total_cost_usd))
+        log.info("workflow.done", label=label, cost=str(result.total_cost_usd))
 
     async def _execute_with_retries(self, step: BaseStep) -> StepRecord:
         """Execute a step, retrying on failure up to max_retries."""
@@ -281,7 +286,8 @@ class WorkflowEngine:
         async with await get_session() as session:
             async with session.begin():
                 task_run = TaskRun(
-                    issue_number=self._ctx.issue_number,
+                    issue_number=self._ctx.issue_number or None,
+                    run_label=self._ctx.run_label,
                     role=self._ctx.role,
                     status=TaskStatus.PENDING.value,
                     branch_name=self._ctx.branch_name,
@@ -392,7 +398,7 @@ class WorkflowEngine:
                         cost_record = CostRecord(
                             task_run_id=self._task_run_id,
                             phase=record.step_name,
-                            issue=self._ctx.issue_number,
+                            issue=self._ctx.issue_number or "",
                             model="claude",
                             cost_usd=result.cost_usd,
                             duration_ms=elapsed_ms,
@@ -418,7 +424,8 @@ class WorkflowEngine:
                     failure_type=failure_type,
                     message=message,
                     context={
-                        "issue": self._ctx.issue_number,
+                        "issue": self._ctx.issue_number or "",
+                        "label": self._ctx.display_label,
                         "branch": self._ctx.branch_name,
                         "cost_usd": str(self._ctx.cost_usd),
                     },

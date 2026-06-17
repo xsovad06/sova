@@ -15,7 +15,8 @@ class HandoffToReviewerStep(BaseStep):
     name = "handoff_to_reviewer"
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
-        log.info("step.handoff_to_reviewer", issue=ctx.issue_number, pr=ctx.pr_number)
+        label = ctx.display_label
+        log.info("step.handoff_to_reviewer", label=label, pr=ctx.pr_number)
 
         auto = ctx.config.pipeline.auto_handoff
 
@@ -24,9 +25,7 @@ class HandoffToReviewerStep(BaseStep):
             role="developer",
             phase="develop",
             summary=f"PR #{ctx.pr_number} ready for review (CI passed)",
-            agent_summary=(
-                f"Development complete for issue #{ctx.issue_number}, PR #{ctx.pr_number} created with passing CI"
-            ),
+            agent_summary=(f"Development complete for {label}, PR #{ctx.pr_number} created with passing CI"),
             next_action="review",
             actions=[
                 HandoffAction(
@@ -41,7 +40,7 @@ class HandoffToReviewerStep(BaseStep):
                 ),
             ],
             notification_message=f"PR #{ctx.pr_number} passed CI, handing to Reviewer",
-            notification_subtitle=f"Developer finished #{ctx.issue_number}",
+            notification_subtitle=f"Developer finished {label}",
             result_summary=f"Handed off to Reviewer (PR #{ctx.pr_number})",
         )
 

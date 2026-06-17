@@ -27,7 +27,7 @@ class SyncStep(BaseStep):
         except RuntimeError as exc:
             return StepResult(success=False, summary="Failed to sync", error=str(exc))
 
-        if ctx.task is None:
+        if ctx.task is None and ctx.has_issue:
             try:
                 ctx.task = await ctx.adapter.get_task(ctx.issue_number)
             except Exception:

@@ -192,6 +192,26 @@ class TestExecutionContext:
         ctx = _make_ctx(config=ProjectConfig(github_repo="owner/repo"))
         assert ctx.repo == "owner/repo"
 
+    def test_issueless_context(self) -> None:
+        ctx = _make_ctx(issue_number="", run_label="planner-1234")
+        assert not ctx.has_issue
+        assert ctx.display_label == "planner-1234"
+        assert ctx.issue_number == ""
+
+    def test_issueless_context_no_label(self) -> None:
+        ctx = _make_ctx(issue_number="", run_label="", task_run_id=99)
+        assert not ctx.has_issue
+        assert ctx.display_label == "run-99"
+
+    def test_issueless_context_fallback(self) -> None:
+        ctx = _make_ctx(issue_number="", run_label="")
+        assert ctx.display_label == "issue-less"
+
+    def test_issue_context_display(self) -> None:
+        ctx = _make_ctx(issue_number="42")
+        assert ctx.has_issue
+        assert ctx.display_label == "#42"
+
 
 # ---------------------------------------------------------------------------
 # BaseStep / GateCheckResult / StepResult
@@ -3452,3 +3472,42 @@ class TestLoadCoderabbitFindings:
 
         assert findings == []
         assert thread_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Issue-less workflow runs
+# ---------------------------------------------------------------------------
+
+
+class TestIssuelessWorkflow:
+    """Test that the workflow engine and steps handle issue-less runs."""
+
+    async def test_workflow_engine_issueless_run(self) -> None:
+        ctx = _make_ctx(issue_number="", run_label="planner-123")
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_completed == 1
+
+        async with await get_session() as session:
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run is not None
+
+    async def test_workflow_engine_issueless_creates_task_run(self) -> None:
+        ctx = _make_ctx(issue_number="", run_label="test-run")
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+        assert result.task_run_id is not None
+
+    async def test_dispatch_requires_role_for_issueless(self) -> None:
+        """Dispatch without issue and without role should raise ValueError."""
+        from sova.roles.dispatcher import dispatch
+
+        ctx = _make_ctx(issue_number="")
+        with pytest.raises(ValueError, match="Issue-less runs require"):
+            await dispatch(ctx)

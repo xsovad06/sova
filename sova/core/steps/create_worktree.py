@@ -15,13 +15,17 @@ class WorktreeStep(BaseStep):
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         if not ctx.branch_name:
-            ctx.branch_name = f"feat/issue-{ctx.issue_number}"
+            if ctx.has_issue:
+                ctx.branch_name = f"feat/issue-{ctx.issue_number}"
+            else:
+                ctx.branch_name = f"feat/{ctx.run_label or 'run'}"
 
-        log.info("step.worktree", issue=ctx.issue_number, branch=ctx.branch_name)
+        worktree_id = ctx.issue_number or ctx.run_label or f"run-{ctx.task_run_id or 'tmp'}"
+        log.info("step.worktree", label=ctx.display_label, branch=ctx.branch_name)
 
         try:
             info = await worktree.create_worktree(
-                issue_id=ctx.issue_number,
+                issue_id=worktree_id,
                 branch=ctx.branch_name,
                 base_branch=ctx.config.base_branch,
                 project_dir=ctx.project_dir,

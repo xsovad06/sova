@@ -73,16 +73,24 @@ class CommitStep(BaseStep):
         task = ctx.task
 
         if is_address_review:
-            subject = f"address review findings for issue {ctx.issue_number}"
+            if ctx.has_issue:
+                label = f"issue {ctx.issue_number}"
+            else:
+                label = ctx.run_label or "run"
+            subject = f"address review findings for {label}"
             message = _normalize_commit_subject(
                 subject,
                 commit_type="fix",
                 default_scope="core",
             )
         else:
-            title = task.title if task else f"issue {ctx.issue_number}"
+            title = task.title if task else (f"issue {ctx.issue_number}" if ctx.has_issue else ctx.run_label or "run")
             subject = title
-            message = f"{_normalize_commit_subject(subject, default_scope='core')}\n\nCloses #{ctx.issue_number}"
+            normalized = _normalize_commit_subject(subject, default_scope="core")
+            if ctx.has_issue:
+                message = f"{normalized}\n\nCloses #{ctx.issue_number}"
+            else:
+                message = normalized
 
         try:
             await git_ops.commit(message, cwd=ctx.working_dir)

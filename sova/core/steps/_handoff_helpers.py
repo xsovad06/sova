@@ -72,7 +72,7 @@ async def write_step_handoff(
         "SOVA",
         f"{project_name} | {notification_message}",
         subtitle=notification_subtitle,
-        group=f"sova-{ctx.issue_number}",
+        group=ctx.notification_group,
     )
 
     return StepResult(success=True, summary=result_summary)

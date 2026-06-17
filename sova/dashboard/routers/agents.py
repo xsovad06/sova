@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 
 from sova.dashboard.services import control_service
 from sova.utils.logging import get_logger
@@ -13,7 +13,7 @@ log = get_logger(component="dashboard.agents")
 
 
 class StartAgentRequest(BaseModel):
-    issue: str = Field(..., min_length=1)
+    issue: str = ""
     role: str | None = None
     force: bool = False
     resume_run_id: int | None = None
@@ -23,10 +23,8 @@ class StartAgentRequest(BaseModel):
     @classmethod
     def validate_issue(cls, v: str) -> str:
         value = v.strip()
-        if not value:
-            raise ValueError("issue cannot be empty")
-        if not value.isdigit():
-            raise ValueError("issue must be a numeric string")
+        if value and not value.isdigit():
+            raise ValueError("issue must be a numeric string or empty for issue-less runs")
         return value
 
     @field_validator("role")
@@ -85,6 +83,8 @@ async def get_agent_output(run_id: int, since: int = 0):
 @router.post("/agents/start")
 async def start_agent(req: StartAgentRequest):
     """Start a new agent process."""
+    if not req.issue and not req.role:
+        return {"error": "Either issue or role is required for starting an agent"}
     return await control_service.start_agent(
         req.issue,
         role=req.role,

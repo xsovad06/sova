@@ -251,7 +251,7 @@ async def start_agent(
     """Start an agent process for the given issue."""
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
 
-    issue = issue.lstrip("#").strip()
+    issue = issue.lstrip("#").strip() if issue else ""
     pa = _get_project_agents(slug)
 
     async with pa._lock:
@@ -261,31 +261,35 @@ async def start_agent(
                 "running": len(pa.agents),
             }
 
-        conflict = await _check_issue_conflict(issue, pa, force=force)
-        if conflict:
-            return conflict
-
-        _evict_completed_for_issue(pa, issue)
+        if issue:
+            conflict = await _check_issue_conflict(issue, pa, force=force)
+            if conflict:
+                return conflict
+            _evict_completed_for_issue(pa, issue)
 
         cwd = pa.project_dir
 
-        if not force:
+        if not force and issue:
             budget_error = await _check_issue_budget(issue, cwd)
             if budget_error:
                 return budget_error
 
-        run_id = await _create_task_run(issue, role or "developer", cwd, pr_number=pr_number)
+        run_id = await _create_task_run(issue or None, role or "developer", cwd, pr_number=pr_number)
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
-        try:
-            from sova.dashboard.services import handoff_service
+        if issue:
+            try:
+                from sova.dashboard.services import handoff_service
 
-            handoff_service.clear_handoff(cwd, issue=issue)
-        except Exception:
-            log.debug("agent.clear_handoff_failed", issue=issue, exc_info=True)
+                handoff_service.clear_handoff(cwd, issue=issue)
+            except Exception:
+                log.debug("agent.clear_handoff_failed", issue=issue, exc_info=True)
 
-        cmd_parts = ["sova", "run", shlex.quote(issue), "--run-id", str(run_id)]
+        cmd_parts = ["sova", "run"]
+        if issue:
+            cmd_parts.append(shlex.quote(issue))
+        cmd_parts.extend(["--run-id", str(run_id)])
         if resume_run_id:
             cmd_parts.extend(["--resume", str(resume_run_id)])
         if role:
@@ -311,8 +315,9 @@ async def start_agent(
         pid = process.pid
         await _update_task_run_pid(run_id, pid, cwd)
 
-        # Link to lifecycle
-        await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
+        # Link to lifecycle (only for issue-based runs)
+        if issue:
+            await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
 
         writer = OutputWriter(cwd, run_id)
         await _set_output_file_path(run_id, writer.path, cwd)
@@ -333,7 +338,7 @@ async def start_agent(
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
-    if (role or "developer") == "developer" and not pr_number:
+    if issue and (role or "developer") == "developer" and not pr_number:
         transition_task = asyncio.create_task(_transition_to_in_progress(issue, pa.project_dir))
         _background_tasks.add(transition_task)
         transition_task.add_done_callback(_background_tasks.discard)
@@ -437,11 +442,12 @@ async def start_command(
                 "running": len(pa.agents),
             }
 
-        conflict = await _check_issue_conflict(issue, pa)
-        if conflict:
-            return conflict
+        if issue:
+            conflict = await _check_issue_conflict(issue, pa)
+            if conflict:
+                return conflict
 
-        _evict_completed_for_issue(pa, issue)
+            _evict_completed_for_issue(pa, issue)
 
         cwd = pa.project_dir
         prompt = _resolve_command_prompt(command, args, cwd)
@@ -567,8 +573,9 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
 
-    # Finalize lifecycle phase
-    await _finalize_lifecycle_phase(run_id, exit_code, agent.last_result_cost or 0.0, agent.project_dir)
+    # Finalize lifecycle phase (only for issue-based runs)
+    if agent.issue:
+        await _finalize_lifecycle_phase(run_id, exit_code, agent.last_result_cost or 0.0, agent.project_dir)
 
     try:
         from sova.config.loader import load_config
@@ -577,13 +584,15 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         cfg = load_config(agent.project_dir)
         role_label = agent.role.split(":")[-1].replace("-", " ").title()
         project_name = agent.project_dir.name
+        issue_label = f"#{agent.issue}" if agent.issue else role_label
+        group_key = f"sova-{agent.issue or agent.role or 'run'}"
         if exit_code != 0:
             notify(
                 cfg.notification,
                 "SOVA",
                 f"{project_name} | Exit code {exit_code}",
-                subtitle=f"{role_label} failed #{agent.issue}",
-                group=f"sova-{agent.issue}",
+                subtitle=f"{role_label} failed {issue_label}",
+                group=group_key,
             )
         else:
             msg = project_name
@@ -593,8 +602,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 cfg.notification,
                 "SOVA",
                 msg,
-                subtitle=f"{role_label} finished #{agent.issue}",
-                group=f"sova-{agent.issue}",
+                subtitle=f"{role_label} finished {issue_label}",
+                group=group_key,
             )
     except Exception:
         log.debug("notify.failed", run_id=run_id, exc_info=True)

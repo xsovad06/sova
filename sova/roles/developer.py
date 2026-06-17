@@ -41,16 +41,17 @@ class DeveloperRole(AgentRole):
         return get_developer_steps()
 
     async def execute(self, ctx: ExecutionContext) -> RoleResult:
-        task = await ctx.adapter.get_task(ctx.issue_number)
+        if ctx.has_issue:
+            task = await ctx.adapter.get_task(ctx.issue_number)
 
-        if not self.validate_preconditions(task, force=ctx.force):
-            return RoleResult(
-                success=False,
-                summary=f"Issue #{ctx.issue_number} not ready for development",
-                error=f"Gate 3: issue must be in researched, in_progress, or in_review state "
-                f"(current: {task.state}). Run triage and research first, "
-                f"or use --force to bypass.",
-            )
+            if not self.validate_preconditions(task, force=ctx.force):
+                return RoleResult(
+                    success=False,
+                    summary=f"Issue #{ctx.issue_number} not ready for development",
+                    error=f"Gate 3: issue must be in researched, in_progress, or in_review state "
+                    f"(current: {task.state}). Run triage and research first, "
+                    f"or use --force to bypass.",
+                )
 
         # Address-review mode: respawned to fix reviewer findings.
         # Use pr_number (set by handoff) as primary signal -- task.state is
@@ -61,23 +62,24 @@ class DeveloperRole(AgentRole):
         return await self._execute_development(ctx)
 
     async def _execute_development(self, ctx: ExecutionContext) -> RoleResult:
-        log.info("developer.start", issue=ctx.issue_number)
+        log.info("developer.start", label=ctx.display_label)
 
-        await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_PROGRESS)
+        if ctx.has_issue:
+            await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_PROGRESS)
 
         steps = get_developer_steps()
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
         if workflow_result.success:
-            log.info("developer.done", issue=ctx.issue_number)
+            log.info("developer.done", label=ctx.display_label)
             return RoleResult(
                 success=True,
-                summary=f"Issue #{ctx.issue_number} developed, PR created, handed off to Reviewer",
+                summary=f"{ctx.display_label} developed, PR created, handed off to Reviewer",
                 output_state=TaskState.IN_REVIEW,
             )
 
-        log.error("developer.failed", issue=ctx.issue_number, error=workflow_result.error)
+        log.error("developer.failed", label=ctx.display_label, error=workflow_result.error)
         return RoleResult(
             success=False,
             summary=f"Development failed at step: {workflow_result.final_status}",
@@ -99,14 +101,14 @@ class DeveloperRole(AgentRole):
         workflow_result = await engine.run()
 
         if workflow_result.success:
-            log.info("developer.address_review.done", issue=ctx.issue_number)
+            log.info("developer.address_review.done", label=ctx.display_label)
             return RoleResult(
                 success=True,
                 summary=f"Review findings addressed for PR #{ctx.pr_number}, handed off to user",
                 output_state=TaskState.IN_REVIEW,
             )
 
-        log.error("developer.address_review.failed", issue=ctx.issue_number, error=workflow_result.error)
+        log.error("developer.address_review.failed", label=ctx.display_label, error=workflow_result.error)
         return RoleResult(
             success=False,
             summary=f"Address review failed at step: {workflow_result.final_status}",
@@ -134,7 +136,7 @@ class DeveloperRole(AgentRole):
             except Exception:
                 log.warning("developer.branch_discovery_failed", exc_info=True)
 
-        if ctx.worktree_dir is None:
+        if ctx.worktree_dir is None and ctx.has_issue:
             issue_num = ctx.issue_number.lstrip("#").strip()
             candidate = ctx.project_dir / ".claude" / "worktrees" / issue_num
             if candidate.exists():
