@@ -1552,6 +1552,7 @@ class TestDuplicateAgentPrevention:
             result = await start_agent("99")
 
         assert result["status"] == "started"
+        assert mock_spawn.call_args is not None, "spawn() was never called"
         # spawn is called with positional args: (prompt, cwd, ...)
         prompt_arg = mock_spawn.call_args[0][0] if mock_spawn.call_args[0] else ""
         assert "--run-id 7" in prompt_arg

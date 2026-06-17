@@ -457,7 +457,11 @@ async def start_command(
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         gh_env = await _resolve_project_gh_env(cwd)
-        process = await get_runtime().spawn(prompt, cwd, env=gh_env)
+        try:
+            process = await get_runtime().spawn(prompt, cwd, env=gh_env)
+        except Exception as exc:
+            log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
+            return {"error": f"Failed to spawn runtime: {exc}"}
         role = f"command:{command}"
         run_id = await _create_task_run(issue, role, cwd, pid=process.pid, pr_number=pr_number)
         if run_id is None:
