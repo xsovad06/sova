@@ -151,9 +151,7 @@ class ClaudeCodeRuntime(AgentRuntime):
         return None
 
     async def check_available(self) -> tuple[bool, str]:
-        return await _check_cli_available(
-            "claude", "https://docs.anthropic.com/en/docs/claude-code"
-        )
+        return await _check_cli_available("claude", "https://docs.anthropic.com/en/docs/claude-code")
 
 
 class AiderRuntime(AgentRuntime):
