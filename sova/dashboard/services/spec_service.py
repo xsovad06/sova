@@ -61,7 +61,7 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     result["created"] = created_match.group(1) if created_match else ""
 
     # Extract title from first heading
-    title_match = re.match(r"^#\s+(?:Spec:\s*)?(.+)$", text, re.MULTILINE)
+    title_match = re.match(r"^#\s+(?:Spec: )?(.+)$", text, re.MULTILINE)
     result["title"] = title_match.group(1).strip() if title_match else f"Spec for #{issue_number}"
 
     # Extract open questions
