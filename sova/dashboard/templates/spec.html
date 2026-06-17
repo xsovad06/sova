@@ -5,7 +5,7 @@
 
 <div class="flex items-center gap-3 mb-6">
   <a href="{{ prefix|default('') }}/agents" class="text-gray-500 hover:text-gray-300 transition-colors text-sm">&larr; Back to Agents</a>
-  <h2 class="text-2xl font-semibold">Spec Review: Issue #{{ issue_number }}</h2>
+  <h2 class="text-2xl font-semibold">Spec Review: Issue <span id="spec-issue-link">#{{ issue_number }}</span></h2>
   <span id="spec-status-badge" class="ml-auto px-3 py-1 text-xs rounded-full"></span>
 </div>
 
@@ -62,7 +62,29 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
+if (window.mermaid) {
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: 'transparent',
+      primaryColor: '#313244',
+      primaryTextColor: '#cdd6f4',
+      primaryBorderColor: '#45475a',
+      lineColor: '#585b70',
+      secondaryColor: '#1e1e2e',
+      tertiaryColor: '#181825',
+      noteBkgColor: '#313244',
+      noteTextColor: '#cdd6f4',
+      fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+    },
+  });
+}
+
 var _specData = null;
 var _issueNumber = '{{ issue_number }}';
 
@@ -94,36 +116,46 @@ function statusBadge(status) {
   el.textContent = status;
 }
 
+var _markedConfigured = false;
+function _ensureMarked() {
+  if (_markedConfigured) return;
+  if (!window.marked) return;
+  _markedConfigured = true;
+  marked.use({
+    gfm: true,
+    breaks: true,
+    renderer: {
+      heading: function(token) {
+        var text = this.parser.parseInline(token.tokens);
+        var tag = 'h' + token.depth;
+        var cls = token.depth === 1 ? 'text-xl font-bold mt-6 mb-3 text-gray-100'
+                : token.depth === 2 ? 'text-lg font-semibold mt-6 mb-3 text-gray-100 border-b border-gray-700/50 pb-2'
+                : 'text-base font-semibold mt-4 mb-2 text-gray-200';
+        return '<' + tag + ' class="' + cls + '">' + text + '</' + tag + '>';
+      },
+    },
+  });
+}
+
 function renderMarkdown(text) {
-  // Simple markdown rendering for spec content
-  var html = escapeHtml(text);
+  _ensureMarked();
+  if (!window.marked) return escapeHtml(text || '');
+  return marked.parse(text || '');
+}
 
-  // Headers
-  html = html.replace(/^### (.+)$/gm, '<h4 class="text-base font-semibold mt-4 mb-2 text-gray-200">$1</h4>');
-  html = html.replace(/^## (.+)$/gm, '<h3 class="text-lg font-semibold mt-6 mb-3 text-gray-100 border-b border-gray-700/50 pb-2">$1</h3>');
-  html = html.replace(/^# (.+)$/gm, '<h2 class="text-xl font-bold mt-6 mb-3 text-gray-100">$1</h2>');
-
-  // Bold and italic
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong class="text-gray-200">$1</strong>');
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-  // Code blocks
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="bg-surface rounded p-3 my-3 text-xs overflow-x-auto border border-gray-700/50"><code>$2</code></pre>');
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code class="bg-surface px-1.5 py-0.5 rounded text-accent text-xs">$1</code>');
-
-  // Lists
-  html = html.replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-gray-300">$1</li>');
-  html = html.replace(/^\d+\. (.+)$/gm, '<li class="ml-4 list-decimal text-gray-300">$1</li>');
-
-  // Paragraphs (double newline)
-  html = html.replace(/\n\n/g, '</p><p class="mb-3 text-gray-300">');
-
-  // Single newlines in context
-  html = html.replace(/\n/g, '<br>');
-
-  return '<p class="mb-3 text-gray-300">' + html + '</p>';
+function renderMermaidBlocks(containerId) {
+  var container = document.getElementById(containerId);
+  if (!container) return;
+  container.querySelectorAll('pre code.language-mermaid').forEach(function(el) {
+    var pre = el.parentElement;
+    var div = document.createElement('div');
+    div.className = 'mermaid';
+    div.textContent = el.textContent;
+    pre.replaceWith(div);
+  });
+  if (window.mermaid) {
+    try { mermaid.run({ querySelector: '#' + containerId + ' .mermaid' }); } catch (e) { /* ignore */ }
+  }
 }
 
 function renderQuestions(questions) {
@@ -136,11 +168,12 @@ function renderQuestions(questions) {
   }
 
   section.classList.remove('hidden');
+  _ensureMarked();
   var html = '';
   for (var i = 0; i < questions.length; i++) {
     var q = questions[i];
     html += '<div class="bg-surface rounded-lg p-4 border border-gray-700/50">';
-    html += '<p class="text-sm text-gray-200 mb-2 font-medium">' + escapeHtml(q.text) + '</p>';
+    html += '<p class="text-sm text-gray-200 mb-2 font-medium spec-question-text">' + (window.marked ? marked.parseInline(q.text || '') : escapeHtml(q.text || '')) + '</p>';
     html += '<textarea id="answer-' + q.id + '" rows="2" placeholder="Enter your answer..." class="w-full bg-surface-card border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-accent focus:outline-none resize-y">' + escapeHtml(q.answer || '') + '</textarea>';
     html += '</div>';
   }
@@ -172,6 +205,7 @@ function renderSpec(data) {
 
   // Content
   document.getElementById('spec-content').innerHTML = renderMarkdown(data.raw_content || '');
+  renderMermaidBlocks('spec-content');
 
   // Show actions only for draft specs
   var actionsEl = document.getElementById('spec-actions');
@@ -263,6 +297,8 @@ async function loadSpec() {
       document.getElementById('spec-content').innerHTML = '<p class="text-gray-500">' + escapeHtml(data.error || data.detail || 'Spec not found') + '</p>';
       return;
     }
+    var el = document.getElementById('spec-issue-link');
+    if (el) el.innerHTML = issueLink(_issueNumber);
     renderSpec(data);
   } catch (e) {
     document.getElementById('spec-content').innerHTML = '<p class="text-accent-red text-sm">Failed to load spec: ' + escapeHtml(e.message) + '</p>';
