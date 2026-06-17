@@ -1,7 +1,7 @@
 """Agent process lifecycle -- start/stop/wait, status queries, pipeline progress.
 
 Manages concurrent agent processes per project.
-Uses sova.ipc.control.AgentProcess under the hood.
+Uses sova.ipc.runtime.AgentRuntime under the hood.
 Delegates DB persistence to agent_db and pool management to agent_pool.
 """
 
@@ -31,7 +31,7 @@ from sova.dashboard.services.agent_pool import (
     _prune_completed,
 )
 from sova.dashboard.services.output_service import OutputWriter
-from sova.ipc.control import AgentProcess
+from sova.ipc.runtime import get_runtime
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -304,7 +304,7 @@ async def start_agent(
 
         gh_env = await _resolve_project_gh_env(cwd)
         try:
-            process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
+            process = await get_runtime().spawn(prompt, cwd, env=gh_env)
         except Exception:
             await _finalize_orphaned_run(run_id, cwd)
             return {"error": "Failed to spawn agent process"}
@@ -457,7 +457,7 @@ async def start_command(
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         gh_env = await _resolve_project_gh_env(cwd)
-        process = await AgentProcess.spawn(prompt=prompt, cwd=cwd, env=gh_env)
+        process = await get_runtime().spawn(prompt, cwd, env=gh_env)
         role = f"command:{command}"
         run_id = await _create_task_run(issue, role, cwd, pid=process.pid, pr_number=pr_number)
         if run_id is None:

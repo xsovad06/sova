@@ -1379,7 +1379,11 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=2),
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1414,7 +1418,11 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=3) as mock_create,
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1451,7 +1459,11 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=4),
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1486,7 +1498,11 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1519,11 +1535,12 @@ class TestDuplicateAgentPrevention:
         mock_process.stderr_lines = _empty_async_iter
         mock_process.wait = AsyncMock(return_value=0)
 
+        mock_spawn = AsyncMock(return_value=mock_process)
+        mock_rt = MagicMock(spawn=mock_spawn)
+
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch(
-                "sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process
-            ) as mock_spawn,
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -1535,12 +1552,13 @@ class TestDuplicateAgentPrevention:
             result = await start_agent("99")
 
         assert result["status"] == "started"
-        prompt_arg = mock_spawn.call_args.kwargs.get("prompt") or mock_spawn.call_args[1].get("prompt", "")
+        # spawn is called with positional args: (prompt, cwd, ...)
+        prompt_arg = mock_spawn.call_args[0][0] if mock_spawn.call_args[0] else ""
         assert "--run-id 7" in prompt_arg
 
     async def test_start_agent_cleans_up_on_spawn_failure(self) -> None:
         """If process spawn fails, the pre-created TaskRun should be marked failed."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import ProjectAgents, start_agent
@@ -1549,7 +1567,11 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, side_effect=OSError("spawn failed")),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(side_effect=OSError("spawn failed"))),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=8),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_finalize_orphaned_run", new_callable=AsyncMock) as mock_orphan,
@@ -3392,7 +3414,11 @@ class TestMergeAwareFinalization:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
-            patch("sova.ipc.control.AgentProcess.spawn", new_callable=AsyncMock, return_value=mock_process),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99) as mock_create,
             patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),

@@ -106,9 +106,29 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
     ),
     # -- Agent --
+    SettingMeta(
+        "agent.runtime",
+        "Agent runtime",
+        "Coding agent backend to use (claude-code, aider)",
+        "agent",
+    ),
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
     SettingMeta(
         "agent.max_budget", "Max budget (USD)", "Maximum spend per agent run before auto-abort", "agent", "number"
+    ),
+    SettingMeta(
+        "agent.max_issue_budget",
+        "Max issue budget (USD)",
+        "Maximum cumulative spend across all runs for a single issue",
+        "agent",
+        "number",
+    ),
+    SettingMeta(
+        "agent.step_timeout",
+        "Step timeout (s)",
+        "Maximum seconds per pipeline step before killing the agent (0 = no limit)",
+        "agent",
+        "number",
     ),
     SettingMeta(
         "agent.skip_manual_test",
