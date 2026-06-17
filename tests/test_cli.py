@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -396,6 +396,65 @@ class TestDoctorHelpers:
 
         checks = [("test", False, "warn", False)]
         _render_results(checks)
+
+    async def test_check_agent_runtime_available(self) -> None:
+        from sova.cli.commands.doctor import _check_agent_runtime
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime") as mock_create,
+        ):
+            mock_cfg.return_value.agent.runtime = "claude-code"
+            mock_rt = MagicMock()
+            mock_rt.check_available = AsyncMock(return_value=(True, "1.0.0"))
+            mock_create.return_value = mock_rt
+
+            checks = await _check_agent_runtime(Path("/tmp"))
+
+        assert len(checks) == 1
+        assert checks[0][1] is True
+        assert "claude-code" in checks[0][2]
+
+    async def test_check_agent_runtime_not_available(self) -> None:
+        from sova.cli.commands.doctor import _check_agent_runtime
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime") as mock_create,
+        ):
+            mock_cfg.return_value.agent.runtime = "aider"
+            mock_rt = MagicMock()
+            mock_rt.check_available = AsyncMock(return_value=(False, "not found"))
+            mock_create.return_value = mock_rt
+
+            checks = await _check_agent_runtime(Path("/tmp"))
+
+        assert len(checks) == 1
+        assert checks[0][1] is False
+
+    async def test_check_agent_runtime_unknown_type(self) -> None:
+        from sova.cli.commands.doctor import _check_agent_runtime
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.ipc.runtime.create_runtime", side_effect=ValueError("Unknown")),
+        ):
+            mock_cfg.return_value.agent.runtime = "bogus"
+
+            checks = await _check_agent_runtime(Path("/tmp"))
+
+        assert len(checks) == 1
+        assert checks[0][1] is False
+        assert "Unknown" in checks[0][2]
+
+    async def test_check_agent_runtime_generic_exception(self) -> None:
+        from sova.cli.commands.doctor import _check_agent_runtime
+
+        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no config")):
+            checks = await _check_agent_runtime(Path("/tmp"))
+
+        assert len(checks) == 1
+        assert checks[0][1] is False
 
 
 # ---------------------------------------------------------------------------

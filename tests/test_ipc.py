@@ -1019,3 +1019,82 @@ class TestAiderRuntime:
 
         assert ok is False
         assert "not found" in detail
+
+    async def test_spawn_with_budget_logs_warning(self) -> None:
+        from decimal import Decimal
+
+        from sova.ipc.runtime import AiderRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 99
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        rt = AiderRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
+            ap = await rt.spawn("fix bug", Path("/tmp"), max_budget_usd=Decimal("5.00"))
+
+        assert ap.pid == 99
+
+
+class TestCheckCliAvailable:
+    async def test_version_check_exception(self) -> None:
+        from sova.ipc.runtime import _check_cli_available
+
+        with (
+            patch("sova.ipc.runtime.shutil.which", return_value="/usr/bin/tool"),
+            patch("sova.ipc.runtime.asyncio.create_subprocess_exec", side_effect=OSError("boom")),
+        ):
+            ok, detail = await _check_cli_available("tool", "install hint")
+
+        assert ok is False
+        assert "error checking version" in detail
+
+
+class TestClaudeCodeParseEdgeCases:
+    def test_parse_output_assistant_string_content(self) -> None:
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({"type": "assistant", "content": "plain string"})
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "plain string"
+
+    def test_parse_output_assistant_other_content_type(self) -> None:
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({"type": "assistant", "content": 42})
+        event = rt.parse_output(line)
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "42"
+
+    def test_parse_output_unknown_event_type(self) -> None:
+        import json
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        rt = ClaudeCodeRuntime()
+        line = json.dumps({"type": "system", "data": "info"})
+        assert rt.parse_output(line) is None
+
+    def test_get_runtime_default(self) -> None:
+        import sova.ipc.runtime as rt_mod
+        from sova.ipc.runtime import ClaudeCodeRuntime, get_runtime
+
+        # Force the default path by clearing the singleton
+        original = rt_mod._runtime
+        try:
+            rt_mod._runtime = None
+            result = get_runtime()
+            assert isinstance(result, ClaudeCodeRuntime)
+        finally:
+            rt_mod._runtime = original
