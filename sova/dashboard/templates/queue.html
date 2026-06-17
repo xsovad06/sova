@@ -225,8 +225,8 @@ function renderQueueCard(item) {
     '<div class="flex-1 min-w-0">' +
       '<div class="flex items-center gap-2">' +
         (item.url
-          ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener" class="text-sm font-medium text-accent hover:underline whitespace-nowrap">' + issueDisplay + '</a>'
-          : '<span class="text-sm font-medium whitespace-nowrap">' + issueDisplay + '</span>') +
+          ? '<a href="' + escapeHtml(item.url) + '" target="_blank" rel="noopener" class="text-sm font-medium text-accent hover:underline whitespace-nowrap" onclick="event.stopPropagation()">' + issueDisplay + '</a>'
+          : '<span class="text-sm font-medium whitespace-nowrap">' + (item.jira_key ? issueDisplay : issueLink(item.issue)) + '</span>') +
         typeBadge +
         '<span class="text-sm text-gray-300 truncate">' + escapeHtml(item.title) + '</span>' +
       '</div>' +

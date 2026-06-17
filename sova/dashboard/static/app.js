@@ -449,7 +449,7 @@ document.addEventListener('click', function(e) {
 });
 
 /* ============================================================
-   7. PR LINK HELPER
+   7. PR & ISSUE LINK HELPERS
    ============================================================ */
 
 window.SOVA_GITHUB_REPO = null;
@@ -462,12 +462,24 @@ function _initGithubRepo() {
 
 function prLink(prNumber) {
   if (!prNumber) return '--';
+  var safe = escapeHtml(String(prNumber));
   var repo = window.SOVA_GITHUB_REPO;
   if (repo) {
-    return '<a href="https://github.com/' + escapeHtml(repo) + '/pull/' + prNumber + '" target="_blank" rel="noopener" ' +
-      'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + prNumber + '</a>';
+    return '<a href="https://github.com/' + escapeHtml(repo) + '/pull/' + safe + '" target="_blank" rel="noopener" ' +
+      'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + safe + '</a>';
   }
-  return '#' + prNumber;
+  return '#' + safe;
+}
+
+function issueLink(issueNumber) {
+  if (!issueNumber) return '--';
+  var safe = escapeHtml(String(issueNumber));
+  var repo = window.SOVA_GITHUB_REPO;
+  if (repo) {
+    return '<a href="https://github.com/' + escapeHtml(repo) + '/issues/' + safe + '" target="_blank" rel="noopener" ' +
+      'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + safe + '</a>';
+  }
+  return '#' + safe;
 }
 
 /* ============================================================
@@ -795,7 +807,7 @@ function renderRunsTable(runs, targetId) {
     '<tbody>' + runs.map(function(r) {
       var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/runs/' + r.id + '\'">' +
-        '<td class="p-3 text-accent">#' + escapeHtml(r.issue_number) + '</td>' +
+        '<td class="p-3">' + issueLink(r.issue_number) + '</td>' +
         '<td class="p-3 text-gray-300">' + escapeHtml(r.role) + '</td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(r.status) + '"></span><span class="' + statusColor(r.status) + '">' + escapeHtml(r.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + escapeHtml(r.current_step || '--') + '</td>' +

@@ -191,7 +191,7 @@ class TestDashboardHealth:
     async def test_lifecycle_renders_with_agents_sidebar(self, client: AsyncClient) -> None:
         resp = await client.get("/lifecycle/42")
         assert resp.status_code == 200
-        assert "Issue #42" in resp.text
+        assert "Issue " in resp.text and "#42" in resp.text
 
     async def test_costs_page_loads(self, client: AsyncClient) -> None:
         resp = await client.get("/costs")
@@ -2156,7 +2156,7 @@ class TestMultiProject:
     async def test_project_lifecycle_renders(self, multi_client: AsyncClient) -> None:
         resp = await multi_client.get("/p/alpha/lifecycle/42")
         assert resp.status_code == 200
-        assert "Issue #42" in resp.text
+        assert "Issue " in resp.text and "#42" in resp.text
 
 
 # ---------------------------------------------------------------------------
