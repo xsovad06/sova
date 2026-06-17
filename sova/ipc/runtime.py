@@ -167,9 +167,7 @@ class ClaudeCodeRuntime(AgentRuntime):
         if event_type == "assistant":
             content = data.get("content", "")
             if isinstance(content, list):
-                parts = [
-                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-                ]
+                parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
                 text = "".join(parts)
             elif isinstance(content, str):
                 text = content
