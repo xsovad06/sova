@@ -1,9 +1,8 @@
 """Step 7b: Validate -- run project pre-push hooks before pushing.
 
-Discovers the project's pre-push hook (via core.hooksPath or .git/hooks)
-and runs it. If it fails, invokes Claude to fix the issues and re-commits.
-This prevents the push step from failing due to hook violations that the
-developer agent could have fixed.
+Discovers the project's pre-push hook (via core.hooksPath, .githooks/
+auto-detect, or .git/hooks fallback) and runs it. If it fails, invokes
+Claude to fix the issues and re-commits.
 """
 
 from __future__ import annotations
@@ -22,15 +21,31 @@ _MAX_FIX_ATTEMPTS = 2
 
 
 async def find_pre_push_hook(cwd: Path | str | None) -> str | None:
-    """Locate the pre-push hook script for the project."""
+    """Locate the pre-push hook script for the project.
+
+    Auto-configures core.hooksPath when .githooks/pre-push exists but the
+    config is missing, preventing silent bypass of invariant checks.
+    """
     result = await run("git", "config", "--get", "core.hooksPath", cwd=cwd)
     if result.success and result.stdout.strip():
         hooks_dir = result.stdout.strip()
     else:
-        git_dir = await run("git", "rev-parse", "--git-dir", cwd=cwd)
-        if not git_dir.success:
+        toplevel = await run("git", "rev-parse", "--show-toplevel", cwd=cwd)
+        if toplevel.success:
+            githooks_hook = Path(toplevel.stdout.strip()) / ".githooks" / "pre-push"
+            if githooks_hook.exists():
+                log.info("step.validate.auto_configure_hooks")
+                config_result = await run("git", "config", "core.hooksPath", ".githooks", cwd=cwd)
+                if not config_result.success:
+                    log.warning("step.validate.auto_configure_failed", error=config_result.stderr)
+                hooks_dir = ".githooks"
+            else:
+                git_dir = await run("git", "rev-parse", "--git-dir", cwd=cwd)
+                if not git_dir.success:
+                    return None
+                hooks_dir = f"{git_dir.stdout.strip()}/hooks"
+        else:
             return None
-        hooks_dir = f"{git_dir.stdout.strip()}/hooks"
 
     hook_path = f"{hooks_dir}/pre-push"
     test_result = await run("test", "-x", hook_path, cwd=cwd)

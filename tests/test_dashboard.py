@@ -2757,7 +2757,6 @@ class TestLogsAPI:
         assert data["total"] == 0
 
     async def test_logs_with_data(self, client: AsyncClient, tmp_path, monkeypatch) -> None:
-
         # Write a test log file
         log_dir = tmp_path / ".claude"
         log_dir.mkdir()
@@ -5333,7 +5332,6 @@ class TestGetSynthesizedHandoff:
         assert result is None
 
     async def test_returns_none_on_exception(self, monkeypatch) -> None:
-
         from sova.dashboard.services import agent_recovery
 
         monkeypatch.setattr("sova.db.session.get_session", lambda: (_ for _ in ()).throw(RuntimeError("db down")))

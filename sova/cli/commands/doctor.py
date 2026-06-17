@@ -124,12 +124,24 @@ def _check_terminal_notifier() -> list[_Check]:
 
 
 async def _check_git_hooks(project_dir: Path) -> _Check:
-    """Check git hooks configuration."""
+    """Check git hooks configuration.
+
+    Required when .githooks/ exists -- invariants are silently bypassed otherwise.
+    """
+    githooks_dir = project_dir / ".githooks"
+    if not githooks_dir.is_dir():
+        return ("git hooks", True, "no .githooks/ directory (not applicable)", False)
+
     hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
     hooks_path = hooks_result.stdout.strip() if hooks_result.success else ""
     hooks_ok = hooks_path == ".githooks"
-    hooks_detail = hooks_path if hooks_ok else "not set -- run: make setup"
-    return ("git hooks", hooks_ok, hooks_detail, False)
+    if hooks_ok:
+        hooks_detail = hooks_path
+    elif hooks_path:
+        hooks_detail = f"set to '{hooks_path}' (expected '.githooks') -- run: git config core.hooksPath .githooks"
+    else:
+        hooks_detail = "not set -- run: git config core.hooksPath .githooks"
+    return ("git hooks", hooks_ok, hooks_detail, True)
 
 
 async def _check_sova_config(project_dir: Path) -> list[_Check]:
