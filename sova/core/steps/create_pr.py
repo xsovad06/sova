@@ -155,9 +155,13 @@ class CreatePRStep(BaseStep):
         else:
             middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
 
-        prompt = _PR_BODY_PROMPT_BASE + middle + _PR_BODY_CONTEXT.format(
-            commit_log=commit_log,
-            diff_stat=diff_stat,
+        prompt = (
+            _PR_BODY_PROMPT_BASE
+            + middle
+            + _PR_BODY_CONTEXT.format(
+                commit_log=commit_log,
+                diff_stat=diff_stat,
+            )
         )
 
         try:
