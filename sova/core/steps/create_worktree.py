@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import worktree
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.worktree")
+
+
+def _sanitize_label(label: str) -> str:
+    """Sanitize a label for safe use in branch names and filesystem paths."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "-", label).strip("-") or "run"
 
 
 class WorktreeStep(BaseStep):
@@ -18,9 +25,11 @@ class WorktreeStep(BaseStep):
             if ctx.has_issue:
                 ctx.branch_name = f"feat/issue-{ctx.issue_number}"
             else:
-                ctx.branch_name = f"feat/{ctx.run_label or 'run'}"
+                safe_label = _sanitize_label(ctx.run_label) if ctx.run_label else "run"
+                ctx.branch_name = f"feat/{safe_label}"
 
-        worktree_id = ctx.issue_number or ctx.run_label or f"run-{ctx.task_run_id or 'tmp'}"
+        raw_id = ctx.issue_number or ctx.run_label or f"run-{ctx.task_run_id or 'tmp'}"
+        worktree_id = _sanitize_label(raw_id) if not ctx.issue_number else raw_id
         log.info("step.worktree", label=ctx.display_label, branch=ctx.branch_name)
 
         try:

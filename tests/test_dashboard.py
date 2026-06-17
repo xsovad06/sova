@@ -2468,9 +2468,8 @@ class TestAgentsAPI:
     async def test_start_agent_allows_empty_issue_with_role(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
 
-        with patch.object(
-            __import__("sova.dashboard.services.control_service", fromlist=["start_agent"]),
-            "start_agent",
+        with patch(
+            "sova.dashboard.services.control_service.start_agent",
             new_callable=AsyncMock,
             return_value={"run_id": 1, "status": "started"},
         ):
@@ -2495,9 +2494,8 @@ class TestAgentsAPI:
     async def test_start_agent_accepts_custom_role(self, client: AsyncClient) -> None:
         from unittest.mock import AsyncMock, patch
 
-        with patch.object(
-            __import__("sova.dashboard.services.control_service", fromlist=["start_agent"]),
-            "start_agent",
+        with patch(
+            "sova.dashboard.services.control_service.start_agent",
             new_callable=AsyncMock,
             return_value={"run_id": 1, "status": "started"},
         ):

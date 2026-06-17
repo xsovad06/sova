@@ -386,6 +386,7 @@ async def test_query_issueless_runs() -> None:
         session.add(TaskRun(issue_number=None, run_label="plan-a", role="planner", status="done"))
         session.add(TaskRun(issue_number="42", role="developer", status="done"))
         session.add(TaskRun(issue_number=None, run_label="plan-b", role="planner", status="running"))
+        session.add(TaskRun(issue_number="", run_label="plan-c", role="planner", status="done"))
         await session.commit()
 
         # Query runs without a real issue number (None or empty)
@@ -393,6 +394,6 @@ async def test_query_issueless_runs() -> None:
             select(TaskRun).where(TaskRun.issue_number.is_(None) | (TaskRun.issue_number == ""))
         )
         issueless = result.scalars().all()
-        assert len(issueless) == 2
+        assert len(issueless) == 3
         labels = {r.run_label for r in issueless}
-        assert labels == {"plan-a", "plan-b"}
+        assert labels == {"plan-a", "plan-b", "plan-c"}

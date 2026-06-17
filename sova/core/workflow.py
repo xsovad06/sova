@@ -398,7 +398,7 @@ class WorkflowEngine:
                         cost_record = CostRecord(
                             task_run_id=self._task_run_id,
                             phase=record.step_name,
-                            issue=self._ctx.issue_number or "",
+                            issue=self._ctx.issue_number or self._ctx.run_label or "",
                             model="claude",
                             cost_usd=result.cost_usd,
                             duration_ms=elapsed_ms,
