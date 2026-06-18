@@ -42,12 +42,20 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
         "base_branch": cfg.base_branch,
         "github_repo": cfg.github_repo,
         "github_user": cfg.github_user,
+        "project_name": _derive_project_name(cfg),
     }
 
     # Scopes: derived from commit config or default
     variables["scopes"] = _derive_scopes(cfg)
 
     return variables
+
+
+def _derive_project_name(cfg: ProjectConfig) -> str:
+    """Derive a human-readable project name from config."""
+    if cfg.github_repo and "/" in cfg.github_repo:
+        return cfg.github_repo.split("/")[-1]
+    return cfg.github_repo or "project"
 
 
 def _derive_scopes(cfg: ProjectConfig) -> str:

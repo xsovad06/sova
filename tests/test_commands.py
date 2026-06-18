@@ -505,3 +505,150 @@ class TestCommandsCLI:
         runner = CliRunner()
         result = runner.invoke(app, ["commands", "update", "--help"])
         assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Guidelines distribution
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def guidelines_dir(tmp_path: Path) -> Path:
+    """Create a fake guidelines directory with sample templates."""
+    guide_dir = tmp_path / "guidelines"
+    guide_dir.mkdir()
+
+    (guide_dir / "security.md").write_text(
+        "# Security Guidelines for {{ project_name }}\n\n"
+        "Run `{{ test_cmd }}` to verify.\n"
+        "Base branch: {{ base_branch }}\n"
+    )
+
+    (guide_dir / "testing.md").write_text("# Testing Guidelines\n\nUse `{{ lint_cmd }}` for linting.\n")
+
+    return guide_dir
+
+
+@pytest.fixture()
+def rules_dir(tmp_path: Path) -> Path:
+    """Create a fake target project rules directory."""
+    rd = tmp_path / "target" / ".claude" / "rules"
+    rd.mkdir(parents=True)
+    return rd
+
+
+class TestGuidelines:
+    def test_install_guidelines(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """install_guidelines() copies and renders guideline templates."""
+        from sova.commands.distribution import install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        result = install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        assert result.installed == 2
+        assert (rules_dir / "security.md").exists()
+        assert (rules_dir / "testing.md").exists()
+
+    def test_install_guidelines_renders_variables(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """Template variables in guidelines are replaced with config values."""
+        from sova.commands.distribution import install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/myapp",
+            test_cmd="pytest",
+            lint_cmd="ruff check .",
+            base_branch="develop",
+        )
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        content = (rules_dir / "security.md").read_text()
+        assert "myapp" in content
+        assert "pytest" in content
+        assert "develop" in content
+        assert "{{ project_name }}" not in content
+        assert "{{ test_cmd }}" not in content
+
+    def test_install_guidelines_creates_manifest(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """install_guidelines() creates a manifest in the rules directory."""
+        from sova.commands.distribution import install_guidelines
+        from sova.commands.manifest import read_manifest
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        manifest = read_manifest(rules_dir)
+        assert manifest is not None
+        assert "security.md" in manifest.commands
+        assert "testing.md" in manifest.commands
+
+    def test_update_guidelines_incremental(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """update_guidelines() only updates changed guidelines."""
+        from sova.commands.distribution import install_guidelines, update_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        # Update without changes
+        result = update_guidelines(guidelines_dir, rules_dir, cfg)
+        assert result.updated == 0
+        assert result.skipped == 2
+
+        # Modify source
+        (guidelines_dir / "security.md").write_text("# Updated security guide for {{ project_name }}\n")
+        result = update_guidelines(guidelines_dir, rules_dir, cfg)
+        assert result.updated == 1
+        assert result.skipped == 1
+
+    def test_update_guidelines_detects_conflicts(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """update_guidelines() detects user-modified guidelines."""
+        from sova.commands.distribution import install_guidelines, update_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        # User modifies installed file AND source changes
+        (rules_dir / "security.md").write_text("# My custom security guide\n")
+        (guidelines_dir / "security.md").write_text("# New upstream version for {{ project_name }}\n")
+
+        result = update_guidelines(guidelines_dir, rules_dir, cfg)
+        assert "security.md" in result.conflicts
+
+    def test_install_guidelines_empty_dir(self, tmp_path: Path, rules_dir: Path) -> None:
+        """install_guidelines() handles missing guidelines directory gracefully."""
+        from sova.commands.distribution import install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        result = install_guidelines(tmp_path / "nonexistent", rules_dir, cfg)
+        assert result.installed == 0
+
+    def test_get_guidelines_dir(self) -> None:
+        """get_guidelines_dir() returns the repo's guidelines/ directory."""
+        from sova.commands.catalog import get_guidelines_dir
+
+        guidelines_dir = get_guidelines_dir()
+        assert guidelines_dir.name == "guidelines"
+        assert guidelines_dir.parent.name == "sova"
+
+    def test_build_variables_includes_project_name(self) -> None:
+        """build_variables() includes project_name derived from github_repo."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="myorg/cool-project", test_cmd="pytest", lint_cmd="ruff")
+        variables = build_variables(cfg)
+        assert variables["project_name"] == "cool-project"
+
+    def test_build_variables_project_name_fallback(self) -> None:
+        """build_variables() uses github_repo as-is when no slash present."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="", test_cmd="pytest", lint_cmd="ruff")
+        variables = build_variables(cfg)
+        assert variables["project_name"] == "project"

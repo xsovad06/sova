@@ -213,6 +213,96 @@ def diff_commands(
     return result
 
 
+def install_guidelines(
+    guidelines_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> InstallResult:
+    """Install guideline templates into a target project's rules directory.
+
+    Renders template variables, writes files, creates a separate manifest
+    in the target directory for conflict-aware updates.
+    """
+    variables = build_variables(cfg)
+    result = InstallResult()
+    hashes: dict[str, str] = {}
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if not guidelines_dir.is_dir():
+        return result
+
+    for path in sorted(guidelines_dir.glob("*.md")):
+        content = path.read_text(encoding="utf-8")
+        rendered = render_command(content, variables)
+        target_path = target_dir / path.name
+
+        target_path.write_text(rendered, encoding="utf-8")
+        hashes[path.name] = file_hash(rendered)
+        result.installed += 1
+
+    create_manifest(target_dir, hashes)
+    log.info("guidelines.installed", count=result.installed)
+
+    return result
+
+
+def update_guidelines(
+    guidelines_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+    *,
+    force: bool = False,
+) -> UpdateResult:
+    """Update installed guidelines incrementally.
+
+    Only writes guidelines whose canonical source has changed.
+    Detects conflicts where the user has modified a managed guideline.
+    """
+    variables = build_variables(cfg)
+    manifest = read_manifest(target_dir)
+    result = UpdateResult()
+
+    if manifest is None:
+        install_result = install_guidelines(guidelines_dir, target_dir, cfg)
+        result.updated = install_result.installed
+        return result
+
+    if not guidelines_dir.is_dir():
+        return result
+
+    for path in sorted(guidelines_dir.glob("*.md")):
+        filename = path.name
+        content = path.read_text(encoding="utf-8")
+        rendered = render_command(content, variables)
+        new_hash = file_hash(rendered)
+
+        target_path = target_dir / filename
+        manifest_entry = manifest.commands.get(filename)
+
+        if manifest_entry is None:
+            target_path.write_text(rendered, encoding="utf-8")
+            update_manifest(target_dir, filename, new_hash)
+            result.updated += 1
+            continue
+
+        if manifest_entry.hash == new_hash:
+            result.skipped += 1
+            continue
+
+        if target_path.exists() and not force:
+            installed_hash = file_hash(target_path.read_text(encoding="utf-8"))
+            if installed_hash != manifest_entry.hash:
+                result.conflicts.append(filename)
+                continue
+
+        target_path.write_text(rendered, encoding="utf-8")
+        update_manifest(target_dir, filename, new_hash)
+        result.updated += 1
+
+    return result
+
+
 def list_commands(target_dir: Path) -> ListResult:
     """List all commands in a target directory, grouped by managed vs local."""
     manifest = read_manifest(target_dir)

@@ -60,15 +60,20 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     console.print("[green]Database initialized.[/green]")
 
     # Install/update commands
-    from sova.commands.catalog import get_canonical_dir
+    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import install_commands as install_cmds
+    from sova.commands.distribution import install_guidelines as install_guides
     from sova.commands.distribution import update_commands as update_cmds
+    from sova.commands.distribution import update_guidelines as update_guides
     from sova.config.loader import load_config
 
     cfg = load_config(project_dir)
     canonical_dir = get_canonical_dir()
+    guidelines_dir = get_guidelines_dir()
     commands_dir = claude_dir / "commands"
     commands_dir.mkdir(exist_ok=True)
+    rules_dir = claude_dir / "rules"
+    rules_dir.mkdir(exist_ok=True)
 
     if update:
         cmd_result = update_cmds(canonical_dir, commands_dir, cfg)
@@ -76,11 +81,19 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         if cmd_result.conflicts:
             for name in cmd_result.conflicts:
                 console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+        guide_result = update_guides(guidelines_dir, rules_dir, cfg)
+        console.print(f"[green]Guidelines updated: {guide_result.updated}, unchanged: {guide_result.skipped}[/green]")
+        if guide_result.conflicts:
+            for name in guide_result.conflicts:
+                console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
         console.print("[green]Quick sync complete.[/green]")
         return
 
     cmd_result = install_cmds(canonical_dir, commands_dir, cfg)
     console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
+
+    guide_result = install_guides(guidelines_dir, rules_dir, cfg)
+    console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
 
     # Create agent memory directory
     memory_dir = claude_dir / "agent-memory"

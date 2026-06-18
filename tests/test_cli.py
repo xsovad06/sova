@@ -240,10 +240,13 @@ class TestProjectCommands:
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
         ):
             mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_install_guides.return_value = MagicMock(installed=0)
             mock_run.side_effect = [
                 MagicMock(success=False, stdout=""),  # git config --get
                 MagicMock(success=True),  # git config set
@@ -262,10 +265,13 @@ class TestProjectCommands:
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
         ):
             mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_install_guides.return_value = MagicMock(installed=0)
             mock_run.return_value = MagicMock(success=True, stdout=".githooks\n")
             await _install(path=tmp_path, no_dashboard=True, update=False)
 
