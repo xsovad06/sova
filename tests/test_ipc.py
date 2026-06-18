@@ -957,7 +957,7 @@ class TestClaudeCodeRuntime:
         assert args[budget_idx + 1] == "5.00"
 
     async def test_spawn_prepends_headless_preamble(self, tmp_path: Path) -> None:
-        from sova.ipc.runtime import ClaudeCodeRuntime, _HEADLESS_PREAMBLE
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE, ClaudeCodeRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 102
