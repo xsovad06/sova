@@ -23,6 +23,18 @@
   </div>
 </div>
 
+<!-- PR Tracker -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50 cursor-pointer select-none" onclick="togglePrTracker()">
+    <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
+    <span id="pr-tracker-count" class="text-xs text-gray-500"></span>
+    <svg id="pr-tracker-chevron" class="ml-auto w-4 h-4 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+  </div>
+  <div id="pr-tracker-list" class="divide-y divide-gray-700/30">
+    <p class="text-gray-500 text-sm py-4 text-center">Loading PRs...</p>
+  </div>
+</div>
+
 <!-- Hidden inputs for runCommand/startAgent backward compat -->
 <input type="hidden" id="agent-issue" value="">
 <input type="hidden" id="agent-issue-number" value="">
@@ -232,11 +244,20 @@ function renderTaskCard(t) {
     ? '<span class="w-1.5 h-1.5 rounded-full bg-accent-red shrink-0" data-tooltip="Last run failed"></span>'
     : '';
 
+  var prBadge = '';
+  var linkedPr = getPrForIssue(t.issue);
+  if (linkedPr) {
+    var prStateClass = _prStateColors[linkedPr.computed_state] || 'bg-gray-600/30 text-gray-400';
+    prBadge = '<span class="text-xs px-1.5 py-0.5 rounded ' + prStateClass + ' whitespace-nowrap shrink-0">' +
+      'PR #' + linkedPr.number + ' ' + escapeHtml(linkedPr.state_label) + '</span>';
+  }
+
   return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
     pDot +
     '<span class="text-xs font-medium shrink-0">' + (t.jira_key ? escapeHtml(t.jira_key) : issueLink(t.issue)) + '</span>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(t.title) + '</span>' +
     failedDot +
+    prBadge +
     stateTag(t.state) +
     '<div class="w-20 flex justify-end">' + actionBtn + '</div>' +
     '<button onclick="toggleCardMenu(event, \'' + escapeHtml(t.issue) + '\')" ' +
@@ -1125,11 +1146,113 @@ function renderHistoryTable(tasks, targetId, showError) {
     '</tbody></table></div>';
 }
 
+// -- PR Tracker --
+
+window._prTrackerData = [];
+var _prTrackerCollapsed = localStorage.getItem('sova-pr-tracker-collapsed') === 'true';
+
+function togglePrTracker() {
+  _prTrackerCollapsed = !_prTrackerCollapsed;
+  localStorage.setItem('sova-pr-tracker-collapsed', _prTrackerCollapsed);
+  var list = document.getElementById('pr-tracker-list');
+  var chevron = document.getElementById('pr-tracker-chevron');
+  list.classList.toggle('hidden', _prTrackerCollapsed);
+  chevron.style.transform = _prTrackerCollapsed ? 'rotate(-90deg)' : '';
+}
+
+var _prStateColors = {
+  draft: 'bg-gray-600/30 text-gray-400',
+  ci_running: 'bg-accent-yellow/20 text-accent-yellow',
+  ci_failed: 'bg-accent-red/20 text-accent-red',
+  changes_requested: 'bg-accent-peach/20 text-accent-peach',
+  approved_ci_green: 'bg-accent-green/30 text-accent-green',
+  approved: 'bg-accent-green/20 text-accent-green',
+  awaiting_review: 'bg-accent-blue/20 text-accent-blue',
+};
+
+var _prActions = {
+  awaiting_review: { text: 'Review', command: 'review-pr', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
+  changes_requested: { text: 'Address PR', command: 'address-pr', cls: 'bg-accent-peach/20 text-accent-peach hover:bg-accent-peach/30' },
+  approved: { text: 'Integrate', command: 'integrate-pr', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
+  approved_ci_green: { text: 'Ship PR', command: 'ship-pr', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
+  ci_failed: { text: 'Ship PR', command: 'ship-pr', cls: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' },
+};
+
+function formatAge(seconds) {
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
+  return Math.floor(seconds / 86400) + 'd';
+}
+
+function renderPrRow(pr) {
+  var stateClass = _prStateColors[pr.computed_state] || 'bg-gray-600/30 text-gray-400';
+  var action = _prActions[pr.computed_state];
+  var actionBtn = '';
+  if (action) {
+    actionBtn = '<button onclick="runCommand(\'' + action.command + '\', {pr: ' + pr.number + '})" ' +
+      'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
+      action.text + '</button>';
+  }
+
+  var issueRef = pr.linked_issue
+    ? '<span class="text-xs text-gray-500">#' + pr.linked_issue + '</span>'
+    : '';
+
+  var ciDot = '';
+  if (pr.ci_status === 'passed') ciDot = '<span class="w-1.5 h-1.5 rounded-full bg-accent-green shrink-0" data-tooltip="CI passed"></span>';
+  else if (pr.ci_status === 'failed') ciDot = '<span class="w-1.5 h-1.5 rounded-full bg-accent-red shrink-0" data-tooltip="CI failed"></span>';
+  else if (pr.ci_status === 'pending') ciDot = '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse shrink-0" data-tooltip="CI running"></span>';
+
+  return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
+    '<a href="' + escapeHtml(pr.url) + '" target="_blank" class="text-xs font-medium text-accent hover:underline shrink-0">#' + pr.number + '</a>' +
+    '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
+    issueRef +
+    ciDot +
+    '<span class="px-1.5 py-0.5 rounded text-xs ' + stateClass + '">' + escapeHtml(pr.state_label) + '</span>' +
+    '<span class="text-xs text-gray-600 w-8 text-right shrink-0">' + formatAge(pr.age_seconds) + '</span>' +
+    '<div class="w-24 flex justify-end shrink-0">' + actionBtn + '</div>' +
+  '</div>';
+}
+
+async function loadPrTracker() {
+  try {
+    var res = await fetch(apiUrl('/prs/open'));
+    if (!res.ok) return;
+    var data = await res.json();
+    window._prTrackerData = data.prs || [];
+    var list = document.getElementById('pr-tracker-list');
+    var count = document.getElementById('pr-tracker-count');
+    count.textContent = window._prTrackerData.length ? '(' + window._prTrackerData.length + ')' : '';
+    if (!window._prTrackerData.length) {
+      list.innerHTML = '<p class="text-gray-500 text-sm py-4 text-center">No open PRs</p>';
+    } else {
+      list.innerHTML = window._prTrackerData.map(renderPrRow).join('');
+    }
+  } catch (e) {
+    // silent
+  }
+}
+
+function getPrForIssue(issueNumber) {
+  if (!issueNumber || !window._prTrackerData) return null;
+  var num = parseInt(issueNumber, 10);
+  for (var i = 0; i < window._prTrackerData.length; i++) {
+    if (window._prTrackerData[i].linked_issue === num) return window._prTrackerData[i];
+  }
+  return null;
+}
+
 // -- Init --
+if (_prTrackerCollapsed) {
+  document.getElementById('pr-tracker-list').classList.add('hidden');
+  document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
+}
 loadTaskCards();
 loadAgents();
+loadPrTracker();
 checkInterrupted();
 loadHistory();
 agentPollInterval = setInterval(loadAgents, 2000);
+setInterval(loadPrTracker, 30000);
 </script>
 {% endblock %}
