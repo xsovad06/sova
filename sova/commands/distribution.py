@@ -68,6 +68,76 @@ class ListResult:
     local: list[ListEntry] = field(default_factory=list)
 
 
+def _install_files(
+    source_files: list[tuple[str, Path]],
+    target_dir: Path,
+    variables: dict[str, str],
+) -> InstallResult:
+    """Render and install source files into a target directory with manifest tracking."""
+    result = InstallResult()
+    hashes: dict[str, str] = {}
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename, source_path in source_files:
+        content = source_path.read_text(encoding="utf-8")
+        rendered = render_command(content, variables)
+
+        (target_dir / filename).write_text(rendered, encoding="utf-8")
+        hashes[filename] = file_hash(rendered)
+        result.installed += 1
+
+    create_manifest(target_dir, hashes)
+    return result
+
+
+def _update_files(
+    source_files: list[tuple[str, Path]],
+    target_dir: Path,
+    variables: dict[str, str],
+    *,
+    force: bool = False,
+) -> UpdateResult:
+    """Incrementally update installed files with conflict detection."""
+    manifest = read_manifest(target_dir)
+    result = UpdateResult()
+
+    if manifest is None:
+        install_result = _install_files(source_files, target_dir, variables)
+        result.updated = install_result.installed
+        return result
+
+    for filename, source_path in source_files:
+        content = source_path.read_text(encoding="utf-8")
+        rendered = render_command(content, variables)
+        new_hash = file_hash(rendered)
+
+        target_path = target_dir / filename
+        manifest_entry = manifest.commands.get(filename)
+
+        if manifest_entry is None:
+            target_path.write_text(rendered, encoding="utf-8")
+            update_manifest(target_dir, filename, new_hash)
+            result.updated += 1
+            continue
+
+        if manifest_entry.hash == new_hash:
+            result.skipped += 1
+            continue
+
+        if target_path.exists() and not force:
+            installed_hash = file_hash(target_path.read_text(encoding="utf-8"))
+            if installed_hash != manifest_entry.hash:
+                result.conflicts.append(filename)
+                continue
+
+        target_path.write_text(rendered, encoding="utf-8")
+        update_manifest(target_dir, filename, new_hash)
+        result.updated += 1
+
+    return result
+
+
 def install_commands(
     canonical_dir: Path,
     target_dir: Path,
@@ -75,34 +145,14 @@ def install_commands(
     *,
     include_autonomous: bool = True,
 ) -> InstallResult:
-    """Install canonical commands into a target project directory.
-
-    Renders template variables, writes files, creates manifest.
-    Preserves any existing project-local commands.
-    """
+    """Install canonical commands into a target project directory."""
     commands = discover(canonical_dir)
-    variables = build_variables(cfg)
-    result = InstallResult()
-    hashes: dict[str, str] = {}
+    files = [(cmd.path.name, cmd.path) for cmd in commands if include_autonomous or cmd.category != "autonomous"]
+    skipped = len(commands) - len(files)
 
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    for cmd in commands:
-        if not include_autonomous and cmd.category == "autonomous":
-            result.skipped += 1
-            continue
-
-        content = cmd.path.read_text(encoding="utf-8")
-        rendered = render_command(content, variables)
-        target_path = target_dir / cmd.path.name
-
-        target_path.write_text(rendered, encoding="utf-8")
-        hashes[cmd.path.name] = file_hash(rendered)
-        result.installed += 1
-
-    create_manifest(target_dir, hashes)
+    result = _install_files(files, target_dir, build_variables(cfg))
+    result.skipped = skipped
     log.info("commands.installed", count=result.installed, skipped=result.skipped)
-
     return result
 
 
@@ -114,60 +164,13 @@ def update_commands(
     include_autonomous: bool = True,
     force: bool = False,
 ) -> UpdateResult:
-    """Update installed commands incrementally.
-
-    Only writes commands whose canonical source has changed.
-    Detects conflicts where the user has modified a managed command.
-    """
+    """Update installed commands incrementally."""
     commands = discover(canonical_dir)
-    variables = build_variables(cfg)
-    manifest = read_manifest(target_dir)
-    result = UpdateResult()
+    files = [(cmd.path.name, cmd.path) for cmd in commands if include_autonomous or cmd.category != "autonomous"]
+    skipped = len(commands) - len(files)
 
-    if manifest is None:
-        # No manifest = first install
-        install_result = install_commands(canonical_dir, target_dir, cfg, include_autonomous=include_autonomous)
-        result.updated = install_result.installed
-        return result
-
-    for cmd in commands:
-        if not include_autonomous and cmd.category == "autonomous":
-            result.skipped += 1
-            continue
-
-        filename = cmd.path.name
-        content = cmd.path.read_text(encoding="utf-8")
-        rendered = render_command(content, variables)
-        new_hash = file_hash(rendered)
-
-        target_path = target_dir / filename
-        manifest_entry = manifest.commands.get(filename)
-
-        if manifest_entry is None:
-            # New command not previously installed
-            target_path.write_text(rendered, encoding="utf-8")
-            update_manifest(target_dir, filename, new_hash)
-            result.updated += 1
-            continue
-
-        if manifest_entry.hash == new_hash:
-            # Source unchanged
-            result.skipped += 1
-            continue
-
-        # Source changed -- check if user also modified the installed file
-        if target_path.exists() and not force:
-            installed_hash = file_hash(target_path.read_text(encoding="utf-8"))
-            if installed_hash != manifest_entry.hash:
-                # User modified this file AND source changed = conflict
-                result.conflicts.append(filename)
-                continue
-
-        # Safe to update
-        target_path.write_text(rendered, encoding="utf-8")
-        update_manifest(target_dir, filename, new_hash)
-        result.updated += 1
-
+    result = _update_files(files, target_dir, build_variables(cfg), force=force)
+    result.skipped += skipped
     return result
 
 
@@ -213,37 +216,25 @@ def diff_commands(
     return result
 
 
+def _collect_guidelines(guidelines_dir: Path) -> list[tuple[str, Path]]:
+    """Collect markdown files from a guidelines directory."""
+    if not guidelines_dir.is_dir():
+        return []
+    return [(p.name, p) for p in sorted(guidelines_dir.glob("*.md"))]
+
+
 def install_guidelines(
     guidelines_dir: Path,
     target_dir: Path,
     cfg: ProjectConfig,
 ) -> InstallResult:
-    """Install guideline templates into a target project's rules directory.
+    """Install guideline templates into a target project's rules directory."""
+    files = _collect_guidelines(guidelines_dir)
+    if not files:
+        return InstallResult()
 
-    Renders template variables, writes files, creates a separate manifest
-    in the target directory for conflict-aware updates.
-    """
-    variables = build_variables(cfg)
-    result = InstallResult()
-    hashes: dict[str, str] = {}
-
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    if not guidelines_dir.is_dir():
-        return result
-
-    for path in sorted(guidelines_dir.glob("*.md")):
-        content = path.read_text(encoding="utf-8")
-        rendered = render_command(content, variables)
-        target_path = target_dir / path.name
-
-        target_path.write_text(rendered, encoding="utf-8")
-        hashes[path.name] = file_hash(rendered)
-        result.installed += 1
-
-    create_manifest(target_dir, hashes)
+    result = _install_files(files, target_dir, build_variables(cfg))
     log.info("guidelines.installed", count=result.installed)
-
     return result
 
 
@@ -254,53 +245,14 @@ def update_guidelines(
     *,
     force: bool = False,
 ) -> UpdateResult:
-    """Update installed guidelines incrementally.
+    """Update installed guidelines incrementally."""
+    files = _collect_guidelines(guidelines_dir)
+    if not files:
+        if read_manifest(target_dir) is None:
+            return UpdateResult()
+        return UpdateResult()
 
-    Only writes guidelines whose canonical source has changed.
-    Detects conflicts where the user has modified a managed guideline.
-    """
-    variables = build_variables(cfg)
-    manifest = read_manifest(target_dir)
-    result = UpdateResult()
-
-    if manifest is None:
-        install_result = install_guidelines(guidelines_dir, target_dir, cfg)
-        result.updated = install_result.installed
-        return result
-
-    if not guidelines_dir.is_dir():
-        return result
-
-    for path in sorted(guidelines_dir.glob("*.md")):
-        filename = path.name
-        content = path.read_text(encoding="utf-8")
-        rendered = render_command(content, variables)
-        new_hash = file_hash(rendered)
-
-        target_path = target_dir / filename
-        manifest_entry = manifest.commands.get(filename)
-
-        if manifest_entry is None:
-            target_path.write_text(rendered, encoding="utf-8")
-            update_manifest(target_dir, filename, new_hash)
-            result.updated += 1
-            continue
-
-        if manifest_entry.hash == new_hash:
-            result.skipped += 1
-            continue
-
-        if target_path.exists() and not force:
-            installed_hash = file_hash(target_path.read_text(encoding="utf-8"))
-            if installed_hash != manifest_entry.hash:
-                result.conflicts.append(filename)
-                continue
-
-        target_path.write_text(rendered, encoding="utf-8")
-        update_manifest(target_dir, filename, new_hash)
-        result.updated += 1
-
-    return result
+    return _update_files(files, target_dir, build_variables(cfg), force=force)
 
 
 def list_commands(target_dir: Path) -> ListResult:

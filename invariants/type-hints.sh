@@ -24,7 +24,7 @@ while IFS= read -r f; do
   [[ -z "$new_funcs" ]] && continue
   while IFS= read -r func_name; do
     # Extract the full signature from def to the line ending with ):  or -> ...:
-    sig=$(sed -n "/def ${func_name}(/,/^[^#]*):$/p" "$WORKTREE_DIR/$f" | head -20)
+    sig=$(sed -n "/def ${func_name}(/,/^[^#]*):$/{ p; 20q; }" "$WORKTREE_DIR/$f")
     if ! echo "$sig" | grep -q '\->'; then
       violations+="  $f: def ${func_name}()"$'\n'
     fi
