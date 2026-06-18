@@ -1,9 +1,10 @@
-"""CLI commands: sova install, sova setup -- project initialization."""
+"""CLI commands: sova install, sova setup, sova uninstall -- project lifecycle."""
 
 from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -34,68 +35,115 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     claude_dir = project_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
 
-    # Create default config if it doesn't exist
+    # Stage 1: Config
     toml_file = project_dir / "sova.toml"
-
     if not toml_file.exists():
         toml_file.write_text(_default_toml())
         console.print(f"[green]Created {toml_file}[/green]")
 
-    # Configure git hooks if .githooks/ exists
-    githooks_dir = project_dir / ".githooks"
-    if githooks_dir.is_dir():
-        hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
-        current = hooks_result.stdout.strip() if hooks_result.success else ""
-        if current != ".githooks":
-            config_result = await run("git", "config", "core.hooksPath", ".githooks", cwd=str(project_dir))
-            if config_result.success:
-                console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
-            else:
-                console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
+    # Stage 2: Git hooks (non-fatal)
+    try:
+        await _configure_git_hooks(project_dir)
+    except Exception as exc:
+        console.print(f"[yellow]Warning: git hooks configuration failed: {exc}[/yellow]")
 
-    # Initialize database
-    from sova.db.session import init_db
+    # Stage 3: Database
+    failed_stages: list[str] = []
+    try:
+        from sova.db.session import init_db
 
-    await init_db(project_dir)
-    console.print("[green]Database initialized.[/green]")
+        await init_db(project_dir)
+        console.print("[green]Database initialized.[/green]")
+    except Exception as exc:
+        console.print(f"[red]Database initialization failed: {exc}[/red]")
+        failed_stages.append("database")
 
-    # Install/update commands
-    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
-    from sova.commands.distribution import install_commands as install_cmds
-    from sova.commands.distribution import install_guidelines as install_guides
-    from sova.commands.distribution import update_commands as update_cmds
-    from sova.commands.distribution import update_guidelines as update_guides
-    from sova.config.loader import load_config
+    # Stage 4: Commands and guidelines
+    try:
+        from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
+        from sova.commands.distribution import install_commands as install_cmds
+        from sova.commands.distribution import install_guidelines as install_guides
+        from sova.commands.distribution import update_commands as update_cmds
+        from sova.commands.distribution import update_guidelines as update_guides
+        from sova.config.loader import load_config
 
-    cfg = load_config(project_dir)
-    canonical_dir = get_canonical_dir()
-    guidelines_dir = get_guidelines_dir()
-    commands_dir = claude_dir / "commands"
-    commands_dir.mkdir(exist_ok=True)
-    rules_dir = claude_dir / "rules"
-    rules_dir.mkdir(exist_ok=True)
+        cfg = load_config(project_dir)
+        canonical_dir = get_canonical_dir()
+        guidelines_dir = get_guidelines_dir()
+        commands_dir = claude_dir / "commands"
+        commands_dir.mkdir(exist_ok=True)
+        rules_dir = claude_dir / "rules"
+        rules_dir.mkdir(exist_ok=True)
 
-    if update:
-        cmd_result = update_cmds(canonical_dir, commands_dir, cfg)
-        console.print(f"[green]Commands updated: {cmd_result.updated}, unchanged: {cmd_result.skipped}[/green]")
-        if cmd_result.conflicts:
-            for name in cmd_result.conflicts:
-                console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
-        guide_result = update_guides(guidelines_dir, rules_dir, cfg)
-        console.print(f"[green]Guidelines updated: {guide_result.updated}, unchanged: {guide_result.skipped}[/green]")
-        if guide_result.conflicts:
-            for name in guide_result.conflicts:
-                console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+        if update:
+            cmd_result = update_cmds(canonical_dir, commands_dir, cfg)
+            console.print(f"[green]Commands updated: {cmd_result.updated}, unchanged: {cmd_result.skipped}[/green]")
+            if cmd_result.conflicts:
+                for name in cmd_result.conflicts:
+                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+            guide_result = update_guides(guidelines_dir, rules_dir, cfg)
+            console.print(
+                f"[green]Guidelines updated: {guide_result.updated}, unchanged: {guide_result.skipped}[/green]"
+            )
+            if guide_result.conflicts:
+                for name in guide_result.conflicts:
+                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+        else:
+            cmd_result = install_cmds(canonical_dir, commands_dir, cfg)
+            console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
+            guide_result = install_guides(guidelines_dir, rules_dir, cfg)
+            console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
+    except Exception as exc:
+        console.print(f"[red]Command installation failed: {exc}[/red]")
+        failed_stages.append("commands")
+
+    # Stage 5: Agent memory (non-fatal)
+    if not update:
+        try:
+            _create_agent_memory(claude_dir)
+        except Exception as exc:
+            console.print(f"[yellow]Warning: agent memory setup failed: {exc}[/yellow]")
+
+    # Verify and report
+    problems = _verify_install(project_dir, update=update)
+    if "commands" in failed_stages:
+        problems.append("commands/guidelines installation failed")
+    if problems:
+        console.print("\n[red]Installation incomplete -- the following are missing:[/red]")
+        for problem in problems:
+            console.print(f"  [red]- {problem}[/red]")
+        console.print("[dim]Re-run 'sova install' to retry.[/dim]")
+        raise typer.Exit(code=1)
+
+    if failed_stages:
+        console.print(f"\n[yellow]Installed with warnings (failed: {', '.join(failed_stages)})[/yellow]")
+    elif update:
         console.print("[green]Quick sync complete.[/green]")
+    else:
+        console.print(f"[green]SOVA installed in {project_dir}[/green]")
+
+    if not no_dashboard and not update:
+        console.print("[dim]Dashboard available via: sova dashboard[/dim]")
+
+
+async def _configure_git_hooks(project_dir: Path) -> None:
+    """Configure core.hooksPath if .githooks/ exists."""
+    githooks_dir = project_dir / ".githooks"
+    if not githooks_dir.is_dir():
         return
 
-    cmd_result = install_cmds(canonical_dir, commands_dir, cfg)
-    console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
+    hooks_result = await run("git", "config", "--get", "core.hooksPath", cwd=str(project_dir))
+    current = hooks_result.stdout.strip() if hooks_result.success else ""
+    if current != ".githooks":
+        config_result = await run("git", "config", "core.hooksPath", ".githooks", cwd=str(project_dir))
+        if config_result.success:
+            console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
+        else:
+            console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
 
-    guide_result = install_guides(guidelines_dir, rules_dir, cfg)
-    console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
 
-    # Create agent memory directory
+def _create_agent_memory(claude_dir: Path) -> None:
+    """Create agent memory directory with starter files."""
     memory_dir = claude_dir / "agent-memory"
     memory_dir.mkdir(exist_ok=True)
 
@@ -104,10 +152,199 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         if not mem_file.exists():
             mem_file.write_text(f"# {name.replace('.md', '').replace('-', ' ').title()}\n")
 
-    console.print(f"[green]SOVA installed in {project_dir}[/green]")
 
-    if not no_dashboard:
-        console.print("[dim]Dashboard available via: sova dashboard[/dim]")
+def _verify_install(project_dir: Path, *, update: bool = False) -> list[str]:
+    """Check that a SOVA installation has all critical artifacts."""
+    from sova.commands.catalog import get_canonical_dir
+
+    problems: list[str] = []
+
+    try:
+        if not (project_dir / "sova.toml").exists():
+            problems.append("sova.toml not found")
+
+        commands_dir = project_dir / ".claude" / "commands"
+        command_count = len(list(commands_dir.glob("*.md"))) if commands_dir.is_dir() else 0
+        if command_count == 0 and get_canonical_dir().is_dir():
+            problems.append(".claude/commands/ has no commands")
+
+        if not update:
+            memory_dir = project_dir / ".claude" / "agent-memory"
+            if not memory_dir.is_dir():
+                problems.append(".claude/agent-memory/ directory missing")
+    except OSError as exc:
+        problems.append(f"cannot verify installation: {exc}")
+
+    return problems
+
+
+def uninstall(
+    path: Annotated[Optional[Path], typer.Argument(help="Project directory to uninstall from.")] = None,
+    remove_commands: Annotated[bool, typer.Option("--remove-commands", help="Remove SOVA-managed commands.")] = False,
+    remove_rules: Annotated[bool, typer.Option("--remove-rules", help="Remove SOVA-managed guidelines/rules.")] = False,
+    remove_memory: Annotated[bool, typer.Option("--remove-memory", help="Remove agent memory data.")] = False,
+    remove_config: Annotated[bool, typer.Option("--remove-config", help="Remove sova.toml.")] = False,
+) -> None:
+    """Remove SOVA from a project directory.
+
+    By default keeps commands, rules, memory, and config. Use --remove-* flags to opt in to deleting them.
+    Database and ephemeral files (worktrees, agent-control) are always removed.
+    """
+    asyncio.run(
+        _uninstall(
+            path=path,
+            remove_commands=remove_commands,
+            remove_rules=remove_rules,
+            remove_memory=remove_memory,
+            remove_config=remove_config,
+        )
+    )
+
+
+async def _uninstall(
+    *,
+    path: Path | None,
+    remove_commands: bool = False,
+    remove_rules: bool = False,
+    remove_memory: bool = False,
+    remove_config: bool = False,
+) -> list[str]:
+    project_dir = (path or Path.cwd()).resolve()
+
+    if not project_dir.is_dir():
+        console.print(f"[red]Directory not found: {project_dir}[/red]")
+        raise typer.Exit(code=1)
+
+    claude_dir = project_dir / ".claude"
+    removed: list[str] = []
+    failed: list[str] = []
+
+    # 1. Managed commands (opt-in removal)
+    if remove_commands:
+        try:
+            commands_dir = claude_dir / "commands"
+            if commands_dir.is_dir():
+                managed_count = _remove_managed_commands(commands_dir)
+                if managed_count > 0:
+                    removed.append(f"{managed_count} managed commands")
+                if not any(commands_dir.iterdir()):
+                    commands_dir.rmdir()
+                    removed.append(".claude/commands/ (empty)")
+        except OSError as exc:
+            failed.append(f"commands: {exc}")
+
+    # 2. Managed rules/guidelines (opt-in removal)
+    if remove_rules:
+        try:
+            rules_dir = claude_dir / "rules"
+            if rules_dir.is_dir():
+                managed_count = _remove_managed_commands(rules_dir)
+                if managed_count > 0:
+                    removed.append(f"{managed_count} managed rules")
+                if not any(rules_dir.iterdir()):
+                    rules_dir.rmdir()
+                    removed.append(".claude/rules/ (empty)")
+        except OSError as exc:
+            failed.append(f"rules: {exc}")
+
+    # 3. Remove database files (always)
+    for db_name in ("sova.db", "sova.db.bak"):
+        db_file = claude_dir / db_name
+        try:
+            if db_file.is_file():
+                db_file.unlink()
+                removed.append(f".claude/{db_name}")
+        except OSError as exc:
+            failed.append(f".claude/{db_name}: {exc}")
+
+    # 4. Remove ephemeral directories (always)
+    for dir_name in ("worktrees", "agent-control"):
+        target = claude_dir / dir_name
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+                removed.append(f".claude/{dir_name}/")
+        except OSError as exc:
+            failed.append(f".claude/{dir_name}/: {exc}")
+
+    # 5. Agent memory (opt-in removal)
+    if remove_memory:
+        try:
+            memory_dir = claude_dir / "agent-memory"
+            if memory_dir.is_dir():
+                shutil.rmtree(memory_dir)
+                removed.append(".claude/agent-memory/")
+        except OSError as exc:
+            failed.append(f"agent memory: {exc}")
+
+    # 6. Config file (opt-in removal)
+    if remove_config:
+        try:
+            toml_file = project_dir / "sova.toml"
+            if toml_file.exists():
+                toml_file.unlink()
+                removed.append("sova.toml")
+        except OSError as exc:
+            failed.append(f"config: {exc}")
+
+    # 7. Remove .claude/ if empty
+    try:
+        if claude_dir.is_dir() and not any(claude_dir.iterdir()):
+            claude_dir.rmdir()
+            removed.append(".claude/ (empty)")
+    except OSError:
+        pass
+
+    # 8. Unregister from project registry
+    try:
+        from sova.config.registry import list_projects, unregister_project
+
+        for slug, reg_path in list_projects().items():
+            if Path(reg_path).resolve() == project_dir:
+                unregister_project(slug)
+                removed.append(f"registry entry ({slug})")
+                break
+    except Exception as exc:
+        failed.append(f"registry: {exc}")
+
+    if removed:
+        console.print(f"[green]SOVA uninstalled from {project_dir}[/green]")
+        for item in removed:
+            console.print(f"  [dim]- {item}[/dim]")
+    else:
+        console.print("[yellow]No SOVA artifacts found to remove.[/yellow]")
+
+    if failed:
+        for item in failed:
+            console.print(f"  [red]Failed: {item}[/red]")
+
+    return failed
+
+
+def _remove_managed_commands(commands_dir: Path) -> int:
+    """Remove SOVA-managed commands, leaving local ones. Returns count removed."""
+    from sova.commands.manifest import MANIFEST_FILENAME, read_manifest
+
+    manifest = read_manifest(commands_dir)
+    if manifest is None:
+        return 0
+
+    count = 0
+    base_dir = commands_dir.resolve()
+    for filename, entry in manifest.commands.items():
+        if entry.managed:
+            cmd_file = (commands_dir / filename).resolve()
+            if not cmd_file.is_relative_to(base_dir):
+                continue
+            if cmd_file.exists():
+                cmd_file.unlink()
+                count += 1
+
+    manifest_file = commands_dir / MANIFEST_FILENAME
+    if manifest_file.exists():
+        manifest_file.unlink()
+
+    return count
 
 
 def setup(

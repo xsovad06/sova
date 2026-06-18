@@ -45,6 +45,7 @@ async def _doctor(project: Path | None) -> None:
     project_dir = (project or Path.cwd()).resolve()
     checks.append(await _check_git_hooks(project_dir))
     checks.extend(await _check_sova_config(project_dir))
+    checks.extend(_check_install_completeness(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
     checks.extend(await _check_agent_runtime(project_dir))
 
@@ -249,6 +250,33 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
         checks.append((_LABEL, available, f"{runtime_type}: {detail}", True))
     except Exception as exc:
         checks.append((_LABEL, False, str(exc)[:80], False))
+    return checks
+
+
+def _check_install_completeness(project_dir: Path) -> list[_Check]:
+    """Check that sova install created all expected artifacts."""
+    checks: list[_Check] = []
+
+    commands_dir = project_dir / ".claude" / "commands"
+    if commands_dir.is_dir():
+        cmd_count = len(list(commands_dir.glob("*.md")))
+        checks.append(("commands installed", cmd_count > 0, f"{cmd_count} commands", cmd_count == 0))
+    else:
+        checks.append(("commands installed", False, ".claude/commands/ missing -- run: sova install", True))
+
+    memory_dir = project_dir / ".claude" / "agent-memory"
+    checks.append(
+        (
+            "agent memory",
+            memory_dir.is_dir(),
+            str(memory_dir) if memory_dir.is_dir() else "missing -- run: sova install",
+            False,
+        )
+    )
+
+    db_path = project_dir / ".claude" / "sova.db"
+    checks.append(("database", db_path.is_file(), str(db_path) if db_path.is_file() else "missing", True))
+
     return checks
 
 
