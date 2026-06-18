@@ -55,6 +55,11 @@ def get_canonical_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "commands"
 
 
+def get_guidelines_dir() -> Path:
+    """Return the path to the guidelines directory in the SOVA repo."""
+    return Path(__file__).resolve().parent.parent.parent / "guidelines"
+
+
 def classify(commands: list[CommandEntry]) -> dict[str, list[CommandEntry]]:
     """Group commands by their category."""
     groups: dict[str, list[CommandEntry]] = {}
