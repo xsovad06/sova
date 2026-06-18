@@ -76,6 +76,36 @@ except Exception:
 
 Also: never leak raw `str(exc)` in HTTP responses (OWASP information disclosure). Use a generic message and log the details server-side with `log.exception()`.
 
+Use `from None` on re-raised exceptions when the original is already logged, to suppress confusing "During handling of the above exception..." tracebacks. Ruff B904 enforces explicit chaining.
+
+```python
+except Exception:
+    log.exception("Uninstall failed for %s", req.slug)
+    raise HTTPException(status_code=500, detail="Failed to uninstall") from None
+```
+
+## Per-Item Error Handling in Deletion Loops
+
+When iterating over items to delete (files, directories, registry entries), wrap try/except **inside** the loop so one failure doesn't skip the remaining items.
+
+```python
+# Wrong -- first failure skips everything after it
+try:
+    for name in items:
+        (path / name).unlink()
+except OSError as exc:
+    failed.append(f"cleanup: {exc}")
+
+# Correct -- each item attempted independently
+for name in items:
+    try:
+        (path / name).unlink()
+    except OSError as exc:
+        failed.append(f"{name}: {exc}")
+```
+
+This pattern applies to any cleanup/teardown code that operates on multiple independent resources.
+
 ## Subprocess Error Handling
 
 Two modes in `sova/utils/shell.py`:

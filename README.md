@@ -169,7 +169,7 @@ For the full configuration reference, see [`sova/config/models.py`](sova/config/
 |----------|----------|
 | **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
 | **Server** | `sova server start\|stop\|status` |
-| **Setup** | `sova install <path>`, `sova setup <path>`, `sova init-db`, `sova doctor` |
+| **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |
 | **Knowledge** | `sova memory search\|prune\|dump\|export\|import` |
