@@ -1265,3 +1265,170 @@ class TestClaudeCodeParseEdgeCases:
             assert isinstance(result, ClaudeCodeRuntime)
         finally:
             rt_mod._runtime = original
+
+
+# ---------------------------------------------------------------------------
+# MockAgentProcess
+# ---------------------------------------------------------------------------
+
+
+class TestMockAgentProcess:
+    from sova.ipc.control import ExitClassification
+    from sova.ipc.testing import MockAgentProcess
+
+    @pytest.mark.asyncio
+    async def test_immediate_success(self) -> None:
+        proc = self.MockAgentProcess(exit_code=0)
+        assert proc.is_running
+        assert proc.returncode is None
+        assert proc.pid == 99999
+
+        code = await proc.wait()
+        assert code == 0
+        assert not proc.is_running
+        assert proc.returncode == 0
+
+    @pytest.mark.asyncio
+    async def test_error_exit(self) -> None:
+        proc = self.MockAgentProcess(exit_code=1, stderr_lines_data=["error: boom"])
+        code, classification = await proc.wait_classified()
+        assert code == 1
+        assert classification == self.ExitClassification.ERROR
+
+    @pytest.mark.asyncio
+    async def test_crash_exit(self) -> None:
+        proc = self.MockAgentProcess(exit_code=130)
+        code, classification = await proc.wait_classified()
+        assert code == 130
+        assert classification == self.ExitClassification.CRASH
+
+    @pytest.mark.asyncio
+    async def test_stdout_lines(self) -> None:
+        proc = self.MockAgentProcess(stdout_lines_data=["line1", "line2", "line3"])
+        lines = [line async for line in proc.stdout_lines()]
+        assert lines == ["line1", "line2", "line3"]
+
+    @pytest.mark.asyncio
+    async def test_stderr_lines(self) -> None:
+        proc = self.MockAgentProcess(stderr_lines_data=["err1"])
+        lines = [line async for line in proc.stderr_lines()]
+        assert lines == ["err1"]
+
+    @pytest.mark.asyncio
+    async def test_empty_stdout(self) -> None:
+        proc = self.MockAgentProcess()
+        lines = [line async for line in proc.stdout_lines()]
+        assert lines == []
+
+    @pytest.mark.asyncio
+    async def test_hang_and_stop(self) -> None:
+        proc = self.MockAgentProcess(should_hang=True, exit_code=42)
+        assert proc.is_running
+
+        # wait() should block, so we stop from another task
+        async def stopper() -> None:
+            await asyncio.sleep(0.01)
+            await proc.stop()
+
+        asyncio.create_task(stopper())
+        code = await proc.wait()
+        assert code == 42
+        assert not proc.is_running
+
+    @pytest.mark.asyncio
+    async def test_wait_after_stop(self) -> None:
+        proc = self.MockAgentProcess(exit_code=0)
+        await proc.stop()
+        # wait after stop should return immediately
+        code = await proc.wait()
+        assert code == 0
+
+    @pytest.mark.asyncio
+    async def test_delayed_completion(self) -> None:
+        proc = self.MockAgentProcess(duration_seconds=0.01, exit_code=0)
+        code = await proc.wait()
+        assert code == 0
+
+    def test_classify_exit_static(self) -> None:
+        assert self.MockAgentProcess.classify_exit(0) == self.ExitClassification.SUCCESS
+        assert self.MockAgentProcess.classify_exit(1) == self.ExitClassification.ERROR
+        assert self.MockAgentProcess.classify_exit(127) == self.ExitClassification.ERROR
+        assert self.MockAgentProcess.classify_exit(128) == self.ExitClassification.CRASH
+        assert self.MockAgentProcess.classify_exit(137) == self.ExitClassification.CRASH
+
+    @pytest.mark.asyncio
+    async def test_custom_pid(self) -> None:
+        proc = self.MockAgentProcess(pid=12345)
+        assert proc.pid == 12345
+
+
+# ---------------------------------------------------------------------------
+# MockRuntime
+# ---------------------------------------------------------------------------
+
+
+class TestMockRuntime:
+    from sova.ipc.runtime import create_runtime
+    from sova.ipc.testing import MockRuntime
+
+    @pytest.mark.asyncio
+    async def test_spawn_and_track(self) -> None:
+        rt = self.MockRuntime(stdout_lines=["hello"], exit_code=0)
+        assert rt.name == "mock"
+        assert rt.last_prompt is None
+        assert rt.spawned_processes == []
+
+        proc = await rt.spawn("do stuff", "/tmp")
+        assert rt.last_prompt == "do stuff"
+        assert len(rt.spawned_processes) == 1
+        assert rt.spawned_processes[0] is proc
+
+        lines = [line async for line in proc.stdout_lines()]
+        assert lines == ["hello"]
+        code = await proc.wait()
+        assert code == 0
+
+    @pytest.mark.asyncio
+    async def test_multiple_spawns(self) -> None:
+        rt = self.MockRuntime()
+        await rt.spawn("first", "/tmp")
+        await rt.spawn("second", "/tmp")
+        assert len(rt.spawned_processes) == 2
+        assert rt.last_prompt == "second"
+
+    def test_parse_output(self) -> None:
+        rt = self.MockRuntime()
+        event = rt.parse_output("hello world")
+        assert event is not None
+        assert event.type == "content"
+        assert event.text == "hello world"
+
+    def test_parse_output_empty(self) -> None:
+        rt = self.MockRuntime()
+        assert rt.parse_output("") is None
+        assert rt.parse_output("   ") is None
+
+    @pytest.mark.asyncio
+    async def test_check_available(self) -> None:
+        rt = self.MockRuntime()
+        available, detail = await rt.check_available()
+        assert available is True
+        assert "mock-runtime" in detail
+
+    @pytest.mark.asyncio
+    async def test_factory_create(self) -> None:
+        rt = TestMockRuntime.create_runtime("mock")
+        assert isinstance(rt, self.MockRuntime)
+        assert rt.name == "mock"
+
+    @pytest.mark.asyncio
+    async def test_spawn_copies_stdout_lines(self) -> None:
+        """Each spawn gets its own copy of stdout lines."""
+        rt = self.MockRuntime(stdout_lines=["a", "b"])
+        p1 = await rt.spawn("first", "/tmp")
+        p2 = await rt.spawn("second", "/tmp")
+
+        lines1 = [line async for line in p1.stdout_lines()]
+        lines2 = [line async for line in p2.stdout_lines()]
+        assert lines1 == ["a", "b"]
+        assert lines2 == ["a", "b"]
