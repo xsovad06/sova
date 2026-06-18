@@ -633,7 +633,7 @@ class TestGuidelines:
 
         guidelines_dir = get_guidelines_dir()
         assert guidelines_dir.name == "guidelines"
-        assert guidelines_dir.parent.name == "sova"
+        assert guidelines_dir.is_dir()
 
     def test_build_variables_includes_project_name(self) -> None:
         """build_variables() includes project_name derived from github_repo."""
