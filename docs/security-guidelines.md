@@ -98,6 +98,22 @@ Prevents shell metacharacters, path traversal sequences, and spaces in branch na
 
 `sova/dashboard/middleware.py` validates project slugs against `^[a-z0-9-]+$` before path resolution, preventing directory traversal via URL segments.
 
+### Template Variables in Inline JavaScript
+
+Jinja2's `{{ var }}` uses HTML escaping, not JavaScript string escaping. A value containing `'` or `</script>` can break the handler or become XSS when interpolated into inline JS.
+
+```html
+<!-- Wrong -- HTML-escaped, not JS-safe -->
+<button onclick="doThing('{{ slug }}')">
+
+<!-- Correct -- pass via data attribute, read in handler -->
+<button data-slug="{{ slug | e }}" onclick="doThing(this.dataset.slug)">
+```
+
+### Manifest Path Traversal
+
+`_remove_managed_commands()` in `sova/cli/commands/project.py` reads filenames from `.sova-manifest.json`. A tampered entry like `../../sova.toml` could escape the managed directory. Guard with `resolve()` + `is_relative_to()`.
+
 ## Force Push Safety
 
 `sova/git/branch.py:push()` always uses `--force-with-lease` instead of `--force`, protecting against data loss from concurrent work.
