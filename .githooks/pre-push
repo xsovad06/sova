@@ -39,7 +39,7 @@ echo "=== Pre-push CI checks ==="
 
 # 1. ShellCheck
 echo ""
-echo "[1/5] ShellCheck..."
+echo "[1/6] ShellCheck..."
 if command -v shellcheck &>/dev/null; then
   if shellcheck --severity=warning \
     invariants/*.sh 2>&1; then
@@ -54,17 +54,17 @@ fi
 
 # 2. Ruff lint
 echo ""
-echo "[2/5] Ruff check..."
+echo "[2/6] Ruff check..."
 run_ruff check sova/ tests/
 
 # 3. Ruff format
 echo ""
-echo "[3/5] Ruff format..."
+echo "[3/6] Ruff format..."
 run_ruff format --check sova/ tests/
 
 # 4. Validate command frontmatter
 echo ""
-echo "[4/5] Command frontmatter..."
+echo "[4/6] Command frontmatter..."
 fm_errors=0
 for f in commands/*.md; do
   name=$(basename "$f")
@@ -101,7 +101,7 @@ fi
 
 # 5. File permissions
 echo ""
-echo "[5/5] File permissions..."
+echo "[5/6] File permissions..."
 perm_errors=0
 for f in invariants/*.sh; do
   if [ ! -x "$f" ]; then
@@ -111,6 +111,26 @@ for f in invariants/*.sh; do
 done
 if [ "$perm_errors" -gt 0 ]; then
   echo "  FAIL ($perm_errors errors)"
+  errors=$((errors + 1))
+else
+  echo "  PASS"
+fi
+
+# 6. Invariant checks (mirrors CI invariants job)
+echo ""
+echo "[6/6] Invariants..."
+inv_errors=0
+for script in invariants/*.sh; do
+  name=$(basename "$script" .sh)
+  if bash "$script" . main 2>&1; then
+    echo "    $name: PASS"
+  else
+    echo "    $name: FAIL"
+    inv_errors=$((inv_errors + 1))
+  fi
+done
+if [ "$inv_errors" -gt 0 ]; then
+  echo "  FAIL ($inv_errors invariant(s) failed)"
   errors=$((errors + 1))
 else
   echo "  PASS"
