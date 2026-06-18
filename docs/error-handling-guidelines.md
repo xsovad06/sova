@@ -57,6 +57,25 @@ This pattern appears in 100+ locations including:
 - Memory extraction (`extract_memory.py`)
 - Handoff file/DB writes
 
+## Typer Exit and Dashboard Endpoints
+
+`typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly -- `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
+
+```python
+# Wrong -- typer.Exit escapes this
+except Exception as exc:
+    raise HTTPException(status_code=500, detail=str(exc))
+
+# Correct -- catch SystemExit for CLI errors, generic message for others
+except SystemExit:
+    raise HTTPException(status_code=404, detail="Project directory not found")
+except Exception:
+    log.exception("operation.failed for %s", identifier)
+    raise HTTPException(status_code=500, detail="Operation failed")
+```
+
+Also: never leak raw `str(exc)` in HTTP responses (OWASP information disclosure). Use a generic message and log the details server-side with `log.exception()`.
+
 ## Subprocess Error Handling
 
 Two modes in `sova/utils/shell.py`:
