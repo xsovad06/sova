@@ -16,6 +16,16 @@ from sova.db.session import close_db, init_db
 runner = CliRunner()
 
 
+def _scaffold_install_artifacts(tmp_path: Path) -> None:
+    """Create the minimum directory structure that _verify_install expects."""
+    (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
+    commands_dir = tmp_path / ".claude" / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
+    memory_dir = tmp_path / ".claude" / "agent-memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+
+
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Initialize an in-memory DB for CLI tests."""
@@ -235,6 +245,7 @@ class TestProjectCommands:
         from sova.cli.commands.project import _install
 
         (tmp_path / ".githooks").mkdir()
+        _scaffold_install_artifacts(tmp_path)
 
         with (
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
@@ -245,7 +256,7 @@ class TestProjectCommands:
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
         ):
-            mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
             mock_run.side_effect = [
                 MagicMock(success=False, stdout=""),  # git config --get
@@ -260,6 +271,7 @@ class TestProjectCommands:
         from sova.cli.commands.project import _install
 
         (tmp_path / ".githooks").mkdir()
+        _scaffold_install_artifacts(tmp_path)
 
         with (
             patch("sova.cli.commands.project.run", new_callable=AsyncMock) as mock_run,
@@ -270,12 +282,373 @@ class TestProjectCommands:
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
         ):
-            mock_install_cmds.return_value = MagicMock(installed=0)
+            mock_install_cmds.return_value = MagicMock(installed=1)
             mock_install_guides.return_value = MagicMock(installed=0)
             mock_run.return_value = MagicMock(success=True, stdout=".githooks\n")
             await _install(path=tmp_path, no_dashboard=True, update=False)
 
         assert mock_run.call_count == 1
+
+    async def test_install_db_failure_reports_error(self, tmp_path: Path) -> None:
+        """init_db failure is caught and reported, but commands still install."""
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock, side_effect=RuntimeError("disk full")),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_install_cmds.return_value = MagicMock(installed=1)
+            mock_install_guides.return_value = MagicMock(installed=0)
+            # Should complete without raising (db failure is non-fatal if commands succeed)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        mock_install_cmds.assert_called_once()
+        mock_install_guides.assert_called_once()
+
+    async def test_install_command_failure_exits_with_error(self, tmp_path: Path) -> None:
+        """Command installation failure triggers verification failure."""
+        from typer import Exit
+
+        from sova.cli.commands.project import _install
+
+        (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
+        (tmp_path / ".claude").mkdir(exist_ok=True)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands", side_effect=OSError("permission denied")),
+            patch("sova.commands.distribution.install_guidelines"),
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            with pytest.raises(Exit):
+                await _install(path=tmp_path, no_dashboard=True, update=False)
+
+    async def test_install_creates_all_artifacts(self, tmp_path: Path) -> None:
+        """Successful install creates commands dir, agent-memory, and sova.toml."""
+        from sova.cli.commands.project import _install
+
+        def _install_cmds_side_effect(_canonical_dir, commands_dir, _cfg):
+            commands_dir.mkdir(parents=True, exist_ok=True)
+            (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
+            return MagicMock(installed=1)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_install_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_install_cmds.side_effect = _install_cmds_side_effect
+            mock_install_guides.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        assert (tmp_path / "sova.toml").exists()
+        assert (tmp_path / ".claude" / "commands").is_dir()
+        assert (tmp_path / ".claude" / "agent-memory").is_dir()
+        assert (tmp_path / ".claude" / "agent-memory" / "MEMORY.md").exists()
+
+    def test_verify_install_all_present(self, tmp_path: Path) -> None:
+        """Verification passes when all artifacts exist."""
+        from sova.cli.commands.project import _verify_install
+
+        _scaffold_install_artifacts(tmp_path)
+        problems = _verify_install(tmp_path)
+        assert problems == []
+
+    def test_verify_install_missing_commands(self, tmp_path: Path) -> None:
+        """Verification catches missing commands directory."""
+        from sova.cli.commands.project import _verify_install
+
+        (tmp_path / "sova.toml").write_text("")
+        (tmp_path / ".claude" / "agent-memory").mkdir(parents=True)
+        problems = _verify_install(tmp_path)
+        assert any("commands" in p for p in problems)
+
+    def test_verify_install_missing_memory(self, tmp_path: Path) -> None:
+        """Verification catches missing agent-memory directory."""
+        from sova.cli.commands.project import _verify_install
+
+        (tmp_path / "sova.toml").write_text("")
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "test.md").write_text("# test")
+        problems = _verify_install(tmp_path)
+        assert any("agent-memory" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# Doctor install completeness checks
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorInstallChecks:
+    def test_check_install_completeness_all_present(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_install_completeness
+
+        _scaffold_install_artifacts(tmp_path)
+        (tmp_path / ".claude" / "sova.db").write_text("")
+        checks = _check_install_completeness(tmp_path)
+        assert all(check[1] for check in checks)
+
+    def test_check_install_completeness_missing_commands(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_install_completeness
+
+        (tmp_path / ".claude").mkdir()
+        (tmp_path / ".claude" / "sova.db").write_text("")
+        checks = _check_install_completeness(tmp_path)
+        cmd_check = next(c for c in checks if c[0] == "commands installed")
+        assert cmd_check[1] is False
+
+    def test_check_install_completeness_missing_db(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_install_completeness
+
+        _scaffold_install_artifacts(tmp_path)
+        checks = _check_install_completeness(tmp_path)
+        db_check = next(c for c in checks if c[0] == "database")
+        assert db_check[1] is False
+
+
+# ---------------------------------------------------------------------------
+# Uninstall command
+# ---------------------------------------------------------------------------
+
+
+def _scaffold_full_install(tmp_path: Path) -> None:
+    """Create a complete SOVA installation for uninstall tests."""
+    import json
+
+    _scaffold_install_artifacts(tmp_path)
+    claude_dir = tmp_path / ".claude"
+    (claude_dir / "sova.db").write_text("")
+    (claude_dir / "sova.db.bak").write_text("")
+    (claude_dir / "agent-memory").mkdir(exist_ok=True)
+    (claude_dir / "agent-memory" / "MEMORY.md").write_text("# Memory")
+    (claude_dir / "worktrees").mkdir(exist_ok=True)
+    (claude_dir / "agent-control").mkdir(exist_ok=True)
+
+    commands_dir = claude_dir / "commands"
+    manifest = {
+        "version": 1,
+        "commands": {
+            "dummy.md": {"hash": "abc123", "managed": True},
+        },
+    }
+    (commands_dir / ".sova-manifest.json").write_text(json.dumps(manifest))
+
+    rules_dir = claude_dir / "rules"
+    rules_dir.mkdir(exist_ok=True)
+    (rules_dir / "managed-rule.md").write_text("# Rule")
+    rules_manifest = {
+        "version": 1,
+        "commands": {
+            "managed-rule.md": {"hash": "def456", "managed": True},
+        },
+    }
+    (rules_dir / ".sova-manifest.json").write_text(json.dumps(rules_manifest))
+
+
+class TestUninstallCommand:
+    def test_uninstall_help(self) -> None:
+        from sova.cli.app import app
+
+        result = runner.invoke(app, ["uninstall", "--help"])
+        assert result.exit_code == 0
+
+    async def test_uninstall_default_keeps_optional(self, tmp_path: Path) -> None:
+        """Default uninstall keeps commands, rules, memory, and config."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path)
+
+        assert (tmp_path / ".claude" / "commands" / "dummy.md").exists()
+        assert (tmp_path / ".claude" / "rules" / "managed-rule.md").exists()
+        assert (tmp_path / ".claude" / "agent-memory").is_dir()
+        assert (tmp_path / "sova.toml").exists()
+        assert not (tmp_path / ".claude" / "sova.db").exists()
+        assert not (tmp_path / ".claude" / "worktrees").exists()
+
+    async def test_uninstall_remove_commands_flag(self, tmp_path: Path) -> None:
+        """--remove-commands removes managed commands, keeps local ones."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+        commands_dir = tmp_path / ".claude" / "commands"
+        (commands_dir / "local-cmd.md").write_text("---\nname: local\n---\n")
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path, remove_commands=True)
+
+        assert not (commands_dir / "dummy.md").exists()
+        assert (commands_dir / "local-cmd.md").exists()
+        assert not (commands_dir / ".sova-manifest.json").exists()
+
+    async def test_uninstall_remove_rules_flag(self, tmp_path: Path) -> None:
+        """--remove-rules removes managed rules/guidelines."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+        rules_dir = tmp_path / ".claude" / "rules"
+        (rules_dir / "local-rule.md").write_text("# Local rule")
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path, remove_rules=True)
+
+        assert not (rules_dir / "managed-rule.md").exists()
+        assert (rules_dir / "local-rule.md").exists()
+        assert not (rules_dir / ".sova-manifest.json").exists()
+
+    async def test_uninstall_removes_db_always(self, tmp_path: Path) -> None:
+        """Database is always removed even without opt-in flags."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path)
+
+        assert not (tmp_path / ".claude" / "sova.db").exists()
+        assert not (tmp_path / ".claude" / "sova.db.bak").exists()
+        assert (tmp_path / ".claude" / "agent-memory").is_dir()
+
+    async def test_uninstall_remove_memory_flag(self, tmp_path: Path) -> None:
+        """--remove-memory removes agent-memory directory."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path, remove_memory=True)
+
+        assert not (tmp_path / ".claude" / "agent-memory").exists()
+        assert (tmp_path / "sova.toml").exists()
+
+    async def test_uninstall_remove_config_flag(self, tmp_path: Path) -> None:
+        """--remove-config removes sova.toml."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path, remove_config=True)
+
+        assert not (tmp_path / "sova.toml").exists()
+        assert not (tmp_path / ".claude" / "sova.db").exists()
+
+    async def test_uninstall_ephemeral_dirs(self, tmp_path: Path) -> None:
+        """Worktrees and agent-control dirs are always removed."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path)
+
+        assert not (tmp_path / ".claude" / "worktrees").exists()
+        assert not (tmp_path / ".claude" / "agent-control").exists()
+
+    async def test_uninstall_unregisters_project(self, tmp_path: Path) -> None:
+        """Project is removed from the registry."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with (
+            patch(
+                "sova.config.registry.list_projects",
+                return_value={"myproj": str(tmp_path)},
+            ),
+            patch("sova.config.registry.unregister_project") as mock_unreg,
+        ):
+            await _uninstall(path=tmp_path)
+
+        mock_unreg.assert_called_once_with("myproj")
+
+    def test_remove_managed_commands_no_manifest(self, tmp_path: Path) -> None:
+        """Without a manifest, no commands are removed."""
+        from sova.cli.commands.project import _remove_managed_commands
+
+        tmp_path.mkdir(exist_ok=True)
+        (tmp_path / "some-cmd.md").write_text("# test")
+        count = _remove_managed_commands(tmp_path)
+        assert count == 0
+        assert (tmp_path / "some-cmd.md").exists()
+
+    async def test_uninstall_no_artifacts(self, tmp_path: Path) -> None:
+        """Running uninstall on a project without SOVA is a no-op."""
+        from sova.cli.commands.project import _uninstall
+
+        with patch("sova.config.registry.list_projects", return_value={}):
+            await _uninstall(path=tmp_path)
+
+    async def test_uninstall_db_failure_continues_to_next(self, tmp_path: Path) -> None:
+        """If one db file fails to delete, remaining files are still attempted."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+        (tmp_path / ".claude" / "sova.db.bak").write_text("backup")
+
+        with (
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch.object(Path, "unlink", side_effect=[OSError("locked"), None]) as mock_unlink,
+        ):
+            failures = await _uninstall(path=tmp_path)
+
+        assert any("sova.db" in f for f in failures)
+        assert mock_unlink.call_count >= 2
+
+    async def test_uninstall_registry_error_is_non_fatal(self, tmp_path: Path) -> None:
+        """Registry errors are captured, not propagated."""
+        from sova.cli.commands.project import _uninstall
+
+        _scaffold_full_install(tmp_path)
+
+        with patch("sova.config.registry.list_projects", side_effect=OSError("corrupt")):
+            failures = await _uninstall(path=tmp_path)
+
+        assert any("registry" in f for f in failures)
+
+    def test_remove_managed_commands_skips_path_traversal(self, tmp_path: Path) -> None:
+        """Manifest entries that escape the managed directory are skipped."""
+        import json
+
+        from sova.commands.manifest import MANIFEST_FILENAME
+
+        managed_dir = tmp_path / "commands"
+        managed_dir.mkdir()
+        safe_file = managed_dir / "safe.md"
+        safe_file.write_text("# safe")
+        outside_file = tmp_path / "outside.md"
+        outside_file.write_text("# outside")
+
+        manifest_data = {
+            "version": 1,
+            "commands": {
+                "safe.md": {"hash": "abc", "managed": True},
+                "../outside.md": {"hash": "def", "managed": True},
+            },
+        }
+        manifest_file = managed_dir / MANIFEST_FILENAME
+        manifest_file.write_text(json.dumps(manifest_data))
+
+        from sova.cli.commands.project import _remove_managed_commands
+
+        count = _remove_managed_commands(managed_dir)
+        assert count == 1
+        assert not safe_file.exists()
+        assert outside_file.exists()
 
 
 # ---------------------------------------------------------------------------

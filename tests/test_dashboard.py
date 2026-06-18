@@ -2158,6 +2158,40 @@ class TestMultiProject:
         assert resp.status_code == 200
         assert "Issue " in resp.text and "#42" in resp.text
 
+    async def test_uninstall_api_accepts_json_body(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch("sova.cli.commands.project._uninstall", new_callable=AsyncMock) as mock_uninstall:
+            mock_uninstall.return_value = []
+            resp = await multi_client.post(
+                "/api/projects/uninstall",
+                json={"slug": "alpha", "remove_files": True, "remove_commands": True, "remove_memory": True},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed"] is True
+        assert data["files_cleaned"] is True
+        mock_uninstall.assert_awaited_once()
+        kwargs = mock_uninstall.call_args.kwargs
+        assert kwargs["remove_commands"] is True
+        assert kwargs["remove_rules"] is False
+        assert kwargs["remove_memory"] is True
+        assert kwargs["remove_config"] is False
+
+    async def test_uninstall_unknown_slug_unregisters(self, multi_client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch("sova.cli.commands.project._uninstall", new_callable=AsyncMock) as mock_uninstall:
+            resp = await multi_client.post(
+                "/api/projects/uninstall",
+                json={"slug": "nonexistent", "remove_files": True},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed"] is False
+        assert data["files_cleaned"] is False
+        mock_uninstall.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Setup API
