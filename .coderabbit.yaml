@@ -98,3 +98,6 @@ knowledge_base:
     scope: "local"
   pull_requests:
     scope: "local"
+  code_guidelines:
+    filePatterns:
+      - "docs/*-guidelines.md"

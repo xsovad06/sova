@@ -15,6 +15,13 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `.claude/rules/architecture.md` | Project structure, key paths, design decisions |
 | `.claude/rules/bash-patterns.md` | Shell scripting conventions and gotchas |
 | `.claude/rules/workflow.md` | Development workflow and task finding |
+| `docs/security-guidelines.md` | Credential handling, input sanitization, subprocess safety |
+| `docs/performance-guidelines.md` | Timeouts, caching, concurrency, async patterns |
+| `docs/error-handling-guidelines.md` | Exceptions, logging, retries, fallbacks, circuit breakers |
+| `docs/api-contracts-guidelines.md` | Dashboard API, adapter ABC, LLM output formats |
+| `docs/database-guidelines.md` | ORM models, session management, migrations |
+| `docs/testing-guidelines.md` | pytest patterns, fixtures, mocking, test isolation |
+| `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
 
 ## Project Structure
 
@@ -39,13 +46,14 @@ sova/
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
-    commands/                      # Command distribution (catalog, templates, manifest, distribution)
+    commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
   commands/                        # 27 standardized commands (markdown with category frontmatter)
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
+  guidelines/                      # Distributable guideline templates (installed to .claude/rules/)
   personas/                        # Tech-stack-specific guidance (markdown)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system
@@ -54,6 +62,8 @@ sova/
   tests/                           # pytest suite (1579+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
+    ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
+    *-guidelines.md                # Domain-specific guidelines (7 files)
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name
