@@ -356,9 +356,14 @@ def create_runtime(runtime_type: str = "claude-code") -> AgentRuntime:
     Raises:
         ValueError: If the runtime type is unknown.
     """
+    if runtime_type == "mock":
+        from sova.ipc.testing import MockRuntime
+
+        return MockRuntime()
+
     cls = _RUNTIMES.get(runtime_type)
     if cls is None:
-        available = ", ".join(sorted(_RUNTIMES))
+        available = ", ".join(sorted([*_RUNTIMES, "mock"]))
         raise ValueError(f"Unknown agent runtime: {runtime_type!r}. Available: {available}")
     return cls()
 
