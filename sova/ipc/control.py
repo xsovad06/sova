@@ -1,7 +1,8 @@
 """Process management for agent subprocesses.
 
-Handles spawning Claude CLI processes, monitoring their lifecycle,
-streaming stdout for dashboard display, and crash detection.
+Handles process lifecycle monitoring, stdout streaming for dashboard
+display, and crash detection. Runtime-specific spawning logic lives
+in the corresponding AgentRuntime implementation (see runtime.py).
 """
 
 from __future__ import annotations
@@ -10,8 +11,6 @@ import asyncio
 import enum
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from decimal import Decimal
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,14 +18,6 @@ from sova.db.models import TaskRun
 from sova.utils.logging import get_logger
 
 log = get_logger(component="ipc.control")
-
-_HEADLESS_PREAMBLE = (
-    "[HEADLESS MODE] You are running as an autonomous agent with no "
-    "human operator. Do not ask for confirmation or pose questions. "
-    "Proceed with git push, force-push, file deletions, and any other "
-    "actions required by the task.\n\n"
-    "Execute the following instruction exactly as specified:\n\n"
-)
 
 
 class ExitClassification(enum.StrEnum):
@@ -42,57 +33,6 @@ class AgentProcess:
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self._proc = proc
-
-    @classmethod
-    async def spawn(
-        cls,
-        *,
-        prompt: str,
-        cwd: Path | str,
-        model: str | None = None,
-        max_budget_usd: Decimal | None = None,
-        env: dict[str, str] | None = None,
-    ) -> AgentProcess:
-        """Spawn a Claude CLI process with the given prompt.
-
-        Args:
-            prompt: The prompt text to send.
-            cwd: Working directory for the process.
-            model: Optional model override.
-            max_budget_usd: Optional budget cap.
-            env: Environment variables. None inherits parent env.
-
-        Returns:
-            An AgentProcess wrapping the subprocess.
-        """
-        args: list[str] = [
-            "claude",
-            "-p",
-            _HEADLESS_PREAMBLE + prompt,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--permission-mode",
-            "auto",
-        ]
-
-        if model:
-            args.extend(["--model", model])
-
-        if max_budget_usd is not None:
-            args.extend(["--max-budget-usd", str(max_budget_usd)])
-
-        log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
-
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=env,
-        )
-
-        return cls(proc)
 
     @property
     def pid(self) -> int:
