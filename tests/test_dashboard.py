@@ -5478,3 +5478,30 @@ class TestExecuteHandoffActionBranches:
         resp = await client.post("/api/handoff/execute", json={"action_id": "weird"})
         assert resp.status_code == 400
         assert "Unknown execution type" in resp.json()["detail"]
+
+
+class TestPrsAPI:
+    async def test_open_prs_returns_list(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[{"number": 1, "title": "Test", "computed_state": "draft"}]),
+        )
+        resp = await client.get("/api/prs/open")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "prs" in data
+        assert len(data["prs"]) == 1
+        assert data["prs"][0]["number"] == 1
+
+    async def test_open_prs_empty(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[]),
+        )
+        resp = await client.get("/api/prs/open")
+        assert resp.status_code == 200
+        assert resp.json()["prs"] == []

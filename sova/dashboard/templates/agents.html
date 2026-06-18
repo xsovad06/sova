@@ -25,11 +25,11 @@
 
 <!-- PR Tracker -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
-  <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50 cursor-pointer select-none" onclick="togglePrTracker()">
+  <button id="pr-tracker-toggle" type="button" class="w-full flex items-center gap-3 px-4 py-3 border-b border-gray-700/50 cursor-pointer select-none text-left" onclick="togglePrTracker()" aria-controls="pr-tracker-list" aria-expanded="true">
     <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
     <span id="pr-tracker-count" class="text-xs text-gray-500"></span>
     <svg id="pr-tracker-chevron" class="ml-auto w-4 h-4 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-  </div>
+  </button>
   <div id="pr-tracker-list" class="divide-y divide-gray-700/30">
     <p class="text-gray-500 text-sm py-4 text-center">Loading PRs...</p>
   </div>
@@ -249,7 +249,7 @@ function renderTaskCard(t) {
   if (linkedPr) {
     var prStateClass = _prStateColors[linkedPr.computed_state] || 'bg-gray-600/30 text-gray-400';
     prBadge = '<span class="text-xs px-1.5 py-0.5 rounded ' + prStateClass + ' whitespace-nowrap shrink-0">' +
-      'PR #' + linkedPr.number + ' ' + escapeHtml(linkedPr.state_label) + '</span>';
+      'PR #' + escapeHtml(String(linkedPr.number)) + ' ' + escapeHtml(linkedPr.state_label) + '</span>';
   }
 
   return '<div class="group flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors relative">' +
@@ -1156,8 +1156,10 @@ function togglePrTracker() {
   localStorage.setItem('sova-pr-tracker-collapsed', _prTrackerCollapsed);
   var list = document.getElementById('pr-tracker-list');
   var chevron = document.getElementById('pr-tracker-chevron');
+  var toggle = document.getElementById('pr-tracker-toggle');
   list.classList.toggle('hidden', _prTrackerCollapsed);
   chevron.style.transform = _prTrackerCollapsed ? 'rotate(-90deg)' : '';
+  if (toggle) toggle.setAttribute('aria-expanded', (!_prTrackerCollapsed).toString());
 }
 
 var _prStateColors = {
@@ -1175,7 +1177,7 @@ var _prActions = {
   changes_requested: { text: 'Address PR', command: 'address-pr', cls: 'bg-accent-peach/20 text-accent-peach hover:bg-accent-peach/30' },
   approved: { text: 'Integrate', command: 'integrate-pr', cls: 'bg-accent/20 text-accent hover:bg-accent/30' },
   approved_ci_green: { text: 'Ship PR', command: 'ship-pr', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
-  ci_failed: { text: 'Ship PR', command: 'ship-pr', cls: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' },
+  ci_failed: { text: 'Address PR', command: 'address-pr', cls: 'bg-accent-red/20 text-accent-red hover:bg-accent-red/30' },
 };
 
 function formatAge(seconds) {
@@ -1188,14 +1190,16 @@ function renderPrRow(pr) {
   var stateClass = _prStateColors[pr.computed_state] || 'bg-gray-600/30 text-gray-400';
   var action = _prActions[pr.computed_state];
   var actionBtn = '';
-  if (action) {
-    actionBtn = '<button onclick="runCommand(\'' + action.command + '\', {pr: ' + pr.number + '})" ' +
+  var prNumber = Number(pr.number);
+  var hasValidPrNumber = Number.isFinite(prNumber);
+  if (action && hasValidPrNumber) {
+    actionBtn = '<button onclick="runCommand(\'' + action.command + '\', {pr: ' + prNumber + '})" ' +
       'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
       action.text + '</button>';
   }
 
   var issueRef = pr.linked_issue
-    ? '<span class="text-xs text-gray-500">#' + pr.linked_issue + '</span>'
+    ? '<span class="text-xs text-gray-500">#' + escapeHtml(String(pr.linked_issue)) + '</span>'
     : '';
 
   var ciDot = '';
@@ -1204,7 +1208,7 @@ function renderPrRow(pr) {
   else if (pr.ci_status === 'pending') ciDot = '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse shrink-0" data-tooltip="CI running"></span>';
 
   return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
-    '<a href="' + escapeHtml(pr.url) + '" target="_blank" class="text-xs font-medium text-accent hover:underline shrink-0">#' + pr.number + '</a>' +
+    '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent hover:underline shrink-0">#' + escapeHtml(String(pr.number)) + '</a>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
     issueRef +
     ciDot +

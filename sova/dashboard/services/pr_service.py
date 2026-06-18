@@ -70,7 +70,15 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
         conclusion = (ctx.get("conclusion") or "").upper()
         if status in ("PENDING", "IN_PROGRESS", "QUEUED"):
             states.add("pending")
-        elif conclusion in ("FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE"):
+        elif conclusion in (
+            "FAILURE",
+            "ERROR",
+            "TIMED_OUT",
+            "STARTUP_FAILURE",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+            "STALE",
+        ):
             states.add("failed")
         elif conclusion == "SUCCESS":
             states.add("passed")
@@ -85,6 +93,8 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
     if "pending" in states:
         return "pending"
     if "passed" in states:
+        return "passed"
+    if "skipped" in states:
         return "passed"
     return "none"
 
@@ -171,6 +181,7 @@ async def list_open_prs_with_state() -> list[dict]:
     try:
         cfg = load_config(project_dir)
     except Exception:
+        log.warning("pr_service.config_load_failed", project_dir=str(project_dir), exc_info=True)
         return []
 
     if not cfg.github_repo:
