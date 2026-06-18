@@ -37,7 +37,7 @@ All subprocess calls go through `sova/utils/shell.py:run()`, which uses `asyncio
 - Arguments are never concatenated into a shell string
 - Default timeout of 300s prevents hung processes
 - `subprocess_error()` factory truncates stderr to 500 chars
-- `AgentProcess.spawn()` in `sova/ipc/control.py` follows the same pattern
+- `ClaudeCodeRuntime.spawn()` in `sova/ipc/runtime.py` follows the same pattern
 
 ### shlex.quote for Dashboard Commands
 

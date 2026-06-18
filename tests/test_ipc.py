@@ -332,7 +332,7 @@ class TestHandoffDB:
 
 
 class TestAgentProcess:
-    async def test_spawn_agent_creates_process(self) -> None:
+    async def test_init_wraps_process(self) -> None:
         from sova.ipc.control import AgentProcess
 
         mock_proc = AsyncMock()
@@ -341,11 +341,7 @@ class TestAgentProcess:
         mock_proc.stderr = AsyncMock()
         mock_proc.returncode = None
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(
-                prompt="Write tests",
-                cwd=Path("/tmp/test"),
-            )
+        ap = AgentProcess(mock_proc)
 
         assert ap.pid == 12345
         assert ap.is_running
@@ -361,8 +357,7 @@ class TestAgentProcess:
         mock_proc.terminate = MagicMock()
         mock_proc.wait = AsyncMock(return_value=0)
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         mock_proc.returncode = None
         await ap.stop()
@@ -378,14 +373,11 @@ class TestAgentProcess:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
-
-        mock_proc.returncode = 0
+        ap = AgentProcess(mock_proc)
         assert not ap.is_running
 
-    async def test_spawn_with_model(self) -> None:
-        from sova.ipc.control import AgentProcess
+    async def test_claude_runtime_spawn_with_model(self) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
 
         mock_proc = AsyncMock()
         mock_proc.pid = 100
@@ -393,13 +385,11 @@ class TestAgentProcess:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            await AgentProcess.spawn(
-                prompt="test",
-                cwd=Path("/tmp"),
-                model="sonnet",
-            )
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await runtime.spawn("test", Path("/tmp"), model="sonnet")
 
+        assert ap.pid == 100
         call_args = mock_exec.call_args
         args = call_args[0]
         assert "--model" in args
@@ -416,8 +406,7 @@ class TestAgentProcess:
         mock_proc.stderr = AsyncMock()
         mock_proc.wait = AsyncMock(return_value=0)
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         mock_proc.returncode = 0
         code = await ap.wait()
@@ -433,8 +422,7 @@ class TestAgentProcess:
         mock_proc.stdout.readline = AsyncMock(side_effect=[b"line 1\n", b"line 2\n", b""])
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         lines = []
         async for line in ap.stdout_lines():
@@ -452,8 +440,7 @@ class TestAgentProcess:
         mock_proc.stderr = AsyncMock()
         mock_proc.stderr.readline = AsyncMock(side_effect=[b"err 1\n", b"err 2\n", b""])
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         lines = []
         async for line in ap.stderr_lines():
@@ -470,8 +457,7 @@ class TestAgentProcess:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = None
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         lines = []
         async for line in ap.stderr_lines():
@@ -490,8 +476,7 @@ class TestExitClassification:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         assert ap.classify_exit(0) == ExitClassification.SUCCESS
 
@@ -504,8 +489,7 @@ class TestExitClassification:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         assert ap.classify_exit(1) == ExitClassification.ERROR
         assert ap.classify_exit(127) == ExitClassification.ERROR
@@ -519,8 +503,7 @@ class TestExitClassification:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         assert ap.classify_exit(128) == ExitClassification.CRASH
         assert ap.classify_exit(137) == ExitClassification.CRASH  # SIGKILL
@@ -536,8 +519,7 @@ class TestExitClassification:
         mock_proc.stderr = AsyncMock()
         mock_proc.wait = AsyncMock(return_value=0)
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         mock_proc.returncode = 0
         code, classification = await ap.wait_classified()
@@ -554,8 +536,7 @@ class TestExitClassification:
         mock_proc.stderr = AsyncMock()
         mock_proc.wait = AsyncMock(return_value=137)
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         mock_proc.returncode = 137
         code, classification = await ap.wait_classified()
@@ -604,8 +585,7 @@ class TestProcessTracker:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         tracker.register(task_run_id=1, process=ap)
         assert tracker.get(1) is ap
@@ -622,8 +602,7 @@ class TestProcessTracker:
         mock_proc.stdout = AsyncMock()
         mock_proc.stderr = AsyncMock()
 
-        with patch("sova.ipc.control.asyncio.create_subprocess_exec", return_value=mock_proc):
-            ap = await AgentProcess.spawn(prompt="test", cwd=Path("/tmp"))
+        ap = AgentProcess(mock_proc)
 
         tracker.register(task_run_id=1, process=ap)
         tracker.unregister(1)
