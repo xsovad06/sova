@@ -211,6 +211,33 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     return None
 
 
+async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
+    """List all open PRs with metadata via a single gh CLI call."""
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--json",
+        "number,title,headRefName,url,reviewDecision,isDraft,author,labels,createdAt,body,state,statusCheckRollup",
+        "--limit",
+        "100",
+        env=env,
+    )
+    if not result.success:
+        log.warning("git.list_open_prs.failed", stderr=result.stderr[:200])
+        return []
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+
+
 async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> str:
     """Get the head branch name of a PR. Returns empty string on failure."""
     env = await resolve_gh_env(github_user)
