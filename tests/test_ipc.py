@@ -376,26 +376,6 @@ class TestAgentProcess:
         ap = AgentProcess(mock_proc)
         assert not ap.is_running
 
-    async def test_claude_runtime_spawn_with_model(self) -> None:
-        from sova.ipc.runtime import ClaudeCodeRuntime
-
-        mock_proc = AsyncMock()
-        mock_proc.pid = 100
-        mock_proc.returncode = None
-        mock_proc.stdout = AsyncMock()
-        mock_proc.stderr = AsyncMock()
-
-        runtime = ClaudeCodeRuntime()
-        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-            ap = await runtime.spawn("test", Path("/tmp"), model="sonnet")
-
-        assert ap.pid == 100
-        call_args = mock_exec.call_args
-        args = call_args[0]
-        assert "--model" in args
-        model_idx = args.index("--model")
-        assert args[model_idx + 1] == "sonnet"
-
     async def test_wait_returns_exit_code(self) -> None:
         from sova.ipc.control import AgentProcess
 
@@ -935,6 +915,87 @@ class TestClaudeCodeRuntime:
 
         assert ok is False
         assert "not found" in detail
+
+    async def test_spawn_with_model(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 100
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await runtime.spawn("test", tmp_path, model="sonnet")
+
+        assert ap.pid == 100
+        args = mock_exec.call_args[0]
+        assert "--model" in args
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "sonnet"
+
+    async def test_spawn_with_max_budget(self, tmp_path: Path) -> None:
+        from decimal import Decimal
+
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 101
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await runtime.spawn("test", tmp_path, max_budget_usd=Decimal("5.00"))
+
+        assert ap.pid == 101
+        args = mock_exec.call_args[0]
+        assert "--max-budget-usd" in args
+        budget_idx = args.index("--max-budget-usd")
+        assert args[budget_idx + 1] == "5.00"
+
+    async def test_spawn_prepends_headless_preamble(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime, _HEADLESS_PREAMBLE
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 102
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await runtime.spawn("my prompt", tmp_path)
+
+        args = mock_exec.call_args[0]
+        # -p flag value should be preamble + prompt
+        p_idx = args.index("-p")
+        assert args[p_idx + 1] == _HEADLESS_PREAMBLE + "my prompt"
+
+    async def test_spawn_includes_required_cli_flags(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import ClaudeCodeRuntime
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 103
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        runtime = ClaudeCodeRuntime()
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await runtime.spawn("test", tmp_path)
+
+        args = mock_exec.call_args[0]
+        # Verify required flags for headless operation
+        assert "--output-format" in args
+        fmt_idx = args.index("--output-format")
+        assert args[fmt_idx + 1] == "stream-json"
+        assert "--verbose" in args
+        assert "--permission-mode" in args
+        pm_idx = args.index("--permission-mode")
+        assert args[pm_idx + 1] == "auto"
 
 
 class TestAiderRuntime:
