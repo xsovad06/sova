@@ -17,7 +17,7 @@ from sova.cli.commands.harden import harden
 from sova.cli.commands.mcp import app as mcp_app
 from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_pr
-from sova.cli.commands.project import install, setup
+from sova.cli.commands.project import install, setup, uninstall
 from sova.cli.commands.run import parallel, run_issue, watch
 from sova.cli.commands.server import app as server_app
 from sova.cli.commands.triage import triage
@@ -42,6 +42,7 @@ app.command(name="harden")(harden)
 # Project
 app.command(name="install")(install)
 app.command(name="setup")(setup)
+app.command(name="uninstall")(uninstall)
 
 # PR
 app.command(name="address-pr")(address_pr)
