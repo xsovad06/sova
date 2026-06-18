@@ -13,13 +13,13 @@
      - In the Mermaid dependency graph (Section 1):
        Change the node's class from its current style to :::done
        Example: I158["#158 AgentRuntime ABC"]:::autonomous
-            --> I158["#158 AgentRuntime ABC\n(DONE)"]:::done
+            ~~> I158["#158 AgentRuntime ABC\n(DONE)"]:::done
      - In the execution timeline (Section 2):
        Add class="done" to the <div class="task-row"> element
        Change the badge to: <span class="task-badge badge-done">done</span>
      - In the Gantt chart (Section 3):
        Add the "done" keyword after the colon
-       Example: :t158, 2026-06-23, 1d  -->  :done, t158, 2026-06-23, 1d
+       Example: :t158, 2026-06-23, 1d  ~~>  :done, t158, 2026-06-23, 1d
      - In Key Notes (Section 4):
        Move the issue number from the agent strategy list to "Recently completed"
 
@@ -46,8 +46,8 @@
      - Move it to the "Deferred" count in Key Notes
 
   5. DEPENDENCY CHANGED
-     - In the Mermaid graph: add/remove arrow lines (A --> B for hard deps,
-       A -.-> B for soft/optional deps)
+     - In the Mermaid graph: add/remove arrow lines (A ~~> B for hard deps,
+       A -..> B for soft/optional deps)
      - In the timeline: add/update/remove <div class="dep-arrow"> entries
 
   6. DATES SHIFTED
