@@ -212,7 +212,7 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
 
 
 async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
-    """List all open PRs with metadata via a single gh CLI call."""
+    """List open PRs (up to 100) with metadata via a single gh CLI call."""
     env = await resolve_gh_env(github_user)
     result = await run(
         "gh",
@@ -223,7 +223,8 @@ async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
         "--state",
         "open",
         "--json",
-        "number,title,headRefName,url,reviewDecision,isDraft,author,labels,createdAt,body,state,statusCheckRollup",
+        "number,title,headRefName,url,reviewDecision,isDraft,author,"
+        "labels,createdAt,body,state,statusCheckRollup,mergeable",
         "--limit",
         "100",
         env=env,
@@ -235,6 +236,7 @@ async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
+        log.warning("git.list_open_prs.parse_failed", stdout=result.stdout[:200], exc_info=True)
         return []
 
 

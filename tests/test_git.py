@@ -1207,3 +1207,39 @@ class TestParseDiffLines:
         result = parse_diff_lines(diff)
         assert result["existing.py"] == {1, 2, 3}
         assert result["brand_new.py"] == {1, 2}
+
+
+class TestListOpenPrs:
+    async def test_success(self) -> None:
+        from sova.git.pr import list_open_prs
+
+        prs = [{"number": 1, "title": "PR1"}]
+        mock_result = AsyncMock()
+        mock_result.success = True
+        mock_result.stdout = json.dumps(prs)
+
+        with patch("sova.git.pr.run", return_value=mock_result), patch("sova.git.pr.resolve_gh_env", return_value={}):
+            result = await list_open_prs(repo="owner/repo")
+        assert result == prs
+
+    async def test_cli_failure(self) -> None:
+        from sova.git.pr import list_open_prs
+
+        mock_result = AsyncMock()
+        mock_result.success = False
+        mock_result.stderr = "auth error"
+
+        with patch("sova.git.pr.run", return_value=mock_result), patch("sova.git.pr.resolve_gh_env", return_value={}):
+            result = await list_open_prs(repo="owner/repo")
+        assert result == []
+
+    async def test_json_decode_error(self) -> None:
+        from sova.git.pr import list_open_prs
+
+        mock_result = AsyncMock()
+        mock_result.success = True
+        mock_result.stdout = "not json"
+
+        with patch("sova.git.pr.run", return_value=mock_result), patch("sova.git.pr.resolve_gh_env", return_value={}):
+            result = await list_open_prs(repo="owner/repo")
+        assert result == []
