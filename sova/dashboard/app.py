@@ -47,6 +47,25 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.app")
 
+
+class RegisterRequest(BaseModel):
+    path: str
+    slug: str | None = None
+
+
+class UnregisterRequest(BaseModel):
+    slug: str
+
+
+class UninstallRequest(BaseModel):
+    slug: str
+    remove_files: bool = True
+    remove_commands: bool = False
+    remove_rules: bool = False
+    remove_memory: bool = False
+    remove_config: bool = False
+
+
 BASE = Path(__file__).parent
 
 _AGENTS_URL = "/agents"
@@ -222,13 +241,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def api_list_projects():
         return {"projects": list_projects()}
 
-    class RegisterRequest(BaseModel):
-        path: str
-        slug: str | None = None
-
-    class UnregisterRequest(BaseModel):
-        slug: str
-
     @app.post("/api/projects/register")
     async def api_register_project(req: RegisterRequest):
         p = Path(req.path)
@@ -240,6 +252,40 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def api_unregister_project(req: UnregisterRequest):
         removed = unregister_project(req.slug)
         return {"removed": removed}
+
+    @app.post("/api/projects/uninstall")
+    async def api_uninstall_project(req: UninstallRequest) -> dict[str, bool]:
+        from fastapi import HTTPException
+
+        from sova.config.registry import get_project_path
+
+        slug = req.slug.lower()
+        project_path = get_project_path(slug)
+        if project_path is None:
+            removed = unregister_project(slug)
+            return {"removed": removed, "files_cleaned": False}
+
+        if req.remove_files:
+            from sova.cli.commands.project import _uninstall
+
+            try:
+                failures = await _uninstall(
+                    path=project_path,
+                    remove_commands=req.remove_commands,
+                    remove_rules=req.remove_rules,
+                    remove_memory=req.remove_memory,
+                    remove_config=req.remove_config,
+                )
+            except SystemExit:
+                removed = unregister_project(slug)
+                return {"removed": removed, "files_cleaned": False}
+            except Exception:
+                log.exception("Uninstall failed for %s", slug)
+                raise HTTPException(status_code=500, detail="Failed to uninstall project") from None
+            return {"removed": True, "files_cleaned": len(failures) == 0}
+
+        removed = unregister_project(slug)
+        return {"removed": removed, "files_cleaned": False}
 
     # -- Setup page (global, not project-scoped) --
     @app.get("/setup")
