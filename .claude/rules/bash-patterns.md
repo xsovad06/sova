@@ -48,6 +48,7 @@ main "$@"
 - **Subshell scope**: `var=x | while ...` -- the while runs in a subshell, var changes are lost. Use process substitution: `while ... done < <(command)`.
 - **readlink -f**: not available on macOS by default. Use `cd "$(dirname "$0")" && pwd` pattern instead.
 - **Arrays**: `"${arr[@]+"${arr[@]}"}"` for safe expansion of potentially empty arrays.
+- **Broken pipe with `pipefail`**: `sed ... | head -N` causes SIGPIPE when `head` closes early, which `set -o pipefail` treats as failure. Use `sed`'s quit command instead: `sed -n '...; Nq'` to limit output without a pipe.
 
 ## ShellCheck
 All bash scripts must pass `shellcheck` with no warnings. Common suppressions:

@@ -53,9 +53,10 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
 
 def _derive_project_name(cfg: ProjectConfig) -> str:
     """Derive a human-readable project name from config."""
-    if cfg.github_repo and "/" in cfg.github_repo:
-        return cfg.github_repo.split("/")[-1]
-    return cfg.github_repo or "project"
+    repo = (cfg.github_repo or "").strip().strip("/")
+    if "/" in repo:
+        return repo.rsplit("/", 1)[-1] or "project"
+    return repo or "project"
 
 
 def _derive_scopes(cfg: ProjectConfig) -> str:

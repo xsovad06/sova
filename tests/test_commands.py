@@ -618,6 +618,10 @@ class TestGuidelines:
         result = update_guidelines(guidelines_dir, rules_dir, cfg)
         assert "security.md" in result.conflicts
 
+        forced = update_guidelines(guidelines_dir, rules_dir, cfg, force=True)
+        assert "security.md" not in forced.conflicts
+        assert forced.updated == 1
+
     def test_install_guidelines_empty_dir(self, tmp_path: Path, rules_dir: Path) -> None:
         """install_guidelines() handles missing guidelines directory gracefully."""
         from sova.commands.distribution import install_guidelines
@@ -654,3 +658,12 @@ class TestGuidelines:
         cfg = ProjectConfig(github_repo="", test_cmd="pytest", lint_cmd="ruff")
         variables = build_variables(cfg)
         assert variables["project_name"] == "project"
+
+    def test_build_variables_project_name_trailing_slash(self) -> None:
+        """build_variables() handles trailing-slash repos gracefully."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/", test_cmd="pytest", lint_cmd="ruff")
+        variables = build_variables(cfg)
+        assert variables["project_name"] == "owner"
