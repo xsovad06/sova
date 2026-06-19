@@ -24,6 +24,7 @@ class ComputedPRState(StrEnum):
     CHANGES_REQUESTED = "changes_requested"
     APPROVED_CI_GREEN = "approved_ci_green"
     APPROVED = "approved"
+    REVIEW_ADDRESSED = "review_addressed"
     AWAITING_REVIEW = "awaiting_review"
 
 
@@ -34,6 +35,7 @@ _STATE_LABELS: dict[str, str] = {
     "changes_requested": "Changes Requested",
     "approved_ci_green": "Ready to Merge",
     "approved": "Approved",
+    "review_addressed": "In Review",
     "awaiting_review": "Awaiting Review",
 }
 
@@ -105,6 +107,8 @@ def compute_pr_state(
     review_decision: str,
     ci_status: str,
     mergeable: str,
+    latest_reviews: list[dict] | None = None,
+    all_threads_resolved: bool = False,
 ) -> str:
     """Derive a single computed state from PR signals."""
     if is_draft:
@@ -119,6 +123,15 @@ def compute_pr_state(
         return ComputedPRState.APPROVED_CI_GREEN
     if review_decision == "APPROVED":
         return ComputedPRState.APPROVED
+    if latest_reviews:
+        has_active_changes_requested = any(r.get("state") == "CHANGES_REQUESTED" for r in latest_reviews)
+        if has_active_changes_requested:
+            return ComputedPRState.CHANGES_REQUESTED
+        if all_threads_resolved and ci_status == "passed" and mergeable == "MERGEABLE":
+            return ComputedPRState.APPROVED_CI_GREEN
+        if all_threads_resolved:
+            return ComputedPRState.APPROVED
+        return ComputedPRState.REVIEW_ADDRESSED
     return ComputedPRState.AWAITING_REVIEW
 
 
@@ -129,6 +142,9 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     review_decision = raw.get("reviewDecision") or ""
     is_draft = bool(raw.get("isDraft"))
     mergeable = raw.get("mergeable") or ""
+    latest_reviews = raw.get("latestReviews") or None
+    thread_total, thread_resolved = raw.get("_thread_counts", (0, 0))
+    all_threads_resolved = thread_total > 0 and thread_resolved >= thread_total
 
     created = raw.get("createdAt") or ""
     age_seconds = 0
@@ -144,6 +160,8 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         review_decision=review_decision,
         ci_status=ci_status,
         mergeable=mergeable,
+        latest_reviews=latest_reviews,
+        all_threads_resolved=all_threads_resolved,
     )
 
     author = raw.get("author") or {}
@@ -172,7 +190,7 @@ async def list_open_prs_with_state() -> list[dict]:
     """List all open PRs with computed state. Cached per-repo for 25s."""
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
-    from sova.git.pr import list_open_prs
+    from sova.git.pr import get_review_thread_counts, list_open_prs
 
     project_dir = get_project_dir()
     if not project_dir:
@@ -194,6 +212,16 @@ async def list_open_prs_with_state() -> list[dict]:
         return cached[1]
 
     raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user)
+
+    pr_numbers = [p["number"] for p in raw_prs]
+    try:
+        thread_counts = await get_review_thread_counts(pr_numbers, repo=repo, github_user=cfg.github_user)
+    except Exception:
+        log.warning("pr_service.thread_counts_failed", exc_info=True)
+        thread_counts = {}
+    for pr in raw_prs:
+        pr["_thread_counts"] = thread_counts.get(pr["number"], (0, 0))
+
     wall_now = time.time()
     result = [_enrich_pr(pr, wall_now) for pr in raw_prs]
     result.sort(key=lambda p: p["number"], reverse=True)

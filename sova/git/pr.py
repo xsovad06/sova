@@ -224,7 +224,7 @@ async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
         "open",
         "--json",
         "number,title,headRefName,url,reviewDecision,isDraft,author,"
-        "labels,createdAt,body,state,statusCheckRollup,mergeable",
+        "labels,createdAt,body,state,statusCheckRollup,mergeable,latestReviews",
         "--limit",
         "100",
         env=env,
@@ -238,6 +238,53 @@ async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
     except json.JSONDecodeError:
         log.warning("git.list_open_prs.parse_failed", stdout=result.stdout[:200], exc_info=True)
         return []
+
+
+async def get_review_thread_counts(
+    pr_numbers: list[int],
+    *,
+    repo: str,
+    github_user: str = "",
+) -> dict[int, tuple[int, int]]:
+    """Batch-fetch review thread counts (total, resolved) for multiple PRs.
+
+    Returns {pr_number: (total_threads, resolved_threads)}.
+    Uses a single GraphQL call for efficiency.
+    """
+    if not pr_numbers:
+        return {}
+
+    owner, name = repo.split("/", 1)
+    aliases = []
+    for pr_num in pr_numbers:
+        aliases.append(
+            f"pr{pr_num}: pullRequest(number:{pr_num}) {{"
+            f" reviewThreads(first:100) {{ totalCount nodes {{ isResolved }} }} }}"
+        )
+
+    query = f'{{ repository(owner:"{owner}", name:"{name}") {{ {" ".join(aliases)} }} }}'
+    env = await resolve_gh_env(github_user)
+    result = await run("gh", "api", "graphql", "-f", f"query={query}", env=env)
+
+    if not result.success:
+        log.warning("git.review_threads.failed", stderr=result.stderr[:200])
+        return {}
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        log.warning("git.review_threads.parse_failed", exc_info=True)
+        return {}
+
+    counts: dict[int, tuple[int, int]] = {}
+    repo_data = data.get("data", {}).get("repository", {})
+    for pr_num in pr_numbers:
+        pr_data = repo_data.get(f"pr{pr_num}", {})
+        threads = pr_data.get("reviewThreads", {})
+        total = threads.get("totalCount", 0)
+        resolved = sum(1 for n in threads.get("nodes", []) if n.get("isResolved"))
+        counts[pr_num] = (total, resolved)
+    return counts
 
 
 async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> str:
