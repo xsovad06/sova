@@ -114,7 +114,7 @@ async def get_agent_status(
             error_message=task_run.error_message,
         )
     except Exception:
-        log.warning("Failed to get agent status for run %s", run_id, exc_info=True)
+        log.warning(f"Failed to get agent status for run {run_id}", exc_info=True)
         return None
 
 
@@ -196,7 +196,7 @@ async def get_all_agent_statuses(
                     )
                 )
             except Exception:
-                log.warning("Failed to compute status for run %s", run.id, exc_info=True)
+                log.warning(f"Failed to compute status for run {run.id}", exc_info=True)
                 continue
 
     return statuses
