@@ -59,12 +59,16 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     all_handoffs = handoff_service.get_all_handoffs()
     handoff = None
     action = None
-    norm_issue = req.issue.lstrip("#").strip() if req.issue else ""
+    norm_issue = str(req.issue).lstrip("#").strip() if req.issue else ""
     for h in all_handoffs:
-        if norm_issue and h.get("issue", "").lstrip("#").strip() != norm_issue:
+        h_issue = str(h.get("issue") or "").lstrip("#").strip()
+        if norm_issue and h_issue != norm_issue:
             continue
         actions = h.get("next_actions", [])
-        match = next((a for a in actions if a.get("id") == req.action_id), None)
+        match = next(
+            (a for a in actions if req.action_id in {a.get("id"), a.get("command"), a.get("label")}),
+            None,
+        )
         if match:
             handoff = h
             action = match
@@ -73,10 +77,13 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     if not handoff:
         synthesized = await get_synthesized_handoff()
         if synthesized:
-            s_issue = synthesized.get("issue", "").lstrip("#").strip()
+            s_issue = str(synthesized.get("issue") or "").lstrip("#").strip()
             if not norm_issue or s_issue == norm_issue:
                 actions = synthesized.get("next_actions", [])
-                match = next((a for a in actions if a.get("id") == req.action_id), None)
+                match = next(
+                    (a for a in actions if req.action_id in {a.get("id"), a.get("command"), a.get("label")}),
+                    None,
+                )
                 if match:
                     handoff = synthesized
                     action = match
@@ -87,17 +94,17 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     exec_params = handoff_service.build_action_command(action)
 
     if handoff.get("source") != "pr-review-state":
-        issue = handoff.get("issue", "") or None
+        issue = str(handoff.get("issue") or "") or None
         handoff_service.clear_handoff(issue=issue)
     else:
-        issue = handoff.get("issue", "")
+        issue = str(handoff.get("issue") or "")
         pr = handoff.get("pr_number")
         if issue and pr is not None:
             invalidate_synthesis_cache(issue, pr)
 
     if exec_params["type"] == "agent":
         result = await control_service.start_agent(
-            exec_params.get("issue", ""),
+            exec_params.get("issue") or "",
             role=exec_params.get("role"),
             pr_number=exec_params.get("pr_number"),
         )
