@@ -477,8 +477,10 @@ async def test_estimation_partial_step_history(session: AsyncSession):
     # (per finding #8 fix: missing steps -> None). The key fix from finding #1 is that
     # we no longer reject ALL data just because one step has < 2 runs.
     # With 6 runs total >= _MIN_HISTORY_RUNS, the averages dict is populated.
-    # However, remaining steps without history cause None (finding #8).
+    # However, remaining steps without history cause None (per _compute_estimation
+    # line 331: "if any remaining step has no historical data, return None").
     # This is correct behavior -- partial estimation is unreliable.
+    assert status.estimated_remaining_ms is None
 
 
 @pytest.mark.asyncio
