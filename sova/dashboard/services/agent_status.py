@@ -10,16 +10,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from sova.db.models import StepExecution, TaskRun
 
 log = get_logger(component="dashboard.agent_status")
 
 DEFAULT_STUCK_THRESHOLD_MS = 300_000  # 5 minutes
-
-_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
 
 _HISTORY_LIMIT = 10
 _MIN_HISTORY_RUNS = 2
@@ -88,9 +93,7 @@ async def get_agent_status(
         # Estimated remaining time
         estimated_remaining_ms = await _estimate_remaining_ms(
             session,
-            progress["pipeline_variant"],
             progress["steps"],
-            progress["step_index"],
             completed,
         )
 
@@ -112,9 +115,9 @@ async def get_agent_status(
 
 
 async def get_all_agent_statuses(
-    project_dir: Path | None = None,
     *,
     stuck_threshold_ms: int = DEFAULT_STUCK_THRESHOLD_MS,
+    project_dir: Path | None = None,
 ) -> list[AgentStatus]:
     """Return AgentStatus for all non-terminal TaskRuns.
 
@@ -167,7 +170,6 @@ async def get_all_agent_statuses(
             estimated_remaining_ms = _compute_estimation(
                 estimation_cache[variant],
                 progress["steps"],
-                progress["step_index"],
                 completed,
             )
 
@@ -206,7 +208,7 @@ def _compute_progress_pct(status: str, step_index: int, total_steps: int, comple
     return completed_count / total_steps * 100
 
 
-def _compute_time_in_step(task_run: object, steps: list, is_terminal: bool) -> int:
+def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], is_terminal: bool) -> int:
     """Compute milliseconds the run has been in its current step."""
     if is_terminal:
         return 0
@@ -236,19 +238,17 @@ def _compute_time_in_step(task_run: object, steps: list, is_terminal: bool) -> i
 
 
 async def _estimate_remaining_ms(
-    session: object,
-    pipeline_variant: str,
+    session: AsyncSession,
     pipeline_steps: list[str],
-    step_index: int,
     completed_steps: list[str],
 ) -> int | None:
     """Estimate remaining time based on historical step durations."""
     averages = await _fetch_step_averages(session, pipeline_steps)
-    return _compute_estimation(averages, pipeline_steps, step_index, completed_steps)
+    return _compute_estimation(averages, pipeline_steps, completed_steps)
 
 
 async def _fetch_step_averages(
-    session: object,
+    session: AsyncSession,
     pipeline_steps: list[str],
 ) -> dict[str, float]:
     """Fetch average duration per step name from historical completed runs.
@@ -275,15 +275,13 @@ async def _fetch_step_averages(
         .subquery()
     )
 
-    # Count distinct runs
-    count_result = await session.execute(select(func.count()).select_from(subq))
-    run_count = count_result.scalar() or 0
-    if run_count < _MIN_HISTORY_RUNS:
-        return {}
-
     # Average duration per step name across those runs
     avg_result = await session.execute(
-        select(StepExecution.step_name, func.avg(StepExecution.duration_ms))
+        select(
+            StepExecution.step_name,
+            func.avg(StepExecution.duration_ms),
+            func.count(StepExecution.task_run_id.distinct()),
+        )
         .where(
             StepExecution.task_run_id.in_(select(subq.c.task_run_id)),
             StepExecution.status == "done",
@@ -291,14 +289,16 @@ async def _fetch_step_averages(
         )
         .group_by(StepExecution.step_name)
     )
+    rows = avg_result.all()
+    if not rows or min(row[2] for row in rows) < _MIN_HISTORY_RUNS:
+        return {}
 
-    return {row[0]: float(row[1]) for row in avg_result.all()}
+    return {row[0]: float(row[1]) for row in rows}
 
 
 def _compute_estimation(
     averages: dict[str, float],
     pipeline_steps: list[str],
-    step_index: int,
     completed_steps: list[str],
 ) -> int | None:
     """Sum average durations for remaining steps. None if no history."""
