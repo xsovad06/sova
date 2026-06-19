@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import time
+from unittest.mock import AsyncMock
+
+import pytest
 
 from sova.dashboard.services.pr_service import (
     ComputedPRState,
@@ -14,7 +18,14 @@ from sova.dashboard.services.pr_service import (
 
 
 def _state(**kwargs: object) -> str:
-    defaults = {"is_draft": False, "review_decision": "", "ci_status": "none", "mergeable": ""}
+    defaults: dict[str, object] = {
+        "is_draft": False,
+        "review_decision": "",
+        "ci_status": "none",
+        "mergeable": "",
+        "latest_reviews": None,
+        "all_threads_resolved": False,
+    }
     defaults.update(kwargs)
     return compute_pr_state(**defaults)  # type: ignore[arg-type]
 
@@ -55,6 +66,31 @@ class TestComputePrState:
     def test_ci_running_beats_approved(self) -> None:
         result = _state(review_decision="APPROVED", ci_status="pending", mergeable="MERGEABLE")
         assert result == ComputedPRState.CI_RUNNING
+
+    def test_threads_resolved_ci_green_ready_to_merge(self) -> None:
+        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
+        result = _state(
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_threads_resolved_ci_not_green_approved(self) -> None:
+        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
+        result = _state(latest_reviews=reviews, all_threads_resolved=True, ci_status="none")
+        assert result == ComputedPRState.APPROVED
+
+    def test_threads_not_resolved_stays_in_review(self) -> None:
+        reviews = [{"state": "COMMENTED", "author": {"login": "reviewer"}}]
+        result = _state(latest_reviews=reviews, all_threads_resolved=False, ci_status="passed")
+        assert result == ComputedPRState.REVIEW_ADDRESSED
+
+    def test_threads_resolved_with_changes_requested_stays_blocked(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "reviewer"}}]
+        result = _state(latest_reviews=reviews, all_threads_resolved=True, ci_status="passed")
+        assert result == ComputedPRState.CHANGES_REQUESTED
 
 
 class TestParseLinkedIssue:
@@ -259,3 +295,113 @@ class TestEnrichPr:
             time.time(),
         )
         assert result["computed_state"] == ComputedPRState.CHANGES_REQUESTED
+
+    def test_threads_resolved_ready_to_merge(self) -> None:
+        raw = self._raw_pr(
+            reviewDecision="",
+            latestReviews=[{"state": "COMMENTED", "author": {"login": "reviewer"}}],
+            _thread_counts=(5, 5),
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["computed_state"] == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_threads_partially_resolved_in_review(self) -> None:
+        raw = self._raw_pr(
+            reviewDecision="",
+            latestReviews=[{"state": "COMMENTED", "author": {"login": "reviewer"}}],
+            _thread_counts=(5, 3),
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["computed_state"] == ComputedPRState.REVIEW_ADDRESSED
+
+
+# ---------------------------------------------------------------------------
+# get_review_thread_counts
+# ---------------------------------------------------------------------------
+
+
+class TestGetReviewThreadCounts:
+    """Tests for get_review_thread_counts in git/pr.py."""
+
+    @pytest.mark.asyncio
+    async def test_empty_list_returns_empty(self) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        result = await get_review_thread_counts([], repo="owner/repo")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_parses_thread_counts(self, monkeypatch) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pr10": {
+                        "reviewThreads": {
+                            "totalCount": 3,
+                            "nodes": [
+                                {"isResolved": True},
+                                {"isResolved": False},
+                                {"isResolved": True},
+                            ],
+                        }
+                    },
+                    "pr20": {
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": [{"isResolved": False}],
+                        }
+                    },
+                }
+            }
+        }
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10, 20], repo="owner/repo")
+        assert result[10] == (3, 2)
+        assert result[20] == (1, 0)
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_failure(self, monkeypatch) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        mock_run = AsyncMock()
+        mock_run.return_value.success = False
+        mock_run.return_value.stderr = "error"
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10], repo="owner/repo")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_bad_json(self, monkeypatch) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = "not json"
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10], repo="owner/repo")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_handles_missing_pr_data(self, monkeypatch) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        graphql_response = {"data": {"repository": {}}}
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10], repo="owner/repo")
+        assert result[10] == (0, 0)
