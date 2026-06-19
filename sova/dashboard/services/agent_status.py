@@ -59,59 +59,63 @@ async def get_agent_status(
 
     Returns None if the run_id does not exist.
     """
-    from sova.dashboard.services.agent_lifecycle import get_step_progress
-    from sova.db.models import StepExecution, TaskRun
-    from sova.db.session import get_session
+    try:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+        from sova.db.models import StepExecution, TaskRun
+        from sova.db.session import get_session
 
-    async with await get_session(project_dir=project_dir) as session:
-        task_run = await session.get(TaskRun, run_id)
-        if task_run is None:
-            return None
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            if task_run is None:
+                return None
 
-        progress = get_step_progress(task_run.current_step, role=task_run.role, pr_number=task_run.pr_number)
+            progress = get_step_progress(task_run.current_step, role=task_run.role, pr_number=task_run.pr_number)
 
-        # Fetch step executions for this run
-        result = await session.execute(
-            select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
+            # Fetch step executions for this run
+            result = await session.execute(
+                select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
+            )
+            steps = result.scalars().all()
+
+            completed = [s.step_name for s in steps if s.status == "done"]
+            is_terminal = task_run.status in _TERMINAL_STATUSES
+
+            # Progress percentage
+            step_progress_pct = _compute_progress_pct(
+                task_run.status, progress["step_index"], progress["total_steps"], len(completed)
+            )
+
+            # Time in step
+            time_in_step_ms = _compute_time_in_step(task_run, steps, is_terminal=is_terminal)
+
+            # Stuck detection
+            is_stuck = not is_terminal and time_in_step_ms > stuck_threshold_ms
+
+            # Estimated remaining time
+            estimated_remaining_ms = await _estimate_remaining_ms(
+                session,
+                progress["steps"],
+                completed,
+            )
+
+        return AgentStatus(
+            run_id=run_id,
+            status=task_run.status,
+            role=task_run.role,
+            pipeline_variant=progress["pipeline_variant"],
+            current_step=task_run.current_step,
+            step_index=progress["step_index"],
+            total_steps=progress["total_steps"],
+            step_progress_pct=step_progress_pct,
+            time_in_step_ms=time_in_step_ms,
+            is_stuck=is_stuck,
+            estimated_remaining_ms=estimated_remaining_ms,
+            completed_steps=completed,
+            error_message=task_run.error_message,
         )
-        steps = result.scalars().all()
-
-        completed = [s.step_name for s in steps if s.status == "done"]
-        is_terminal = task_run.status in _TERMINAL_STATUSES
-
-        # Progress percentage
-        step_progress_pct = _compute_progress_pct(
-            task_run.status, progress["step_index"], progress["total_steps"], len(completed)
-        )
-
-        # Time in step
-        time_in_step_ms = _compute_time_in_step(task_run, steps, is_terminal)
-
-        # Stuck detection
-        is_stuck = not is_terminal and time_in_step_ms > stuck_threshold_ms
-
-        # Estimated remaining time
-        estimated_remaining_ms = await _estimate_remaining_ms(
-            session,
-            progress["steps"],
-            completed,
-        )
-
-    return AgentStatus(
-        run_id=run_id,
-        status=task_run.status,
-        role=task_run.role,
-        pipeline_variant=progress["pipeline_variant"],
-        current_step=task_run.current_step,
-        step_index=progress["step_index"],
-        total_steps=progress["total_steps"],
-        step_progress_pct=step_progress_pct,
-        time_in_step_ms=time_in_step_ms,
-        is_stuck=is_stuck,
-        estimated_remaining_ms=estimated_remaining_ms,
-        completed_steps=completed,
-        error_message=task_run.error_message,
-    )
+    except Exception:
+        log.warning("Failed to get agent status for run %s", run_id, exc_info=True)
+        return None
 
 
 async def get_all_agent_statuses(
@@ -152,44 +156,48 @@ async def get_all_agent_statuses(
 
         statuses: list[AgentStatus] = []
         for run in runs:
-            progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
-            run_steps = steps_by_run.get(run.id, [])
-            completed = [s.step_name for s in run_steps if s.status == "done"]
+            try:
+                progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
+                run_steps = steps_by_run.get(run.id, [])
+                completed = [s.step_name for s in run_steps if s.status == "done"]
 
-            step_progress_pct = _compute_progress_pct(
-                run.status, progress["step_index"], progress["total_steps"], len(completed)
-            )
-            time_in_step_ms = _compute_time_in_step(run, run_steps, is_terminal=False)
-            is_stuck = time_in_step_ms > stuck_threshold_ms
-
-            # Estimation: fetch averages once per variant
-            variant = progress["pipeline_variant"]
-            if variant not in estimation_cache:
-                estimation_cache[variant] = await _fetch_step_averages(session, progress["steps"])
-
-            estimated_remaining_ms = _compute_estimation(
-                estimation_cache[variant],
-                progress["steps"],
-                completed,
-            )
-
-            statuses.append(
-                AgentStatus(
-                    run_id=run.id,
-                    status=run.status,
-                    role=run.role,
-                    pipeline_variant=variant,
-                    current_step=run.current_step,
-                    step_index=progress["step_index"],
-                    total_steps=progress["total_steps"],
-                    step_progress_pct=step_progress_pct,
-                    time_in_step_ms=time_in_step_ms,
-                    is_stuck=is_stuck,
-                    estimated_remaining_ms=estimated_remaining_ms,
-                    completed_steps=completed,
-                    error_message=run.error_message,
+                step_progress_pct = _compute_progress_pct(
+                    run.status, progress["step_index"], progress["total_steps"], len(completed)
                 )
-            )
+                time_in_step_ms = _compute_time_in_step(run, run_steps, is_terminal=False)
+                is_stuck = time_in_step_ms > stuck_threshold_ms
+
+                # Estimation: fetch averages once per variant
+                variant = progress["pipeline_variant"]
+                if variant not in estimation_cache:
+                    estimation_cache[variant] = await _fetch_step_averages(session, progress["steps"])
+
+                estimated_remaining_ms = _compute_estimation(
+                    estimation_cache[variant],
+                    progress["steps"],
+                    completed,
+                )
+
+                statuses.append(
+                    AgentStatus(
+                        run_id=run.id,
+                        status=run.status,
+                        role=run.role,
+                        pipeline_variant=variant,
+                        current_step=run.current_step,
+                        step_index=progress["step_index"],
+                        total_steps=progress["total_steps"],
+                        step_progress_pct=step_progress_pct,
+                        time_in_step_ms=time_in_step_ms,
+                        is_stuck=is_stuck,
+                        estimated_remaining_ms=estimated_remaining_ms,
+                        completed_steps=completed,
+                        error_message=run.error_message,
+                    )
+                )
+            except Exception:
+                log.warning("Failed to compute status for run %s", run.id, exc_info=True)
+                continue
 
     return statuses
 
@@ -208,7 +216,7 @@ def _compute_progress_pct(status: str, step_index: int, total_steps: int, comple
     return completed_count / total_steps * 100
 
 
-def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], is_terminal: bool) -> int:
+def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], *, is_terminal: bool) -> int:
     """Compute milliseconds the run has been in its current step."""
     if is_terminal:
         return 0
@@ -260,7 +268,9 @@ async def _fetch_step_averages(
     if not pipeline_steps:
         return {}
 
-    # Find completed runs that have steps matching this pipeline
+    # Find completed runs that have steps matching this pipeline.
+    # HAVING filter excludes runs from shorter pipelines that share step names.
+    min_steps = max(1, int(len(pipeline_steps) * 0.5))
     subq = (
         select(StepExecution.task_run_id)
         .join(TaskRun, TaskRun.id == StepExecution.task_run_id)
@@ -270,17 +280,23 @@ async def _fetch_step_averages(
             StepExecution.status == "done",
         )
         .group_by(StepExecution.task_run_id)
+        .having(func.count(StepExecution.step_name.distinct()) >= min_steps)
         .order_by(TaskRun.started_at.desc())
         .limit(_HISTORY_LIMIT)
         .subquery()
     )
+
+    # Count distinct runs in the subquery
+    count_result = await session.execute(select(func.count(subq.c.task_run_id.distinct())))
+    run_count = count_result.scalar() or 0
+    if run_count < _MIN_HISTORY_RUNS:
+        return {}
 
     # Average duration per step name across those runs
     avg_result = await session.execute(
         select(
             StepExecution.step_name,
             func.avg(StepExecution.duration_ms),
-            func.count(StepExecution.task_run_id.distinct()),
         )
         .where(
             StepExecution.task_run_id.in_(select(subq.c.task_run_id)),
@@ -290,7 +306,7 @@ async def _fetch_step_averages(
         .group_by(StepExecution.step_name)
     )
     rows = avg_result.all()
-    if not rows or min(row[2] for row in rows) < _MIN_HISTORY_RUNS:
+    if not rows:
         return {}
 
     return {row[0]: float(row[1]) for row in rows}
@@ -311,5 +327,9 @@ def _compute_estimation(
     if not remaining:
         return 0
 
-    total = sum(averages.get(s, 0) for s in remaining)
+    # If any remaining step has no historical data, we can't estimate reliably
+    if any(s not in averages for s in remaining):
+        return None
+
+    total = sum(averages[s] for s in remaining)
     return int(total)
