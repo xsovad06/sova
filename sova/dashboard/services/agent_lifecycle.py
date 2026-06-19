@@ -33,6 +33,7 @@ from sova.dashboard.services.agent_pool import (
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import get_runtime
 from sova.utils.logging import get_logger
+from sova.utils.shell import run as run_shell
 
 log = get_logger(component="dashboard.control")
 
@@ -441,7 +442,20 @@ async def start_command(
 
     pa = _get_project_agents(slug)
 
-    issue = str((args or {}).get("issue", command))
+    safe_args = args or {}
+    raw_pr = safe_args.get("pr")
+    try:
+        pr_number = int(raw_pr) if raw_pr is not None else None
+    except (ValueError, TypeError):
+        pr_number = None
+        raw_pr = None
+
+    issue = str(safe_args.get("issue", "")).strip()
+    if not issue:
+        if raw_pr is not None:
+            issue = await _resolve_issue_from_pr(raw_pr, pa.project_dir)
+        if not issue:
+            issue = command
 
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
@@ -459,9 +473,6 @@ async def start_command(
 
         cwd = pa.project_dir
         prompt = _resolve_command_prompt(command, args, cwd)
-
-        raw_pr = (args or {}).get("pr")
-        pr_number = int(raw_pr) if raw_pr is not None else None
 
         try:
             from sova.dashboard.services import handoff_service
@@ -622,6 +633,36 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         await _process_auto_handoff(agent)
 
 
+# -- PR to issue resolution ---------------------------------------------------
+
+
+async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str:
+    """Extract a linked issue number from a PR body via gh CLI (best-effort)."""
+    import re
+
+    pr_str = str(int(pr_number))
+    try:
+        result = await run_shell(
+            "gh",
+            "pr",
+            "view",
+            pr_str,
+            "--json",
+            "body",
+            "--jq",
+            ".body",
+            cwd=project_dir,
+            timeout=10,
+        )
+        if result.success and result.stdout:
+            match = re.search(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", result.stdout, re.IGNORECASE)
+            if match:
+                return match.group(1)
+    except Exception:
+        log.debug("resolve_issue_from_pr.failed", pr=pr_number, exc_info=True)
+    return ""
+
+
 # -- GH auth resolution ------------------------------------------------------
 
 
@@ -697,6 +738,7 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
 
 
 _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
+_STANDALONE_ROLES = frozenset({"reviewer"})
 _RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
 
 
@@ -709,6 +751,15 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
     via _sync_task_run_context, so gating on current_step avoids false
     positives for developer runs that created a PR.
     """
+    is_command = role is not None and (role.startswith("command:") or role in _STANDALONE_ROLES)
+    if is_command:
+        return {
+            "step_index": 0,
+            "total_steps": 1,
+            "steps": ["running"],
+            "pipeline_variant": "command",
+        }
+
     is_researcher = role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY)
     is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
         current_step is not None and current_step in _ADDRESS_REVIEW_ONLY

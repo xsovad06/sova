@@ -29,6 +29,7 @@ _PIPELINE_LENGTHS: dict[str, int] = {
     "developer": len(DEVELOPER_PIPELINE),
     "address_review": len(ADDRESS_REVIEW_PIPELINE),
     "researcher": len(RESEARCHER_PIPELINE),
+    "command": 1,
 }
 
 _PIPELINE_ROLES = frozenset({"developer", "researcher"})
@@ -161,9 +162,9 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     steps_result = await session.execute(steps_stmt)
     steps = steps_result.scalars().all()
 
-    variant_from_steps = _detect_variant_from_steps(steps, run.current_step)
+    variant_from_steps = _detect_variant_from_steps(steps, run.current_step, role=run.role)
     progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
-    is_specific = variant_from_steps in ("address_review", "researcher")
+    is_specific = variant_from_steps in ("address_review", "researcher", "command")
     variant = variant_from_steps if is_specific else progress["pipeline_variant"]
     progress["pipeline_variant"] = variant
 
@@ -340,6 +341,8 @@ def _detect_variant(current_step: str | None, *, role: str | None = None, pr_num
     dashboard outer-process sentinel). WorkflowEngine TaskRuns acquire
     pr_number mid-pipeline, so gating avoids false positives.
     """
+    if role is not None and (role.startswith("command:") or role == "reviewer"):
+        return "command"
     if role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY):
         return "researcher"
     if current_step in (None, "agent") and role == "developer" and pr_number is not None:
@@ -349,8 +352,10 @@ def _detect_variant(current_step: str | None, *, role: str | None = None, pr_num
     return "developer"
 
 
-def _detect_variant_from_steps(step_executions: list, current_step: str | None) -> str:
+def _detect_variant_from_steps(step_executions: list, current_step: str | None, *, role: str | None = None) -> str:
     """Detect pipeline variant from step execution history (more reliable)."""
+    if role is not None and (role.startswith("command:") or role == "reviewer"):
+        return "command"
     step_names = {s.step_name for s in step_executions}
     if step_names & _RESEARCHER_ONLY:
         return "researcher"

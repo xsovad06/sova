@@ -69,7 +69,7 @@ async function loadDashboard() {
       var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
       stripCards.innerHTML = agents.agents.map(function(a) {
         var colors = roleColor(a.role);
-        var pipeline = renderStepPipeline(a.current_step, a.role, true);
+        var pipeline = renderStepPipeline(a.current_step, a.role, true, a.pipeline_variant);
         return '<a href="' + prefix + '/agents" class="bg-surface-card rounded-lg border ' + colors.border + ' p-3 min-w-[200px] hover:bg-surface-hover transition-colors">' +
           '<div class="flex items-center gap-2 mb-2">' +
             '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
