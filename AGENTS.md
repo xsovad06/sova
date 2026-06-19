@@ -42,7 +42,7 @@ sova/
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
       routers/                     # 17 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles, spec, prs)
-      services/                    # 23 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, output, role, spec, pr)
+      services/                    # 24 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, output, role, spec, pr)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
@@ -59,7 +59,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (1652+ tests)
+  tests/                           # pytest suite (1694+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
