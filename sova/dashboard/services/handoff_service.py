@@ -149,7 +149,7 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
         if legacy.exists():
             try:
                 ldata = json.loads(legacy.read_text())
-                if ldata.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                if str(ldata.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
                     files.append(legacy)
             except (json.JSONDecodeError, OSError):
                 pass
@@ -175,7 +175,7 @@ def archive_handoff(project_dir: Path | None = None, issue: str | None = None) -
             archive.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             source = data.get("source", "unknown")
-            h_issue = data.get("issue", "")
+            h_issue = data.get("issue") or ""
             suffix = f"_{h_issue}" if h_issue else ""
             stem = hf.stem
             archive_name = f"{ts}_{source}{suffix}_{stem}.json"
@@ -215,7 +215,7 @@ def clear_handoff(project_dir: Path | None = None, issue: str | None = None) -> 
         if legacy.exists():
             try:
                 data = json.loads(legacy.read_text())
-                if data.get("issue", "").lstrip("#").strip() == issue.lstrip("#").strip():
+                if str(data.get("issue") or "").lstrip("#").strip() == issue.lstrip("#").strip():
                     legacy.unlink()
                     cleared = True
             except (json.JSONDecodeError, OSError):
