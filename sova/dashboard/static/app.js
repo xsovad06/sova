@@ -262,9 +262,11 @@ function sovaConfirm(message, options) {
 
 var _notifItems = [];
 var _lastHandoffState = null;
+var _notifiedHandoffIds = {};
 var _notifiedRunIds = {};
 var _dismissedTimestamps = {};
 var _DISMISSED_STORAGE_KEY = 'sova_dismissed_runs';
+var _NOTIFIED_HANDOFFS_KEY = 'sova_notified_handoffs';
 var _DISMISSED_TTL_MS = 120000;
 
 function _loadDismissedRuns() {
@@ -298,6 +300,7 @@ function _dotClass(color, animate) {
 
 function startSidebarPolling() {
   _loadDismissedRuns();
+  _loadNotifiedHandoffs();
   _pollActivity();
   _pollHandoff();
   setInterval(_pollActivity, 3000);
@@ -349,22 +352,48 @@ async function _pollHandoff() {
     var banner = document.getElementById('checkpoint-banner');
     if (!banner) return;
 
-    if (data.has_handoff && data.handoff.status === 'awaiting_action') {
+    var handoffs = (data.handoffs || []).filter(function(h) {
+      return h.status === 'awaiting_action';
+    });
+
+    if (handoffs.length > 0) {
       banner.classList.remove('hidden');
-      if (_lastHandoffState !== 'awaiting') {
-        _lastHandoffState = 'awaiting';
-        _addNotification('Handoff: action required', 'warning');
-        var dot = document.getElementById('activity-dot');
-        if (dot) dot.className = _dotClass('bg-accent-yellow', true);
-      }
+      var dot = document.getElementById('activity-dot');
+      if (dot) dot.className = _dotClass('bg-accent-yellow', true);
+      _lastHandoffState = 'awaiting';
+
+      var hadNew = false;
+      handoffs.forEach(function(h) {
+        var hid = h.id || ('issue-' + (h.issue || 'unknown'));
+        if (_notifiedHandoffIds[hid]) return;
+        _notifiedHandoffIds[hid] = true;
+        hadNew = true;
+        var label = h.issue ? '#' + h.issue : 'Agent';
+        _addNotification(label + ': action required', 'warning');
+      });
+      if (hadNew) _saveNotifiedHandoffs();
     } else {
       banner.classList.add('hidden');
-      if (data.has_handoff && data.handoff.status !== _lastHandoffState) {
-        _lastHandoffState = data.handoff.status;
-      } else if (!data.has_handoff) {
+      if (!data.has_handoff) {
         _lastHandoffState = null;
+        _notifiedHandoffIds = {};
+        _saveNotifiedHandoffs();
       }
     }
+  } catch (e) { /* ignore */ }
+}
+
+function _loadNotifiedHandoffs() {
+  try {
+    var raw = localStorage.getItem(_NOTIFIED_HANDOFFS_KEY);
+    if (!raw) return;
+    _notifiedHandoffIds = JSON.parse(raw);
+  } catch (e) { /* ignore */ }
+}
+
+function _saveNotifiedHandoffs() {
+  try {
+    localStorage.setItem(_NOTIFIED_HANDOFFS_KEY, JSON.stringify(_notifiedHandoffIds));
   } catch (e) { /* ignore */ }
 }
 
@@ -474,6 +503,9 @@ function prLink(prNumber) {
 function issueLink(issueNumber) {
   if (!issueNumber) return '--';
   var safe = escapeHtml(String(issueNumber));
+  if (!/^\d+$/.test(String(issueNumber))) {
+    return '#' + safe;
+  }
   var repo = window.SOVA_GITHUB_REPO;
   if (repo) {
     return '<a href="https://github.com/' + escapeHtml(repo) + '/issues/' + safe + '" target="_blank" rel="noopener" ' +
@@ -740,43 +772,65 @@ function _commandToRole(role) {
 
 var PIPELINE_STEPS = [
   'sync', 'assess', 'create_worktree', 'develop', 'simplify',
-  'self_review', 'commit', 'push', 'create_pr', 'monitor_ci',
-  'automated_review', 'address_review', 'complete'
+  'self_review', 'commit', 'validate', 'push', 'create_pr',
+  'wait_for_external_reviews', 'address_external_findings',
+  'monitor_ci', 'extract_memory', 'handoff_to_reviewer'
 ];
 
 var STEP_LABELS = {
   sync: 'Sync', assess: 'Assess', create_worktree: 'Worktree',
   develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
-  commit: 'Commit', push: 'Push', create_pr: 'PR', monitor_ci: 'CI',
-  automated_review: 'Auto Review', address_review: 'Address', complete: 'Done'
+  commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
+  wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
+  monitor_ci: 'CI', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'
 };
 
-function renderStepPipeline(currentStep, role, compact) {
+function renderStepPipeline(currentStep, role, compact, pipelineVariant) {
   var colors = roleColor(role);
-  var idx = currentStep ? PIPELINE_STEPS.indexOf(currentStep) : -1;
-  var segments = PIPELINE_STEPS.map(function(step, i) {
+
+  if (pipelineVariant === 'command') {
+    var cmdName = (role || '').replace(/^command:/, '').replace(/^\//, '');
+    var label = '';
+    if (!compact) {
+      label = '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(cmdName || 'Running') + '</div>';
+    }
+    return '<div class="flex gap-0.5"><div class="flex-1 ' + (compact ? 'h-1.5' : 'h-2.5') + ' rounded animate-pulse" style="background:' + colors.hex + ';opacity:0.7"></div></div>' + label;
+  }
+
+  var steps = PIPELINE_STEPS;
+  var labels = STEP_LABELS;
+  if (pipelineVariant === 'address_review') {
+    steps = ['rebase', 'address_review', 'commit', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_user'];
+    labels = {rebase: 'Rebase', address_review: 'Address', commit: 'Commit', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_user: 'Handoff'};
+  } else if (pipelineVariant === 'researcher') {
+    steps = ['fetch_task', 'research', 'spec', 'extract_memory'];
+    labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};
+  }
+
+  var idx = currentStep ? steps.indexOf(currentStep) : -1;
+  var segments = steps.map(function(step, i) {
     var w = compact ? 'flex-1 h-1.5' : 'flex-1 h-2.5';
     var rounded = '';
     if (i === 0) rounded = ' rounded-l';
-    if (i === PIPELINE_STEPS.length - 1) rounded = ' rounded-r';
+    if (i === steps.length - 1) rounded = ' rounded-r';
 
     if (idx >= 0 && i < idx) {
-      return '<div class="' + w + rounded + '" style="background:' + colors.hex + '" title="' + (STEP_LABELS[step] || step) + '"></div>';
+      return '<div class="' + w + rounded + '" style="background:' + colors.hex + '" title="' + (labels[step] || step) + '"></div>';
     } else if (i === idx) {
-      return '<div class="' + w + rounded + ' animate-pulse" style="background:' + colors.hex + ';opacity:0.7" title="' + (STEP_LABELS[step] || step) + ' (current)"></div>';
+      return '<div class="' + w + rounded + ' animate-pulse" style="background:' + colors.hex + ';opacity:0.7" title="' + (labels[step] || step) + ' (current)"></div>';
     } else {
-      return '<div class="' + w + ' bg-gray-700' + rounded + '" title="' + (STEP_LABELS[step] || step) + '"></div>';
+      return '<div class="' + w + ' bg-gray-700' + rounded + '" title="' + (labels[step] || step) + '"></div>';
     }
   });
 
-  var label = '';
+  var stepLabel = '';
   if (!compact && idx >= 0) {
-    label = '<div class="text-xs text-gray-400 mt-1">' + (STEP_LABELS[currentStep] || currentStep) + ' (' + (idx + 1) + '/' + PIPELINE_STEPS.length + ')</div>';
+    stepLabel = '<div class="text-xs text-gray-400 mt-1">' + (labels[currentStep] || currentStep) + ' (' + (idx + 1) + '/' + steps.length + ')</div>';
   } else if (!compact) {
-    label = '<div class="text-xs text-gray-500 mt-1">Initializing...</div>';
+    stepLabel = '<div class="text-xs text-gray-500 mt-1">Initializing...</div>';
   }
 
-  return '<div class="flex gap-0.5">' + segments.join('') + '</div>' + label;
+  return '<div class="flex gap-0.5">' + segments.join('') + '</div>' + stepLabel;
 }
 
 function formatElapsed(seconds) {
