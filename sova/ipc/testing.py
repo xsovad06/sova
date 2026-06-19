@@ -73,6 +73,7 @@ class MockAgentProcess:
         return self._returncode
 
     async def stop(self, timeout: float = 10.0) -> None:
+        _ = timeout  # interface compatibility
         if self._returncode is not None:
             return
         self._hang_release.set()
