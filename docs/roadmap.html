@@ -382,7 +382,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-18</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-19</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -551,6 +551,13 @@ flowchart TD
     I121["#121 Kanban pipeline\nview (agents)"]:::medium
     I123["#123 Per-agent\nstatus badges"]:::medium
     I124["#124 Interactive step\nvisualization"]:::medium
+  end
+
+  subgraph SECURITY["SECURITY HARDENING"]
+    direction TB
+    I198["#198 Prompt injection\nguard (mid-pipeline)"]:::high
+    I199["#199 LLM output\negress filter"]:::medium
+    I198 --> I199
   end
 
   %% Cross-tier dependencies
@@ -771,6 +778,25 @@ flowchart TD
 
       <div class="phase-divider"></div>
 
+      <!-- Security Hardening -->
+      <div class="timeline-label">Security<br><span style="font-weight:400;font-size:0.65rem;color:var(--red)">Anytime</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#198</span>
+          <span class="task-title">Mid-pipeline prompt injection guard for LLM calls</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#199</span>
+          <span class="task-title">LLM output egress filter for external-facing actions</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">#198 -> #199</div>
+      </div>
+
+      <div class="phase-divider"></div>
+
       <!-- Good First Issues -->
       <div class="timeline-label">GFI<br><span style="font-weight:400;font-size:0.65rem;color:var(--green)">Parallel</span></div>
       <div class="timeline-content">
@@ -925,6 +951,10 @@ gantt
   section Tier 4 LLM Infra
     #117 Ollama local models         :t117, 2026-09-01, 5d
 
+  section Security Hardening
+    #198 Prompt injection guard      :t198, 2026-07-14, 3d
+    #199 LLM output egress filter    :t199, after t198, 2d
+
   section Release Gate
     #6 Measure velocity              :t6, 2026-09-15, 14d
     #21 Blog post                    :t21, after t6, 5d
@@ -953,7 +983,8 @@ gantt
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
-        <li><strong>Agentic (13 issues):</strong> #145, #149, #152, #153, #155, #156, #157, #158, #159, #160, #161, #164, #165 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
+        <li><strong>Agentic (15 issues):</strong> #145, #149, #152, #153, #155, #156, #157, #158, #159, #160, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
         <li><strong>Human (9 issues):</strong> #146, #150, #151, #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
         <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
