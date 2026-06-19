@@ -277,7 +277,7 @@ async def get_review_thread_counts(
         return {}
 
     counts: dict[int, tuple[int, int]] = {}
-    repo_data = data.get("data", {}).get("repository", {})
+    repo_data = (data.get("data") or {}).get("repository") or {}
     for pr_num in pr_numbers:
         pr_data = repo_data.get(f"pr{pr_num}", {})
         threads = pr_data.get("reviewThreads", {})

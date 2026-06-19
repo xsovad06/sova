@@ -405,3 +405,17 @@ class TestGetReviewThreadCounts:
 
         result = await get_review_thread_counts([10], repo="owner/repo")
         assert result[10] == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_handles_data_null_response(self, monkeypatch) -> None:
+        from sova.git.pr import get_review_thread_counts
+
+        graphql_response = {"data": None, "errors": [{"message": "something went wrong"}]}
+        mock_run = AsyncMock()
+        mock_run.return_value.success = True
+        mock_run.return_value.stdout = json.dumps(graphql_response)
+        monkeypatch.setattr("sova.git.pr.run", mock_run)
+        monkeypatch.setattr("sova.git.pr.resolve_gh_env", AsyncMock(return_value=None))
+
+        result = await get_review_thread_counts([10], repo="owner/repo")
+        assert result[10] == (0, 0)
