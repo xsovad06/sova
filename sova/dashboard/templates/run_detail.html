@@ -150,7 +150,7 @@ async function loadRunDetail() {
     }
 
     // Pipeline bar
-    document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false);
+    document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant);
 
     // Resume chain
     var chainEl = document.getElementById('resume-chain');

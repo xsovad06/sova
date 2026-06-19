@@ -4186,11 +4186,46 @@ class TestStepProgress:
             result = get_step_progress(step, role="developer", pr_number=147)
             assert result["pipeline_variant"] == "developer", f"step={step} should be developer"
 
-    def test_reviewer_role_with_pr_number_is_not_address_review(self) -> None:
+    def test_reviewer_role_with_pr_number_is_command(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         result = get_step_progress("commit", role="reviewer", pr_number=147)
-        assert result["pipeline_variant"] == "developer"
+        assert result["pipeline_variant"] == "command"
+
+    def test_command_role_returns_command_variant(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="command:integrate-pr")
+        assert result["pipeline_variant"] == "command"
+        assert result["step_index"] == 0
+        assert result["total_steps"] == 1
+
+    def test_command_role_with_agent_step(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("agent", role="command:review-pr")
+        assert result["pipeline_variant"] == "command"
+        assert result["step_index"] == 0
+
+    def test_command_role_ship_pr(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="command:ship-pr")
+        assert result["pipeline_variant"] == "command"
+
+    def test_researcher_role_unaffected_by_command_check(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="researcher")
+        assert result["pipeline_variant"] == "researcher"
+
+    def test_reviewer_role_returns_command_variant(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="reviewer")
+        assert result["pipeline_variant"] == "command"
+        assert result["step_index"] == 0
+        assert result["total_steps"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -5505,3 +5540,145 @@ class TestPrsAPI:
         resp = await client.get("/api/prs/open")
         assert resp.status_code == 200
         assert resp.json()["prs"] == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_issue_from_pr
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIssueFromPr:
+    """Tests for _resolve_issue_from_pr in agent_lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_extracts_closes_issue(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "## Summary\n\nCloses #42\n"
+        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == "42"
+
+    @pytest.mark.asyncio
+    async def test_extracts_fixes_issue(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "Fixes #123"
+        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == "123"
+
+    @pytest.mark.asyncio
+    async def test_extracts_resolves_case_insensitive(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "resolves #77"
+        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == "77"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_match(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "Just a regular PR body"
+        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_failure(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = False
+        mock_result.return_value.stdout = ""
+        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_exception(self, tmp_path, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_lifecycle.run_shell",
+            AsyncMock(side_effect=OSError("nope")),
+        )
+
+        result = await _resolve_issue_from_pr(99, tmp_path)
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# _detect_variant / _detect_variant_from_steps -- command role coverage
+# ---------------------------------------------------------------------------
+
+
+class TestDetectVariantCommandRoles:
+    """Tests for command/standalone role detection in work_service."""
+
+    def test_detect_variant_command_integrate(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant
+
+        assert _detect_variant(None, role="command:integrate-pr") == "command"
+
+    def test_detect_variant_command_ship(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant
+
+        assert _detect_variant("running", role="command:ship-pr") == "command"
+
+    def test_detect_variant_command_review_pr(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant
+
+        assert _detect_variant(None, role="command:review-pr") == "command"
+
+    def test_detect_variant_reviewer_standalone(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant
+
+        assert _detect_variant(None, role="reviewer") == "command"
+
+    def test_detect_variant_reviewer_with_pr(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant
+
+        assert _detect_variant(None, role="reviewer", pr_number=42) == "command"
+
+    def test_detect_variant_from_steps_command_role(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant_from_steps
+
+        assert _detect_variant_from_steps([], None, role="command:integrate-pr") == "command"
+
+    def test_detect_variant_from_steps_reviewer(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant_from_steps
+
+        assert _detect_variant_from_steps([], None, role="reviewer") == "command"
+
+    def test_detect_variant_from_steps_developer_not_command(self) -> None:
+        from sova.dashboard.services.work_service import _detect_variant_from_steps
+
+        assert _detect_variant_from_steps([], None, role="developer") != "command"
