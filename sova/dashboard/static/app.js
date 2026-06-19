@@ -59,24 +59,66 @@ function formatDuration(ms) {
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
 
+var STATUS_COLORS = {
+  pending:           { dot: 'bg-gray-500',        text: 'text-gray-400',         bg: 'bg-gray-500/20' },
+  assessing:         { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  researched:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  in_progress:       { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  developing:        { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  simplifying:       { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  reviewing:         { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  committing:        { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  addressing_review: { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  pushing:           { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  pr_created:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  ci_monitoring:     { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  automated_review:  { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  done:              { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  failed:            { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
+  rejected:          { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
+  paused:            { dot: 'bg-accent-purple',   text: 'text-accent-purple',    bg: 'bg-accent-purple/20' },
+  interrupted:       { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
+  running:           { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+};
+
+var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1 };
+var _STUCK_THRESHOLD_S = 300;
+
 function statusColor(status) {
-  switch (status) {
-    case 'done': return 'text-accent-green';
-    case 'failed': return 'text-accent-red';
-    case 'developing': case 'running': return 'text-accent-yellow';
-    case 'pending': return 'text-gray-400';
-    default: return 'text-accent';
-  }
+  return (STATUS_COLORS[status] || STATUS_COLORS.pending).text;
 }
 
 function statusDot(status) {
-  switch (status) {
-    case 'done': return 'bg-accent-green';
-    case 'failed': return 'bg-accent-red';
-    case 'developing': case 'running': return 'bg-accent-yellow animate-pulse';
-    case 'pending': return 'bg-gray-500';
-    default: return 'bg-accent';
+  var c = STATUS_COLORS[status] || STATUS_COLORS.pending;
+  var isActive = c.text === 'text-accent-yellow';
+  return c.dot + (isActive ? ' animate-pulse' : '');
+}
+
+function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSeconds, aggregatedLabel) {
+  var colors = STATUS_COLORS[status] || STATUS_COLORS.pending;
+  var isTerminal = !!_STATUS_TERMINAL[status];
+  var isStuck = !isTerminal && elapsedSeconds != null && elapsedSeconds > _STUCK_THRESHOLD_S;
+  var stuckClass = isStuck ? ' sova-status-stuck' : '';
+  var pulseClass = isTerminal ? '' : ' animate-pulse';
+
+  var label = escapeHtml(aggregatedLabel || status);
+  if (currentStep && totalSteps) {
+    label += ' (' + escapeHtml(currentStep) + ', ' + (stepIndex || '?') + '/' + totalSteps + ')';
+  } else if (currentStep) {
+    label += ' (' + escapeHtml(currentStep) + ')';
   }
+
+  var elapsedHtml = '';
+  if (!isTerminal && elapsedSeconds != null) {
+    var startTs = Date.now() - (elapsedSeconds * 1000);
+    elapsedHtml = ' <span class="sova-status-elapsed" data-start="' + startTs + '">' + formatElapsed(elapsedSeconds) + '</span>';
+  }
+
+  return '<span class="sova-status-badge ' + colors.bg + ' ' + colors.text + stuckClass + '">' +
+    '<span class="sova-status-dot ' + colors.dot + pulseClass + '"></span>' +
+    '<span>' + label + '</span>' +
+    elapsedHtml +
+  '</span>';
 }
 
 /* ============================================================
