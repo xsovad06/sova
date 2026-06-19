@@ -363,6 +363,33 @@
   font-weight: 500;
 }
 
+/* Status badge (agent cards) */
+.sova-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.sova-status-badge .sova-status-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sova-status-stuck .sova-status-dot {
+  animation: sova-stuck-pulse 2s ease-in-out infinite !important;
+}
+
+@keyframes sova-stuck-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; box-shadow: 0 0 6px var(--ctp-red); }
+}
+
 /* Form inputs */
 .sova-input {
   background: var(--color-surface);

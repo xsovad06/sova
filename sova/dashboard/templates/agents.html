@@ -128,6 +128,29 @@
 <script>
 var activeLogRunId = null;
 
+// Shared 1s interval to update all elapsed timers on the page
+setInterval(function() {
+  var els = document.querySelectorAll('.sova-status-elapsed');
+  if (els.length === 0) return;
+  var now = Date.now();
+  els.forEach(function(el) {
+    var start = parseInt(el.getAttribute('data-start'), 10);
+    if (!start) return;
+    var secs = Math.max(0, Math.round((now - start) / 1000));
+    el.textContent = formatElapsed(secs);
+
+    // Update stuck class on parent badge
+    var badge = el.closest('.sova-status-badge');
+    if (badge) {
+      if (secs > _STUCK_THRESHOLD_S) {
+        badge.classList.add('sova-status-stuck');
+      } else {
+        badge.classList.remove('sova-status-stuck');
+      }
+    }
+  });
+}, 1000);
+
 // -- Task browser --
 
 var _allQueue = [];
@@ -683,13 +706,6 @@ async function loadAgents() {
 
     var fp = agentFingerprint(data);
     if (fp === lastAgentFingerprint) {
-      data.agents.forEach(function(agent) {
-        var el = document.getElementById('agent-card-' + agent.run_id);
-        if (el) {
-          var elapsedEl = el.querySelector('[data-field="elapsed"]');
-          if (elapsedEl) elapsedEl.textContent = formatElapsed(agent.elapsed_seconds);
-        }
-      });
       return;
     }
     lastAgentFingerprint = fp;
@@ -724,7 +740,6 @@ function renderAgentCard(agent) {
   var colors = roleColor(agent.role);
   var pipeline = renderStepPipeline(agent.current_step, agent.role, false, agent.pipeline_variant);
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
-  var elapsed = formatElapsed(agent.elapsed_seconds);
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
@@ -733,15 +748,14 @@ function renderAgentCard(agent) {
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
     '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
       '<div class="flex items-center gap-2">' +
-        '<span class="w-2 h-2 rounded-full ' + colors.dot + ' animate-pulse"></span>' +
         '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role, agent.pipeline_variant)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
         prBadge +
+        renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds) +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
         '<span class="text-accent-green">' + cost + '</span>' +
-        '<span class="text-gray-500" data-field="elapsed">' + elapsed + '</span>' +
       '</div>' +
     '</div>' +
     '<div class="mb-3">' + pipeline + '</div>' +
@@ -760,7 +774,6 @@ function renderAgentCard(agent) {
 function renderCompletedCard(agent) {
   var colors = roleColor(agent.role);
   var borderColor = agent.status === 'done' ? 'border-accent-green/40' : 'border-accent-red/40';
-  var statusDotClass = agent.status === 'done' ? 'bg-accent-green' : 'bg-accent-red';
   var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
   var agoText = agent.completed_seconds_ago + 's ago';
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
@@ -774,10 +787,9 @@ function renderCompletedCard(agent) {
   return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all cursor-pointer hover:opacity-90" onclick="window.location=\'' + detailUrl + '\'">' +
     '<div class="flex items-center justify-between">' +
       '<div class="flex items-center gap-2">' +
-        '<span class="w-2 h-2 rounded-full ' + statusDotClass + '"></span>' +
         '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
-        '<span class="text-xs ' + (agent.status === 'done' ? 'text-accent-green' : 'text-accent-red') + '">' + escapeHtml(agent.status) + '</span>' +
+        renderStatusBadge(agent.status) +
         prBadge +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
