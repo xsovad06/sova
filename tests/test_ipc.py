@@ -1330,8 +1330,11 @@ class TestMockAgentProcess:
             await asyncio.sleep(0.01)
             await proc.stop()
 
-        asyncio.create_task(stopper())
-        code = await proc.wait()
+        stopper_task = asyncio.create_task(stopper())
+        try:
+            code = await proc.wait()
+        finally:
+            await stopper_task
         assert code == 42
         assert not proc.is_running
 
@@ -1342,6 +1345,22 @@ class TestMockAgentProcess:
         # wait after stop should return immediately
         code = await proc.wait()
         assert code == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_interrupts_delayed_wait(self) -> None:
+        proc = self.MockAgentProcess(duration_seconds=10.0, exit_code=7)
+
+        async def stopper() -> None:
+            await asyncio.sleep(0.02)
+            await proc.stop()
+
+        stopper_task = asyncio.create_task(stopper())
+        try:
+            code = await asyncio.wait_for(proc.wait(), timeout=2.0)
+        finally:
+            await stopper_task
+        assert code == 7
+        assert not proc.is_running
 
     @pytest.mark.asyncio
     async def test_delayed_completion(self) -> None:
