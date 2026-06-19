@@ -40,8 +40,8 @@ class MockAgentProcess:
         self._should_hang = should_hang
         self._pid = pid
         self._returncode: int | None = None
-        self._finished = asyncio.Event()
         self._hang_release = asyncio.Event()
+        self._stop_event = asyncio.Event()
 
     @property
     def pid(self) -> int:
@@ -62,18 +62,22 @@ class MockAgentProcess:
         if self._should_hang:
             await self._hang_release.wait()
         elif self._duration_seconds > 0:
-            await asyncio.sleep(self._duration_seconds)
+            remaining = self._duration_seconds
+            while remaining > 0 and not self._stop_event.is_set():
+                chunk = min(0.01, remaining)
+                await asyncio.sleep(chunk)
+                remaining -= chunk
 
-        self._returncode = self._exit_code
-        self._finished.set()
+        if self._returncode is None:
+            self._returncode = self._exit_code
         return self._returncode
 
     async def stop(self, timeout: float = 10.0) -> None:
         if self._returncode is not None:
             return
         self._hang_release.set()
+        self._stop_event.set()
         self._returncode = self._exit_code
-        self._finished.set()
 
     async def stdout_lines(self) -> AsyncIterator[str]:
         for line in self._stdout_lines_data:
@@ -149,7 +153,7 @@ class MockRuntime(AgentRuntime):
 
     @property
     def spawned_processes(self) -> list[MockAgentProcess]:
-        return self._spawned
+        return list(self._spawned)
 
     @property
     def last_prompt(self) -> str | None:
