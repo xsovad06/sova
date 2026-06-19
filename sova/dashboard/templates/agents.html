@@ -249,7 +249,7 @@ function renderTaskCard(t) {
       '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>' +
       escapeHtml(roleLabel) + '</span>';
   } else if (smartAct === 'integrate') {
-    actionBtn = '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeHtml(t.issue) + '\', pr: ' + (prNum || 0) + '})" ' +
+    actionBtn = '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeJsStr(t.issue) + '\', pr: ' + (prNum || 0) + '})" ' +
       'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
       escapeHtml(action.text) + '</button>';
   } else if (smartAct === 'ship-pr') {
@@ -257,11 +257,11 @@ function renderTaskCard(t) {
       'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
       escapeHtml(action.text) + '</button>';
   } else if (smartAct === 'address-review') {
-    actionBtn = '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'developer\', ' + (prNum || 0) + ')" ' +
+    actionBtn = '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'developer\', ' + (prNum || 0) + ')" ' +
       'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
       escapeHtml(action.text) + '</button>';
   } else {
-    actionBtn = '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', false, \'' + escapeHtml(t.action) + '\')" ' +
+    actionBtn = '<button onclick="quickStart(\'' + escapeJsStr(t.issue) + '\', false, \'' + escapeHtml(t.action) + '\')" ' +
       'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
       escapeHtml(action.text) + '</button>';
   }
@@ -285,23 +285,23 @@ function renderTaskCard(t) {
     prBadge +
     stateTag(t.state) +
     '<div class="w-20 flex justify-end">' + actionBtn + '</div>' +
-    '<button onclick="toggleCardMenu(event, \'' + escapeHtml(t.issue) + '\')" ' +
+    '<button onclick="toggleCardMenu(event, \'' + escapeJsStr(t.issue) + '\')" ' +
       'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0" ' +
       'data-tooltip="More options">' +
       '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>' +
     '</button>' +
     '<div id="card-menu-' + t.issue + '" class="hidden absolute right-4 top-8 z-50 bg-surface border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]">' +
       (isRunning
-        ? '<button onclick="stopAgent(_runningAgents[\'' + escapeHtml(t.issue) + '\'].run_id)" class="w-full text-left px-3 py-1.5 text-xs text-accent-red hover:bg-surface-hover transition-colors">Stop Agent</button>'
-        : '<button onclick="quickStart(\'' + escapeHtml(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
-          '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
-          '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>') +
+        ? '<button onclick="stopAgent(_runningAgents[\'' + escapeJsStr(t.issue) + '\'].run_id)" class="w-full text-left px-3 py-1.5 text-xs text-accent-red hover:bg-surface-hover transition-colors">Stop Agent</button>'
+        : '<button onclick="quickStart(\'' + escapeJsStr(t.issue) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
+          '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
+          '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>') +
       (prNum && !isRunning
         ? '<hr class="border-gray-700/50 my-1">' +
           (!linkedPr || linkedPr.computed_state === 'changes_requested'
-            ? '<button onclick="quickStartRole(\'' + escapeHtml(t.issue) + '\', \'developer\', ' + prNum + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + prNum + ')</button>'
+            ? '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'developer\', ' + prNum + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + prNum + ')</button>'
             : '') +
-          '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeHtml(t.issue) + '\', pr: ' + prNum + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + prNum + '</button>' +
+          '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeJsStr(t.issue) + '\', pr: ' + prNum + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + prNum + '</button>' +
           '<button onclick="runCommand(\'ship-pr\', {pr: ' + prNum + '})" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Ship PR #' + prNum + '</button>'
         : '') +
     '</div>' +
