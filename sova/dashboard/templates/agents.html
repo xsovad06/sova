@@ -138,16 +138,6 @@ setInterval(function() {
     if (!start) return;
     var secs = Math.max(0, Math.round((now - start) / 1000));
     el.textContent = formatElapsed(secs);
-
-    // Update stuck class on parent badge
-    var badge = el.closest('.sova-status-badge');
-    if (badge) {
-      if (secs > _STUCK_THRESHOLD_S) {
-        badge.classList.add('sova-status-stuck');
-      } else {
-        badge.classList.remove('sova-status-stuck');
-      }
-    }
   });
 }, 1000);
 
@@ -755,6 +745,7 @@ function renderAgentCard(agent) {
         renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds) +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
+        '<span class="text-gray-500" data-field="elapsed">' + formatElapsed(agent.elapsed_seconds) + '</span>' +
         '<span class="text-accent-green">' + cost + '</span>' +
       '</div>' +
     '</div>' +
