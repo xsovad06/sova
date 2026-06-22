@@ -84,13 +84,21 @@ var STATUS_COLORS = {
 var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1 };
 var _STUCK_THRESHOLD_S = 300;
 
+function formatElapsed(seconds) {
+  if (!seconds) return '0s';
+  seconds = Math.floor(seconds);
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm';
+}
+
 function statusColor(status) {
   return (STATUS_COLORS[status] || STATUS_COLORS.pending).text;
 }
 
 function statusDot(status) {
   var c = STATUS_COLORS[status] || STATUS_COLORS.pending;
-  var isActive = c.text === 'text-accent-yellow';
+  var isActive = !_STATUS_TERMINAL[status];
   return c.dot + (isActive ? ' animate-pulse' : '');
 }
 
@@ -103,7 +111,8 @@ function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSe
 
   var label = escapeHtml(aggregatedLabel || status);
   if (currentStep && totalSteps) {
-    label += ' (' + escapeHtml(currentStep) + ', ' + (stepIndex || '?') + '/' + totalSteps + ')';
+    var idx = parseInt(stepIndex, 10);
+    label += ' (' + escapeHtml(currentStep) + ', ' + (isNaN(idx) ? 0 : idx) + '/' + parseInt(totalSteps, 10) + ')';
   } else if (currentStep) {
     label += ' (' + escapeHtml(currentStep) + ')';
   }
