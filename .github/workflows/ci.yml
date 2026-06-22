@@ -3,16 +3,17 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
   push:
-    branches:
-      - main
-      - 'feat/**'
-      - 'fix/**'
-      - 'refactor/**'
+    branches: [main]
 
 jobs:
-  shellcheck:
-    name: ShellCheck
+  lint-static:
+    name: Static Checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +25,48 @@ jobs:
         run: |
           shellcheck --severity=warning \
             invariants/*.sh
+
+      - name: Check executable permissions
+        run: |
+          errors=0
+          for f in invariants/*.sh; do
+            if [ ! -x "$f" ]; then
+              echo "ERROR: $f is not executable"
+              errors=$((errors + 1))
+            fi
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors permission errors. Fix with: chmod +x <file>"
+            exit 1
+          fi
+          echo "All scripts have correct permissions"
+
+      - name: Check YAML frontmatter in all commands
+        run: |
+          errors=0
+          for f in commands/*.md; do
+            name=$(basename "$f")
+            # Check file starts with ---
+            if ! head -1 "$f" | grep -q '^---$'; then
+              echo "ERROR: $name missing frontmatter opening ---"
+              errors=$((errors + 1))
+              continue
+            fi
+            # Extract frontmatter (between first --- and second ---)
+            frontmatter=$(awk 'NR==1{next} /^---$/{exit} {print}' "$f")
+            # Check required fields
+            for field in name description user-invocable; do
+              if ! echo "$frontmatter" | grep -q "^${field}:"; then
+                echo "ERROR: $name missing required field: $field"
+                errors=$((errors + 1))
+              fi
+            done
+          done
+          if [ "$errors" -gt 0 ]; then
+            echo "Found $errors frontmatter errors"
+            exit 1
+          fi
+          echo "All $(find commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
 
   python-lint:
     name: Python Lint
@@ -53,45 +96,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
 
       - name: Install package
         run: pip install -e ".[dev]"
 
       - name: Run tests
         run: pytest tests/ -v
-
-  validate-commands:
-    name: Validate Commands
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check YAML frontmatter in all commands
-        run: |
-          errors=0
-          for f in commands/*.md; do
-            name=$(basename "$f")
-            # Check file starts with ---
-            if ! head -1 "$f" | grep -q '^---$'; then
-              echo "ERROR: $name missing frontmatter opening ---"
-              errors=$((errors + 1))
-              continue
-            fi
-            # Extract frontmatter (between first --- and second ---)
-            frontmatter=$(awk 'NR==1{next} /^---$/{exit} {print}' "$f")
-            # Check required fields
-            for field in name description user-invocable; do
-              if ! echo "$frontmatter" | grep -q "^${field}:"; then
-                echo "ERROR: $name missing required field: $field"
-                errors=$((errors + 1))
-              fi
-            done
-          done
-          if [ "$errors" -gt 0 ]; then
-            echo "Found $errors frontmatter errors"
-            exit 1
-          fi
-          echo "All $(find commands -name '*.md' | wc -l | tr -d ' ') commands have valid frontmatter"
 
   integration:
     name: Integration Test
@@ -102,6 +113,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
 
       - name: Install package
         run: pip install .
@@ -153,24 +165,3 @@ jobs:
             exit 1
           fi
           echo "=== All invariants passed ==="
-
-  permissions:
-    name: File Permissions
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check executable permissions
-        run: |
-          errors=0
-          for f in invariants/*.sh; do
-            if [ ! -x "$f" ]; then
-              echo "ERROR: $f is not executable"
-              errors=$((errors + 1))
-            fi
-          done
-          if [ "$errors" -gt 0 ]; then
-            echo "Found $errors permission errors. Fix with: chmod +x <file>"
-            exit 1
-          fi
-          echo "All scripts have correct permissions"
