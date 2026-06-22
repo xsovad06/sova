@@ -1293,7 +1293,60 @@ loadAgents();
 loadPrTracker();
 checkInterrupted();
 loadHistory();
-agentPollInterval = setInterval(loadAgents, 2000);
+
+// -- WebSocket for real-time agent status with polling fallback --
+var _agentWs = null;
+var _wsReconnectDelay = 1000;
+var _wsMaxReconnectDelay = 16000;
+
+function _connectAgentWs() {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var wsUrl = proto + '//' + location.host + apiUrl('/ws/agents/status');
+  try {
+    _agentWs = new WebSocket(wsUrl);
+  } catch (e) {
+    _startPollingFallback();
+    return;
+  }
+
+  _agentWs.onopen = function() {
+    _wsReconnectDelay = 1000;
+    // Stop polling if it was running as fallback
+    if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
+  };
+
+  _agentWs.onmessage = function() {
+    // Server sends lightweight ticks; refresh full UI via HTTP
+    loadAgents();
+  };
+
+  _agentWs.onclose = function() {
+    _agentWs = null;
+    _startPollingFallback();
+    // Reconnect with exponential backoff
+    setTimeout(_connectAgentWs, _wsReconnectDelay);
+    _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, _wsMaxReconnectDelay);
+  };
+
+  _agentWs.onerror = function() {
+    if (_agentWs) _agentWs.close();
+  };
+}
+
+function _startPollingFallback() {
+  if (!agentPollInterval) {
+    agentPollInterval = setInterval(loadAgents, 2000);
+  }
+}
+
+_connectAgentWs();
+
+// Clean up on page navigation
+window.addEventListener('beforeunload', function() {
+  if (_agentWs) { _agentWs.close(); _agentWs = null; }
+  if (agentPollInterval) { clearInterval(agentPollInterval); }
+});
+
 setInterval(loadPrTracker, 30000);
 </script>
 {% endblock %}
