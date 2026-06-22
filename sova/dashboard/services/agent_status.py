@@ -333,3 +333,13 @@ def _compute_estimation(
 
     total = sum(averages[s] for s in remaining)
     return int(total)
+
+
+def format_status_update(statuses: list[AgentStatus]) -> dict:
+    """Format a list of AgentStatus into a WebSocket message payload."""
+    from dataclasses import asdict
+
+    return {
+        "type": "status_update",
+        "runs": [asdict(s) for s in statuses],
+    }
