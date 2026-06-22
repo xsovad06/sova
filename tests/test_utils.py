@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sova.utils.formatting import branch_name, slugify, truncate
+from sova.utils.formatting import branch_name, decimal_to_json, slugify, truncate
 
 
 def test_slugify_basic() -> None:
@@ -43,6 +44,18 @@ def test_truncate_long() -> None:
     result = truncate("a" * 300, 200)
     assert len(result) == 200
     assert result.endswith("...")
+
+
+def test_decimal_to_json_none() -> None:
+    assert decimal_to_json(None) == "0.00"
+
+
+def test_decimal_to_json_value() -> None:
+    assert decimal_to_json(Decimal("1.23")) == "1.23"
+
+
+def test_decimal_to_json_zero() -> None:
+    assert decimal_to_json(Decimal("0")) == "0"
 
 
 # ---------------------------------------------------------------------------
