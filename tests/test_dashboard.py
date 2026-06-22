@@ -5754,3 +5754,48 @@ class TestWebSocketAgentStatus:
             data = ws.receive_json()
             assert data["type"] == "status_update"
             assert data["runs"] == []
+
+    def test_websocket_multi_project_isolation(self) -> None:
+        """ConnectionManager groups connections by project_dir for isolation."""
+        import asyncio
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.routers.agents import _ConnectionManager
+
+        mgr = _ConnectionManager()
+
+        ws_a = MagicMock()
+        ws_a.send_json = AsyncMock()
+        ws_b = MagicMock()
+        ws_b.send_json = AsyncMock()
+
+        dir_a = Path("/project-a")
+        dir_b = Path("/project-b")
+
+        # Patch create_task to avoid needing a running event loop
+        dummy_task = MagicMock()
+        dummy_task.done.return_value = False
+        with patch("asyncio.create_task", return_value=dummy_task):
+            mgr.connect(ws_a, dir_a)
+            mgr.connect(ws_b, dir_b)
+
+        # Each project group has exactly one connection
+        assert len(mgr._groups.get(dir_a, [])) == 1
+        assert len(mgr._groups.get(dir_b, [])) == 1
+
+        # Broadcast to project A should only reach ws_a
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(mgr._broadcast({"type": "test"}, dir_a))
+        finally:
+            loop.close()
+        ws_a.send_json.assert_awaited_once_with({"type": "test"})
+        ws_b.send_json.assert_not_awaited()
+
+        # Disconnect from project A should not affect project B
+        mgr.disconnect(ws_a, dir_a)
+        assert len(mgr._groups.get(dir_a, [])) == 0
+        assert len(mgr._groups.get(dir_b, [])) == 1
+
+        mgr.disconnect(ws_b, dir_b)
