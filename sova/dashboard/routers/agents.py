@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
+
+from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel, field_validator
 
 from sova.dashboard.services import control_service
@@ -112,3 +114,20 @@ async def get_issue_pr_status(issue_number: str):
 async def run_command(req: RunCommandRequest):
     """Execute a Claude Code command (e.g. /integrate-pr, /approve-merge)."""
     return await control_service.start_command(req.command, req.args or {})
+
+
+@router.websocket("/ws/agents/status")
+async def ws_agent_status(websocket: WebSocket) -> None:
+    """Send periodic tick notifications so the client can refresh agent status.
+
+    The client triggers a full ``loadAgents()`` HTTP fetch on each tick,
+    so the server only needs to signal "time to refresh" -- no expensive
+    status computation here.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            await websocket.send_json({"type": "tick"})
+            await asyncio.sleep(2)
+    except Exception:
+        pass

@@ -5682,3 +5682,22 @@ class TestDetectVariantCommandRoles:
         from sova.dashboard.services.work_service import _detect_variant_from_steps
 
         assert _detect_variant_from_steps([], None, role="developer") != "command"
+
+
+# ---------------------------------------------------------------------------
+# WebSocket agent status
+# ---------------------------------------------------------------------------
+
+
+class TestWebSocketAgentStatus:
+    def test_websocket_connect_and_receive(self) -> None:
+        """WebSocket endpoint accepts connection and sends lightweight tick."""
+        from starlette.testclient import TestClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws/agents/status") as ws:
+            data = ws.receive_json()
+            assert data == {"type": "tick"}
