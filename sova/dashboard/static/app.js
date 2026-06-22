@@ -884,15 +884,6 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant) {
   return '<div class="flex gap-0.5">' + segments.join('') + '</div>' + stepLabel;
 }
 
-function formatElapsed(seconds) {
-  if (!seconds || seconds <= 0) return '0s';
-  if (seconds < 60) return seconds + 's';
-  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
-  var h = Math.floor(seconds / 3600);
-  var m = Math.floor((seconds % 3600) / 60);
-  return h + 'h ' + m + 'm';
-}
-
 /* ============================================================
    13. RUNS TABLE (shared)
    ============================================================ */
