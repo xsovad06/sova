@@ -2653,6 +2653,421 @@ class TestAgentsAPI:
         assert data["run_id"] == 1
 
 
+class TestKanbanAPI:
+    """Tests for the kanban API endpoint."""
+
+    async def test_kanban_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "columns" in data
+        assert data["columns"] == []
+
+    async def test_kanban_groups_by_step(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        run1 = TaskRun(
+            issue_number="100",
+            role="developer",
+            status="developing",
+            current_step="develop",
+            total_cost_usd=Decimal("0.10"),
+            started_at=now - timedelta(minutes=5),
+        )
+        run2 = TaskRun(
+            issue_number="101",
+            role="developer",
+            status="developing",
+            current_step="develop",
+            total_cost_usd=Decimal("0.20"),
+            started_at=now - timedelta(minutes=3),
+        )
+        run3 = TaskRun(
+            issue_number="102",
+            role="developer",
+            status="developing",
+            current_step="self_review",
+            total_cost_usd=Decimal("0.15"),
+            started_at=now - timedelta(minutes=1),
+        )
+        session.add_all([run1, run2, run3])
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        columns = data["columns"]
+
+        assert len(columns) == 2
+        col_names = [c["name"] for c in columns]
+        assert "develop" in col_names
+        assert "self_review" in col_names
+
+        develop_col = next(c for c in columns if c["name"] == "develop")
+        assert develop_col["count"] == 2
+        assert len(develop_col["runs"]) == 2
+        assert develop_col["pipeline"] == "developer"
+
+        review_col = next(c for c in columns if c["name"] == "self_review")
+        assert review_col["count"] == 1
+        assert len(review_col["runs"]) == 1
+
+    async def test_kanban_pending_column(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        run_none = TaskRun(
+            issue_number="110",
+            role="developer",
+            status="pending",
+            current_step=None,
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        run_agent = TaskRun(
+            issue_number="111",
+            role="developer",
+            status="pending",
+            current_step="agent",
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        session.add_all([run_none, run_agent])
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+
+        pending_cols = [c for c in columns if c["name"] == "pending"]
+        assert len(pending_cols) == 1
+        assert pending_cols[0]["count"] == 2
+
+    async def test_kanban_excludes_terminal(self, client: AsyncClient, seed_data) -> None:
+        _ = seed_data
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+
+        # seed_data has run3 (developing/develop) as the only non-terminal run
+        total_runs = sum(len(col["runs"]) for col in columns)
+        assert total_runs > 0
+        # Verify terminal runs (done/failed) are not included
+        for col in columns:
+            for run in col["runs"]:
+                assert run["status"] not in ("done", "failed")
+
+    async def test_kanban_per_column_limit(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        runs = [
+            TaskRun(
+                issue_number=str(200 + i),
+                role="developer",
+                status="developing",
+                current_step="develop",
+                total_cost_usd=Decimal("0.01"),
+                started_at=now - timedelta(minutes=i),
+            )
+            for i in range(5)
+        ]
+        session.add_all(runs)
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban?per_column=2")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+        develop_col = next(c for c in columns if c["name"] == "develop")
+        assert develop_col["count"] == 5
+        assert len(develop_col["runs"]) == 2
+
+    async def test_kanban_columns_ordered_by_position(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        run1 = TaskRun(
+            issue_number="300",
+            role="developer",
+            status="developing",
+            current_step="push",
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        run2 = TaskRun(
+            issue_number="301",
+            role="developer",
+            status="developing",
+            current_step="sync",
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        session.add_all([run1, run2])
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+        assert len(columns) == 2
+        # sync comes before push in the developer pipeline
+        assert columns[0]["name"] == "sync"
+        assert columns[1]["name"] == "push"
+        assert columns[0]["position"] < columns[1]["position"]
+
+    async def test_kanban_rejects_invalid_per_column(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/kanban?per_column=0")
+        assert resp.status_code == 422
+
+        resp = await client.get("/api/agents/kanban?per_column=-1")
+        assert resp.status_code == 422
+
+    async def test_kanban_unknown_step(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="400",
+            role="developer",
+            status="developing",
+            current_step="nonexistent_step",
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        session.add(run)
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+        assert len(columns) == 1
+        assert columns[0]["name"] == "nonexistent_step"
+        assert columns[0]["pipeline"] == "unknown"
+        assert columns[0]["position"] == 999
+
+    async def test_kanban_mixed_variants(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Runs from different pipeline variants at a shared step get separate columns."""
+        now = datetime.now(timezone.utc)
+        # Developer run at 'commit'
+        dev_run = TaskRun(
+            issue_number="500",
+            role="developer",
+            status="developing",
+            current_step="commit",
+            total_cost_usd=Decimal("0.10"),
+            started_at=now - timedelta(minutes=5),
+        )
+        # Address-review run at 'commit' with step history containing
+        # address_review-only steps so variant detection identifies it correctly.
+        ar_run = TaskRun(
+            issue_number="501",
+            role="developer",
+            status="developing",
+            current_step="commit",
+            pr_number=42,
+            total_cost_usd=Decimal("0.05"),
+            started_at=now - timedelta(minutes=2),
+        )
+        session.add_all([dev_run, ar_run])
+        await session.flush()
+
+        # Add step execution history with an address_review-only step
+        ar_step = StepExecution(
+            task_run_id=ar_run.id,
+            step_name="address_review",
+            status="done",
+            started_at=now - timedelta(minutes=3),
+            ended_at=now - timedelta(minutes=2),
+        )
+        session.add(ar_step)
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        columns = resp.json()["columns"]
+
+        # Both are at 'commit' but different variants -> separate columns
+        commit_cols = [c for c in columns if c["name"] == "commit"]
+        assert len(commit_cols) == 2
+
+        pipelines = {c["pipeline"] for c in commit_cols}
+        assert "developer" in pipelines
+        assert "address_review" in pipelines
+
+        # Each column has exactly one run
+        for col in commit_cols:
+            assert col["count"] == 1
+
+
+class TestGetKanbanColumnsDirect:
+    """Direct unit tests for get_kanban_columns (bypasses API router)."""
+
+    async def test_empty_db_returns_empty(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        result = await get_kanban_columns(session)
+        assert result == []
+
+    async def test_single_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="10",
+            role="developer",
+            status="developing",
+            current_step="develop",
+            total_cost_usd=Decimal("0.05"),
+            started_at=now - timedelta(minutes=2),
+        )
+        session.add(run)
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 1
+        assert cols[0]["name"] == "develop"
+        assert cols[0]["pipeline"] == "developer"
+        assert cols[0]["count"] == 1
+        assert len(cols[0]["runs"]) == 1
+        assert cols[0]["runs"][0]["issue_number"] == "10"
+
+    async def test_pending_variants(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="20",
+                    role="developer",
+                    status="pending",
+                    current_step=None,
+                    total_cost_usd=Decimal("0"),
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="21",
+                    role="developer",
+                    status="pending",
+                    current_step="agent",
+                    total_cost_usd=Decimal("0"),
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 1
+        assert cols[0]["name"] == "pending"
+        assert cols[0]["count"] == 2
+        assert len(cols[0]["runs"]) == 2
+
+    async def test_researcher_variant_detection(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="30",
+            role="researcher",
+            status="researching",
+            current_step="research",
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="research",
+            status="running",
+            started_at=now,
+        )
+        session.add(step)
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 1
+        assert cols[0]["runs"][0]["pipeline_variant"] == "researcher"
+
+    async def test_address_review_variant_detection(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="31",
+            role="developer",
+            status="developing",
+            current_step="commit",
+            pr_number=99,
+            total_cost_usd=Decimal("0"),
+            started_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        session.add(
+            StepExecution(
+                task_run_id=run.id,
+                step_name="address_review",
+                status="done",
+                started_at=now - timedelta(minutes=1),
+                ended_at=now,
+            )
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 1
+        assert cols[0]["runs"][0]["pipeline_variant"] == "address_review"
+
+    async def test_per_column_limit(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number=str(40 + i),
+                    role="developer",
+                    status="developing",
+                    current_step="develop",
+                    total_cost_usd=Decimal("0"),
+                    started_at=now - timedelta(minutes=i),
+                )
+                for i in range(5)
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, per_column=2)
+        assert len(cols) == 1
+        assert cols[0]["count"] == 5
+        assert len(cols[0]["runs"]) == 2
+
+    async def test_columns_sorted_by_position(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="50",
+                    role="developer",
+                    status="developing",
+                    current_step="push",
+                    total_cost_usd=Decimal("0"),
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="51",
+                    role="developer",
+                    status="developing",
+                    current_step="sync",
+                    total_cost_usd=Decimal("0"),
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 2
+        assert cols[0]["name"] == "sync"
+        assert cols[1]["name"] == "push"
+
+
 class TestWorkAPI:
     """Tests for the new work API endpoints."""
 
@@ -2777,6 +3192,167 @@ class TestWorkAPI:
         resp = await client.get("/api/work/summary")
         data = resp.json()
         assert data["active"] == 0
+
+    async def test_work_detail_found(self, client: AsyncClient, session: AsyncSession) -> None:
+        """get_work_detail returns run with steps and pipeline progress."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="77",
+            role="developer",
+            status="running",
+            current_step="develop",
+            total_cost_usd=Decimal("0.50"),
+            started_at=now - timedelta(minutes=10),
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="sync",
+            status="done",
+            cost_usd=Decimal("0.01"),
+            started_at=now - timedelta(minutes=10),
+            ended_at=now - timedelta(minutes=9),
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get(f"/api/work/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "run" in data
+        assert "steps" in data
+        assert "pipeline" in data
+        assert data["run"]["issue_number"] == "77"
+        assert data["run"]["role"] == "developer"
+        assert len(data["steps"]) == 1
+        assert data["steps"][0]["step_name"] == "sync"
+
+    async def test_work_detail_researcher_variant(self, client: AsyncClient, session: AsyncSession) -> None:
+        """get_work_detail detects researcher variant from step history."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="78",
+            role="researcher",
+            status="running",
+            current_step="research",
+            total_cost_usd=Decimal("0.10"),
+            started_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="research",
+            status="running",
+            cost_usd=Decimal("0.05"),
+            started_at=now,
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get(f"/api/work/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pipeline"]["pipeline_variant"] == "researcher"
+
+    async def test_work_detail_address_review_variant(self, client: AsyncClient, session: AsyncSession) -> None:
+        """get_work_detail detects address_review variant from step history."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="79",
+            role="developer",
+            status="running",
+            current_step="address_review",
+            pr_number=42,
+            total_cost_usd=Decimal("0.10"),
+            started_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="address_review",
+            status="running",
+            cost_usd=Decimal("0.05"),
+            started_at=now,
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get(f"/api/work/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pipeline"]["pipeline_variant"] == "address_review"
+
+    async def test_work_history_with_researcher_run(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Work history correctly identifies researcher variant."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="80",
+            role="researcher",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("0.05"),
+            started_at=now - timedelta(minutes=5),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="research",
+            status="done",
+            cost_usd=Decimal("0.05"),
+            started_at=now - timedelta(minutes=5),
+            ended_at=now,
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get("/api/work/history?role=researcher")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["tasks"]) >= 1
+        researcher_task = next(t for t in data["tasks"] if t["issue_number"] == "80")
+        assert researcher_task["pipeline_variant"] == "researcher"
+
+    async def test_work_history_with_address_review_run(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Work history correctly identifies address_review variant from steps."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="81",
+            role="developer",
+            status="done",
+            current_step="complete",
+            pr_number=55,
+            total_cost_usd=Decimal("0.08"),
+            started_at=now - timedelta(minutes=3),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="address_review",
+            status="done",
+            cost_usd=Decimal("0.08"),
+            started_at=now - timedelta(minutes=3),
+            ended_at=now,
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get("/api/work/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        ar_task = next(t for t in data["tasks"] if t["issue_number"] == "81")
+        assert ar_task["pipeline_variant"] == "address_review"
 
 
 class TestLogsAPI:

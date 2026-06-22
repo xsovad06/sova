@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator
 
 from sova.dashboard.services import control_service
+from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
@@ -138,6 +140,14 @@ async def dismiss_interrupted():
 async def get_pipeline():
     """Get the developer pipeline step names."""
     return {"steps": control_service.DEVELOPER_PIPELINE}
+
+
+@router.get("/agents/kanban")
+async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> dict[str, Any]:
+    """Get non-terminal TaskRuns grouped into Kanban columns by pipeline step."""
+    async with await get_session() as session:
+        columns = await control_service.get_kanban_columns(session, per_column=per_column)
+    return {"columns": columns}
 
 
 @router.get("/agents/{run_id}/output")

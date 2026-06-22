@@ -7,6 +7,7 @@ for the Work page (Active / History / Failed tabs).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,7 @@ from sova.dashboard.services.control_service import (
     get_step_progress,
 )
 from sova.db.models import StepExecution, TaskRun
-from sova.utils.formatting import iso_utc
+from sova.utils.formatting import decimal_to_json, iso_utc
 
 _TERMINAL = TASK_RUN_TERMINAL
 
@@ -35,6 +36,57 @@ _PIPELINE_LENGTHS: dict[str, int] = {
 _PIPELINE_ROLES = frozenset({"developer", "researcher"})
 
 
+def _init_step_positions() -> dict[tuple[str, str], tuple[str, int]]:
+    """Map (step_name, variant) tuples to (pipeline_name, position).
+
+    Steps shared across pipelines (e.g., 'commit' in developer and
+    address_review) get separate entries keyed by variant so they
+    appear as distinct kanban columns.
+    """
+    positions: dict[tuple[str, str], tuple[str, int]] = {}
+    offset = 0
+    for pipeline_name, steps in [
+        ("developer", DEVELOPER_PIPELINE),
+        ("address_review", ADDRESS_REVIEW_PIPELINE),
+        ("researcher", RESEARCHER_PIPELINE),
+    ]:
+        for i, step in enumerate(steps):
+            positions[(step, pipeline_name)] = (pipeline_name, offset + i)
+        offset += len(steps)
+    return positions
+
+
+# Unified step ordering across all pipelines (computed once at import).
+# "pending" is a synthetic column for runs with no step yet (None/"agent").
+_STEP_POSITIONS: dict[tuple[str, str], tuple[str, int]] = {
+    **_init_step_positions(),
+    ("pending", "pending"): ("pending", -1),
+}
+
+
+def _build_run_summary(r: TaskRun, now: datetime) -> dict[str, Any]:
+    """Build a summary dict for an active (non-terminal) TaskRun."""
+    started = r.started_at or now
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed = now - started
+    progress = get_step_progress(r.current_step, role=r.role, pr_number=r.pr_number)
+    return {
+        "id": r.id,
+        "issue_number": r.issue_number,
+        "role": r.role,
+        "status": r.status,
+        "current_step": r.current_step,
+        "pipeline_variant": progress.get("pipeline_variant", "developer"),
+        "step_index": progress.get("step_index", 0),
+        "total_steps": progress.get("total_steps", 0),
+        "started_at": iso_utc(started),
+        "elapsed_seconds": int(elapsed.total_seconds()),
+        "elapsed_formatted": _format_duration(elapsed),
+        "total_cost_usd": decimal_to_json(r.total_cost_usd),
+    }
+
+
 async def get_active_work(session: AsyncSession) -> list[dict]:
     """Get non-terminal task runs with step progress info."""
     stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL)).order_by(TaskRun.started_at.desc())
@@ -44,31 +96,10 @@ async def get_active_work(session: AsyncSession) -> list[dict]:
     now = datetime.now(timezone.utc)
     items = []
     for r in runs:
-        started = r.started_at or now
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-
-        elapsed = now - started
-        progress = get_step_progress(r.current_step, role=r.role, pr_number=r.pr_number)
-
-        items.append(
-            {
-                "id": r.id,
-                "issue_number": r.issue_number,
-                "role": r.role,
-                "status": r.status,
-                "current_step": r.current_step,
-                "pipeline_variant": progress.get("pipeline_variant", "developer"),
-                "step_index": progress["step_index"],
-                "total_steps": progress["total_steps"],
-                "branch_name": r.branch_name,
-                "pr_number": r.pr_number,
-                "elapsed_seconds": int(elapsed.total_seconds()),
-                "elapsed_formatted": _format_duration(elapsed),
-                "started_at": iso_utc(started),
-                "total_cost_usd": float(r.total_cost_usd or 0),
-            }
-        )
+        d = _build_run_summary(r, now)
+        d["branch_name"] = r.branch_name
+        d["pr_number"] = r.pr_number
+        items.append(d)
     return items
 
 
@@ -141,7 +172,7 @@ async def get_work_history(
                 "total_steps_possible": (_PIPELINE_LENGTHS.get(variant) if r.role in _PIPELINE_ROLES else None),
                 "branch_name": r.branch_name,
                 "pr_number": r.pr_number,
-                "total_cost_usd": float(r.total_cost_usd or 0),
+                "total_cost_usd": decimal_to_json(r.total_cost_usd),
                 "duration_ms": duration_ms,
                 "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
                 "error_message": r.error_message,
@@ -313,7 +344,7 @@ def _run_to_dict(run: TaskRun) -> dict:
         "pipeline_variant": _detect_variant(run.current_step, role=run.role, pr_number=run.pr_number),
         "branch_name": run.branch_name,
         "pr_number": run.pr_number,
-        "total_cost_usd": float(run.total_cost_usd or 0),
+        "total_cost_usd": decimal_to_json(run.total_cost_usd),
         "error_message": run.error_message,
         "project_slug": run.project_slug,
         "resumed_from_id": run.resumed_from_id,
@@ -373,7 +404,7 @@ def _step_to_dict(step: StepExecution) -> dict:
         "id": step.id,
         "step_name": step.step_name,
         "status": step.status,
-        "cost_usd": float(step.cost_usd),
+        "cost_usd": decimal_to_json(step.cost_usd),
         "duration_ms": step.duration_ms,
         "duration_formatted": _format_duration_ms(step.duration_ms) if step.duration_ms else None,
         "output_summary": step.output_summary,
@@ -382,6 +413,68 @@ def _step_to_dict(step: StepExecution) -> dict:
         "started_at": iso_utc(step.started_at),
         "ended_at": iso_utc(step.ended_at),
     }
+
+
+async def get_kanban_columns(session: AsyncSession, *, per_column: int = 10) -> list[dict]:
+    """Get non-terminal TaskRuns grouped into Kanban columns by pipeline step.
+
+    Each column represents a pipeline step with runs currently at that step.
+    Columns are ordered by pipeline position. Empty columns are omitted.
+    """
+    stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL)).order_by(TaskRun.started_at.desc())
+    result = await session.execute(stmt)
+    runs = result.scalars().all()
+
+    if not runs:
+        return []
+
+    now = datetime.now(timezone.utc)
+
+    # Batch-fetch step execution history for accurate variant detection.
+    # get_step_progress can't distinguish shared steps (commit, validate, push)
+    # across pipelines without step history context.
+    run_ids = [r.id for r in runs]
+    steps_by_run = await _batch_step_names(session, run_ids)
+
+    # Group runs by (step, variant) so shared step names across pipelines
+    # (e.g., 'commit' in developer vs address_review) get separate columns.
+    columns: dict[tuple[str, str], list[dict]] = {}
+    for r in runs:
+        summary = _build_run_summary(r, now)
+        step = r.current_step
+        if step is None or step == "agent":
+            step = "pending"
+            variant = "pending"
+        else:
+            # Use step history for authoritative variant detection
+            step_names = steps_by_run.get(r.id, set())
+            if step_names & _RESEARCHER_ONLY:
+                variant = "researcher"
+            elif step_names & _ADDRESS_REVIEW_ONLY:
+                variant = "address_review"
+            else:
+                variant = summary["pipeline_variant"]
+        summary["pipeline_variant"] = variant
+
+        columns.setdefault((step, variant), []).append(summary)
+
+    # Build result sorted by pipeline position
+    result_columns = []
+    for (col_step, col_variant), col_runs in columns.items():
+        pipeline_name, position = _STEP_POSITIONS.get((col_step, col_variant), ("unknown", 999))
+        limited_runs = col_runs[:per_column]
+        result_columns.append(
+            {
+                "name": col_step,
+                "pipeline": pipeline_name,
+                "position": position,
+                "count": len(col_runs),
+                "runs": limited_runs,
+            }
+        )
+
+    result_columns.sort(key=lambda c: c["position"])
+    return result_columns
 
 
 def _format_duration(td) -> str:

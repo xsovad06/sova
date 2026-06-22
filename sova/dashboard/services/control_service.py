@@ -128,3 +128,4 @@ from sova.dashboard.services.agent_recovery import (
     recover_stale_runs as recover_stale_runs,
 )
 from sova.dashboard.services.output_service import OutputWriter as OutputWriter
+from sova.dashboard.services.work_service import get_kanban_columns as get_kanban_columns

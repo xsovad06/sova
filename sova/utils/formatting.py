@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import datetime, timezone
+from decimal import Decimal
 
 
 def slugify(text: str, max_length: int = 50) -> str:
@@ -52,3 +53,15 @@ def iso_utc(dt: datetime | None) -> str | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.isoformat()
+
+
+def decimal_to_json(value: Decimal | None) -> str:
+    """Convert a Decimal to a JSON-safe string for API responses.
+
+    Centralizes Decimal-to-string serialization at the API boundary
+    so monetary values stay as Decimal throughout business logic.
+    Returns a string representation to avoid float precision loss.
+    """
+    if value is None:
+        return "0.00"
+    return str(value)
