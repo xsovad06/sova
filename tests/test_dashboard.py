@@ -5799,3 +5799,4 @@ class TestWebSocketAgentStatus:
         assert len(mgr._groups.get(dir_b, [])) == 1
 
         mgr.disconnect(ws_b, dir_b)
+        assert len(mgr._groups.get(dir_b, [])) == 0
