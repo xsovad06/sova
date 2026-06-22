@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator
 
 from sova.dashboard.services import control_service
@@ -12,6 +12,36 @@ from sova.utils.logging import get_logger
 
 router = APIRouter(tags=["agents"])
 log = get_logger(component="dashboard.agents")
+
+
+class _ConnectionManager:
+    """Track active WebSocket connections for lifecycle management."""
+
+    def __init__(self) -> None:
+        self._connections: list[WebSocket] = []
+
+    @property
+    def active_connections(self) -> list[WebSocket]:
+        return list(self._connections)
+
+    def connect(self, ws: WebSocket) -> None:
+        self._connections.append(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        try:
+            self._connections.remove(ws)
+        except ValueError:
+            pass
+
+    async def broadcast(self, data: dict) -> None:
+        for ws in list(self._connections):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                self.disconnect(ws)
+
+
+_ws_manager = _ConnectionManager()
 
 
 class StartAgentRequest(BaseModel):
@@ -118,16 +148,34 @@ async def run_command(req: RunCommandRequest):
 
 @router.websocket("/ws/agents/status")
 async def ws_agent_status(websocket: WebSocket) -> None:
-    """Send periodic tick notifications so the client can refresh agent status.
+    """Push real-time agent status updates over WebSocket.
 
-    The client triggers a full ``loadAgents()`` HTTP fetch on each tick,
-    so the server only needs to signal "time to refresh" -- no expensive
-    status computation here.
+    Computes agent statuses server-side and sends full
+    ``{type: 'status_update', runs: [...]}`` payloads so the client
+    can render directly without an extra HTTP round-trip.
     """
+    from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.agent_status import (
+        format_status_update,
+        get_all_agent_statuses,
+    )
+
     await websocket.accept()
+    _ws_manager.connect(websocket)
     try:
         while True:
-            await websocket.send_json({"type": "tick"})
+            project_dir = get_project_dir()
+            try:
+                statuses = await get_all_agent_statuses(project_dir=project_dir)
+                message = format_status_update(statuses)
+            except Exception:
+                log.warning("Failed to fetch agent statuses for WebSocket push", exc_info=True)
+                message = {"type": "status_update", "runs": []}
+            await websocket.send_json(message)
             await asyncio.sleep(2)
-    except Exception:
+    except WebSocketDisconnect:
         pass
+    except Exception:
+        log.exception("Unexpected error in WebSocket /ws/agents/status")
+    finally:
+        _ws_manager.disconnect(websocket)

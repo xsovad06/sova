@@ -5690,8 +5690,8 @@ class TestDetectVariantCommandRoles:
 
 
 class TestWebSocketAgentStatus:
-    def test_websocket_connect_and_receive(self) -> None:
-        """WebSocket endpoint accepts connection and sends lightweight tick."""
+    def test_websocket_connect_and_receive_status_update(self) -> None:
+        """WebSocket endpoint accepts connection and sends status_update with runs."""
         from starlette.testclient import TestClient
 
         from sova.dashboard.app import create_app
@@ -5700,4 +5700,57 @@ class TestWebSocketAgentStatus:
         client = TestClient(app)
         with client.websocket_connect("/api/ws/agents/status") as ws:
             data = ws.receive_json()
-            assert data == {"type": "tick"}
+            assert data["type"] == "status_update"
+            assert isinstance(data["runs"], list)
+
+    def test_websocket_client_disconnect(self) -> None:
+        """Verify connection is removed from manager after client disconnects."""
+        from starlette.testclient import TestClient
+
+        from sova.dashboard.app import create_app
+        from sova.dashboard.routers.agents import _ws_manager
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        before = len(_ws_manager.active_connections)
+        with client.websocket_connect("/api/ws/agents/status") as ws:
+            ws.receive_json()
+        # After disconnect, connection count should be back to baseline
+        assert len(_ws_manager.active_connections) == before
+
+    def test_websocket_multiple_clients(self) -> None:
+        """Multiple clients can connect and each receives updates."""
+        from starlette.testclient import TestClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        with client.websocket_connect("/api/ws/agents/status") as ws1:
+            with client.websocket_connect("/api/ws/agents/status") as ws2:
+                d1 = ws1.receive_json()
+                d2 = ws2.receive_json()
+                assert d1["type"] == "status_update"
+                assert d2["type"] == "status_update"
+
+    def test_websocket_error_handling(self) -> None:
+        """When get_all_agent_statuses raises, endpoint sends empty runs and does not crash."""
+        from unittest.mock import AsyncMock, patch
+
+        from starlette.testclient import TestClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=False)
+        client = TestClient(app)
+        with (
+            patch(
+                "sova.dashboard.services.agent_status.get_all_agent_statuses",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("DB failure"),
+            ),
+            client.websocket_connect("/api/ws/agents/status") as ws,
+        ):
+            data = ws.receive_json()
+            assert data["type"] == "status_update"
+            assert data["runs"] == []

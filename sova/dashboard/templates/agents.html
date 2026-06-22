@@ -1298,34 +1298,62 @@ loadHistory();
 var _agentWs = null;
 var _wsReconnectDelay = 1000;
 var _wsMaxReconnectDelay = 16000;
+var _wsReconnectAttempts = 0;
+var _wsMaxReconnectAttempts = 10;
+var _wsLastRunIds = null;
 
 function _connectAgentWs() {
-  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  var wsUrl = proto + '//' + location.host + apiUrl('/ws/agents/status');
-  try {
-    _agentWs = new WebSocket(wsUrl);
-  } catch (e) {
+  if (_wsReconnectAttempts > _wsMaxReconnectAttempts) {
+    console.warn('WebSocket max reconnect attempts reached, falling back to polling');
     _startPollingFallback();
     return;
   }
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var wsUrl = proto + '//' + location.host + apiUrl('/ws/agents/status');
+  _agentWs = new WebSocket(wsUrl);
 
   _agentWs.onopen = function() {
     _wsReconnectDelay = 1000;
+    _wsReconnectAttempts = 0;
     // Stop polling if it was running as fallback
     if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
   };
 
-  _agentWs.onmessage = function() {
-    // Server sends lightweight ticks; refresh full UI via HTTP
-    loadAgents();
+  _agentWs.onmessage = function(event) {
+    try {
+      var msg = JSON.parse(event.data);
+      if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
+        // Check if the set of active run IDs changed -- triggers full reload
+        var currentIds = msg.runs.map(function(r) { return r.run_id; }).sort().join(',');
+        if (_wsLastRunIds !== null && currentIds !== _wsLastRunIds) {
+          _wsLastRunIds = currentIds;
+          loadAgents();
+          return;
+        }
+        _wsLastRunIds = currentIds;
+        // Update status indicators inline without full HTTP reload
+        msg.runs.forEach(function(run) {
+          var card = document.getElementById('agent-card-' + run.run_id);
+          if (!card) return;
+          var badge = card.querySelector('[data-status-badge]');
+          if (badge && run.is_stuck) {
+            badge.classList.add('text-accent-yellow');
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('WebSocket message parse error:', e);
+    }
   };
 
   _agentWs.onclose = function() {
     _agentWs = null;
     _startPollingFallback();
-    // Reconnect with exponential backoff
-    setTimeout(_connectAgentWs, _wsReconnectDelay);
-    _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, _wsMaxReconnectDelay);
+    _wsReconnectAttempts++;
+    if (_wsReconnectAttempts <= _wsMaxReconnectAttempts) {
+      setTimeout(_connectAgentWs, _wsReconnectDelay);
+      _wsReconnectDelay = Math.min(_wsReconnectDelay * 2, _wsMaxReconnectDelay);
+    }
   };
 
   _agentWs.onerror = function() {
