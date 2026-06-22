@@ -749,7 +749,7 @@ function renderAgentCard(agent) {
         '<span class="text-accent-green">' + cost + '</span>' +
       '</div>' +
     '</div>' +
-    '<div class="mb-3">' + pipeline + '</div>' +
+    '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
       '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
@@ -1323,21 +1323,41 @@ function _connectAgentWs() {
     try {
       var msg = JSON.parse(event.data);
       if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
-        // Check if the set of active run IDs changed -- triggers full reload
-        var currentIds = msg.runs.map(function(r) { return r.run_id; }).sort().join(',');
-        if (_wsLastRunIds !== null && currentIds !== _wsLastRunIds) {
-          _wsLastRunIds = currentIds;
+        // Build a snapshot of display-relevant fields to detect any change
+        var snapshot = msg.runs.map(function(r) {
+          return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + ':' + (r.is_stuck ? '1' : '0');
+        }).sort().join(',');
+        if (_wsLastRunIds !== null && snapshot !== _wsLastRunIds) {
+          _wsLastRunIds = snapshot;
           loadAgents();
           return;
         }
-        _wsLastRunIds = currentIds;
-        // Update status indicators inline without full HTTP reload
+        _wsLastRunIds = snapshot;
+        // Apply all display-relevant field deltas inline
         msg.runs.forEach(function(run) {
           var card = document.getElementById('agent-card-' + run.run_id);
           if (!card) return;
-          var badge = card.querySelector('[data-status-badge]');
-          if (badge && run.is_stuck) {
-            badge.classList.add('text-accent-yellow');
+
+          // Re-render status badge with current values
+          var badgeEl = card.querySelector('.sova-status-badge');
+          if (badgeEl) {
+            var elapsedSec = run.time_in_step_ms != null ? run.time_in_step_ms / 1000 : null;
+            var newBadge = renderStatusBadge(run.status, run.current_step, run.step_index, run.total_steps, elapsedSec);
+            badgeEl.outerHTML = newBadge;
+          }
+
+          // Update step pipeline
+          var pipelineEl = card.querySelector('[data-pipeline-container]');
+          if (pipelineEl) {
+            pipelineEl.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant);
+          }
+
+          // Update elapsed time display
+          var elapsedEl = card.querySelector('[data-field="elapsed"]');
+          if (elapsedEl) {
+            elapsedEl.textContent = run.time_in_step_ms != null
+              ? formatElapsed(Math.floor(run.time_in_step_ms / 1000))
+              : '';
           }
         });
       }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator
@@ -13,32 +14,66 @@ from sova.utils.logging import get_logger
 router = APIRouter(tags=["agents"])
 log = get_logger(component="dashboard.agents")
 
+_STATUS_BROADCAST_INTERVAL = 2  # seconds
+
 
 class _ConnectionManager:
-    """Track active WebSocket connections for lifecycle management."""
+    """Track active WebSocket connections per project and run a single producer per group.
+
+    Instead of each connection fetching statuses independently, one background
+    task per project_dir polls ``get_all_agent_statuses`` and broadcasts to all
+    subscribers in that group.  This keeps backend work constant regardless of
+    client count and correctly scopes data in multi-project mode.
+    """
 
     def __init__(self) -> None:
-        self._connections: list[WebSocket] = []
+        # Keyed by project_dir (None for single-project mode)
+        self._groups: dict[Path | None, list[WebSocket]] = {}
+        self._producer_tasks: dict[Path | None, asyncio.Task] = {}
 
     @property
     def active_connections(self) -> list[WebSocket]:
-        return list(self._connections)
+        return [ws for conns in self._groups.values() for ws in conns]
 
-    def connect(self, ws: WebSocket) -> None:
-        self._connections.append(ws)
+    def connect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
+        group = self._groups.setdefault(project_dir, [])
+        group.append(ws)
+        task = self._producer_tasks.get(project_dir)
+        if task is None or task.done():
+            self._producer_tasks[project_dir] = asyncio.create_task(self._produce_loop(project_dir))
 
-    def disconnect(self, ws: WebSocket) -> None:
+    def disconnect(self, ws: WebSocket, project_dir: Path | None = None) -> None:
+        group = self._groups.get(project_dir, [])
         try:
-            self._connections.remove(ws)
+            group.remove(ws)
         except ValueError:
             pass
+        if not group:
+            self._groups.pop(project_dir, None)
 
-    async def broadcast(self, data: dict) -> None:
-        for ws in list(self._connections):
+    async def _broadcast(self, data: dict, project_dir: Path | None) -> None:
+        for ws in list(self._groups.get(project_dir, [])):
             try:
                 await ws.send_json(data)
             except Exception:
-                self.disconnect(ws)
+                self.disconnect(ws, project_dir)
+
+    async def _produce_loop(self, project_dir: Path | None) -> None:
+        """Single producer per project: fetch statuses and broadcast."""
+        from sova.dashboard.services.agent_status import (
+            format_status_update,
+            get_all_agent_statuses,
+        )
+
+        while self._groups.get(project_dir):
+            try:
+                statuses = await get_all_agent_statuses(project_dir=project_dir)
+                message = format_status_update(statuses)
+            except Exception:
+                log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
+                message = {"type": "status_update", "runs": []}
+            await self._broadcast(message, project_dir)
+            await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
 
 
 _ws_manager = _ConnectionManager()
@@ -150,32 +185,27 @@ async def run_command(req: RunCommandRequest):
 async def ws_agent_status(websocket: WebSocket) -> None:
     """Push real-time agent status updates over WebSocket.
 
-    Computes agent statuses server-side and sends full
-    ``{type: 'status_update', runs: [...]}`` payloads so the client
-    can render directly without an extra HTTP round-trip.
+    The connection registers with ``_ws_manager`` which runs a single
+    background producer per project.  That producer fetches statuses once
+    per interval and broadcasts ``{type: 'status_update', runs: [...]}``
+    to every subscriber, keeping backend work constant regardless of
+    client count.
     """
     from sova.dashboard.project_context import get_project_dir
-    from sova.dashboard.services.agent_status import (
-        format_status_update,
-        get_all_agent_statuses,
-    )
 
     await websocket.accept()
-    _ws_manager.connect(websocket)
+    # Capture project_dir at connection time so the producer loop
+    # uses the correct scope even in multi-project mode.
+    project_dir = get_project_dir()
+    _ws_manager.connect(websocket, project_dir)
     try:
+        # Keep connection alive -- wait for client messages or disconnect.
+        # The producer task in _ws_manager handles sending updates.
         while True:
-            project_dir = get_project_dir()
-            try:
-                statuses = await get_all_agent_statuses(project_dir=project_dir)
-                message = format_status_update(statuses)
-            except Exception:
-                log.warning("Failed to fetch agent statuses for WebSocket push", exc_info=True)
-                message = {"type": "status_update", "runs": []}
-            await websocket.send_json(message)
-            await asyncio.sleep(2)
+            await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     except Exception:
         log.exception("Unexpected error in WebSocket /ws/agents/status")
     finally:
-        _ws_manager.disconnect(websocket)
+        _ws_manager.disconnect(websocket, project_dir)
