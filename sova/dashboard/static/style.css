@@ -675,6 +675,36 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   border-top-color: transparent;
 }
 
+/* ============================================================
+   9. KANBAN BOARD
+   ============================================================ */
+
+.kanban-column {
+  min-width: 14rem;
+  max-width: 16rem;
+  flex-shrink: 0;
+  background: var(--color-surface-card);
+  border-radius: 0.5rem;
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.5);
+}
+
+.kanban-card {
+  display: block;
+  padding: 0.625rem;
+  border-radius: 0.375rem;
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+  background: var(--color-surface);
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease;
+  text-decoration: none;
+  color: inherit;
+}
+
+.kanban-card:hover {
+  border-color: rgb(var(--ctp-blue-rgb) / 0.3);
+  background: var(--color-surface-hover);
+}
+
 /* Sidebar tooltips: only visible when collapsed */
 .sidebar [data-tooltip]::after {
   display: none;

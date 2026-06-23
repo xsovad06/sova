@@ -60,9 +60,28 @@
   <div id="handoff-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"></div>
 </div>
 
-<!-- Running Agents Grid -->
+<!-- View Toggle -->
+<div class="flex items-center gap-1 mb-4">
+  <button onclick="switchAgentView('list')" id="view-list"
+    class="px-3 py-1.5 text-xs font-medium rounded-l border border-gray-700 transition-colors bg-surface-hover text-white">
+    List
+  </button>
+  <button onclick="switchAgentView('kanban')" id="view-kanban"
+    class="px-3 py-1.5 text-xs font-medium rounded-r border border-gray-700 transition-colors bg-surface text-gray-500 hover:text-gray-300">
+    Pipeline
+  </button>
+</div>
+
+<!-- Running Agents Grid (list view) -->
 <div id="agents-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
   <div class="text-gray-500 text-sm">No agents running</div>
+</div>
+
+<!-- Kanban Board (pipeline view) -->
+<div id="kanban-grid" class="hidden mb-6 overflow-x-auto">
+  <div id="kanban-columns" class="flex gap-3 min-h-[200px] pb-2">
+    <p class="text-gray-500 text-sm py-8 text-center w-full">Loading pipeline view...</p>
+  </div>
 </div>
 
 <!-- Interrupted Runs Banner -->
@@ -683,7 +702,6 @@ function agentFingerprint(data) {
 async function loadAgents() {
   try {
     var data = await fetchAPI(apiUrl('/agents/active'));
-    var grid = document.getElementById('agents-grid');
     var slotsInfo = document.getElementById('slots-info');
     slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots';
 
@@ -695,15 +713,22 @@ async function loadAgents() {
     if (!_cardMenuOpen) renderTaskCards();
 
     var fp = agentFingerprint(data);
-    if (fp === lastAgentFingerprint) {
-      return;
-    }
-    lastAgentFingerprint = fp;
+    var changed = fp !== lastAgentFingerprint;
+    if (changed) lastAgentFingerprint = fp;
 
+    // Update log tabs and handoff regardless of view mode
+    if (changed) {
+      updateLogTabs(data.agents);
+      checkStandaloneHandoff();
+    }
+
+    // Skip DOM-heavy list rendering when kanban view is active
+    if (_agentView === 'kanban') return;
+    if (!changed) return;
+
+    var grid = document.getElementById('agents-grid');
     if (data.agents.length === 0 && data.completed.length === 0) {
       grid.innerHTML = '<div class="col-span-2 text-gray-500 text-sm py-8 text-center">No agents running</div>';
-      updateLogTabs([]);
-      checkStandaloneHandoff();
       return;
     }
     var cards = [];
@@ -719,8 +744,6 @@ async function loadAgents() {
     });
 
     grid.innerHTML = cards.join('');
-    updateLogTabs(data.agents);
-    checkStandaloneHandoff();
   } catch (e) {
     console.error('Failed to load agents:', e);
   }
@@ -1288,6 +1311,7 @@ if (_prTrackerCollapsed) {
   document.getElementById('pr-tracker-list').classList.add('hidden');
   document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
 }
+var _agentView = localStorage.getItem('sova-agents-view') || 'list';
 loadTaskCards();
 loadAgents();
 loadPrTracker();
@@ -1396,5 +1420,114 @@ window.addEventListener('beforeunload', function() {
 });
 
 setInterval(loadPrTracker, 30000);
+
+// -- View Toggle (List / Pipeline Kanban) --
+
+var _kanbanPollInterval = null;
+var _toggleBase = 'px-3 py-1.5 text-xs font-medium border border-gray-700 transition-colors';
+var _toggleActive = 'bg-surface-hover text-white';
+var _toggleInactive = 'bg-surface text-gray-500 hover:text-gray-300';
+
+function switchAgentView(view) {
+  _agentView = view;
+  localStorage.setItem('sova-agents-view', view);
+
+  var listBtn = document.getElementById('view-list');
+  var kanbanBtn = document.getElementById('view-kanban');
+  var listGrid = document.getElementById('agents-grid');
+  var kanbanGrid = document.getElementById('kanban-grid');
+  var isKanban = view === 'kanban';
+
+  listGrid.classList.toggle('hidden', isKanban);
+  kanbanGrid.classList.toggle('hidden', !isKanban);
+  listBtn.className = _toggleBase + ' rounded-l ' + (isKanban ? _toggleInactive : _toggleActive);
+  kanbanBtn.className = _toggleBase + ' rounded-r ' + (isKanban ? _toggleActive : _toggleInactive);
+
+  if (isKanban) {
+    loadKanban();
+    if (!_kanbanPollInterval) _kanbanPollInterval = setInterval(loadKanban, 5000);
+  } else {
+    if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
+  }
+}
+
+function _formatStepName(name) {
+  if (!name) return '';
+  return name.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+function _pipelineLabel(pipeline) {
+  var labels = { developer: 'Dev', address_review: 'Addr', researcher: 'Res', pending: '', unknown: '' };
+  return labels[pipeline] || pipeline;
+}
+
+async function loadKanban() {
+  if (_agentView !== 'kanban') return;
+  try {
+    var data = await fetchAPI(apiUrl('/agents/kanban'));
+    var container = document.getElementById('kanban-columns');
+    if (!container) return;
+
+    if (!data.columns || data.columns.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-sm py-8 text-center w-full">No active runs</p>';
+      return;
+    }
+
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+
+    container.innerHTML = data.columns.map(function(col) {
+      var pipelineBadge = col.pipeline && col.pipeline !== 'pending' && col.pipeline !== 'unknown'
+        ? '<span class="text-xs text-gray-600 font-normal ml-1">' + escapeHtml(_pipelineLabel(col.pipeline)) + '</span>'
+        : '';
+      var countBadge = '<span class="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-xs rounded-full bg-accent/20 text-accent">' + col.count + '</span>';
+
+      var cardsHtml = col.runs.map(function(run) {
+        var rc = roleColor(run.role);
+        var sc = STATUS_COLORS[run.status] || STATUS_COLORS.pending;
+        var isTerminal = !!_STATUS_TERMINAL[run.status];
+        var pulseClass = isTerminal ? '' : ' animate-pulse';
+
+        return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block">' +
+          '<div class="flex items-center justify-between mb-1.5">' +
+            '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(String(run.issue_number)) + '</span>' +
+            '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + sc.dot + pulseClass + '"></span>' +
+          '</div>' +
+          '<div class="flex items-center gap-1.5 mb-1.5">' +
+            '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(run.role, run.pipeline_variant)) + '</span>' +
+            '<span class="text-xs text-gray-500">' + escapeHtml(run.status) + '</span>' +
+          '</div>' +
+          '<div class="flex items-center justify-between text-xs text-gray-500">' +
+            '<span>' + formatElapsed(run.elapsed_seconds) + '</span>' +
+            '<span class="text-accent-green">$' + (run.total_cost_usd || 0).toFixed(2) + '</span>' +
+          '</div>' +
+        '</a>';
+      }).join('');
+
+      var overflowHint = col.count > col.runs.length
+        ? '<p class="text-xs text-gray-600 text-center mt-2">+ ' + (col.count - col.runs.length) + ' more</p>'
+        : '';
+
+      return '<div class="kanban-column">' +
+        '<div class="flex items-center justify-between px-3 py-2 border-b border-gray-700/50">' +
+          '<span class="text-xs font-medium text-gray-400 uppercase tracking-wider">' +
+            escapeHtml(_formatStepName(col.name)) + pipelineBadge +
+          '</span>' +
+          countBadge +
+        '</div>' +
+        '<div class="p-2 space-y-2 overflow-y-auto" style="max-height: 500px">' +
+          cardsHtml +
+          overflowHint +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load kanban:', e);
+  }
+}
+
+// Initialize the saved view preference
+if (_agentView === 'kanban') {
+  switchAgentView('kanban');
+}
 </script>
 {% endblock %}

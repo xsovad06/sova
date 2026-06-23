@@ -2140,6 +2140,16 @@ class TestHandoffAPI:
         assert "checkHandoffForAgents" in resp.text
         assert "executeHandoffAction" in resp.text
 
+    async def test_agents_page_has_kanban_view(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert "kanban-grid" in resp.text
+        assert "kanban-columns" in resp.text
+        assert "switchAgentView" in resp.text
+        assert "loadKanban" in resp.text
+        assert "view-list" in resp.text
+        assert "view-kanban" in resp.text
+
 
 # ---------------------------------------------------------------------------
 # Multi-project mode
