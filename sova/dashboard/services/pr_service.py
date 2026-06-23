@@ -132,6 +132,8 @@ def compute_pr_state(
         if all_threads_resolved:
             return ComputedPRState.APPROVED
         return ComputedPRState.REVIEW_ADDRESSED
+    if ci_status == "passed" and mergeable == "MERGEABLE":
+        return ComputedPRState.APPROVED_CI_GREEN
     return ComputedPRState.AWAITING_REVIEW
 
 
