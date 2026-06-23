@@ -183,8 +183,8 @@ def create_app(
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
         else:
-            await init_db(project_dir)
-            await recover_stale_runs(project_dir)
+            await init_db(resolved)
+            await recover_stale_runs(resolved)
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         yield

@@ -136,7 +136,7 @@ async function loadRunDetail() {
     statusEl.textContent = run.status;
     statusEl.className = 'text-xl font-bold ' + statusColor(run.status);
 
-    document.getElementById('detail-cost').textContent = '$' + run.total_cost_usd.toFixed(4);
+    document.getElementById('detail-cost').textContent = '$' + parseFloat(run.total_cost_usd || 0).toFixed(4);
 
     // PR + branch info
     var infoEl = document.getElementById('run-info');
@@ -194,6 +194,7 @@ async function loadRunDetail() {
     // Steps
     if (steps.length === 0) {
       document.getElementById('step-timeline').innerHTML = '<p class="text-gray-500 text-sm">No steps recorded</p>';
+      switchDetailTab('output');
     } else {
       document.getElementById('step-timeline').innerHTML = '<div class="space-y-2">' +
         steps.map(function(s) {
@@ -205,7 +206,7 @@ async function loadRunDetail() {
             '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + stepColors.dot + '"></span>' +
             '<span class="text-sm font-medium w-36">' + escapeHtml(STEP_LABELS[s.step_name] || s.step_name) + '</span>' +
             '<span class="text-xs text-gray-500 w-20">' + (s.duration_formatted || formatDuration(s.duration_ms)) + '</span>' +
-            '<span class="text-xs text-accent-green w-20">$' + s.cost_usd.toFixed(4) + '</span>' +
+            '<span class="text-xs text-accent-green w-20">$' + parseFloat(s.cost_usd || 0).toFixed(4) + '</span>' +
             '<span class="text-xs ' + stepColors.text + '">' + s.status + '</span>' +
             (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-xs">' + escapeHtml(s.error_message) + '</span>' : '') +
           '</div>';
