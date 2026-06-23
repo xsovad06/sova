@@ -64,10 +64,42 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 - Write handoff with merge options
 
 **CI is pending** (and `wait_for=ci`):
-- Poll CI every 60 seconds, up to 15 minutes
-- When CI completes:
-  - If passed: write handoff with "Merge" action
-  - If failed: write handoff with "Retry" and "Investigate" actions
+
+Poll CI in a loop using the following bash command:
+
+```bash
+# Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
+# Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
+for i in $(seq 1 30); do
+  echo "--- CI poll attempt $i/30 ---"
+  CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null || echo "[]")
+  echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
+  IFS=$'\t' read -r TOTAL PENDING FAILED < <(echo "$CHECKS_JSON" | jq -r '
+    (length | tostring) + "\t" +
+    ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
+    ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
+  ')
+  if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+    if [ "$FAILED" -gt 0 ]; then
+      echo "CI FAILED: $FAILED check(s) failed"
+      break
+    else
+      echo "CI PASSED: all $TOTAL checks passed"
+      break
+    fi
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "CI TIMEOUT: checks still pending after 15 minutes"
+    break
+  fi
+  sleep 30
+done
+```
+
+Act on the result:
+- **CI PASSED**: write handoff with "Merge" action
+- **CI FAILED**: write handoff with "Retry" and "Investigate" actions
+- **CI TIMEOUT**: write handoff with "Wait for CI" action so the dashboard can re-trigger later
 
 **CI has failed** (and `investigate_ci=true`):
 - Fetch the CI check details

@@ -39,9 +39,41 @@ Verify:
 
 Note: formal GitHub review approval is NOT required. The user triggering this command from the dashboard is the approval. Log the review status for the record, but proceed regardless.
 
-If CI checks are still pending, wait up to 5 minutes (polling every 30 seconds). If they don't complete, write a handoff with "Wait for CI" action and stop.
+If CI checks are still pending, poll in a loop using the following bash command:
 
-If CI has failures, write a failed handoff and stop -- do not merge with failing CI.
+```bash
+# Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
+# Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
+for i in $(seq 1 30); do
+  echo "--- CI poll attempt $i/30 ---"
+  CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null || echo "[]")
+  echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
+  IFS=$'\t' read -r TOTAL PENDING FAILED < <(echo "$CHECKS_JSON" | jq -r '
+    (length | tostring) + "\t" +
+    ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
+    ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
+  ')
+  if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+    if [ "$FAILED" -gt 0 ]; then
+      echo "CI FAILED: $FAILED check(s) failed"
+      break
+    else
+      echo "CI PASSED: all $TOTAL checks passed"
+      break
+    fi
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "CI TIMEOUT: checks still pending after 15 minutes"
+    break
+  fi
+  sleep 30
+done
+```
+
+Act on the result:
+- **CI PASSED**: proceed to merge (step 3)
+- **CI FAILED**: write a failed handoff with the failing check names and stop -- do not merge with failing CI
+- **CI TIMEOUT**: write a handoff with status `awaiting_action` and a "Wait for CI" next action (mode: `claude-command`, command: `agent-resume`, args: `{pr: <PR_NUMBER>, wait_for: "ci"}`), then stop
 
 ### 3. Merge
 

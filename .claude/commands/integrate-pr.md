@@ -87,20 +87,44 @@ Only run if `.claude/agent-memory/` exists in the project.
 
 ### Phase 4: Wait for CI
 
-If the repository has CI checks configured, poll until complete:
+If the repository has CI checks configured, poll in a loop using the following bash command. This includes external review bots (e.g., CodeRabbit) that appear as pending StatusContext checks.
 
 ```bash
-gh pr checks <PR_NUMBER>
+# Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
+# Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
+for i in $(seq 1 30); do
+  echo "--- CI poll attempt $i/30 ---"
+  CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null || echo "[]")
+  echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
+  IFS=$'\t' read -r TOTAL PENDING FAILED < <(echo "$CHECKS_JSON" | jq -r '
+    (length | tostring) + "\t" +
+    ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
+    ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
+  ')
+  if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+    if [ "$FAILED" -gt 0 ]; then
+      echo "CI FAILED: $FAILED check(s) failed"
+      break
+    else
+      echo "CI PASSED: all $TOTAL checks passed"
+      break
+    fi
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "CI TIMEOUT: checks still pending after 15 minutes"
+    break
+  fi
+  sleep 30
+done
 ```
 
-Poll every 30 seconds, up to 15 minutes. This includes external review bots (e.g., CodeRabbit) that appear as pending StatusContext checks. After all checks pass, also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision`) -- `gh pr checks` monitors CI status only, not review decisions.
-
-- **Passes**: proceed to Phase 5.
-- **No checks configured**: proceed to Phase 5 immediately.
-- **Fails**: analyze the failure output briefly.
-  - For infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and wait once more. On second failure, stop and report the diagnosis.
+Act on the result:
+- **CI PASSED**: also verify that no blocking `CHANGES_REQUESTED` review remains (`gh pr view <PR_NUMBER> --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions). Then proceed to Phase 5.
+- **No checks returned** (TOTAL=0 on first poll): wait 2 minutes for checks to register (grace period after push), then proceed to Phase 5 if still no checks.
+- **CI FAILED**: analyze the failure output briefly.
+  - For infrastructure/flaky issues (network timeouts, resource limits, unrelated tests), post a retry comment and re-run the polling loop once more. On second failure, stop and report the diagnosis.
   - For real code issues, stop and report the diagnosis with failing check details.
-- **Times out** (15 minutes elapsed): stop and report. The user can re-run after CI completes.
+- **CI TIMEOUT**: stop and report. The user can re-run `/integrate-pr` after CI completes.
 
 ### Phase 5: Merge
 
