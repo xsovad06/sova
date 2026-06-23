@@ -48,7 +48,7 @@ var PHASE_LABELS = {
 };
 
 var _lifecycleData = null;
-var _pollTimer = null;
+
 var _lastUpdated = null;
 
 function phaseStatusStyle(status) {
@@ -355,18 +355,6 @@ async function abandonLifecycle() {
   }
 }
 
-// Initial load + polling
-loadLifecycle();
-_pollTimer = setInterval(loadLifecycle, 5000);
-
-document.addEventListener('visibilitychange', function() {
-  if (document.hidden) {
-    clearInterval(_pollTimer);
-    _pollTimer = null;
-  } else {
-    loadLifecycle();
-    _pollTimer = setInterval(loadLifecycle, 5000);
-  }
-});
+visibilityAwarePoll(loadLifecycle, 5000);
 </script>
 {% endblock %}

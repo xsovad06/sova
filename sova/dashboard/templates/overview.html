@@ -73,7 +73,6 @@ async function loadOverview() {
   }
 }
 
-loadOverview();
-setInterval(loadOverview, 10000);
+visibilityAwarePoll(loadOverview, 10000);
 </script>
 {% endblock %}

@@ -1432,9 +1432,10 @@ _connectAgentWs();
 window.addEventListener('beforeunload', function() {
   if (_agentWs) { _agentWs.close(); _agentWs = null; }
   if (agentPollInterval) { clearInterval(agentPollInterval); }
+  if (_prPollInterval) { clearInterval(_prPollInterval); }
 });
 
-setInterval(loadPrTracker, 30000);
+var _prPollInterval = setInterval(loadPrTracker, 30000);
 
 // -- View Toggle (List / Pipeline Kanban) --
 
@@ -1544,5 +1545,30 @@ async function loadKanban() {
 if (_agentView === 'kanban') {
   switchAgentView('kanban');
 }
+
+// Pause polling when tab is hidden, full refresh when it returns
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (_agentWs) { _agentWs.close(); _agentWs = null; }
+    if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
+    if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
+    if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
+  } else {
+    _wsReconnectAttempts = 0;
+    _wsReconnectDelay = 1000;
+    _wsLastRunIds = null;
+    _connectAgentWs();
+    loadAgents();
+    loadTaskCards();
+    loadPrTracker();
+    checkInterrupted();
+    loadHistory();
+    _prPollInterval = setInterval(loadPrTracker, 30000);
+    if (_agentView === 'kanban') {
+      loadKanban();
+      _kanbanPollInterval = setInterval(loadKanban, 5000);
+    }
+  }
+});
 </script>
 {% endblock %}
