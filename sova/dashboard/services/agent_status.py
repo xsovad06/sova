@@ -209,7 +209,7 @@ def _compute_progress_pct(status: str, step_index: int, total_steps: int, comple
     """Compute progress percentage from completed step count."""
     if status == "done":
         return 100.0
-    if step_index == -1 and completed_count == 0:
+    if step_index == 0 and completed_count == 0:
         return 0.0
     if total_steps == 0:
         return 0.0

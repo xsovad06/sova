@@ -775,9 +775,9 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
         pipeline = DEVELOPER_PIPELINE
         variant = "developer"
 
-    if current_step is None:
+    if current_step is None or current_step == "agent":
         return {
-            "step_index": -1,
+            "step_index": 0,
             "total_steps": len(pipeline),
             "steps": pipeline,
             "pipeline_variant": variant,
@@ -786,7 +786,7 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
     try:
         idx = pipeline.index(current_step)
     except ValueError:
-        idx = -1
+        idx = 0
     return {
         "step_index": idx,
         "total_steps": len(pipeline),
