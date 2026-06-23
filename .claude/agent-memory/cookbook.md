@@ -43,6 +43,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Use `escapeJsStr()` not `escapeHtml()` for JS string context** -- `escapeHtml()` escapes HTML entities but not single quotes or backslashes. Inline event handlers like `onclick="fn('...')"` need JS string escaping. File: `sova/dashboard/static/app.js`. [confirmed: 0]
 - **Polling-based `innerHTML` refresh kills open dropdowns** -- [promoted] to `.claude/rules/architecture.md` (Dashboard JS polling corollary). Track `_cardMenuOpen`, skip re-renders while open, reset flag in all grid-replacing functions.
 
+- **PR widget role actions must use `quickStartRole`, not `runCommand`** -- `runCommand` routes through the command endpoint which can't resolve issue numbers from PR context, causing all actions to share `issue="address-pr"` and conflict. Role-based actions (address-pr, develop) must use `quickStartRole(issue, role, prNum)` which routes through the agent endpoint with proper issue dedup. Command-based actions (integrate-pr, ship-pr, review-pr) can use `runCommand` but should pass `linked_issue` in args. PR #204. [confirmed: 0]
 - **Display filter vs sort key divergence hides broken logic** -- `indexOf('priority:')` prefix check matches both `"priority:high"` and `"priority: high"`, but dict exact match `label in {"priority:high": 1}` only hits one format. When filters hide a field from display, sort/logic bugs become invisible. Normalize before matching: `label.replace(" ", "")`. File: `sova/dashboard/services/queue_service.py:_extract_label_priority()`. [confirmed: 1]
 - **Modal focus management requires three fixes for `display: none` toggling** -- (1) `offsetParent` returns `null` for elements inside `position: fixed` containers, so `el.offsetParent !== null` filters out ALL modal children -- use `!el.disabled` only; (2) synchronous `.focus()` after removing Tailwind `hidden` class silently fails before browser layout -- wrap in `setTimeout(fn, 0)`; (3) keydown listener on the modal element only fires when a descendant already has focus -- use `document.addEventListener` with a `!modal.contains(document.activeElement)` guard to pull escaped focus back. PR #178. [confirmed: 1]
 
@@ -143,6 +144,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 (All promoted to Tier 1: dispose engine after Alembic migrations; self-heal corrupted `alembic_version`.)
 
+- **NOT NULL columns need `server_default` in Alembic migrations** -- SQLAlchemy's `default=0` is Python-side only; `ALTER TABLE ADD COLUMN ... NOT NULL` without `server_default` fails on tables with existing rows. Always pair `nullable=False` with `server_default=text("0")` (or appropriate value) in migration files. PR #201 review + CodeRabbit. [confirmed: 0]
+
 ## External Review Tools
 
 - **External API queries must distinguish failure (`None`) from empty result (`[]`)** -- [promoted] to `.claude/rules/architecture.md`. Includes `_GH_STATE_MAP` fallback trap.
@@ -160,6 +163,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Test assertions drift after rebase onto main** -- feature branch tests may assert pre-rebase default values. After rebase, run tests and update assertions to match main's current state (e.g., `"harden"` -> `"spec"` for NEEDS_SPEC action). [confirmed: 0]
 - **Fork-based PRs require fetching from the correct remote** -- `gh pr view --json headRepositoryOwner` reveals which remote hosts the branch. Use `git fetch <fork-remote> <branch>` before checkout. [confirmed: 0]
 - **`git rebase --continue` rejects `--no-edit`** -- use `GIT_EDITOR=true git rebase --continue` to skip the editor. [confirmed: 0]
+- **Pre-push invariant failures on code outside your diff** -- invariant hooks check the full codebase, not just changed files. If an invariant fails on code from a commit on `main` that your branch hasn't picked up yet, rebase onto `main` before pushing. Common with `money-decimal` when main refactored `decimal_to_json` -> `float()`. PR #204. [confirmed: 0]
 
 ## Input Normalization
 
