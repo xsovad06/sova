@@ -149,8 +149,10 @@ async function loadRunDetail() {
       infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
     }
 
-    // Pipeline bar
-    document.getElementById('pipeline-bar').innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant);
+    // Pipeline bar (interactive with step data)
+    var pipelineContainer = document.getElementById('pipeline-bar');
+    pipelineContainer.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant, {interactive: true, stepData: steps});
+    initInteractivePipeline(pipelineContainer, steps);
 
     // Resume chain
     var chainEl = document.getElementById('resume-chain');
