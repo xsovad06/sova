@@ -440,9 +440,16 @@ flowchart TD
   subgraph TIER2["TIER 2: DASHBOARD POLISH (Jul-Aug)"]
     direction TB
 
+    subgraph CHAIN_H["Chain H: Pipeline Reliability"]
+      direction TB
+      I208["#208 Worktree conflict\nresolution"]:::autonomous
+      I207["#207 CI polling\ntimeout"]:::autonomous
+      I206["#206 SonarCloud coverage\ngate handling"]:::autonomous
+    end
+
     subgraph CHAIN_C["Chain C: Step Visualization"]
       direction TB
-      I149["#149 Run detail API\nwith full step data"]:::autonomous
+      I149["#149 Run detail API\n(DONE)"]:::done
       I150["#150 Clickable step\npipeline bar"]:::guided
       I151["#151 Step detail panel\ncost, duration, errors"]:::guided
 
@@ -632,11 +639,25 @@ flowchart TD
       <div class="timeline-label">Tier 2<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Jul-Aug</span></div>
       <div class="timeline-content">
         <div class="task-row">
-          <span class="task-number">#149</span>
-          <span class="task-title">Enhance run detail API with full step data</span>
+          <span class="task-number">#208</span>
+          <span class="task-title">Worktree conflict resolution for headless agents</span>
           <span class="task-badge badge-autonomous">agentic</span>
         </div>
-        <div class="dep-arrow">depends on #149</div>
+        <div class="task-row">
+          <span class="task-number">#207</span>
+          <span class="task-title">CI polling timeout for headless agents</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#206</span>
+          <span class="task-title">SonarCloud coverage gate handling in address-pr</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row done">
+          <span class="task-number">#149</span>
+          <span class="task-title">Enhance run detail API with full step data</span>
+          <span class="task-badge badge-done">done</span>
+        </div>
         <div class="task-row">
           <span class="task-number">#150</span>
           <span class="task-title">Clickable step pipeline bar on run detail page</span>
@@ -927,9 +948,12 @@ gantt
     #153 Status badge UI             :done, t153, 2026-06-22, 1d
     #154 WebSocket real-time status   :done, t154, 2026-06-23, 1d
 
-  section Tier 2 Dashboard Polish
-    #149 Run detail API              :t149, 2026-07-07, 2d
-    #150 Step pipeline bar           :t150, after t149, 3d
+  section Tier 2 Pipeline Reliability + Dashboard
+    #208 Worktree conflict resolution :t208, 2026-07-01, 2d
+    #207 CI polling timeout           :t207, 2026-07-01, 2d
+    #206 SonarCloud coverage gate     :t206, 2026-07-03, 2d
+    #149 Run detail API              :done, t149, 2026-06-23, 1d
+    #150 Step pipeline bar           :t150, 2026-07-07, 3d
     #151 Step detail panel           :t151, after t150, 3d
     #145 Kanban API endpoint         :done, t145, 2026-06-23, 1d
     #146 Kanban board UI             :t146, 2026-07-07, 4d
@@ -971,18 +995,18 @@ gantt
       <strong>Critical Path to v0.1.0</strong>
       <ul>
         <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154) -- all done</li>
-        <li><strong>Tier 2</strong> (Jul-Aug): Step Visualization (#149-151) + Kanban (#146, #145 done) -- mix of agentic + human</li>
+        <li><strong>Tier 2</strong> (Jul-Aug): Pipeline Reliability (#208, #207, #206) + Step Visualization (#150-151, #149 done) + Kanban (#146, #145 done) -- mix of agentic + human</li>
         <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157)</li>
         <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
-        <li><strong>Recently completed</strong>: #145 (kanban API), #154 (WebSocket status), #153 (status badge UI), #152 (status aggregator), #160 (MockRuntime), #159 (SubprocessRuntime), #158 (AgentRuntime ABC), #167 (circuit breaker), #142 (input validation), #143 (keyboard dismiss), #169 (clear sentinel), #110 (SpecStep epic), #116 (Agent Runtime epic)</li>
+        <li><strong>Recently completed</strong>: #149 (run detail API), #145 (kanban API), #154 (WebSocket status), #153 (status badge UI), #152 (status aggregator), #160 (MockRuntime), #159 (SubprocessRuntime), #158 (AgentRuntime ABC), #167 (circuit breaker), #142 (input validation), #143 (keyboard dismiss), #169 (clear sentinel), #110 (SpecStep epic), #116 (Agent Runtime epic)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
-        <li><strong>Agentic (8 remaining):</strong> #149, #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Agentic (10 remaining):</strong> #206, #207, #208, #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
         <li><strong>Human (9 issues):</strong> #146, #150, #151, #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
         <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
