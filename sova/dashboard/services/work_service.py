@@ -189,11 +189,10 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     if run is None:
         return None
 
-    steps_stmt = select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
-    steps_result = await session.execute(steps_stmt)
-    steps = steps_result.scalars().all()
+    all_steps = await _get_all_steps(session, run_id)
+    deduped = _dedupe_steps(all_steps)
 
-    variant_from_steps = _detect_variant_from_steps(steps, run.current_step, role=run.role)
+    variant_from_steps = _detect_variant_from_steps(deduped, run.current_step, role=run.role)
     progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
     is_specific = variant_from_steps in ("address_review", "researcher", "command")
     variant = variant_from_steps if is_specific else progress["pipeline_variant"]
@@ -204,7 +203,7 @@ async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
 
     return {
         "run": run_dict,
-        "steps": [_step_to_dict(s) for s in steps],
+        "steps": [_step_to_dict(s) for s in deduped],
         "pipeline": progress,
     }
 
@@ -312,11 +311,22 @@ async def get_run(session: AsyncSession, run_id: int) -> dict | None:
     return _run_to_dict(run) if run else None
 
 
-async def get_run_steps(session: AsyncSession, run_id: int) -> list[dict]:
-    """Get all step executions for a run, in order."""
-    stmt = select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.started_at)
-    result = await session.execute(stmt)
-    return [_step_to_dict(s) for s in result.scalars().all()]
+async def get_run_steps(
+    session: AsyncSession,
+    run_id: int,
+    *,
+    deduplicate: bool = True,
+) -> list[dict]:
+    """Get step executions for a run.
+
+    Args:
+        deduplicate: When True (default), returns only the latest attempt
+            per step name. Set to False to get all records including
+            failed retry attempts.
+    """
+    all_steps = await _get_all_steps(session, run_id)
+    steps = _dedupe_steps(all_steps) if deduplicate else all_steps
+    return [_step_to_dict(s) for s in steps]
 
 
 async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Manually abandoned") -> dict | None:
@@ -399,6 +409,26 @@ def _detect_variant_from_steps(step_executions: list, current_step: str | None, 
     return "developer"
 
 
+async def _get_all_steps(session: AsyncSession, run_id: int) -> list[StepExecution]:
+    """Fetch all step executions for a run, ordered by start time."""
+    stmt = (
+        select(StepExecution)
+        .where(StepExecution.task_run_id == run_id)
+        .order_by(StepExecution.started_at, StepExecution.id)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+def _dedupe_steps(steps: list[StepExecution]) -> list[StepExecution]:
+    """Keep only the latest (highest id) execution per step_name, preserving order."""
+    latest: dict[str, StepExecution] = {}
+    for s in steps:
+        if s.step_name not in latest or s.id > latest[s.step_name].id:
+            latest[s.step_name] = s
+    return [s for s in steps if latest.get(s.step_name) is not None and s.id == latest[s.step_name].id]
+
+
 def _step_to_dict(step: StepExecution) -> dict:
     return {
         "id": step.id,
@@ -410,6 +440,7 @@ def _step_to_dict(step: StepExecution) -> dict:
         "output_summary": step.output_summary,
         "gate_check_result": step.gate_check_result,
         "error_message": step.error_message,
+        "retry_count": step.retry_count,
         "started_at": iso_utc(step.started_at),
         "ended_at": iso_utc(step.ended_at),
     }

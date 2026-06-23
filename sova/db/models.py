@@ -76,6 +76,7 @@ class StepExecution(Base):
     output_summary: Mapped[str | None] = mapped_column(Text)
     gate_check_result: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
