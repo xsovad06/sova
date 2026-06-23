@@ -58,7 +58,7 @@ def _text_has_open_questions(text: str) -> bool:
     """Check if text contains an Open Questions section with content."""
     content = _extract_section(text, "Open Questions")
     normalized = content.strip().lower() if content else ""
-    if not normalized or normalized.startswith("(omit") or normalized == "none":
+    if not normalized or normalized.startswith("(omit") or normalized.startswith("none"):
         return False
     return True
 

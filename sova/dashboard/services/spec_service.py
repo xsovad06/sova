@@ -91,7 +91,7 @@ def _extract_open_questions(text: str) -> list[dict]:
     """Extract open questions from the spec."""
     content = _extract_section(text, "Open Questions")
     normalized = content.strip().lower() if content else ""
-    if not normalized or normalized.startswith("(omit") or normalized == "none":
+    if not normalized or normalized.startswith("(omit") or normalized.startswith("none"):
         return []
 
     questions = []
