@@ -184,7 +184,7 @@ var _roleLabels = {
 function _smartAction(t, pr) {
   if (!pr || t.state !== 'in_review') return t.action;
   if (pr.computed_state === 'approved_ci_green' || pr.computed_state === 'approved') return 'integrate';
-  if (pr.computed_state === 'changes_requested') return 'address-review';
+  if (pr.computed_state === 'changes_requested' || pr.computed_state === 'ci_failed') return 'address-review';
   return t.action;
 }
 
@@ -212,7 +212,7 @@ var _actionLabels = {
   harden: { text: 'Harden', cls: 'bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30' },
   spec: { text: 'Spec', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
   integrate: { text: 'Integrate', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
-  'address-review': { text: 'Address Review', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
+  'address-review': { text: 'Address', cls: 'bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30' },
   'ship-pr': { text: 'Ship PR', cls: 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' },
 };
 
@@ -330,7 +330,7 @@ function renderTaskCard(t) {
           '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>') +
       (prNum && !isRunning
         ? '<hr class="border-gray-700/50 my-1">' +
-          (!linkedPr || linkedPr.computed_state === 'changes_requested'
+          (!linkedPr || linkedPr.computed_state === 'changes_requested' || linkedPr.computed_state === 'ci_failed'
             ? '<button onclick="quickStartRole(\'' + escapeJsStr(t.issue) + '\', \'developer\', ' + prNum + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-yellow hover:bg-surface-hover transition-colors">Address Review (PR #' + prNum + ')</button>'
             : '') +
           '<button onclick="runCommand(\'integrate-pr\', {issue: \'' + escapeJsStr(t.issue) + '\', pr: ' + prNum + '})" class="w-full text-left px-3 py-1.5 text-xs text-accent-green hover:bg-surface-hover transition-colors">Integrate PR #' + prNum + '</button>' +
@@ -672,10 +672,14 @@ async function runCommand(command, args) {
       showToast(await getErrorDetail(res, 'Failed to run command'), 'error');
     } else {
       var result = await res.json();
-      hidePrActionsPanel();
-      document.getElementById('agent-issue').value = '';
-      document.getElementById('agent-issue-number').value = '';
-      if (result.run_id) viewLogs(result.run_id);
+      if (result.error) {
+        showToast(result.error, 'error');
+      } else {
+        hidePrActionsPanel();
+        document.getElementById('agent-issue').value = '';
+        document.getElementById('agent-issue-number').value = '';
+        if (result.run_id) viewLogs(result.run_id);
+      }
     }
   } catch (e) {
     showToast('Failed to run command: ' + e.message, 'error');
@@ -1222,7 +1226,7 @@ var _prStateColors = {
   approved_ci_green: 'bg-accent-green/30 text-accent-green',
   approved: 'bg-accent-green/20 text-accent-green',
   review_addressed: 'bg-accent-lavender/20 text-accent-lavender',
-  awaiting_review: 'bg-accent-blue/20 text-accent-blue',
+  awaiting_review: 'bg-accent/20 text-accent',
 };
 
 var _prActions = {
@@ -1247,9 +1251,20 @@ function renderPrRow(pr) {
   var prNumber = Number(pr.number);
   var hasValidPrNumber = Number.isFinite(prNumber);
   if (action && hasValidPrNumber) {
-    actionBtn = '<button onclick="runCommand(\'' + action.command + '\', {pr: ' + prNumber + '})" ' +
-      'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
-      action.text + '</button>';
+    var onclick;
+    if (action.role && pr.linked_issue) {
+      onclick = "quickStartRole('" + escapeJsStr(String(pr.linked_issue)) + "', '" + action.role + "', " + prNumber + ")";
+    } else if (action.command) {
+      var cmdArgs = pr.linked_issue
+        ? '{pr: ' + prNumber + ', issue: \'' + escapeJsStr(String(pr.linked_issue)) + '\'}'
+        : '{pr: ' + prNumber + '}';
+      onclick = "runCommand('" + action.command + "', " + cmdArgs + ")";
+    }
+    if (onclick) {
+      actionBtn = '<button onclick="' + onclick + '" ' +
+        'class="text-xs px-2.5 py-1 rounded transition-colors whitespace-nowrap ' + action.cls + '">' +
+        action.text + '</button>';
+    }
   }
 
   var issueRef = pr.linked_issue
