@@ -833,11 +833,25 @@ var STEP_LABELS = {
   develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
   commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
   wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
-  monitor_ci: 'CI', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff'
+  monitor_ci: 'CI', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
+  rebase: 'Rebase', address_review: 'Address', resolve_external_reviews: 'Resolve',
+  handoff_to_user: 'Handoff', fetch_task: 'Fetch', research: 'Research', spec: 'Spec'
 };
 
-function renderStepPipeline(currentStep, role, compact, pipelineVariant) {
+var STEP_STATUS_COLORS = {
+  done:        { bg: 'var(--ctp-green)',    text: 'text-accent-green' },
+  failed:      { bg: 'var(--ctp-red)',      text: 'text-accent-red' },
+  error:       { bg: 'var(--ctp-red)',      text: 'text-accent-red' },
+  gate_failed: { bg: 'var(--ctp-yellow)',   text: 'text-accent-yellow' },
+  running:     { bg: 'var(--ctp-blue)',     text: 'text-accent' },
+  in_progress: { bg: 'var(--ctp-blue)',     text: 'text-accent' },
+  skipped:     { bg: 'var(--ctp-surface1)', text: 'text-gray-500' }
+};
+
+function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var colors = roleColor(role);
+  var interactive = opts && opts.interactive;
+  var stepData = (opts && opts.stepData) || [];
 
   if (pipelineVariant === 'command') {
     var cmdName = (role || '').replace(/^command:/, '').replace(/^\//, '');
@@ -858,30 +872,159 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant) {
     labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};
   }
 
+  // Build lookup from step execution data
+  var stepMap = {};
+  stepData.forEach(function(s) { stepMap[s.step_name] = s; });
+
   var idx = currentStep ? steps.indexOf(currentStep) : -1;
   var segments = steps.map(function(step, i) {
-    var w = compact ? 'flex-1 h-1.5' : 'flex-1 h-2.5';
+    var h = compact ? 'h-1.5' : (interactive ? 'h-3' : 'h-2.5');
+    var w = 'flex-1 ' + h;
     var rounded = '';
     if (i === 0) rounded = ' rounded-l';
     if (i === steps.length - 1) rounded = ' rounded-r';
 
-    if (idx >= 0 && i < idx) {
-      return '<div class="' + w + rounded + '" style="background:' + colors.hex + '" title="' + (labels[step] || step) + '"></div>';
+    var stepLabel = labels[step] || step;
+    var exec = stepMap[step];
+    var bg, cls = '', tooltip = stepLabel;
+
+    if (interactive && exec) {
+      var sc = STEP_STATUS_COLORS[exec.status];
+      bg = sc ? sc.bg : 'var(--ctp-surface1)';
+      if (exec.status === 'running' || exec.status === 'in_progress') {
+        cls = ' sova-step-pulse';
+      }
+      tooltip = stepLabel + ' (' + exec.status + ')';
+    } else if (interactive && !exec) {
+      bg = null;
+      tooltip = stepLabel + ' (pending)';
+    } else if (idx >= 0 && i < idx) {
+      bg = colors.hex;
     } else if (i === idx) {
-      return '<div class="' + w + rounded + ' animate-pulse" style="background:' + colors.hex + ';opacity:0.7" title="' + (labels[step] || step) + ' (current)"></div>';
+      bg = colors.hex;
+      cls = compact ? ' animate-pulse' : ' sova-step-pulse';
     } else {
-      return '<div class="' + w + ' bg-gray-700' + rounded + '" title="' + (labels[step] || step) + '"></div>';
+      bg = null;
     }
+
+    var style = bg ? 'background:' + bg : '';
+    var bgClass = bg ? '' : ' bg-gray-700';
+    var interClass = interactive ? ' sova-step-seg' : '';
+
+    var labelHtml = '';
+    if (interactive && !compact) {
+      labelHtml = '<span class="sova-step-label">' + escapeHtml(stepLabel) + '</span>';
+    }
+
+    var dataAttr = interactive ? ' data-step="' + step + '"' : '';
+
+    return '<div class="' + w + rounded + cls + interClass + bgClass +
+      '" style="' + style + '" title="' + escapeHtml(tooltip) + '"' + dataAttr +
+      '>' + labelHtml + '</div>';
   });
 
-  var stepLabel = '';
-  if (!compact && idx >= 0) {
-    stepLabel = '<div class="text-xs text-gray-400 mt-1">' + (labels[currentStep] || currentStep) + ' (' + (idx + 1) + '/' + steps.length + ')</div>';
-  } else if (!compact) {
-    stepLabel = '<div class="text-xs text-gray-500 mt-1">Initializing...</div>';
+  var stepLabelHtml = '';
+  if (!compact && !interactive && idx >= 0) {
+    stepLabelHtml = '<div class="text-xs text-gray-400 mt-1">' + escapeHtml(labels[currentStep] || currentStep) + ' (' + (idx + 1) + '/' + steps.length + ')</div>';
+  } else if (!compact && !interactive) {
+    stepLabelHtml = '<div class="text-xs text-gray-500 mt-1">Initializing...</div>';
   }
 
-  return '<div class="flex gap-0.5">' + segments.join('') + '</div>' + stepLabel;
+  var barHtml = '<div class="flex gap-0.5' + (interactive ? ' items-stretch' : '') + '">' + segments.join('') + '</div>' + stepLabelHtml;
+
+  if (interactive) {
+    barHtml += '<div class="sova-step-detail" id="step-detail-panel"></div>';
+  }
+
+  return barHtml;
+}
+
+function _stepStatusColor(status) {
+  var sc = STEP_STATUS_COLORS[status];
+  return sc ? sc.text : 'text-gray-500';
+}
+
+function _renderStepDetailPanel(stepName, stepMap) {
+  var exec = stepMap ? stepMap[stepName] || null : null;
+  var label = STEP_LABELS[stepName] || stepName;
+
+  if (!exec) {
+    return '<div class="bg-surface-hover rounded p-3 text-sm">' +
+      '<span class="text-gray-400">' + escapeHtml(label) + '</span>' +
+      '<span class="text-xs text-gray-600 ml-2">pending</span>' +
+    '</div>';
+  }
+
+  var statusCls = _stepStatusColor(exec.status);
+  var rows = [];
+  rows.push('<div class="flex items-center gap-3 mb-2">' +
+    '<span class="font-medium text-sm text-gray-200">' + escapeHtml(label) + '</span>' +
+    '<span class="text-xs font-medium ' + statusCls + '">' + escapeHtml(exec.status) + '</span>' +
+  '</div>');
+
+  var details = [];
+  if (exec.duration_formatted || exec.duration_ms) {
+    details.push('<span class="text-gray-500">Duration:</span> <span class="text-gray-300">' +
+      escapeHtml(exec.duration_formatted || formatDuration(exec.duration_ms)) + '</span>');
+  }
+  if (exec.cost_usd != null) {
+    details.push('<span class="text-gray-500">Cost:</span> <span class="text-accent-green">$' +
+      exec.cost_usd.toFixed(4) + '</span>');
+  }
+  if (exec.retry_count > 0) {
+    details.push('<span class="text-gray-500">Retries:</span> <span class="text-accent-yellow">' +
+      exec.retry_count + '</span>');
+  }
+  if (details.length > 0) {
+    rows.push('<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">' + details.join('') + '</div>');
+  }
+
+  if (exec.error_message) {
+    rows.push('<div class="mt-2 text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto">' +
+      escapeHtml(exec.error_message) + '</div>');
+  }
+  if (exec.gate_check_result) {
+    var gateText = typeof exec.gate_check_result === 'string' ? exec.gate_check_result : JSON.stringify(exec.gate_check_result);
+    rows.push('<div class="mt-2 text-xs text-accent-yellow bg-accent-yellow/5 rounded p-2 max-h-24 overflow-y-auto">' +
+      '<span class="text-gray-500">Gate:</span> ' + escapeHtml(gateText) + '</div>');
+  }
+  if (exec.output_summary) {
+    rows.push('<div class="mt-2 text-xs text-gray-400 bg-surface-hover rounded p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">' +
+      escapeHtml(exec.output_summary) + '</div>');
+  }
+
+  return '<div class="bg-surface-hover rounded-lg p-3 border border-gray-700/50">' + rows.join('') + '</div>';
+}
+
+function initInteractivePipeline(container, stepData) {
+  var _openStep = null;
+  var panel = container.querySelector('#step-detail-panel');
+  if (!panel) return;
+
+  var stepMap = {};
+  stepData.forEach(function(s) { stepMap[s.step_name] = s; });
+
+  var segs = container.querySelectorAll('.sova-step-seg');
+  segs.forEach(function(seg) {
+    seg.addEventListener('click', function() {
+      var step = seg.getAttribute('data-step');
+      if (!step) return;
+
+      if (_openStep === step) {
+        panel.classList.remove('sova-step-detail-open');
+        panel.innerHTML = '';
+        _openStep = null;
+        segs.forEach(function(s) { s.classList.remove('sova-step-active'); });
+        return;
+      }
+
+      _openStep = step;
+      panel.innerHTML = _renderStepDetailPanel(step, stepMap);
+      panel.classList.add('sova-step-detail-open');
+      segs.forEach(function(s) { s.classList.remove('sova-step-active'); });
+      seg.classList.add('sova-step-active');
+    });
+  });
 }
 
 /* ============================================================

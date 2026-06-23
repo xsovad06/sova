@@ -710,6 +710,67 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   overflow-y: auto;
 }
 
+/* ============================================================
+   10. INTERACTIVE STEP PIPELINE
+   ============================================================ */
+
+/* Step segment */
+.sova-step-seg {
+  position: relative;
+  cursor: pointer;
+  transition: opacity 150ms ease, filter 150ms ease;
+}
+
+.sova-step-seg:hover {
+  filter: brightness(1.2);
+}
+
+.sova-step-seg.sova-step-active {
+  cursor: default;
+}
+
+/* Step label (visible on md+ screens) */
+.sova-step-label {
+  display: none;
+  font-size: 0.625rem;
+  color: rgb(var(--ctp-text-rgb) / 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  text-align: center;
+  padding: 0 2px;
+}
+
+@media (min-width: 768px) {
+  .sova-step-label { display: block; }
+}
+
+/* Pulse for in-progress step */
+@keyframes sova-step-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.sova-step-pulse {
+  animation: sova-step-pulse 2s ease-in-out infinite;
+}
+
+/* Detail panel */
+.sova-step-detail {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 250ms ease, opacity 200ms ease, margin 250ms ease;
+  margin-top: 0;
+}
+
+.sova-step-detail.sova-step-detail-open {
+  max-height: 300px;
+  opacity: 1;
+  margin-top: 0.75rem;
+}
+
 /* Sidebar tooltips: only visible when collapsed */
 .sidebar [data-tooltip]::after {
   display: none;
