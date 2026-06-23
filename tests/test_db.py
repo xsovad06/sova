@@ -59,6 +59,7 @@ async def test_create_step_execution() -> None:
             cost_usd=Decimal("1.50"),
             duration_ms=45000,
             output_summary="Implemented feature X",
+            retry_count=2,
         )
         session.add(step)
         await session.commit()
@@ -66,6 +67,29 @@ async def test_create_step_execution() -> None:
 
         assert step.task_run_id == run.id
         assert step.cost_usd == Decimal("1.50")
+        assert step.retry_count == 2
+
+
+async def test_step_execution_retry_count_defaults_to_zero() -> None:
+    """retry_count defaults to 0 when not specified."""
+    async with await get_session() as session:
+        run = TaskRun(issue_number="11", role="developer", status="in_progress")
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="sync",
+            status="success",
+            cost_usd=Decimal("0"),
+            duration_ms=100,
+        )
+        session.add(step)
+        await session.commit()
+        await session.refresh(step)
+
+        assert step.retry_count == 0
 
 
 async def test_create_failure_record() -> None:

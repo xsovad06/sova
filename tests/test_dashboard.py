@@ -302,6 +302,93 @@ class TestRunsAPI:
         assert data["run"]["issue_number"] == "42"
         assert len(data["steps"]) == 2
         assert data["steps"][0]["step_name"] == "sync"
+        assert data["steps"][0]["retry_count"] == 0
+
+    async def test_get_run_detail_with_retries(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Retried steps: API returns only the final attempt per step_name with retry_count."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="99",
+            role="developer",
+            status="done",
+            current_step="complete",
+            branch_name="feat/retry-test",
+            total_cost_usd=Decimal("0.50"),
+            project_slug="myproject",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        # Step "develop" failed once (retry_count=0), then succeeded (retry_count=1)
+        step_fail = StepExecution(
+            task_run_id=run.id,
+            step_name="develop",
+            status="failed",
+            retry_count=0,
+            cost_usd=Decimal("0.10"),
+            duration_ms=5000,
+            error_message="Tests failed",
+            started_at=now - timedelta(minutes=30),
+            ended_at=now - timedelta(minutes=25),
+        )
+        step_ok = StepExecution(
+            task_run_id=run.id,
+            step_name="develop",
+            status="done",
+            retry_count=1,
+            cost_usd=Decimal("0.30"),
+            duration_ms=10000,
+            started_at=now - timedelta(minutes=25),
+            ended_at=now - timedelta(minutes=15),
+        )
+        session.add_all([step_fail, step_ok])
+        await session.commit()
+
+        resp = await client.get(f"/api/runs/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Only the final attempt should appear
+        assert len(data["steps"]) == 1
+        assert data["steps"][0]["step_name"] == "develop"
+        assert data["steps"][0]["retry_count"] == 1
+        assert data["steps"][0]["status"] == "done"
+        assert data["steps"][0]["error_message"] is None
+
+    async def test_get_run_detail_default_retry_count(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Steps created without explicit retry_count should serialize as 0."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="100",
+            role="developer",
+            status="done",
+            current_step="complete",
+            branch_name="feat/retry-default-test",
+            total_cost_usd=Decimal("0.10"),
+            project_slug="myproject",
+            started_at=now - timedelta(minutes=20),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        step = StepExecution(
+            task_run_id=run.id,
+            step_name="develop",
+            status="done",
+            cost_usd=Decimal("0.10"),
+            duration_ms=1000,
+            started_at=now - timedelta(minutes=10),
+            ended_at=now - timedelta(minutes=5),
+        )
+        session.add(step)
+        await session.commit()
+
+        resp = await client.get(f"/api/runs/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["steps"][0]["retry_count"] == 0
 
     async def test_get_run_not_found(self, client: AsyncClient) -> None:
         resp = await client.get("/api/runs/999")
@@ -3843,6 +3930,123 @@ class TestWorkServiceDirect:
         assert "failed" in _TERMINAL
         assert "rejected" in _TERMINAL
         assert "developing" not in _TERMINAL
+
+    def test_dedupe_steps_keeps_latest_per_name(self) -> None:
+        from sova.dashboard.services.work_service import _dedupe_steps
+
+        s1 = StepExecution(id=1, task_run_id=1, step_name="develop", status="failed", retry_count=0)
+        s2 = StepExecution(id=2, task_run_id=1, step_name="develop", status="done", retry_count=1)
+        s3 = StepExecution(id=3, task_run_id=1, step_name="push", status="done", retry_count=0)
+
+        result = _dedupe_steps([s1, s2, s3])
+        assert len(result) == 2
+        assert result[0].id == 2
+        assert result[0].step_name == "develop"
+        assert result[0].retry_count == 1
+        assert result[1].id == 3
+        assert result[1].step_name == "push"
+
+    def test_dedupe_steps_preserves_order(self) -> None:
+        from sova.dashboard.services.work_service import _dedupe_steps
+
+        s1 = StepExecution(id=1, task_run_id=1, step_name="sync", status="done", retry_count=0)
+        s2 = StepExecution(id=2, task_run_id=1, step_name="develop", status="done", retry_count=0)
+
+        result = _dedupe_steps([s1, s2])
+        assert len(result) == 2
+        assert result[0].step_name == "sync"
+        assert result[1].step_name == "develop"
+
+    async def test_get_work_detail_with_steps(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_work_detail
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            run = TaskRun(issue_number="10", role="developer", status="developing", started_at=now)
+            session.add(run)
+            await session.flush()
+            session.add(
+                StepExecution(
+                    id=1,
+                    task_run_id=run.id,
+                    step_name="sync",
+                    status="done",
+                    retry_count=0,
+                    started_at=now,
+                )
+            )
+            session.add(
+                StepExecution(
+                    id=2,
+                    task_run_id=run.id,
+                    step_name="develop",
+                    status="failed",
+                    retry_count=0,
+                    started_at=now,
+                )
+            )
+            session.add(
+                StepExecution(
+                    id=3,
+                    task_run_id=run.id,
+                    step_name="develop",
+                    status="done",
+                    retry_count=1,
+                    started_at=now,
+                )
+            )
+
+        result = await get_work_detail(session, run.id)
+        assert result is not None
+        assert result["run"]["id"] == run.id
+        # Deduplication: two unique step names (sync + develop), latest develop kept
+        assert len(result["steps"]) == 2
+        step_names = [s["step_name"] for s in result["steps"]]
+        assert step_names == ["sync", "develop"]
+        assert result["steps"][1]["retry_count"] == 1
+        assert "pipeline" in result
+
+    async def test_get_run_steps_deduplicates(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_run_steps
+
+        now = datetime.now(timezone.utc)
+        async with session.begin():
+            run = TaskRun(issue_number="11", role="developer", status="done", started_at=now, ended_at=now)
+            session.add(run)
+            await session.flush()
+            session.add(
+                StepExecution(
+                    id=10,
+                    task_run_id=run.id,
+                    step_name="push",
+                    status="failed",
+                    retry_count=0,
+                    started_at=now,
+                )
+            )
+            session.add(
+                StepExecution(
+                    id=11,
+                    task_run_id=run.id,
+                    step_name="push",
+                    status="done",
+                    retry_count=1,
+                    started_at=now,
+                )
+            )
+
+        steps = await get_run_steps(session, run.id)
+        assert len(steps) == 1
+        assert steps[0]["step_name"] == "push"
+        assert steps[0]["retry_count"] == 1
+
+        # Non-deduplicated path returns all retry attempts
+        all_steps = await get_run_steps(session, run.id, deduplicate=False)
+        assert len(all_steps) == 2
+        assert all_steps[0]["retry_count"] == 0
+        assert all_steps[0]["status"] == "failed"
+        assert all_steps[1]["retry_count"] == 1
+        assert all_steps[1]["status"] == "done"
 
 
 # ---------------------------------------------------------------------------

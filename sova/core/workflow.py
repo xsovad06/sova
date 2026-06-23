@@ -229,7 +229,23 @@ class WorkflowEngine:
 
         while attempts < max_attempts:
             start = time.monotonic()
-            step_exec_id = await self._create_step_execution(step.name)
+
+            try:
+                step_exec_id = await self._create_step_execution(step.name, retry_count=attempts)
+            except Exception as exc:
+                log.warning("workflow.step_exec.create_failed", step=step.name, error=str(exc), exc_info=True)
+                step_result = StepResult(
+                    success=False,
+                    summary=f"DB error creating step execution for {step.name}",
+                    error=str(exc),
+                )
+                attempts += 1
+                record.retries = attempts - 1
+                record.result = step_result
+                if attempts < max_attempts:
+                    continue
+                record.status = "failed"
+                return record
 
             try:
                 step_result = await step.execute(self._ctx)
@@ -240,11 +256,14 @@ class WorkflowEngine:
             record.duration_ms = elapsed_ms
             record.result = step_result
             attempts += 1
+            record.retries = attempts - 1
 
-            await self._update_step_execution(step_exec_id, step_result, elapsed_ms)
+            try:
+                await self._update_step_execution(step_exec_id, step_result, elapsed_ms)
+            except Exception as exc:
+                log.warning("workflow.step_exec.update_failed", step=step.name, error=str(exc), exc_info=True)
 
             if not step_result.success:
-                record.retries = attempts - 1
                 if attempts < max_attempts:
                     log.info("workflow.step.retry", step=step.name, attempt=attempts)
                     continue
@@ -368,7 +387,7 @@ class WorkflowEngine:
                     if not task_run.ended_at:
                         task_run.ended_at = datetime.now(timezone.utc)
 
-    async def _create_step_execution(self, step_name: str) -> int:
+    async def _create_step_execution(self, step_name: str, retry_count: int = 0) -> int:
         """Create a StepExecution record and return its ID."""
         async with await get_session() as session:
             async with session.begin():
@@ -376,6 +395,7 @@ class WorkflowEngine:
                     task_run_id=self._task_run_id,
                     step_name=step_name,
                     status="running",
+                    retry_count=retry_count,
                 )
                 session.add(step_exec)
                 await session.flush()
