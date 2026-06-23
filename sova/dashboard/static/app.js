@@ -302,7 +302,26 @@ function sovaConfirm(message, options) {
 }
 
 /* ============================================================
-   6. SIDEBAR POLLING & NOTIFICATIONS
+   6. VISIBILITY-AWARE POLLING
+   ============================================================ */
+
+function visibilityAwarePoll(fn, intervalMs) {
+  fn();
+  var state = { id: setInterval(fn, intervalMs) };
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      clearInterval(state.id);
+      state.id = null;
+    } else {
+      fn();
+      state.id = setInterval(fn, intervalMs);
+    }
+  });
+  return state;
+}
+
+/* ============================================================
+   7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
 var _notifItems = [];
@@ -343,14 +362,34 @@ function _dotClass(color, animate) {
   return 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ' + color + ' border-2 border-sidebar' + (animate ? ' animate-pulse' : '');
 }
 
+var _activityPollInterval = null;
+var _handoffPollInterval = null;
+
 function startSidebarPolling() {
   _loadDismissedRuns();
   _loadNotifiedHandoffs();
   _pollActivity();
   _pollHandoff();
-  setInterval(_pollActivity, 3000);
-  setInterval(_pollHandoff, 5000);
+  _activityPollInterval = setInterval(_pollActivity, 3000);
+  _handoffPollInterval = setInterval(_pollHandoff, 5000);
 }
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (_activityPollInterval) { clearInterval(_activityPollInterval); _activityPollInterval = null; }
+    if (_handoffPollInterval) { clearInterval(_handoffPollInterval); _handoffPollInterval = null; }
+    if (_globalBatchPollInterval) { clearInterval(_globalBatchPollInterval); _globalBatchPollInterval = null; }
+  } else {
+    _pollActivity();
+    _pollHandoff();
+    if (!_activityPollInterval) _activityPollInterval = setInterval(_pollActivity, 3000);
+    if (!_handoffPollInterval) _handoffPollInterval = setInterval(_pollHandoff, 5000);
+    if (_globalBatchId && !_globalBatchPollInterval) {
+      _pollGlobalBatch();
+      _globalBatchPollInterval = setInterval(_pollGlobalBatch, 2000);
+    }
+  }
+});
 
 async function _pollActivity() {
   try {
@@ -523,7 +562,7 @@ document.addEventListener('click', function(e) {
 });
 
 /* ============================================================
-   7. PR & ISSUE LINK HELPERS
+   8. PR & ISSUE LINK HELPERS
    ============================================================ */
 
 window.SOVA_GITHUB_REPO = null;
@@ -560,7 +599,7 @@ function issueLink(issueNumber) {
 }
 
 /* ============================================================
-   8. GLOBAL BATCH PROGRESS
+   9. GLOBAL BATCH PROGRESS
    ============================================================ */
 
 var _globalBatchId = null;
@@ -720,7 +759,7 @@ function _clearGlobalBatch() {
 }
 
 /* ============================================================
-   9. COLLAPSIBLE SIDEBAR
+   10. COLLAPSIBLE SIDEBAR
    ============================================================ */
 
 function initSidebarCollapse() {
@@ -749,7 +788,7 @@ function toggleSidebar() {
 }
 
 /* ============================================================
-   10. INITIALIZATION
+   11. INITIALIZATION
    ============================================================ */
 
 initColors();
@@ -762,7 +801,7 @@ if (document.getElementById('activity-dot')) {
 initGlobalBatch();
 
 /* ============================================================
-   11. ROLE COLORS
+   12. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
@@ -812,7 +851,7 @@ function _commandToRole(role) {
 }
 
 /* ============================================================
-   12. STEP PIPELINE BAR
+   13. STEP PIPELINE BAR
    ============================================================ */
 
 var PIPELINE_STEPS = [
@@ -1044,7 +1083,7 @@ function initInteractivePipeline(container, stepData) {
 }
 
 /* ============================================================
-   13. RUNS TABLE (shared)
+   14. RUNS TABLE (shared)
    ============================================================ */
 
 function renderRunsTable(runs, targetId) {
