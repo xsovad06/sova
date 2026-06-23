@@ -505,7 +505,7 @@ async def test_estimation_without_history(session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_unknown_step(session: AsyncSession):
-    """Unknown current_step (agent sentinel) yields step_index=-1 and 0% progress."""
+    """Unknown current_step (agent sentinel) yields step_index=0 and 0% progress."""
     from sova.dashboard.services.agent_status import get_agent_status
 
     run = TaskRun(
@@ -520,7 +520,7 @@ async def test_unknown_step(session: AsyncSession):
 
     status = await get_agent_status(run.id)
     assert status is not None
-    assert status.step_index == -1
+    assert status.step_index == 0
     assert status.step_progress_pct == 0.0
 
 

@@ -4941,14 +4941,14 @@ class TestStepProgress:
 
         result = get_step_progress(None)
         assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == -1
+        assert result["step_index"] == 0
 
     def test_none_step_with_pr_number_is_address_review(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         result = get_step_progress(None, role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == -1
+        assert result["step_index"] == 0
         assert result["total_steps"] == 9
 
     def test_agent_step_with_pr_number_is_address_review(self) -> None:
@@ -4957,6 +4957,7 @@ class TestStepProgress:
 
         result = get_step_progress("agent", role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
+        assert result["step_index"] == 0
 
     def test_shared_step_with_pr_number_is_developer(self) -> None:
         """WorkflowEngine TaskRun on shared step with pr_number acquired mid-pipeline."""

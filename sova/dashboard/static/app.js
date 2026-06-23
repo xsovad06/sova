@@ -110,12 +110,6 @@ function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSe
   var pulseClass = isTerminal ? '' : ' animate-pulse';
 
   var label = escapeHtml(aggregatedLabel || status);
-  if (currentStep && totalSteps) {
-    var idx = parseInt(stepIndex, 10);
-    label += ' (' + escapeHtml(currentStep) + ', ' + (isNaN(idx) ? 0 : idx) + '/' + parseInt(totalSteps, 10) + ')';
-  } else if (currentStep) {
-    label += ' (' + escapeHtml(currentStep) + ')';
-  }
 
   var elapsedHtml = '';
   if (!isTerminal && elapsedSeconds != null) {
