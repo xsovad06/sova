@@ -58,7 +58,7 @@ class TestComputePrState:
         assert result == ComputedPRState.APPROVED
 
     def test_awaiting_review_default(self) -> None:
-        assert _state(ci_status="passed", mergeable="MERGEABLE") == ComputedPRState.AWAITING_REVIEW
+        assert _state(ci_status="none", mergeable="MERGEABLE") == ComputedPRState.AWAITING_REVIEW
 
     def test_ci_failed_beats_changes_requested(self) -> None:
         assert _state(review_decision="CHANGES_REQUESTED", ci_status="failed") == ComputedPRState.CI_FAILED
@@ -91,6 +91,14 @@ class TestComputePrState:
         reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "reviewer"}}]
         result = _state(latest_reviews=reviews, all_threads_resolved=True, ci_status="passed")
         assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_no_reviews_ci_green_mergeable_ready_to_ship(self) -> None:
+        result = _state(ci_status="passed", mergeable="MERGEABLE", latest_reviews=None)
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_no_reviews_ci_green_not_mergeable_stays_awaiting(self) -> None:
+        result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
+        assert result == ComputedPRState.AWAITING_REVIEW
 
 
 class TestParseLinkedIssue:
