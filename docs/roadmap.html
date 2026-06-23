@@ -382,7 +382,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-19</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-23</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -418,9 +418,9 @@ flowchart TD
 
     subgraph CHAIN_A["Chain A: Agent Runtime"]
       direction TB
-      I158["#158 AgentRuntime ABC"]:::autonomous
-      I159["#159 SubprocessRuntime"]:::autonomous
-      I160["#160 MockRuntime\nfor testing"]:::autonomous
+      I158["#158 AgentRuntime ABC\n(DONE)"]:::done
+      I159["#159 SubprocessRuntime\n(DONE)"]:::done
+      I160["#160 MockRuntime\n(DONE)"]:::done
 
       I158 --> I159
       I159 --> I160
@@ -428,9 +428,9 @@ flowchart TD
 
     subgraph CHAIN_B["Chain B: Status Badges"]
       direction TB
-      I152["#152 Agent status\naggregator service"]:::autonomous
-      I153["#153 Status badge\nUI component"]:::autonomous
-      I154["#154 WebSocket\nreal-time status"]:::medium
+      I152["#152 Agent status\naggregator service\n(DONE)"]:::done
+      I153["#153 Status badge\nUI component\n(DONE)"]:::done
+      I154["#154 WebSocket\nreal-time status\n(DONE)"]:::done
 
       I152 --> I153
       I153 -.-> I154
@@ -452,7 +452,7 @@ flowchart TD
 
     subgraph CHAIN_D["Chain D: Kanban Pipeline"]
       direction TB
-      I145["#145 Kanban API\nendpoint"]:::autonomous
+      I145["#145 Kanban API\nendpoint\n(DONE)"]:::done
       I146["#146 Kanban board\nUI component"]:::guided
       I147["#147 Configurable\ncolumn grouping"]:::medium
       I148["#148 Drag-drop\nreordering"]:::medium
@@ -549,7 +549,7 @@ flowchart TD
     direction TB
     I187b["#187 Specs listing\npage in sidebar"]:::medium
     I121["#121 Kanban pipeline\nview (agents)"]:::medium
-    I123["#123 Per-agent\nstatus badges"]:::medium
+    I123["#123 Per-agent\nstatus badges\n(deps done)"]:::medium
     I124["#124 Interactive step\nvisualization"]:::medium
   end
 
@@ -592,35 +592,37 @@ flowchart TD
     <div class="timeline">
 
       <!-- Tier 1 -->
-      <div class="timeline-label">Tier 1<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Start now</span></div>
+      <div class="timeline-label">Tier 1<br><span style="font-weight:400;font-size:0.65rem;color:var(--green)">Complete</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#158</span>
           <span class="task-title">Create AgentRuntime ABC</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #158</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#159</span>
           <span class="task-title">Extract AgentProcess into SubprocessRuntime</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #159</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#160</span>
           <span class="task-title">Create MockRuntime for deterministic agent testing</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#152</span>
           <span class="task-title">Agent status aggregator service</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #152</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#153</span>
           <span class="task-title">Status badge UI component for agents</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
+        </div>
+        <div class="task-row done">
+          <span class="task-number">#154</span>
+          <span class="task-title">WebSocket endpoint for real-time agent status</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -646,12 +648,11 @@ flowchart TD
           <span class="task-title">Step detail panel with cost, duration, errors</span>
           <span class="task-badge badge-guided">human</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#145</span>
           <span class="task-title">Kanban API endpoint for agent pipeline view</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #145</div>
         <div class="task-row">
           <span class="task-number">#146</span>
           <span class="task-title">Kanban board UI component on agents page</span>
@@ -895,10 +896,6 @@ flowchart TD
           <span class="task-number">#148</span>
           <span class="task-title">Kanban drag-drop card reordering</span>
         </div>
-        <div class="task-row">
-          <span class="task-number">#154</span>
-          <span class="task-title">WebSocket endpoint for real-time agent status</span>
-        </div>
       </div>
     </div>
   </div>
@@ -922,19 +919,20 @@ gantt
   dateFormat YYYY-MM-DD
   axisFormat %b %d
 
-  section Tier 1 Start Now
-    #158 AgentRuntime ABC             :t158, 2026-06-23, 1d
-    #159 SubprocessRuntime            :t159, after t158, 1d
-    #160 MockRuntime                  :t160, after t159, 1d
-    #152 Status aggregator service    :t152, 2026-06-23, 2d
-    #153 Status badge UI             :t153, after t152, 1d
+  section Tier 1 Complete
+    #158 AgentRuntime ABC             :done, t158, 2026-06-18, 1d
+    #159 SubprocessRuntime            :done, t159, 2026-06-18, 1d
+    #160 MockRuntime                  :done, t160, 2026-06-19, 1d
+    #152 Status aggregator service    :done, t152, 2026-06-19, 1d
+    #153 Status badge UI             :done, t153, 2026-06-22, 1d
+    #154 WebSocket real-time status   :done, t154, 2026-06-23, 1d
 
   section Tier 2 Dashboard Polish
     #149 Run detail API              :t149, 2026-07-07, 2d
     #150 Step pipeline bar           :t150, after t149, 3d
     #151 Step detail panel           :t151, after t150, 3d
-    #145 Kanban API endpoint         :t145, 2026-07-07, 2d
-    #146 Kanban board UI             :t146, after t145, 4d
+    #145 Kanban API endpoint         :done, t145, 2026-06-23, 1d
+    #146 Kanban board UI             :t146, 2026-07-07, 4d
 
   section Tier 3 Pipeline Extensions
     #161 SpecStep                    :t161, 2026-08-04, 2d
@@ -972,23 +970,23 @@ gantt
     <div class="notes">
       <strong>Critical Path to v0.1.0</strong>
       <ul>
-        <li><strong>Tier 1</strong> (now): Agent Runtime (#158-160) + Status Badges (#152-153) -- all agentic, ~3d each</li>
-        <li><strong>Tier 2</strong> (Jul-Aug): Step Visualization (#149-151) + Kanban (#145-146) -- mix of agentic + human</li>
+        <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154) -- all done</li>
+        <li><strong>Tier 2</strong> (Jul-Aug): Step Visualization (#149-151) + Kanban (#146, #145 done) -- mix of agentic + human</li>
         <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157)</li>
         <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
-        <li><strong>Recently completed</strong>: #167 (circuit breaker), #142 (input validation), #143 (keyboard dismiss), #169 (clear sentinel), #110 (SpecStep epic), #116 (Agent Runtime epic)</li>
+        <li><strong>Recently completed</strong>: #145 (kanban API), #154 (WebSocket status), #153 (status badge UI), #152 (status aggregator), #160 (MockRuntime), #159 (SubprocessRuntime), #158 (AgentRuntime ABC), #167 (circuit breaker), #142 (input validation), #143 (keyboard dismiss), #169 (clear sentinel), #110 (SpecStep epic), #116 (Agent Runtime epic)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
-        <li><strong>Agentic (15 issues):</strong> #145, #149, #152, #153, #155, #156, #157, #158, #159, #160, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Agentic (8 remaining):</strong> #149, #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
         <li><strong>Human (9 issues):</strong> #146, #150, #151, #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
         <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
-        <li><strong>Deferred (13 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
+        <li><strong>Deferred (12 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
       </ul>
     </div>
   </div>

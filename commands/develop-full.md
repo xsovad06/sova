@@ -36,7 +36,11 @@ Develop a feature or fix end-to-end with TDD, testing, self-review, and clean co
 5. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`
    - `.claude/agent-memory/cookbook.md`
-6. Identify which module(s) this work touches and read relevant source code.
+6. **Check for spec** (issue numbers only): look for `.claude/specs/{issue-number}-*.md`.
+   - If found with `Status: approved`: read it. Report: "Using approved spec: {filename}". The `/develop` step will follow this spec as its primary guide.
+   - If found with `Status: draft`: warn the user: "Draft spec exists at {filename} but is not approved. Run `/spec {issue}` to review and approve it, or proceed without spec guidance." Wait for user confirmation before continuing.
+   - If not found: continue silently. Specs are optional -- not every task needs one.
+7. Identify which module(s) this work touches and read relevant source code.
 
 ### Phase 1: Develop (TDD)
 
