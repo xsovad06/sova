@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
 from sova.utils.logging import get_logger
 
@@ -28,7 +29,7 @@ async def _create_task_run(
                 task_run = TaskRun(
                     issue_number=issue or None,
                     role=role,
-                    status="running",
+                    status=TaskStatus.RUNNING.value,
                     current_step="agent",
                     pid=pid,
                     pr_number=pr_number,

@@ -13,6 +13,7 @@ from enum import StrEnum
 class TaskStatus(StrEnum):
     """All states in the task lifecycle."""
 
+    RUNNING = "running"
     PENDING = "pending"
     ASSESSING = "assessing"
     RESEARCHED = "researched"
@@ -40,6 +41,7 @@ _RESUMABLE = frozenset(s for s in TaskStatus if s not in _TERMINAL and s != Task
 
 # Explicit forward transitions (happy path + branching)
 _TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
+    TaskStatus.RUNNING: frozenset({TaskStatus.PENDING, TaskStatus.ADDRESSING_REVIEW}),
     TaskStatus.PENDING: frozenset({TaskStatus.ASSESSING}),
     TaskStatus.ASSESSING: frozenset({TaskStatus.IN_PROGRESS, TaskStatus.REJECTED}),
     TaskStatus.RESEARCHED: frozenset({TaskStatus.IN_PROGRESS}),
