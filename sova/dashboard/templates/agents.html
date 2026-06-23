@@ -1192,7 +1192,7 @@ function renderHistoryTable(tasks, targetId, showError) {
         '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(t.role, t.pipeline_variant)) + '</span></td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(t.status) + '"></span><span class="' + statusColor(t.status) + '">' + escapeHtml(t.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + stepsText + '</td>' +
-        '<td class="p-3 text-right text-accent-green">$' + t.total_cost_usd.toFixed(4) + '</td>' +
+        '<td class="p-3 text-right text-accent-green">$' + parseFloat(t.total_cost_usd || 0).toFixed(4) + '</td>' +
         '<td class="p-3 text-gray-400">' + (t.duration_formatted || '--') + '</td>' +
         '<td class="p-3 text-gray-400">' + prLink(t.pr_number) + '</td>' +
         '<td class="p-3 text-gray-500 text-xs">' + (t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--') + '</td>' +
