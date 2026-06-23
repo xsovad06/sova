@@ -705,6 +705,11 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   background: var(--color-surface-hover);
 }
 
+.kanban-card-list {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
 /* Sidebar tooltips: only visible when collapsed */
 .sidebar [data-tooltip]::after {
   display: none;

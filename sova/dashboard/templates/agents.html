@@ -1448,6 +1448,7 @@ function switchAgentView(view) {
     if (!_kanbanPollInterval) _kanbanPollInterval = setInterval(loadKanban, 5000);
   } else {
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
+    loadAgents();
   }
 }
 
@@ -1481,16 +1482,13 @@ async function loadKanban() {
         : '';
       var countBadge = '<span class="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-xs rounded-full bg-accent/20 text-accent">' + col.count + '</span>';
 
-      var cardsHtml = col.runs.map(function(run) {
+      var cardsHtml = (col.runs || []).map(function(run) {
         var rc = roleColor(run.role);
-        var sc = STATUS_COLORS[run.status] || STATUS_COLORS.pending;
-        var isTerminal = !!_STATUS_TERMINAL[run.status];
-        var pulseClass = isTerminal ? '' : ' animate-pulse';
 
         return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block">' +
           '<div class="flex items-center justify-between mb-1.5">' +
             '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(String(run.issue_number)) + '</span>' +
-            '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + sc.dot + pulseClass + '"></span>' +
+            '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + statusDot(run.status) + '"></span>' +
           '</div>' +
           '<div class="flex items-center gap-1.5 mb-1.5">' +
             '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(run.role, run.pipeline_variant)) + '</span>' +
@@ -1498,7 +1496,7 @@ async function loadKanban() {
           '</div>' +
           '<div class="flex items-center justify-between text-xs text-gray-500">' +
             '<span>' + formatElapsed(run.elapsed_seconds) + '</span>' +
-            '<span class="text-accent-green">$' + (run.total_cost_usd || 0).toFixed(2) + '</span>' +
+            '<span class="text-accent-green">$' + (Number(run.total_cost_usd) || 0).toFixed(2) + '</span>' +
           '</div>' +
         '</a>';
       }).join('');
@@ -1514,7 +1512,7 @@ async function loadKanban() {
           '</span>' +
           countBadge +
         '</div>' +
-        '<div class="p-2 space-y-2 overflow-y-auto" style="max-height: 500px">' +
+        '<div class="kanban-card-list p-2 space-y-2">' +
           cardsHtml +
           overflowHint +
         '</div>' +
@@ -1522,6 +1520,8 @@ async function loadKanban() {
     }).join('');
   } catch (e) {
     console.error('Failed to load kanban:', e);
+    var errContainer = document.getElementById('kanban-columns');
+    if (errContainer) errContainer.innerHTML = '<p class="text-red-400 text-sm py-8 text-center w-full">Failed to load pipeline view</p>';
   }
 }
 

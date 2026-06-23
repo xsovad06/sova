@@ -2804,6 +2804,11 @@ class TestKanbanAPI:
         assert len(develop_col["runs"]) == 2
         assert develop_col["pipeline"] == "developer"
 
+        # Verify run objects have all fields the UI relies on
+        run_obj = develop_col["runs"][0]
+        for field in ("id", "issue_number", "role", "status", "elapsed_seconds", "total_cost_usd", "pipeline_variant"):
+            assert field in run_obj, f"missing field '{field}' in kanban run object"
+
         review_col = next(c for c in columns if c["name"] == "self_review")
         assert review_col["count"] == 1
         assert len(review_col["runs"]) == 1
