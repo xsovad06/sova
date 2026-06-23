@@ -108,6 +108,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **AssessStep must guard against duplicate developer runs when a PR exists** -- rejects with error suggesting address-review. Bypass: `--force` or `--pr`. [confirmed: 1]
 - **CI poll must validate PR head SHA after force-push** -- pass `expected_sha` to `_poll_ci()`, verify via `gh pr view --json headRefOid`. [confirmed: 1]
 - **ResolveExternalReviewsStep must include github_user threads** -- filter by both CodeRabbit bot logins AND `ctx.config.github_user`. [confirmed: 0]
+- **Guard all DB writes in retry loops with try/except** -- `_create_step_execution()` and `_update_step_execution()` can fail (connection lost, disk full). Unguarded DB failures crash the workflow; wrap in try/except, log with `exc_info=True`, and continue. PR #201. [confirmed: 0]
 - **Prefer budget over wall-clock timeout as the primary agent governor** -- `agent.step_timeout` (1800s) is configurable; budget is the better control. [confirmed: 1]
 - **Multi-project dashboard requires project-scoped URLs** -- APIs and pages live under `/p/{slug}/...` in multi-project mode. [confirmed: 1]
 - **`start_command` vs `start_agent` produce different handoff behavior** -- `start_command("review-pr")` does NOT write `DashboardHandoff`. [confirmed: 1]
@@ -168,6 +169,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **GitHub `gh pr checks --json` returns `"SKIPPED"` not `"SKIPPING"`** -- the text-format output shows "skipping" but the JSON `state` field is `"SKIPPED"` (past tense). State maps must include both. Unmapped states silently default to `IN_PROGRESS`, causing 900s poll timeouts. File: `sova/git/pr.py:_GH_STATE_MAP`. [confirmed: 0]
 - **`not is_passed` is not the same as `is_failed` for CI checks** -- skipped, cancelled, and neutral checks are not passed but not failures either. Use an explicit `is_failed` property checking only `FAILURE` and `TIMED_OUT` conclusions. File: `sova/git/pr.py:CICheck.is_failed`. [confirmed: 0]
+- **GitHub CI workflows silently skip when a PR has merge conflicts** -- `mergeStateStatus: "DIRTY"` prevents workflow triggers even when `paths-ignore` doesn't apply. The checks never appear (not pending, just absent). Fix: rebase to resolve conflicts, then push -- CI triggers on the clean commit. Diagnose with `gh pr view N --json mergeStateStatus,mergeable`. [confirmed: 0]
 - **Dual `push` + `pull_request_target` triggers cause SonarCloud race failures** -- both fire on feature branch pushes, submitting two reports. SonarCloud processes them sequentially; the loser is rejected with "a newer report has already been processed." Fix: remove feature branch patterns from `push` trigger; `pull_request_target` covers all PR analysis, `push: [main]` covers post-merge. File: `.github/workflows/sonarcloud.yml`. PR #179. [confirmed: 0]
 
 ## Dashboard Recovery

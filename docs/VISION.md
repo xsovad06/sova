@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-06-14
+> **Last updated**: 2026-06-23
 
 ## What This Becomes
 
@@ -283,9 +283,9 @@ Target: October 2026.
 | #23 | CI pipeline | Done |
 | #16 | Polish README | Done |
 | #6 | Measure velocity (SOVA vs manual) | Open |
-| #18 | Deploy to 2+ external projects | Open |
+| #18 | Deploy to 2+ external projects | Done |
 | #20 | Tag v0.1.0 release | Open |
-| #22 | Make repository public | Open |
+| #22 | Make repository public | Done |
 | #21 | Write launch blog post | Open |
 
 ## Future Roadmap (P4+)
@@ -293,8 +293,8 @@ Target: October 2026.
 | # | Feature | Description |
 |---|---------|-------------|
 | #33 | VM deployment + always-on mode | systemd service hardening, notification abstraction, hybrid laptop+VM |
-| #32 | Team knowledge sharing | sync generalizable learnings across SOVA installations |
-| #51 | Visual role builder | dashboard page for composing custom agent roles as workflow DAGs |
+| ~~#32~~ | ~~Team knowledge sharing~~ | ~~sync generalizable learnings across SOVA installations~~ (done) |
+| ~~#51~~ | ~~Visual role builder~~ | ~~dashboard page for composing custom agent roles as workflow DAGs~~ (done) |
 | #24 | Evaluate monetization | Q1 2027 decision: open-core vs hosted vs consulting |
 | -- | Additional adapters | JIRA, Linear, Odoo task source adapters |
 | -- | Additional personas | Go, React, Rust framework guidance |
