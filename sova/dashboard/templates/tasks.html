@@ -98,7 +98,6 @@ async function loadTasks() {
   }
 }
 
-loadTasks();
-setInterval(loadTasks, 15000);
+visibilityAwarePoll(loadTasks, 15000);
 </script>
 {% endblock %}

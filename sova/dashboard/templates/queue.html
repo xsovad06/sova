@@ -470,7 +470,6 @@ async function executeBulkAction(action) {
   }
 }
 
-loadQueue();
-setInterval(loadQueue, 15000);
+visibilityAwarePoll(loadQueue, 15000);
 </script>
 {% endblock %}

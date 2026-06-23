@@ -551,8 +551,24 @@ function dismissInterrupted() {
 pollStatus();
 checkHandoff();
 checkInterrupted();
-setInterval(pollStatus, 2000);
-setInterval(pollOutput, 1000);
-setInterval(checkHandoff, 3000);
+var _statusPoll = setInterval(pollStatus, 2000);
+var _outputPoll = setInterval(pollOutput, 1000);
+var _handoffPoll = setInterval(checkHandoff, 3000);
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    clearInterval(_statusPoll); _statusPoll = null;
+    clearInterval(_outputPoll); _outputPoll = null;
+    clearInterval(_handoffPoll); _handoffPoll = null;
+  } else {
+    pollStatus();
+    pollOutput();
+    checkHandoff();
+    checkInterrupted();
+    _statusPoll = setInterval(pollStatus, 2000);
+    _outputPoll = setInterval(pollOutput, 1000);
+    _handoffPoll = setInterval(checkHandoff, 3000);
+  }
+});
 </script>
 {% endblock %}

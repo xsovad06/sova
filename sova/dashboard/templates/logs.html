@@ -139,5 +139,16 @@ function toggleAutoRefresh() {
 loadComponents();
 loadLogs();
 refreshTimer = setInterval(loadLogs, 5000);
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  } else {
+    loadLogs();
+    if (document.getElementById('auto-refresh').checked && !refreshTimer) {
+      refreshTimer = setInterval(loadLogs, 5000);
+    }
+  }
+});
 </script>
 {% endblock %}
