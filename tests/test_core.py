@@ -60,6 +60,7 @@ def _make_ctx(**kwargs) -> ExecutionContext:
 class TestTaskStatus:
     def test_all_states_exist(self) -> None:
         expected = {
+            "RUNNING",
             "PENDING",
             "ASSESSING",
             "RESEARCHED",
@@ -80,6 +81,14 @@ class TestTaskStatus:
         }
         actual = {s.name for s in TaskStatus}
         assert expected == actual
+
+    def test_running_transitions(self) -> None:
+        valid = get_valid_transitions(TaskStatus.RUNNING)
+        assert TaskStatus.PENDING in valid
+        assert TaskStatus.ADDRESSING_REVIEW in valid
+        assert TaskStatus.PAUSED in valid
+        assert TaskStatus.FAILED in valid
+        assert TaskStatus.DONE not in valid
 
     def test_pending_transitions(self) -> None:
         valid = get_valid_transitions(TaskStatus.PENDING)
@@ -409,7 +418,7 @@ class TestWorkflowEngine:
 
         assert len(result.step_records) == 1
         assert result.step_records[0].step_name == "dummy"
-        assert result.step_records[0].status == "completed"
+        assert result.step_records[0].status == "done"
 
     async def test_adopt_existing_task_run(self) -> None:
         """When ctx.task_run_id is set, the engine should reuse it instead of creating a new one."""
@@ -1425,7 +1434,7 @@ class TestWorkflowDB:
             )
             assert len(rows) == 1
             assert rows[0].step_name == "dummy"
-            assert rows[0].status == "passed"
+            assert rows[0].status == "done"
 
     async def test_failure_creates_failure_record(self) -> None:
         ctx = _make_ctx()
