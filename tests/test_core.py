@@ -479,6 +479,65 @@ class TestWorkflowEngine:
         assert ctx.task_run_id is not None
         assert result.task_run_id == ctx.task_run_id
 
+    async def test_create_step_execution_db_error_retries(self) -> None:
+        """When _create_step_execution raises, the engine retries and can still succeed."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.max_retries = 1
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        call_count = 0
+        original_create = engine._create_step_execution
+
+        async def failing_create(step_name: str, retry_count: int = 0) -> int:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("DB connection lost")
+            return await original_create(step_name, retry_count=retry_count)
+
+        engine._create_step_execution = failing_create
+        result = await engine.run()
+
+        assert result.success
+        assert call_count == 2
+        assert result.step_records[0].retries == 1
+
+    async def test_create_step_execution_db_error_exhausts_retries(self) -> None:
+        """When _create_step_execution fails on every attempt, the step fails."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.max_retries = 0
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        async def always_failing_create(step_name: str, retry_count: int = 0) -> int:
+            raise RuntimeError("DB permanently down")
+
+        engine._create_step_execution = always_failing_create
+        result = await engine.run()
+
+        assert not result.success
+        assert result.steps_failed == 1
+        record = result.step_records[0]
+        assert record.status == "failed"
+        assert record.result is not None
+        assert "DB error" in (record.result.summary or "")
+
+    async def test_update_step_execution_db_error_non_fatal(self) -> None:
+        """When _update_step_execution raises, the step still succeeds."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        async def failing_update(step_exec_id: int, result: StepResult, elapsed_ms: int) -> None:
+            raise RuntimeError("DB write failed")
+
+        engine._update_step_execution = failing_update
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_completed == 1
+
 
 # ---------------------------------------------------------------------------
 # Step implementations (unit tests for individual steps)
