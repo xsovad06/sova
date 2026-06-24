@@ -41,6 +41,8 @@ DEVELOPER_PIPELINE = get_developer_step_names()
 ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
 RESEARCHER_PIPELINE = get_researcher_step_names()
 
+_CLAUDE_DIR = ".claude"
+
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -397,7 +399,7 @@ def _resolve_issue_worktree(issue: str, project_dir: Path) -> Path:
     issue_id = issue.lstrip("#").strip()
     if not issue_id or not issue_id.isdigit():
         return project_dir
-    candidate = project_dir / ".claude" / "worktrees" / issue_id
+    candidate = project_dir / _CLAUDE_DIR / "worktrees" / issue_id
     if candidate.is_dir():
         log.info("command.using_worktree", issue=issue_id, path=str(candidate))
         return candidate
@@ -419,7 +421,7 @@ def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) 
     if args:
         arg_str = " ".join(f"{k}={v}" for k, v in args.items())
 
-    target_cmd = project_dir / ".claude" / "commands" / f"{command}.md"
+    target_cmd = project_dir / _CLAUDE_DIR / "commands" / f"{command}.md"
     if target_cmd.is_file():
         prompt = f"/{command}"
         if arg_str:
@@ -427,7 +429,7 @@ def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) 
         return prompt
 
     sova_root = Path(__file__).resolve().parent.parent.parent.parent
-    sova_cmd = sova_root / ".claude" / "commands" / f"{command}.md"
+    sova_cmd = sova_root / _CLAUDE_DIR / "commands" / f"{command}.md"
     if not sova_cmd.is_file():
         sova_cmd = sova_root / "commands" / f"{command}.md"
 
@@ -444,17 +446,8 @@ def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) 
     return prompt
 
 
-async def start_command(
-    command: str,
-    args: dict | None = None,
-    slug: str | None = None,
-) -> dict:
-    """Start a Claude Code command (e.g. /agent-resume, /integrate-pr)."""
-    from sova.dashboard.services.agent_output import _read_output, _read_stderr
-
-    pa = _get_project_agents(slug)
-
-    safe_args = args or {}
+async def _resolve_command_context(safe_args: dict, command: str, project_dir: Path) -> tuple[int | None, str]:
+    """Extract PR number and issue identifier from command args."""
     raw_pr = safe_args.get("pr")
     try:
         pr_number = int(raw_pr) if raw_pr is not None else None
@@ -465,9 +458,23 @@ async def start_command(
     issue = str(safe_args.get("issue", "")).strip()
     if not issue:
         if raw_pr is not None:
-            issue = await _resolve_issue_from_pr(raw_pr, pa.project_dir)
+            issue = await _resolve_issue_from_pr(raw_pr, project_dir)
         if not issue:
             issue = command
+    return pr_number, issue
+
+
+async def start_command(
+    command: str,
+    args: dict | None = None,
+    slug: str | None = None,
+) -> dict:
+    """Start a Claude Code command (e.g. /agent-resume, /integrate-pr)."""
+    from sova.dashboard.services.agent_output import _read_output, _read_stderr
+
+    pa = _get_project_agents(slug)
+    safe_args = args or {}
+    pr_number, issue = await _resolve_command_context(safe_args, command, pa.project_dir)
 
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
