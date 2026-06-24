@@ -218,6 +218,7 @@ class SonarCloudConfig(BaseSettings):
     """SonarCloud-specific configuration."""
 
     project_key: str = ""
+    coverage_threshold: Decimal = Decimal("80.0")
 
     model_config = SettingsConfigDict(env_prefix="SOVA_SONARCLOUD_")
 

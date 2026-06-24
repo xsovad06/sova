@@ -290,15 +290,26 @@ class MonitorCIStep(BaseStep):
         """Invoke Claude to fix CI failures. Returns (cost, error_or_None)."""
         from decimal import Decimal
 
-        raw_logs = await get_ci_failure_logs(
-            failed_checks,
-            repo=ctx.repo,
-            github_user=ctx.config.github_user,
-        )
-        ci_logs = _redact_logs(raw_logs)
-        log_result = await run("git", "log", "--oneline", "-5", cwd=ctx.working_dir)
-        recent_commits = log_result.stdout.strip() if log_result.success else ""
-        prompt = self._build_fix_prompt(failed_checks, ci_logs, recent_commits, ctx)
+        sonar_checks, other_checks = self._split_sonarcloud_checks(failed_checks)
+        coverage_prompt = await self._fetch_sonarcloud_coverage_prompt(ctx, sonar_checks)
+
+        if coverage_prompt and not other_checks:
+            prompt = coverage_prompt
+        else:
+            # Fetch logs for non-Sonar checks when coverage_prompt handles Sonar,
+            # otherwise fetch logs for all failed checks (including Sonar).
+            log_checks = other_checks if coverage_prompt and other_checks else failed_checks
+            raw_logs = await get_ci_failure_logs(
+                log_checks,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
+            ci_logs = _redact_logs(raw_logs)
+            log_result = await run("git", "log", "--oneline", "-5", cwd=ctx.working_dir)
+            recent_commits = log_result.stdout.strip() if log_result.success else ""
+            prompt = self._build_fix_prompt(failed_checks, ci_logs, recent_commits, ctx)
+            if coverage_prompt:
+                prompt += f"\n\n---\n\n{coverage_prompt}"
 
         budget = ctx.config.agent.max_budget - ctx.cost_usd
         if budget <= 0:
@@ -366,6 +377,72 @@ class MonitorCIStep(BaseStep):
             return True, None
 
         return False, None
+
+    # ------------------------------------------------------------------
+    # SonarCloud coverage detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_sonarcloud_checks(
+        failed_checks: list[CICheck],
+    ) -> tuple[list[CICheck], list[CICheck]]:
+        """Split failed checks into SonarCloud and non-SonarCloud groups."""
+        from sova.adapters.external_reviews import _CHECK_NAMES
+
+        sonar_name = _CHECK_NAMES.get("sonarcloud", "")
+        sonar: list[CICheck] = []
+        other: list[CICheck] = []
+        for check in failed_checks:
+            if check.name == sonar_name:
+                sonar.append(check)
+            else:
+                other.append(check)
+        return sonar, other
+
+    @staticmethod
+    async def _fetch_sonarcloud_coverage_prompt(
+        ctx: ExecutionContext,
+        sonar_checks: list[CICheck],
+    ) -> str:
+        """Fetch coverage data from SonarCloud and build a test-writing prompt.
+
+        Returns an empty string when SonarCloud is not configured, unreachable,
+        or the coverage gate is passing.
+        """
+        if not sonar_checks:
+            return ""
+
+        ext = ctx.config.external_reviews
+        if not ext.enabled or "sonarcloud" not in ext.tools:
+            return ""
+        project_key = ext.sonarcloud.project_key if ext.sonarcloud else ""
+        if not project_key or ctx.pr_number is None:
+            return ""
+
+        from sova.adapters.external_reviews import (
+            fetch_sonarcloud_coverage_issues,
+            format_coverage_findings_for_prompt,
+        )
+
+        report = await fetch_sonarcloud_coverage_issues(
+            project_key,
+            ctx.pr_number,
+            required_pct=ext.sonarcloud.coverage_threshold,
+        )
+        if report is None:
+            return ""
+
+        if report.coverage_pct >= report.required_pct and not report.findings:
+            log.info("step.monitor_ci.sonarcloud_coverage_ok", pct=report.coverage_pct)
+            return ""
+
+        log.info(
+            "step.monitor_ci.sonarcloud_coverage_gap",
+            coverage=report.coverage_pct,
+            required=report.required_pct,
+            findings=len(report.findings),
+        )
+        return format_coverage_findings_for_prompt(report)
 
     # ------------------------------------------------------------------
     # Prompt construction

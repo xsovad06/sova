@@ -435,6 +435,13 @@ _REGISTRY: list[SettingMeta] = [
         "SonarCloud project key (e.g. org_repo)",
         "external_reviews",
     ),
+    SettingMeta(
+        "external_reviews.sonarcloud.coverage_threshold",
+        "Coverage threshold",
+        "Minimum coverage percentage on new code (must match SonarCloud quality gate)",
+        "external_reviews",
+        "number",
+    ),
 ]
 
 _META_BY_KEY: dict[str, SettingMeta] = {m.key: m for m in _REGISTRY}

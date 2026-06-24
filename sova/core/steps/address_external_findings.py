@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
+from typing import Any
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -22,7 +24,9 @@ class AddressExternalFindingsStep(BaseStep):
 
         from sova.adapters.external_reviews import (
             _fetch_coderabbit_threads,
+            fetch_sonarcloud_coverage_issues,
             fetch_sonarcloud_issues,
+            format_coverage_findings_for_prompt,
             format_findings_for_prompt,
             resolve_coderabbit_threads,
         )
@@ -30,27 +34,53 @@ class AddressExternalFindingsStep(BaseStep):
         ext = ctx.config.external_reviews
         all_findings = []
         coderabbit_thread_ids: list[str] = []
+        coverage_prompt = ""
 
+        tasks: list[tuple[str, Any]] = []
         if "sonarcloud" in ext.tools and ext.sonarcloud.project_key:
-            sonar_findings = await fetch_sonarcloud_issues(ext.sonarcloud.project_key, ctx.pr_number)
-            all_findings.extend(sonar_findings)
-
+            pk = ext.sonarcloud.project_key
+            tasks.append(("sonar_issues", fetch_sonarcloud_issues(pk, ctx.pr_number)))
+            tasks.append(
+                (
+                    "sonar_coverage",
+                    fetch_sonarcloud_coverage_issues(pk, ctx.pr_number, required_pct=ext.sonarcloud.coverage_threshold),
+                )
+            )
         if "coderabbit" in ext.tools:
-            cr_result = await _fetch_coderabbit_threads(ctx.repo, ctx.pr_number, github_user=ctx.config.github_user)
+            coro = _fetch_coderabbit_threads(ctx.repo, ctx.pr_number, github_user=ctx.config.github_user)
+            tasks.append(("coderabbit", coro))
+
+        if tasks:
+            results = await asyncio.gather(*(t[1] for t in tasks))
+            result_map = {tasks[i][0]: results[i] for i in range(len(tasks))}
+        else:
+            result_map = {}
+
+        if "sonar_issues" in result_map:
+            all_findings.extend(result_map["sonar_issues"])
+        if "sonar_coverage" in result_map:
+            report = result_map["sonar_coverage"]
+            if report and (report.coverage_pct < report.required_pct or report.findings):
+                coverage_prompt = format_coverage_findings_for_prompt(report)
+        if "coderabbit" in result_map:
+            cr_result = result_map["coderabbit"]
             all_findings.extend(cr_result.findings)
             coderabbit_thread_ids = cr_result.thread_ids
 
-        if not all_findings:
+        if not all_findings and not coverage_prompt:
             log.info("step.address_external_findings.none_found", pr=ctx.pr_number)
             return StepResult(success=True, summary="No external findings to address")
 
         log.info(
             "step.address_external_findings.found",
             count=len(all_findings),
+            has_coverage_gap=bool(coverage_prompt),
             sources=list({f.source for f in all_findings}),
         )
 
         prompt = format_findings_for_prompt(all_findings)
+        if coverage_prompt:
+            prompt = f"{prompt}\n\n---\n\n{coverage_prompt}" if prompt else coverage_prompt
         cost = await self._apply_fixes(ctx, prompt)
 
         if coderabbit_thread_ids and cost > 0:
@@ -68,9 +98,16 @@ class AddressExternalFindingsStep(BaseStep):
         elif coderabbit_thread_ids:
             log.info("step.address_external_findings.threads_not_resolved", reason="llm_failed")
 
+        parts: list[str] = []
+        if all_findings:
+            parts.append(f"{len(all_findings)} external finding(s)")
+        if coverage_prompt:
+            parts.append("coverage gap remediation")
+        summary = f"Addressed {' + '.join(parts)}" if parts else "Addressed external findings"
+
         return StepResult(
             success=True,
-            summary=f"Addressed {len(all_findings)} external finding(s)",
+            summary=summary,
             cost_usd=cost,
         )
 

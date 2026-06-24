@@ -2185,6 +2185,204 @@ class TestMonitorCIFixLoop:
 
 
 # ---------------------------------------------------------------------------
+# MonitorCIStep -- SonarCloud coverage handling
+# ---------------------------------------------------------------------------
+
+
+class TestMonitorCISonarCloud:
+    async def test_split_sonarcloud_checks(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+        tests = _make_ci_check("Tests", passed=False)
+        lint = _make_ci_check("Lint", passed=False)
+
+        sonar_checks, other_checks = MonitorCIStep._split_sonarcloud_checks([sonar, tests, lint])
+        assert len(sonar_checks) == 1
+        assert sonar_checks[0].name == "SonarCloud Code Analysis"
+        assert len(other_checks) == 2
+
+    async def test_split_no_sonarcloud(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        tests = _make_ci_check("Tests", passed=False)
+        sonar_checks, other_checks = MonitorCIStep._split_sonarcloud_checks([tests])
+        assert sonar_checks == []
+        assert len(other_checks) == 1
+
+    async def test_fetch_coverage_prompt_returns_empty_without_sonar_checks(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [])
+        assert result == ""
+
+    async def test_fetch_coverage_prompt_returns_empty_without_config(self) -> None:
+        from sova.config.models import ExternalReviewsConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig(external_reviews=ExternalReviewsConfig())
+        ctx = _make_ctx(pr_number=10, config=config)
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+        result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
+        assert result == ""
+
+    async def test_fetch_coverage_prompt_returns_empty_when_sonarcloud_not_in_tools(self) -> None:
+        from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ext = ExternalReviewsConfig(
+            enabled=True,
+            tools=["coderabbit"],
+            sonarcloud=SonarCloudConfig(project_key="org_repo"),
+        )
+        config = ProjectConfig(external_reviews=ext)
+        ctx = _make_ctx(pr_number=10, config=config)
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+        result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
+        assert result == ""
+
+    async def test_fetch_coverage_prompt_with_gap(self) -> None:
+        from sova.adapters.external_reviews import CoverageReport, ExternalFinding
+        from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ext = ExternalReviewsConfig(
+            enabled=True,
+            tools=["sonarcloud"],
+            sonarcloud=SonarCloudConfig(project_key="org_repo"),
+        )
+        config = ProjectConfig(external_reviews=ext)
+        ctx = _make_ctx(pr_number=10, config=config)
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+
+        report = CoverageReport(
+            coverage_pct=Decimal("65.0"),
+            required_pct=Decimal("80.0"),
+            findings=[
+                ExternalFinding("sonarcloud-coverage", "sova/core/workflow.py", 235, "MAJOR", "Uncovered"),
+            ],
+        )
+        with patch(
+            "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+            new_callable=AsyncMock,
+            return_value=report,
+        ):
+            result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
+
+        assert "65.0%" in result
+        assert "pytest" in result
+        assert "sova/core/workflow.py:235" in result
+
+    async def test_fetch_coverage_prompt_coverage_ok(self) -> None:
+        from sova.adapters.external_reviews import CoverageReport
+        from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ext = ExternalReviewsConfig(
+            enabled=True,
+            tools=["sonarcloud"],
+            sonarcloud=SonarCloudConfig(project_key="org_repo"),
+        )
+        config = ProjectConfig(external_reviews=ext)
+        ctx = _make_ctx(pr_number=10, config=config)
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+
+        report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
+        with patch(
+            "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+            new_callable=AsyncMock,
+            return_value=report,
+        ):
+            result = await MonitorCIStep._fetch_sonarcloud_coverage_prompt(ctx, [sonar])
+
+        assert result == ""
+
+    async def test_invoke_fix_uses_coverage_prompt_for_sonarcloud(self) -> None:
+        """When only SonarCloud fails, _invoke_fix uses the coverage prompt."""
+        from sova.adapters.external_reviews import CoverageReport
+        from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ext = ExternalReviewsConfig(
+            enabled=True,
+            tools=["sonarcloud"],
+            sonarcloud=SonarCloudConfig(project_key="org_repo"),
+        )
+        config = ProjectConfig(external_reviews=ext)
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        step = MonitorCIStep()
+
+        sonar_check = _make_ci_check("SonarCloud Code Analysis", passed=False)
+        report = CoverageReport(coverage_pct=Decimal("65.0"), required_pct=Decimal("80.0"), findings=[])
+
+        mock_invoke = AsyncMock(return_value=LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.10")))
+        mock_run = AsyncMock(side_effect=_shell_side_effect)
+
+        with (
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch("sova.core.steps.monitor_ci.get_ci_failure_logs", new_callable=AsyncMock, return_value=""),
+        ):
+            cost, error = await step._invoke_fix(ctx, [sonar_check], mock_invoke, mock_run)
+
+        assert error is None
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert "65.0%" in prompt_arg
+        assert "pytest" in prompt_arg
+
+    async def test_invoke_fix_combined_sonar_and_other_failures(self) -> None:
+        """When both SonarCloud and other checks fail, logs are fetched for non-Sonar checks only."""
+        from sova.adapters.external_reviews import CoverageReport
+        from sova.config.models import ExternalReviewsConfig, SonarCloudConfig
+        from sova.core.steps.monitor_ci import MonitorCIStep
+        from sova.llm.models import LLMResult
+
+        ext = ExternalReviewsConfig(
+            enabled=True,
+            tools=["sonarcloud"],
+            sonarcloud=SonarCloudConfig(project_key="org_repo"),
+        )
+        config = ProjectConfig(external_reviews=ext)
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test", worktree_dir=Path("/tmp/wt"), config=config)
+        step = MonitorCIStep()
+
+        sonar = _make_ci_check("SonarCloud Code Analysis", passed=False)
+        tests = _make_ci_check("Tests", passed=False)
+        report = CoverageReport(coverage_pct=Decimal("65.0"), required_pct=Decimal("80.0"), findings=[])
+
+        mock_invoke = AsyncMock(return_value=LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.10")))
+        mock_run = AsyncMock(side_effect=_shell_side_effect)
+
+        with (
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "sova.core.steps.monitor_ci.get_ci_failure_logs",
+                new_callable=AsyncMock,
+                return_value="test failure logs",
+            ) as mock_logs,
+        ):
+            cost, error = await step._invoke_fix(ctx, [sonar, tests], mock_invoke, mock_run)
+
+        assert error is None
+        mock_logs.assert_called_once()
+        log_checks = mock_logs.call_args[0][0]
+        assert len(log_checks) == 1
+        assert log_checks[0].name == "Tests"
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert "65.0%" in prompt_arg
+        assert "test failure logs" in prompt_arg
+
+
+# ---------------------------------------------------------------------------
 # SyncStep -- task fetch
 # ---------------------------------------------------------------------------
 
