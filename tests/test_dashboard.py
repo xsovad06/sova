@@ -1745,6 +1745,145 @@ class TestDuplicateAgentPrevention:
 
 
 # ---------------------------------------------------------------------------
+# start_command worktree resolution
+# ---------------------------------------------------------------------------
+
+
+class TestStartCommandWorktreeResolution:
+    """start_command() should use an existing worktree as cwd when available."""
+
+    async def test_uses_worktree_when_exists(self, tmp_path: Path) -> None:
+        """When a worktree exists for the issue, cwd should be the worktree path."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+
+        mock_process = MagicMock()
+        mock_process.pid = 9999
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+        ):
+            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+
+        assert result.get("status") == "started"
+        spawn_cwd = mock_runtime.spawn.call_args[0][1]
+        assert spawn_cwd == worktree, f"Expected worktree {worktree}, got {spawn_cwd}"
+
+    async def test_falls_back_to_project_dir_when_no_worktree(self, tmp_path: Path) -> None:
+        """When no worktree exists, cwd should remain the project directory."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+
+        mock_process = MagicMock()
+        mock_process.pid = 9999
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+        ):
+            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+
+        assert result.get("status") == "started"
+        spawn_cwd = mock_runtime.spawn.call_args[0][1]
+        assert spawn_cwd == tmp_path, f"Expected project dir {tmp_path}, got {spawn_cwd}"
+
+    def test_resolve_issue_worktree_returns_worktree_path(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree returns worktree path when directory exists."""
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        assert _resolve_issue_worktree("42", tmp_path) == worktree
+
+    def test_resolve_issue_worktree_returns_project_dir_when_missing(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree returns project_dir when no worktree exists."""
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        assert _resolve_issue_worktree("42", tmp_path) == tmp_path
+
+    def test_resolve_issue_worktree_handles_non_numeric_issue(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree returns project_dir for non-numeric issue IDs."""
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        assert _resolve_issue_worktree("standup", tmp_path) == tmp_path
+
+    def test_resolve_issue_worktree_strips_hash(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree strips leading # from issue number."""
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        worktree = tmp_path / ".claude" / "worktrees" / "42"
+        worktree.mkdir(parents=True)
+        assert _resolve_issue_worktree("#42", tmp_path) == worktree
+
+    async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
+        """Commands without an issue number should always use project dir."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+
+        mock_process = MagicMock()
+        mock_process.pid = 9999
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+        ):
+            result = await start_command("standup", {})
+
+        assert result.get("status") == "started"
+        spawn_cwd = mock_runtime.spawn.call_args[0][1]
+        assert spawn_cwd == tmp_path
+
+
+# ---------------------------------------------------------------------------
 # build_action_command
 # ---------------------------------------------------------------------------
 
