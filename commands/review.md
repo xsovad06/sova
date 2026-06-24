@@ -130,8 +130,7 @@ git diff  # review your own fixes
 
 ## 7. Run CI Checks Locally
 
-Run the same checks the pipeline will run (see CLAUDE.md for commands).
-Only run checks for modules with changed files. If any check fails, fix the issue and loop back to Step 6.
+Run the full CI-equivalent checks: `{{ check_cmd }}`. If any check fails, fix the issue and loop back to Step 6.
 
 ## 8. Summary
 

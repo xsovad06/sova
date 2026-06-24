@@ -7,6 +7,7 @@ base_branch = "main"
 test_cmd = "make test"
 lint_cmd = "make lint"
 format_cmd = "make format"
+check_cmd = "make check"
 
 [task_source]
 type = "github"

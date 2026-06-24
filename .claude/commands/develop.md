@@ -72,16 +72,12 @@ note it for a separate task instead of doing it inline.
 
 ### Step 5: Verify
 
-Run the project's linter and test suite (see CLAUDE.md for commands):
+Run the full CI-equivalent checks:
 ```bash
-# Run linter
-<project lint command from CLAUDE.md>
-
-# Run tests
-<project test command from CLAUDE.md>
+{{ check_cmd }}
 ```
 
-If tests fail, fix and re-run (up to 3 attempts).
+If any check fails, fix and re-run (up to 3 attempts).
 
 ### Step 5: Self-Check
 
