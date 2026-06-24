@@ -158,15 +158,25 @@ async function loadConfig() {
       '</div>' +
     '</div>';
 
+    html += '<div class="sova-card">' +
+      '<div class="sova-card-header">' +
+        '<h3 class="text-sm font-medium text-gray-400">SOVA Installation</h3>' +
+      '</div>' +
+      '<div class="sova-card-body" id="installation-status">' +
+        '<p class="text-gray-500 text-sm">Checking for updates...</p>' +
+      '</div>' +
+    '</div>';
+
     container.innerHTML = html;
 
     // Restore previously expanded groups, or auto-expand first on initial load
     var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
     toExpand.forEach(function(id) { toggleGroup(id); });
 
-    // Load invariants and personas into their containers
+    // Load invariants, personas, and installation status into their containers
     loadInvariants();
     loadPersonas();
+    loadInstallationStatus();
   } catch (e) {
     console.error('Failed to load config:', e);
     document.getElementById('config-groups').innerHTML =
@@ -316,6 +326,123 @@ async function loadPersonas() {
     container.innerHTML = html;
   } catch (e) {
     console.error('Failed to load personas:', e);
+  }
+}
+
+async function loadInstallationStatus() {
+  var container = document.getElementById('installation-status');
+  if (!container) return;
+  try {
+    var data = await fetchAPI(apiUrl('/settings/installation/status'));
+    var html = '';
+
+    if (data.has_updates) {
+      html += '<div class="text-sm text-accent-yellow font-medium mb-2">' +
+        data.total_updates + ' update' + (data.total_updates !== 1 ? 's' : '') + ' available</div>';
+
+      var cmdCount = data.commands.changed.length + data.commands.new.length + data.commands.removed.length;
+      var guideCount = data.guidelines.changed.length + data.guidelines.new.length + data.guidelines.removed.length;
+
+      if (cmdCount > 0) {
+        var parts = [];
+        if (data.commands.changed.length > 0) parts.push(data.commands.changed.length + ' changed');
+        if (data.commands.new.length > 0) parts.push(data.commands.new.length + ' new');
+        if (data.commands.removed.length > 0) parts.push(data.commands.removed.length + ' removed');
+        html += '<div class="text-xs text-gray-400 mb-1">Commands: ' + parts.join(', ') + '</div>';
+      }
+
+      if (guideCount > 0) {
+        var gparts = [];
+        if (data.guidelines.changed.length > 0) gparts.push(data.guidelines.changed.length + ' changed');
+        if (data.guidelines.new.length > 0) gparts.push(data.guidelines.new.length + ' new');
+        if (data.guidelines.removed.length > 0) gparts.push(data.guidelines.removed.length + ' removed');
+        html += '<div class="text-xs text-gray-400 mb-1">Guidelines: ' + gparts.join(', ') + '</div>';
+      }
+
+      html += '<div class="mt-3 flex items-center gap-3">' +
+        '<button type="button" id="btn-sync-installation" onclick="syncInstallation()" ' +
+          'class="px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">' +
+          'Sync Now</button>' +
+        '<span id="sync-installation-status" class="text-xs text-gray-500"></span>' +
+      '</div>';
+    } else {
+      html += '<div class="text-sm text-accent-green mb-1">Up to date</div>' +
+        '<div class="mt-2">' +
+          '<button type="button" onclick="loadInstallationStatus()" ' +
+            'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>' +
+        '</div>';
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('Failed to load installation status:', e);
+    container.innerHTML = '<p class="text-gray-500 text-xs">Failed to check installation status</p>';
+  }
+}
+
+async function syncInstallation() {
+  var btn = document.getElementById('btn-sync-installation');
+  var status = document.getElementById('sync-installation-status');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  if (status) status.textContent = '';
+  try {
+    var res = await fetch(apiUrl('/setup/commands/sync'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    });
+    if (!res.ok) {
+      var err = await res.json();
+      if (status) {
+        status.textContent = 'Error: ' + (err.detail || res.status);
+        status.className = 'text-xs text-accent-red';
+      }
+      btn.disabled = false;
+      btn.textContent = 'Sync Now';
+      return;
+    }
+    var data = await res.json();
+    var parts = [];
+    if (data.commands && data.commands.updated > 0) {
+      parts.push(data.commands.updated + ' command' + (data.commands.updated !== 1 ? 's' : '') + ' updated');
+    }
+    if (data.guidelines && data.guidelines.updated > 0) {
+      parts.push(data.guidelines.updated + ' guideline' + (data.guidelines.updated !== 1 ? 's' : '') + ' updated');
+    }
+    if (parts.length === 0) parts.push('Already up to date');
+
+    var conflicts = [];
+    if (data.commands && data.commands.conflicts && data.commands.conflicts.length > 0) {
+      conflicts = conflicts.concat(data.commands.conflicts);
+    }
+    if (data.guidelines && data.guidelines.conflicts && data.guidelines.conflicts.length > 0) {
+      conflicts = conflicts.concat(data.guidelines.conflicts);
+    }
+
+    var container = document.getElementById('installation-status');
+    var html = '<div class="text-sm text-accent-green mb-1">Sync complete</div>' +
+      '<div class="text-xs text-gray-400 mb-1">' + escapeHtml(parts.join(', ')) + '</div>';
+
+    if (conflicts.length > 0) {
+      html += conflicts.map(function(f) {
+        return '<div class="text-xs text-accent-yellow">! ' + escapeHtml(f) + ' -- locally modified, skipped</div>';
+      }).join('');
+    }
+
+    html += '<div class="mt-2">' +
+      '<button type="button" onclick="loadInstallationStatus()" ' +
+        'class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Re-check</button>' +
+    '</div>';
+
+    container.innerHTML = html;
+  } catch (e) {
+    if (status) {
+      status.textContent = 'Error: ' + e.message;
+      status.className = 'text-xs text-accent-red';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Sync Now';
   }
 }
 
