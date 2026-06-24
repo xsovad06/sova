@@ -119,7 +119,8 @@ async def configure_project(req: ConfigureRequest):
 async def sync_commands() -> dict[str, object]:
     """Sync canonical SOVA commands and guidelines into the active project."""
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
-    from sova.commands.distribution import update_commands, update_guidelines
+    from sova.commands.distribution import UpdateResult, update_commands, update_guidelines
+    from sova.commands.manifest import read_manifest
     from sova.config.loader import load_config
 
     project_dir = get_project_dir()
@@ -127,7 +128,6 @@ async def sync_commands() -> dict[str, object]:
         raise HTTPException(status_code=400, detail="No active project")
 
     canonical_dir = get_canonical_dir()
-    guidelines_dir = get_guidelines_dir()
     try:
         cfg = load_config(project_dir)
     except (FileNotFoundError, ValueError, KeyError) as e:
@@ -135,13 +135,18 @@ async def sync_commands() -> dict[str, object]:
 
     commands_dir = project_dir / ".claude" / "commands"
     commands_dir.mkdir(parents=True, exist_ok=True)
-    rules_dir = project_dir / ".claude" / "rules"
-    rules_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd_result, guide_result = await asyncio.gather(
-        asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg),
-        asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg),
-    )
+    cmd_result = await asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg)
+
+    # Only sync guidelines if they were previously installed (manifest exists).
+    # Without this guard, syncing installs SOVA-framework-specific templates
+    # into projects that never opted into managed guidelines.
+    rules_dir = project_dir / ".claude" / "rules"
+    if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+        guidelines_dir = get_guidelines_dir()
+        guide_result = await asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg)
+    else:
+        guide_result = UpdateResult()
 
     return {
         "status": "ok",
