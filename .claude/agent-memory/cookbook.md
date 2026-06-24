@@ -19,6 +19,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Testing
 
+- **Mock `side_effect` must not rely on `call_count` with `asyncio.gather`** -- when two async calls run concurrently via `asyncio.gather`, invocation order is non-deterministic. Route responses by inspecting the URL/args passed to `side_effect`, not by counting calls. PR #211 CodeRabbit. [confirmed: 0]
 - **Assert context side effects, not just return values** -- when a step's `execute()` updates both the return `StepResult` and the shared `ExecutionContext` (e.g., `ctx.add_cost()`), test both. A regression in context mutation passes if only `result.cost_usd` is asserted. PR #99 CodeRabbit. [confirmed: 0]
 
 ## Dashboard / Frontend
@@ -96,6 +97,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Workflow / Pipeline
 
+- **LLM prompt sections must be conditional when composed from multiple sources** -- `format_coverage_findings_for_prompt()` appends "Do NOT modify production code" unconditionally, but the caller (`address_external_findings.py`, `monitor_ci.py`) may combine this prompt with production fix instructions. Use a `coverage_only: bool` parameter to gate restrictive instructions. PR #211 CodeRabbit. [confirmed: 0]
 - **Approval-then-spawn endpoints must order: spawn first, clear state second** -- if `clear_handoff()` runs before `start_agent()` and the spawn fails, the system is left in an inconsistent state (handoff cleared, no agent running). Call `start_agent()` first, verify success, then clear the handoff. PR #182 CodeRabbit. [confirmed: 0]
 - **Dashboard finalization must separate cost from status writes** -- write cost unconditionally, THEN check terminal guard for status. File: `sova/dashboard/services/agent_db.py`. [confirmed: 0]
 - **Always pass `project_dir` to `get_session()` in dashboard services** -- production code needs it for multi-project; tests use `_ignore_project_dir` pattern. [confirmed: 1]
