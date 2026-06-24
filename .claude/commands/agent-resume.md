@@ -65,21 +65,33 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 
 **CI is pending** (and `wait_for=ci`):
 
-Poll CI in a loop using the following bash command:
+Poll CI in a loop using the following bash command. The loop uses 30 iterations x 30s = 15 minutes (matching default `ci.max_wait=900s`). Adjust iteration count if `ci.max_wait` or `ci.poll_interval` are customized in `sova.toml`. Requires gh CLI v2.32+ (for the `bucket` field).
 
 ```bash
 # Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
 # Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
+# Grace period: first 5 iterations (2.5 min) tolerate TOTAL=0 for checks to register after push
 for i in $(seq 1 30); do
   echo "--- CI poll attempt $i/30 ---"
   CHECKS_JSON=$(gh pr checks <PR_NUMBER> --json name,bucket 2>/dev/null || echo "[]")
   echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
-  IFS=$'\t' read -r TOTAL PENDING FAILED < <(echo "$CHECKS_JSON" | jq -r '
+  STATS=$(echo "$CHECKS_JSON" | jq -r '
     (length | tostring) + "\t" +
     ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
     ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
-  ')
-  if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+  ' 2>/dev/null) || { echo "Failed to parse CI check status"; break; }
+  IFS=$'\t' read -r TOTAL PENDING FAILED <<< "$STATS"
+  if [ "$TOTAL" -eq 0 ]; then
+    if [ "$i" -lt 5 ]; then
+      echo "No checks registered yet (grace period $i/5)"
+      sleep 30
+      continue
+    else
+      echo "NO_CHECKS: no CI checks configured (grace period expired)"
+      break
+    fi
+  fi
+  if [ "$PENDING" -eq 0 ]; then
     if [ "$FAILED" -gt 0 ]; then
       echo "CI FAILED: $FAILED check(s) failed"
       break
@@ -99,6 +111,7 @@ done
 Act on the result:
 - **CI PASSED**: write handoff with "Merge" action
 - **CI FAILED**: write handoff with "Retry" and "Investigate" actions
+- **NO_CHECKS** (no CI checks configured): proceed to next action (treat as passed) -- write handoff with "Merge" action
 - **CI TIMEOUT**: write handoff with "Wait for CI" action so the dashboard can re-trigger later
 
 **CI has failed** (and `investigate_ci=true`):
