@@ -392,6 +392,18 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
 
 
+def _resolve_issue_worktree(issue: str, project_dir: Path) -> Path:
+    """Return the worktree path for an issue if one exists, else project_dir."""
+    issue_id = issue.lstrip("#").strip()
+    if not issue_id or not issue_id.isdigit():
+        return project_dir
+    candidate = project_dir / ".claude" / "worktrees" / issue_id
+    if candidate.is_dir():
+        log.info("command.using_worktree", issue=issue_id, path=str(candidate))
+        return candidate
+    return project_dir
+
+
 def _strip_frontmatter(content: str) -> str:
     """Remove YAML frontmatter (--- ... ---) from command file content."""
     if content.startswith("---"):
@@ -471,33 +483,34 @@ async def start_command(
 
             _evict_completed_for_issue(pa, issue)
 
-        cwd = pa.project_dir
-        prompt = _resolve_command_prompt(command, args, cwd)
+        project_dir = pa.project_dir
+        cwd = _resolve_issue_worktree(issue, project_dir) if issue else project_dir
+        prompt = _resolve_command_prompt(command, args, project_dir)
 
         try:
             from sova.dashboard.services import handoff_service
 
-            handoff_service.clear_handoff(cwd, issue=issue)
+            handoff_service.clear_handoff(project_dir, issue=issue)
         except Exception:
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
-        gh_env = await _resolve_project_gh_env(cwd)
+        gh_env = await _resolve_project_gh_env(project_dir)
         try:
             process = await get_runtime().spawn(prompt, cwd, env=gh_env)
         except Exception as exc:
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
             return {"error": f"Failed to spawn runtime: {exc}"}
         role = f"command:{command}"
-        run_id = await _create_task_run(issue, role, cwd, pid=process.pid, pr_number=pr_number)
+        run_id = await _create_task_run(issue, role, project_dir, pid=process.pid, pr_number=pr_number)
         if run_id is None:
             await process.stop()
             return {"error": "Failed to create task run record"}
 
         # Link to lifecycle
-        await _link_run_to_lifecycle(run_id, issue, role, cwd)
+        await _link_run_to_lifecycle(run_id, issue, role, project_dir)
 
-        writer = OutputWriter(cwd, run_id)
-        await _set_output_file_path(run_id, writer.path, cwd)
+        writer = OutputWriter(project_dir, run_id)
+        await _set_output_file_path(run_id, writer.path, project_dir)
 
         agent = AgentState(
             run_id=run_id,
@@ -506,7 +519,7 @@ async def start_command(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
-            project_dir=cwd,
+            project_dir=project_dir,
         )
         pa.agents[run_id] = agent
 
