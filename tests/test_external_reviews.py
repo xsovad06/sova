@@ -10,12 +10,15 @@ from unittest.mock import AsyncMock, patch
 
 from sova.adapters.base import Task, TaskState
 from sova.adapters.external_reviews import (
+    CoverageReport,
     ExternalCheckStatus,
     ExternalFinding,
     _fetch_coderabbit_threads,
     _ThreadsResult,
     fetch_coderabbit_findings,
+    fetch_sonarcloud_coverage_issues,
     fetch_sonarcloud_issues,
+    format_coverage_findings_for_prompt,
     format_findings_for_prompt,
     get_check_statuses,
 )
@@ -328,11 +331,17 @@ class TestAddressExternalFindingsStep:
 
         cfg = ProjectConfig(external_reviews=_ext_config())
         ctx = _make_ctx(config=cfg, pr_number=94)
+        report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
         with (
             patch(
                 "sova.adapters.external_reviews.fetch_sonarcloud_issues",
                 new_callable=AsyncMock,
                 return_value=[],
+            ),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
             ),
             patch(
                 "sova.adapters.external_reviews._fetch_coderabbit_threads",
@@ -354,6 +363,7 @@ class TestAddressExternalFindingsStep:
             findings=[ExternalFinding("coderabbit", "sova/cli.py", 20, "MAJOR", "Bug", "PRRT_abc")],
             thread_ids=["PRRT_abc"],
         )
+        coverage_report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
         mock_llm = AsyncMock()
         mock_llm.cost_usd = Decimal("0.05")
         with (
@@ -361,6 +371,11 @@ class TestAddressExternalFindingsStep:
                 "sova.adapters.external_reviews.fetch_sonarcloud_issues",
                 new_callable=AsyncMock,
                 return_value=sonar,
+            ),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=coverage_report,
             ),
             patch(
                 "sova.adapters.external_reviews._fetch_coderabbit_threads",
@@ -396,6 +411,187 @@ class TestAddressExternalFindingsStep:
         ctx = _make_ctx(config=cfg, pr_number=None)
         result = await AddressExternalFindingsStep().execute(ctx)
         assert not result.success
+
+
+class TestFetchSonarCloudCoverageIssues:
+    async def test_returns_none_when_no_project_key(self) -> None:
+        result = await fetch_sonarcloud_coverage_issues("", 1)
+        assert result is None
+
+    async def test_parses_measures_and_issues(self) -> None:
+        measures_response = {
+            "component": {
+                "measures": [
+                    {"metric": "new_coverage", "period": {"value": "65.7"}},
+                ]
+            }
+        }
+        issues_response = {
+            "issues": [
+                {
+                    "key": "AZ789",
+                    "component": "org_repo:sova/core/workflow.py",
+                    "line": 235,
+                    "severity": "MAJOR",
+                    "message": "Not enough test coverage",
+                }
+            ]
+        }
+
+        async def side_effect(*args: Any, **kwargs: Any) -> ShellResult:
+            url_arg = next((a for a in args if isinstance(a, str) and "sonarcloud.io" in a), "")
+            if "measures/component" in url_arg:
+                return _shell_result(stdout=json.dumps(measures_response))
+            return _shell_result(stdout=json.dumps(issues_response))
+
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock, side_effect=side_effect):
+            report = await fetch_sonarcloud_coverage_issues("org_repo", 94)
+
+        assert report is not None
+        assert report.coverage_pct == Decimal("65.7")
+        assert report.required_pct == Decimal("80.0")
+        assert len(report.findings) == 1
+        assert report.findings[0].file_path == "sova/core/workflow.py"
+        assert report.findings[0].source == "sonarcloud-coverage"
+
+    async def test_handles_measures_curl_failure(self) -> None:
+        async def side_effect(*args: Any, **kwargs: Any) -> ShellResult:
+            url_arg = next((a for a in args if isinstance(a, str) and "sonarcloud.io" in a), "")
+            if "measures/component" in url_arg:
+                return _shell_result(returncode=1, stderr="timeout")
+            return _shell_result(stdout='{"issues": []}')
+
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock, side_effect=side_effect):
+            report = await fetch_sonarcloud_coverage_issues("org_repo", 94)
+
+        assert report is None
+
+    async def test_handles_issues_api_failure(self) -> None:
+        measures_response = {"component": {"measures": [{"metric": "new_coverage", "period": {"value": "65.7"}}]}}
+
+        async def side_effect(*args: Any, **kwargs: Any) -> ShellResult:
+            url_arg = next((a for a in args if isinstance(a, str) and "sonarcloud.io" in a), "")
+            if "measures/component" in url_arg:
+                return _shell_result(stdout=json.dumps(measures_response))
+            return _shell_result(returncode=1, stderr="API error")
+
+        with patch("sova.adapters.external_reviews.run", new_callable=AsyncMock, side_effect=side_effect):
+            report = await fetch_sonarcloud_coverage_issues("org_repo", 94)
+
+        assert report is not None
+        assert report.coverage_pct == Decimal("65.7")
+        assert report.findings == []
+
+    async def test_custom_required_pct(self) -> None:
+        with patch(
+            "sova.adapters.external_reviews.run",
+            new_callable=AsyncMock,
+            return_value=_shell_result(stdout='{"component": {"measures": []}}'),
+        ):
+            report = await fetch_sonarcloud_coverage_issues("org_repo", 1, required_pct=Decimal("90.0"))
+
+        assert report is not None
+        assert report.required_pct == Decimal("90.0")
+
+
+class TestFormatCoverageFindings:
+    def test_formats_with_findings(self) -> None:
+        findings = [
+            ExternalFinding("sonarcloud-coverage", "sova/core/workflow.py", 235, "MAJOR", "Uncovered line"),
+        ]
+        report = CoverageReport(coverage_pct=Decimal("65.7"), required_pct=Decimal("80.0"), findings=findings)
+        result = format_coverage_findings_for_prompt(report)
+        assert "65.7%" in result
+        assert "80.0%" in result
+        assert "sova/core/workflow.py:235" in result
+        assert "pytest" in result
+
+    def test_formats_without_findings(self) -> None:
+        report = CoverageReport(coverage_pct=Decimal("65.7"), required_pct=Decimal("80.0"), findings=[])
+        result = format_coverage_findings_for_prompt(report)
+        assert "65.7%" in result
+        assert "pytest --cov" in result
+
+    def test_includes_diff_files(self) -> None:
+        report = CoverageReport(coverage_pct=Decimal("70.0"), required_pct=Decimal("80.0"), findings=[])
+        result = format_coverage_findings_for_prompt(report, diff_files=["sova/app.py", "sova/cli.py"])
+        assert "sova/app.py" in result
+        assert "sova/cli.py" in result
+
+
+class TestAddressExternalFindingsWithCoverage:
+    async def test_execute_with_coverage_gap_only(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+
+        report = CoverageReport(coverage_pct=Decimal("65.0"), required_pct=Decimal("80.0"), findings=[])
+        mock_llm = AsyncMock()
+        mock_llm.cost_usd = Decimal("0.05")
+
+        with (
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=_ThreadsResult(),
+            ),
+            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm) as mock_invoke,
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch("sova.git.operations.push", new_callable=AsyncMock),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        assert "coverage gap remediation" in result.summary
+        assert mock_invoke.called
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert "65.0%" in prompt_arg
+        assert "pytest --cov" in prompt_arg
+
+    async def test_no_findings_and_coverage_ok(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94)
+
+        report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
+        with (
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_issues",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=_ThreadsResult(),
+            ),
+        ):
+            result = await AddressExternalFindingsStep().execute(ctx)
+
+        assert result.success
+        assert "No external findings" in result.summary
 
 
 class TestResolveCodeRabbitThreads:
