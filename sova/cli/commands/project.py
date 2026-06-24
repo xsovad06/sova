@@ -413,6 +413,7 @@ github_user = "{github_user}"
 base_branch = "main"
 test_cmd = "{test_cmd}"
 lint_cmd = "make lint"
+check_cmd = ""
 
 [task_source]
 type = "github"

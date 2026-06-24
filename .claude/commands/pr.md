@@ -89,7 +89,7 @@ Create a pull request for the current branch using the project's standard PR tem
    If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body.
 
 8. **Run preflight CI checks locally** before pushing:
-   Run the project's lint and test commands (see CLAUDE.md). Fix any failures before proceeding.
+   Run the full CI-equivalent checks: `{{ check_cmd }}`. This must pass before any push -- it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
 
 9. **Push the branch**:
    - New PR: `git push -u origin $(git branch --show-current)`

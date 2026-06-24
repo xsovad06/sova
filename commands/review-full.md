@@ -45,7 +45,7 @@ Follow the `/review` command workflow:
 
 1. Review all changed files for bugs, security, performance, test coverage, consistency, doc freshness, and scout rule (fix pre-existing issues in touched files).
 2. Score each finding (1-10 priority). Address all findings (fix or acknowledge with justification).
-3. Run CI checks locally. Fix any failures before proceeding.
+3. Run the full CI-equivalent checks: `{{ check_cmd }}`. Fix any failures before proceeding.
 4. Report findings in the standard review format.
 
 See `/review` for the full review checklist and scoring criteria.

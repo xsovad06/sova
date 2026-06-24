@@ -32,11 +32,9 @@ git log origin/main..HEAD --oneline
 
 ### Phase 2: Run Local CI Checks (Prepush)
 
-Run the same checks the CI pipeline will run. See CLAUDE.md for the exact commands.
-
-Common patterns:
+Run the full CI-equivalent checks before pushing:
 ```bash
-make check   # or: make ci, make lint && make test, npm run check
+{{ check_cmd }}
 ```
 
 If any check fails:
