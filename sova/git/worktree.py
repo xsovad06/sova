@@ -173,7 +173,14 @@ async def resolve_worktree_conflict(
 
     # Guard: never remove the main worktree (would destroy the repo)
     toplevel = await run("git", "rev-parse", "--show-toplevel", cwd=cwd)
-    if toplevel.success and Path(toplevel.stdout.strip()).resolve() == wt_path.resolve():
+    if not toplevel.success:
+        log.error("worktree.toplevel_check_failed", branch=branch, stderr=toplevel.stderr[:200])
+        raise RuntimeError(
+            f"Cannot verify repository root for branch {branch!r}. Refusing to remove worktree {wt_path} (fail-closed)."
+        )
+
+    repo_root = Path(toplevel.stdout.strip()).resolve()
+    if repo_root == wt_path.resolve():
         log.warning("worktree.conflict_is_main", branch=branch, path=str(wt_path))
         raise RuntimeError(
             f"Branch {branch!r} is checked out in the main worktree ({wt_path}). "
@@ -188,7 +195,7 @@ async def resolve_worktree_conflict(
         return wt_path
 
     # Guard: check if an agent is actively using this worktree
-    active_pid = await _check_worktree_active_agent(wt_path)
+    active_pid = await _check_worktree_active_agent(wt_path, project_dir=repo_root)
     if active_pid is not None:
         msg = f"Cannot remove worktree {wt_path}: agent with PID {active_pid} is actively using it"
         log.error("worktree.conflict_active_agent", path=str(wt_path), pid=active_pid)
@@ -199,7 +206,7 @@ async def resolve_worktree_conflict(
     return wt_path
 
 
-async def _check_worktree_active_agent(worktree_path: Path) -> int | None:
+async def _check_worktree_active_agent(worktree_path: Path, *, project_dir: Path | None = None) -> int | None:
     """Check if an agent is actively using a worktree.
 
     Queries the TaskRun DB table for non-terminal runs whose worktree_path
@@ -222,7 +229,7 @@ async def _check_worktree_active_agent(worktree_path: Path) -> int | None:
     resolved = str(worktree_path.resolve())
 
     try:
-        async with await get_session() as session:
+        async with await get_session(project_dir=project_dir) as session:
             stmt = select(TaskRun).where(
                 TaskRun.worktree_path != "",
                 TaskRun.worktree_path.isnot(None),
