@@ -1736,10 +1736,9 @@ class TestReviewerLLMReview:
         assert len(handoff.pending_findings) == 0
 
         dashboard_handoff = mock_file_handoff.call_args[0][1]
+        assert len(dashboard_handoff.next_actions) == 1
         assert dashboard_handoff.next_actions[0].id == "integrate"
         assert dashboard_handoff.next_actions[0].label == "Integrate PR"
-        assert dashboard_handoff.next_actions[1].id == "approve"
-        assert dashboard_handoff.next_actions[1].label == "Merge Only"
 
     async def test_diff_fetch_failure(self) -> None:
         from unittest.mock import patch

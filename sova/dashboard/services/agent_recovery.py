@@ -441,7 +441,7 @@ def _build_address_review_action(issue_number: str, pr_number: int) -> list[dict
 
 
 def _build_integrate_actions(issue_number: str, pr_number: int) -> list[dict]:
-    """Build the 'Integrate PR' + 'Merge Only' action list."""
+    """Build the 'Integrate PR' action list."""
     return [
         {
             "id": "integrate",
@@ -450,16 +450,6 @@ def _build_integrate_actions(issue_number: str, pr_number: int) -> list[dict]:
             "style": "approve",
             "mode": "claude-command",
             "command": f"/integrate-pr {pr_number}",
-            "args": {"issue": issue_number, "pr": pr_number},
-            "auto_execute": False,
-        },
-        {
-            "id": "approve",
-            "label": "Merge Only",
-            "description": "Squash merge without rebase or learning -- skip the full pipeline",
-            "style": "neutral",
-            "mode": "claude-command",
-            "command": f"/approve-merge {pr_number}",
             "args": {"issue": issue_number, "pr": pr_number},
             "auto_execute": False,
         },

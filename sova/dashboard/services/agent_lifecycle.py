@@ -437,7 +437,7 @@ async def start_command(
     args: dict | None = None,
     slug: str | None = None,
 ) -> dict:
-    """Start a Claude Code command (e.g. /agent-resume, /approve-merge)."""
+    """Start a Claude Code command (e.g. /agent-resume, /integrate-pr)."""
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
 
     pa = _get_project_agents(slug)
