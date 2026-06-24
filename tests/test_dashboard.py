@@ -6595,3 +6595,82 @@ class TestWebSocketAgentStatus:
 
         mgr.disconnect(ws_b, dir_b)
         assert len(mgr._groups.get(dir_b, [])) == 0
+
+
+# ---------------------------------------------------------------------------
+# Installation status / sync API
+# ---------------------------------------------------------------------------
+
+
+class TestInstallationAPI:
+    @pytest.fixture
+    async def install_client(self, tmp_path, monkeypatch):
+        """Dashboard client with a project that has commands and guidelines installed."""
+        from sova.commands.manifest import create_manifest
+
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        (project_dir / ".claude").mkdir()
+
+        # Create sova.toml
+        (project_dir / "sova.toml").write_text(
+            'github_repo = "owner/myapp"\ngithub_user = "owner"\ntest_cmd = "pytest"\nlint_cmd = "ruff"\n'
+        )
+
+        commands_dir = project_dir / ".claude" / "commands"
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        rules_dir = project_dir / ".claude" / "rules"
+        rules_dir.mkdir(parents=True, exist_ok=True)
+
+        # Install a few fake commands with manifest
+        (commands_dir / "develop.md").write_text("# Develop\n")
+        create_manifest(commands_dir, {"develop.md": "abc123"})
+
+        # Install a guideline with manifest
+        (rules_dir / "security.md").write_text("# Security\n")
+        create_manifest(rules_dir, {"security.md": "def456"})
+
+        # Patch get_project_dir so the settings router resolves to our tmp project
+        monkeypatch.setattr(
+            "sova.dashboard.routers.settings.get_project_dir",
+            lambda: project_dir,
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.setup.get_project_dir",
+            lambda: project_dir,
+        )
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=project_dir)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
+
+    async def test_installation_status_returns_200(self, install_client: AsyncClient) -> None:
+        resp = await install_client.get("/api/settings/installation/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "commands" in data
+        assert "guidelines" in data
+        assert "total_updates" in data
+        assert "has_updates" in data
+        assert isinstance(data["commands"]["changed"], list)
+        assert isinstance(data["commands"]["new"], list)
+        assert isinstance(data["commands"]["removed"], list)
+        assert isinstance(data["guidelines"]["changed"], list)
+
+    async def test_sync_returns_structured_and_flat(self, install_client: AsyncClient) -> None:
+        resp = await install_client.post("/api/setup/commands/sync")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        # Backward-compatible flat fields
+        assert "updated" in data
+        assert "skipped" in data
+        assert "conflicts" in data
+        # Structured per-category fields
+        assert "commands" in data
+        assert "guidelines" in data
+        assert "updated" in data["commands"]
+        assert "updated" in data["guidelines"]

@@ -64,7 +64,7 @@ async def update_config(req: ConfigUpdateRequest):
     "/settings/installation/status",
     responses={500: {"description": "Failed to check installation status"}},
 )
-async def installation_status():
+async def installation_status() -> dict[str, object]:
     """Check for available SOVA command and guideline updates."""
     from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
     from sova.commands.distribution import diff_commands, diff_guidelines
@@ -108,9 +108,9 @@ async def installation_status():
             "total_updates": total,
             "has_updates": total > 0,
         }
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - route boundary translates unexpected failures to HTTP 500
         log.warning("settings.installation.status.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to check installation status")
+        raise HTTPException(status_code=500, detail="Failed to check installation status") from exc
 
 
 @router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
