@@ -39,9 +39,56 @@ Verify:
 
 Note: formal GitHub review approval is NOT required. The user triggering this command from the dashboard is the approval. Log the review status for the record, but proceed regardless.
 
-If CI checks are still pending, wait up to 5 minutes (polling every 30 seconds). If they don't complete, write a handoff with "Wait for CI" action and stop.
+If CI checks are still pending, poll in a loop. Replace `<PR_NUMBER>` with the actual PR number from context before executing the loop as a single Bash tool call. Requires gh CLI v2.32+ (for the `bucket` field).
 
-If CI has failures, write a failed handoff and stop -- do not merge with failing CI.
+```bash
+# Set the PR number once at the top -- substitute from context
+PR_NUM=<PR_NUMBER>
+# Poll CI checks in a loop (30 iterations x 30s = 15 minutes max)
+# Uses `bucket` (not `state`) -- bucket normalizes raw states into: pass, fail, pending, skipping, cancel
+# Grace period: first 5 iterations (2.5 min) tolerate TOTAL=0 for checks to register after push
+for i in $(seq 1 30); do
+  echo "--- CI poll attempt $i/30 ---"
+  CHECKS_JSON=$(gh pr checks "$PR_NUM" --json name,bucket 2>/dev/null || echo "[]")
+  echo "$CHECKS_JSON" | jq -r '.[] | "\(.bucket)\t\(.name)"'
+  STATS=$(echo "$CHECKS_JSON" | jq -r '
+    (length | tostring) + "\t" +
+    ([.[] | select(.bucket == "pending")] | length | tostring) + "\t" +
+    ([.[] | select(.bucket == "fail" or .bucket == "cancel")] | length | tostring)
+  ' 2>/dev/null) || { echo "Failed to parse CI check status"; break; }
+  IFS=$'\t' read -r TOTAL PENDING FAILED <<< "$STATS"
+  if [ "$TOTAL" -eq 0 ]; then
+    if [ "$i" -lt 5 ]; then
+      echo "No checks registered yet (grace period $i/5)"
+      sleep 30
+      continue
+    else
+      echo "NO_CHECKS: no CI checks configured (grace period expired)"
+      break
+    fi
+  fi
+  if [ "$PENDING" -eq 0 ]; then
+    if [ "$FAILED" -gt 0 ]; then
+      echo "CI FAILED: $FAILED check(s) failed"
+      break
+    else
+      echo "CI PASSED: all $TOTAL checks passed"
+      break
+    fi
+  fi
+  if [ "$i" -eq 30 ]; then
+    echo "CI TIMEOUT: checks still pending after 15 minutes"
+    break
+  fi
+  sleep 30
+done
+```
+
+Act on the result:
+- **CI PASSED**: proceed to merge (step 3)
+- **NO_CHECKS** (no CI checks configured): proceed to merge (step 3). No checks means nothing to wait for.
+- **CI FAILED**: write a failed handoff with the failing check names and stop -- do not merge with failing CI
+- **CI TIMEOUT**: write a handoff with status `awaiting_action` and a "Wait for CI" next action (mode: `claude-command`, command: `agent-resume`, args: `{pr: <PR_NUMBER>, wait_for: "ci"}`), then stop
 
 ### 3. Merge
 
