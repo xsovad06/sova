@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sova.utils.logging import get_logger
-from sova.utils.shell import run, run_checked
+from sova.utils.shell import run, run_checked, subprocess_error
 
 log = get_logger(component="git.branch")
 
@@ -26,10 +26,33 @@ async def create_branch(name: str, base: str, cwd: Path | None = None) -> None:
 
 
 async def sync_branch(branch: str, cwd: Path | None = None) -> None:
-    """Fetch from origin and pull the latest changes for a branch."""
+    """Fetch from origin and pull the latest changes for a branch.
+
+    If the checkout fails because the branch is already checked out in a
+    worktree, automatically resolves the conflict by removing the stale
+    worktree and retrying.
+    """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
-    await run_checked("git", "checkout", branch, cwd=cwd)
+
+    checkout_result = await run("git", "checkout", branch, cwd=cwd)
+    if not checkout_result.success:
+        if "already checked out" in checkout_result.stderr:
+            from sova.git.worktree import resolve_worktree_conflict
+
+            log.warning("git.sync_branch.worktree_conflict", branch=branch)
+            try:
+                await resolve_worktree_conflict(branch, cwd=cwd)
+            except RuntimeError as exc:
+                raise RuntimeError(f"Failed to resolve worktree conflict for branch {branch}: {exc}") from exc
+            checkout_result = await run("git", "checkout", branch, cwd=cwd)
+
+        if not checkout_result.success:
+            raise subprocess_error(
+                ("git", "checkout", branch),
+                checkout_result,
+            )
+
     await run_checked("git", "pull", "origin", branch, cwd=cwd)
 
 

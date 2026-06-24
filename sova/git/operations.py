@@ -81,3 +81,9 @@ from sova.git.rebase import (
 from sova.git.rebase import (
     rebase_with_conflict_resolution as rebase_with_conflict_resolution,
 )
+from sova.git.worktree import (
+    find_worktree_by_branch as find_worktree_by_branch,
+)
+from sova.git.worktree import (
+    resolve_worktree_conflict as resolve_worktree_conflict,
+)
