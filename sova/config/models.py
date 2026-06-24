@@ -256,6 +256,7 @@ class ProjectConfig(BaseSettings):
     test_cmd: str = "make test"
     lint_cmd: str = "make lint"
     format_cmd: str = "make format"
+    check_cmd: str = ""
 
     # Persona
     persona_map: str = ""

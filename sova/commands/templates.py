@@ -39,6 +39,7 @@ def build_variables(cfg: ProjectConfig) -> dict[str, str]:
         "test_cmd": cfg.test_cmd,
         "lint_cmd": cfg.lint_cmd,
         "format_cmd": cfg.format_cmd,
+        "check_cmd": cfg.check_cmd or f"{cfg.lint_cmd} && {cfg.test_cmd}",
         "base_branch": cfg.base_branch,
         "github_repo": cfg.github_repo,
         "github_user": cfg.github_user,
