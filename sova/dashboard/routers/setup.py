@@ -138,8 +138,10 @@ async def sync_commands() -> dict[str, object]:
     rules_dir = project_dir / ".claude" / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd_result = await asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg)
-    guide_result = await asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg)
+    cmd_result, guide_result = await asyncio.gather(
+        asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg),
+        asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg),
+    )
 
     return {
         "status": "ok",
