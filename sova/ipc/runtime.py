@@ -29,6 +29,9 @@ _HEADLESS_PREAMBLE = (
     "human operator. Do not ask for confirmation or pose questions. "
     "Proceed with git push, force-push, file deletions, and any other "
     "actions required by the task.\n\n"
+    "WORKTREE CONFLICT RECOVERY: If you encounter worktree conflicts, "
+    "the git operations will resolve them automatically. Do not attempt "
+    "manual worktree removal.\n\n"
     "Execute the following instruction exactly as specified:\n\n"
 )
 
