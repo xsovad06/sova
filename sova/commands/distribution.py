@@ -174,31 +174,27 @@ def update_commands(
     return result
 
 
-def diff_commands(
-    canonical_dir: Path,
+def _diff_files(
+    source_files: list[tuple[str, Path]],
     target_dir: Path,
-    cfg: ProjectConfig,
+    variables: dict[str, str],
 ) -> DiffResult:
-    """Show what changed between canonical source and installed commands.
-
-    Returns lists of changed, new, and removed command filenames.
-    """
-    commands = discover(canonical_dir)
-    variables = build_variables(cfg)
+    """Compare source files against installed manifest to find changes."""
     manifest = read_manifest(target_dir)
     result = DiffResult()
 
+    if not source_files:
+        return result
+
     if manifest is None:
-        # Everything is new
-        result.new = [cmd.path.name for cmd in commands]
+        result.new = [filename for filename, _ in source_files]
         return result
 
     canonical_names = set()
-    for cmd in commands:
-        filename = cmd.path.name
+    for filename, source_path in source_files:
         canonical_names.add(filename)
 
-        content = cmd.path.read_text(encoding="utf-8")
+        content = source_path.read_text(encoding="utf-8")
         rendered = render_command(content, variables)
         new_hash = file_hash(rendered)
 
@@ -208,12 +204,32 @@ def diff_commands(
         elif entry.hash != new_hash:
             result.changed.append(filename)
 
-    # Check for removed commands (in manifest but not in canonical)
     for filename, entry in manifest.commands.items():
         if entry.managed and filename not in canonical_names:
             result.removed.append(filename)
 
     return result
+
+
+def diff_commands(
+    canonical_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> DiffResult:
+    """Show what changed between canonical source and installed commands."""
+    commands = discover(canonical_dir)
+    files = [(cmd.path.name, cmd.path) for cmd in commands]
+    return _diff_files(files, target_dir, build_variables(cfg))
+
+
+def diff_guidelines(
+    guidelines_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> DiffResult:
+    """Show what changed between canonical guidelines and installed ones."""
+    files = _collect_guidelines(guidelines_dir)
+    return _diff_files(files, target_dir, build_variables(cfg))
 
 
 def _collect_guidelines(guidelines_dir: Path) -> list[tuple[str, Path]]:
