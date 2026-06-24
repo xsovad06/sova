@@ -54,9 +54,12 @@ Ensure you are on the PR's head branch:
 
 ```bash
 git fetch origin
+git worktree prune
 git checkout <HEAD_BRANCH>
 git rebase origin/<BASE_BRANCH>
 ```
+
+If checkout fails with "already checked out", `sync_branch()` auto-resolves the conflict via `resolve_worktree_conflict()`. This handles stale worktree cleanup with PID liveness checks.
 
 **Stop on merge conflicts** -- report which files conflict and stop. Do not attempt auto-resolution.
 

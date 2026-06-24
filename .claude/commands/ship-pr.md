@@ -32,15 +32,13 @@ Note: formal GitHub review approval is NOT required. The user triggering this co
 ### 2. Sync and Rebase
 
 ```bash
-# Fetch latest
 git fetch origin
-
-# Check out the PR branch
+git worktree prune
 git checkout <HEAD_BRANCH>
-
-# Rebase onto base branch
 git rebase origin/<BASE_BRANCH>
 ```
+
+If checkout fails with "already checked out", `sync_branch()` auto-resolves the conflict via `resolve_worktree_conflict()`. This handles stale worktree cleanup with PID liveness checks.
 
 If there are merge conflicts, attempt to resolve them before giving up:
 

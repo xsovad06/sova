@@ -25,10 +25,16 @@ Score each review comment, address all of them (fix or acknowledge with justific
    gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews
    ```
 
-3. Find the working directory -- check for an existing worktree or create one:
+3. Find the working directory using the PR's branch name (from `headRefName` in step 2), not the issue number. This prevents cross-PR contamination when worktrees from unrelated issues exist:
    ```bash
-   git worktree list
+   git worktree prune
+   git checkout <HEAD_BRANCH>
    ```
+   If checkout fails with "already checked out", `sync_branch()` in `sova/git/branch.py` auto-resolves the conflict via `resolve_worktree_conflict()`. For manual use, the worktree path can be found with:
+   ```bash
+   WORKTREE_PATH=$(git worktree list --porcelain | grep -F -B2 "branch refs/heads/<HEAD_BRANCH>" | grep "^worktree " | cut -d" " -f2)
+   ```
+   Never resolve the worktree by issue number alone -- always use the branch name from the PR metadata.
 
 4. **Classify comment sources**: Separate human reviewer comments from bot comments (e.g., `sourcery-ai[bot]`, `coderabbitai[bot]`). Both get scored the same way, but bot comments are addressed in bulk and may warrant a re-review request.
 
