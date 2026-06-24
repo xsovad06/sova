@@ -172,7 +172,6 @@ var _runningAgents = {};
 var _roleLabels = {
   'command:integrate-pr': 'Integrating',
   'command:ship-pr': 'Shipping',
-  'command:approve-merge': 'Merging',
   'command:address-pr': 'Addressing PR',
   'command:review-pr': 'Reviewing PR',
   'reviewer': 'Reviewing',
@@ -640,12 +639,6 @@ function renderPrActionsPanel(pr, issueNumber) {
       'data-tooltip="Rebase, push, merge, and clean up">' +
       'Integrate PR</button>';
 
-    if (readyToIntegrate) {
-      actionsHtml += '<button onclick="runCommand(\'approve-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
-        'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
-        'data-tooltip="Merge without full integration">' +
-        'Merge Only</button>';
-    }
   } else if (pr.state === 'MERGED') {
     actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
       'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors" ' +

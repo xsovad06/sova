@@ -1313,10 +1313,9 @@ class TestHandoffToUserStep:
 
         assert result.success
         handoff = mock_file.call_args[0][1]
-        assert len(handoff.next_actions) == 2
+        assert len(handoff.next_actions) == 1
         assert handoff.next_actions[0].id == "integrate"
-        assert handoff.next_actions[1].id == "approve"
-        assert all(not a.auto_execute for a in handoff.next_actions)
+        assert not handoff.next_actions[0].auto_execute
 
 
 class TestAddressReviewStep:

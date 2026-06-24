@@ -2006,11 +2006,11 @@ class TestHandoffAPI:
             "created_at": "2026-04-20T10:00:00Z",
             "next_actions": [
                 {
-                    "id": "merge",
-                    "label": "Merge PR",
+                    "id": "integrate",
+                    "label": "Integrate PR",
                     "style": "approve",
                     "mode": "claude-command",
-                    "command": "approve-merge",
+                    "command": "integrate-pr",
                 },
             ],
         }
@@ -5497,9 +5497,8 @@ class TestSynthesizePrActions:
         actions = await agent_recovery.synthesize_pr_actions("42")
 
         assert actions is not None
-        assert len(actions) == 2
+        assert len(actions) == 1
         assert actions[0]["id"] == "integrate"
-        assert actions[1]["id"] == "approve"
 
     async def test_returns_none_for_only_bot_reviews(self) -> None:
         from sova.adapters.base import PRReview
@@ -5583,7 +5582,7 @@ class TestSynthesizePrActions:
 
         actions = await agent_recovery.synthesize_pr_actions("42")
         assert actions is not None
-        assert len(actions) == 2
+        assert len(actions) == 1
         assert actions[0]["id"] == "integrate"
 
 
@@ -6248,10 +6247,10 @@ class TestExecuteHandoffActionBranches:
             "pr_number": 99,
             "next_actions": [
                 {
-                    "id": "approve",
-                    "label": "Merge Only",
+                    "id": "integrate",
+                    "label": "Integrate PR",
                     "mode": "claude-command",
-                    "command": "/approve-merge 99",
+                    "command": "/integrate-pr 99",
                     "args": {"issue": "42", "pr": 99},
                 },
             ],
@@ -6269,10 +6268,10 @@ class TestExecuteHandoffActionBranches:
             lambda *a: None,
         )
 
-        resp = await client.post("/api/handoff/execute", json={"action_id": "approve"})
+        resp = await client.post("/api/handoff/execute", json={"action_id": "integrate"})
         assert resp.status_code == 200
         data = resp.json()
-        assert data["action"] == "Merge Only"
+        assert data["action"] == "Integrate PR"
 
     async def test_execute_shell_action_rejected(self, client: AsyncClient, monkeypatch) -> None:
         from unittest.mock import AsyncMock

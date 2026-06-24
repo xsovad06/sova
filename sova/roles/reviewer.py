@@ -579,17 +579,6 @@ class ReviewerRole(AgentRole):
                     args={"issue": ctx.issue_number, "pr": ctx.pr_number},
                 ),
             )
-            actions.append(
-                HandoffAction(
-                    id="approve",
-                    label="Merge Only",
-                    description="Squash merge without rebase or learning -- skip the full pipeline",
-                    style="neutral",
-                    mode="claude-command",
-                    command=f"/approve-merge {ctx.pr_number}",
-                    args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                ),
-            )
 
         dashboard_handoff = DashboardHandoff(
             source="reviewer",

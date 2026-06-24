@@ -187,7 +187,7 @@ async def get_issue_pr_status(issue_number: str):
 
 @router.post("/agents/command")
 async def run_command(req: RunCommandRequest):
-    """Execute a Claude Code command (e.g. /integrate-pr, /approve-merge)."""
+    """Execute a Claude Code command (e.g. /integrate-pr, /ship-pr)."""
     return await control_service.start_command(req.command, req.args or {})
 
 
