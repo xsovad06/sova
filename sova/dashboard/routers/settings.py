@@ -1,6 +1,10 @@
-"""Settings router -- config, invariants, personas."""
+"""Settings router -- config, invariants, personas, installation status."""
 
 from __future__ import annotations
+
+import asyncio
+from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -54,6 +58,59 @@ async def update_config(req: ConfigUpdateRequest):
     except Exception:
         log.warning("settings.config.update.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update configuration")
+
+
+@router.get(
+    "/settings/installation/status",
+    responses={500: {"description": "Failed to check installation status"}},
+)
+async def installation_status():
+    """Check for available SOVA command and guideline updates."""
+    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
+    from sova.commands.distribution import diff_commands, diff_guidelines
+    from sova.config.loader import load_config
+
+    project_dir = get_project_dir() or Path.cwd()
+
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to load project config: {exc}",
+        ) from exc
+
+    try:
+        canonical_dir = get_canonical_dir()
+        guidelines_dir = get_guidelines_dir()
+        commands_dir = project_dir / ".claude" / "commands"
+        rules_dir = project_dir / ".claude" / "rules"
+
+        cmd_diff, guide_diff = await asyncio.to_thread(
+            lambda: (
+                diff_commands(canonical_dir, commands_dir, cfg),
+                diff_guidelines(guidelines_dir, rules_dir, cfg),
+            )
+        )
+
+        total = (
+            len(cmd_diff.changed)
+            + len(cmd_diff.new)
+            + len(cmd_diff.removed)
+            + len(guide_diff.changed)
+            + len(guide_diff.new)
+            + len(guide_diff.removed)
+        )
+
+        return {
+            "commands": asdict(cmd_diff),
+            "guidelines": asdict(guide_diff),
+            "total_updates": total,
+            "has_updates": total > 0,
+        }
+    except Exception:
+        log.warning("settings.installation.status.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to check installation status")
 
 
 @router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
