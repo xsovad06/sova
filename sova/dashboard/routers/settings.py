@@ -66,8 +66,8 @@ async def update_config(req: ConfigUpdateRequest):
 )
 async def installation_status() -> dict[str, object]:
     """Check for available SOVA command and guideline updates."""
-    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
-    from sova.commands.distribution import diff_commands, diff_guidelines
+    from sova.commands.catalog import get_canonical_dir
+    from sova.commands.distribution import diff_commands
     from sova.config.loader import load_config
 
     project_dir = get_project_dir() or Path.cwd()
@@ -81,17 +81,24 @@ async def installation_status() -> dict[str, object]:
         ) from exc
 
     try:
+        from sova.commands.distribution import DiffResult
+        from sova.commands.manifest import read_manifest
+
         canonical_dir = get_canonical_dir()
-        guidelines_dir = get_guidelines_dir()
         commands_dir = project_dir / ".claude" / "commands"
         rules_dir = project_dir / ".claude" / "rules"
 
-        cmd_diff, guide_diff = await asyncio.to_thread(
-            lambda: (
-                diff_commands(canonical_dir, commands_dir, cfg),
-                diff_guidelines(guidelines_dir, rules_dir, cfg),
-            )
-        )
+        cmd_diff = await asyncio.to_thread(diff_commands, canonical_dir, commands_dir, cfg)
+
+        # Only diff guidelines if they were previously installed (manifest exists)
+        if rules_dir.is_dir() and read_manifest(rules_dir) is not None:
+            from sova.commands.catalog import get_guidelines_dir
+            from sova.commands.distribution import diff_guidelines
+
+            guidelines_dir = get_guidelines_dir()
+            guide_diff = await asyncio.to_thread(diff_guidelines, guidelines_dir, rules_dir, cfg)
+        else:
+            guide_diff = DiffResult()
 
         total = (
             len(cmd_diff.changed)
