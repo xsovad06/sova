@@ -117,9 +117,9 @@ async def configure_project(req: ConfigureRequest):
 
 @router.post("/setup/commands/sync")
 async def sync_commands() -> dict[str, object]:
-    """Sync canonical SOVA commands into the active project."""
-    from sova.commands.catalog import get_canonical_dir
-    from sova.commands.distribution import update_commands
+    """Sync canonical SOVA commands and guidelines into the active project."""
+    from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
+    from sova.commands.distribution import update_commands, update_guidelines
     from sova.config.loader import load_config
 
     project_dir = get_project_dir()
@@ -127,18 +127,35 @@ async def sync_commands() -> dict[str, object]:
         raise HTTPException(status_code=400, detail="No active project")
 
     canonical_dir = get_canonical_dir()
+    guidelines_dir = get_guidelines_dir()
     try:
         cfg = load_config(project_dir)
     except (FileNotFoundError, ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"Failed to load project config: {e}") from e
-    target_dir = project_dir / ".claude" / "commands"
-    target_dir.mkdir(parents=True, exist_ok=True)
 
-    result = await asyncio.to_thread(update_commands, canonical_dir, target_dir, cfg)
+    commands_dir = project_dir / ".claude" / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    rules_dir = project_dir / ".claude" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd_result = await asyncio.to_thread(update_commands, canonical_dir, commands_dir, cfg)
+    guide_result = await asyncio.to_thread(update_guidelines, guidelines_dir, rules_dir, cfg)
 
     return {
         "status": "ok",
-        "updated": result.updated,
-        "skipped": result.skipped,
-        "conflicts": result.conflicts,
+        # Backward-compatible top-level fields (commands totals)
+        "updated": cmd_result.updated,
+        "skipped": cmd_result.skipped,
+        "conflicts": cmd_result.conflicts,
+        # Structured per-category results
+        "commands": {
+            "updated": cmd_result.updated,
+            "skipped": cmd_result.skipped,
+            "conflicts": cmd_result.conflicts,
+        },
+        "guidelines": {
+            "updated": guide_result.updated,
+            "skipped": guide_result.skipped,
+            "conflicts": guide_result.conflicts,
+        },
     }
