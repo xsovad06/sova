@@ -667,3 +667,85 @@ class TestGuidelines:
         cfg = ProjectConfig(github_repo="owner/", test_cmd="pytest", lint_cmd="ruff")
         variables = build_variables(cfg)
         assert variables["project_name"] == "owner"
+
+
+# ---------------------------------------------------------------------------
+# diff_guidelines -- guideline diff detection
+# ---------------------------------------------------------------------------
+
+
+class TestDiffGuidelines:
+    def test_diff_no_manifest_all_new(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """diff_guidelines() reports all guidelines as new when no manifest exists."""
+        from sova.commands.distribution import diff_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert set(diff.new) == {"security.md", "testing.md"}
+        assert diff.changed == []
+        assert diff.removed == []
+
+    def test_diff_up_to_date(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """diff_guidelines() returns empty diff when installed matches canonical."""
+        from sova.commands.distribution import diff_guidelines, install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert diff.changed == []
+        assert diff.new == []
+        assert diff.removed == []
+
+    def test_diff_detects_changed(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """diff_guidelines() detects when a canonical guideline has changed."""
+        from sova.commands.distribution import diff_guidelines, install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "security.md").write_text("# Updated security guide\n")
+
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert "security.md" in diff.changed
+        assert "testing.md" not in diff.changed
+
+    def test_diff_detects_new(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """diff_guidelines() detects new guidelines added to canonical."""
+        from sova.commands.distribution import diff_guidelines, install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "performance.md").write_text("# Performance Guidelines\n")
+
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert "performance.md" in diff.new
+
+    def test_diff_detects_removed(self, guidelines_dir: Path, rules_dir: Path) -> None:
+        """diff_guidelines() detects guidelines removed from canonical."""
+        from sova.commands.distribution import diff_guidelines, install_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (guidelines_dir / "testing.md").unlink()
+
+        diff = diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert "testing.md" in diff.removed
+
+    def test_diff_empty_guidelines_dir(self, tmp_path: Path, rules_dir: Path) -> None:
+        """diff_guidelines() returns empty diff when no canonical guidelines exist."""
+        from sova.commands.distribution import diff_guidelines
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(github_repo="owner/myapp", test_cmd="pytest", lint_cmd="ruff check .")
+        diff = diff_guidelines(tmp_path / "nonexistent", rules_dir, cfg)
+        assert diff.changed == []
+        assert diff.new == []
+        assert diff.removed == []
