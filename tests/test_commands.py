@@ -219,6 +219,24 @@ class TestTemplates:
         assert variables["test_cmd"] == "pytest"
         assert variables["lint_cmd"] == "ruff check ."
 
+    def test_build_variables_check_cmd_explicit(self) -> None:
+        """build_variables() uses explicit check_cmd when configured."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .", check_cmd="make check")
+        variables = build_variables(cfg)
+        assert variables["check_cmd"] == "make check"
+
+    def test_build_variables_check_cmd_fallback(self) -> None:
+        """build_variables() composes check_cmd from lint + test when not set."""
+        from sova.commands.templates import build_variables
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        variables = build_variables(cfg)
+        assert variables["check_cmd"] == "ruff check . && pytest"
+
     def test_build_variables_includes_scopes(self) -> None:
         """build_variables() includes scopes from config when available."""
         from sova.commands.templates import build_variables

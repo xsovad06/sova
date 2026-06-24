@@ -62,6 +62,12 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta("test_cmd", "Test command", "Shell command to run the test suite", "project"),
     SettingMeta("lint_cmd", "Lint command", "Shell command to run the linter", "project"),
     SettingMeta("format_cmd", "Format command", "Shell command to auto-format code", "project"),
+    SettingMeta(
+        "check_cmd",
+        "Check command",
+        "Full CI-equivalent command (e.g. make check). If empty, commands fall back to lint_cmd + test_cmd",
+        "project",
+    ),
     SettingMeta("persona_map", "Persona map", "Path to a custom persona mapping file", "project"),
     SettingMeta(
         "shared_knowledge_dir", "Shared knowledge dir", "Directory for cross-project shared knowledge files", "project"

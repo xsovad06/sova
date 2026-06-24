@@ -87,6 +87,31 @@ reviewer = "Koda"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
 
 
+def test_check_cmd_loaded_from_toml(tmp_path: Path) -> None:
+    """check_cmd is loaded from root-level TOML key."""
+    toml_content = """
+github_repo = "user/repo"
+test_cmd = "pytest"
+lint_cmd = "ruff check ."
+check_cmd = "make check"
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.check_cmd == "make check"
+
+
+def test_check_cmd_defaults_to_empty(tmp_path: Path) -> None:
+    """check_cmd defaults to empty string when not specified."""
+    toml_content = """
+github_repo = "user/repo"
+test_cmd = "pytest"
+lint_cmd = "ruff check ."
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.check_cmd == ""
+
+
 def test_migrate_deprecated_no_ai_coauthor(tmp_path: Path) -> None:
     """Old no_ai_coauthor=true is migrated to ai_coauthor=false."""
     toml_content = """

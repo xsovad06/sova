@@ -90,7 +90,7 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
             result[section] = data[section]
 
     # Root-level keys that don't belong to a section
-    for key in ("github_repo", "github_user", "base_branch", "test_cmd", "lint_cmd", "format_cmd"):
+    for key in ("github_repo", "github_user", "base_branch", "test_cmd", "lint_cmd", "format_cmd", "check_cmd"):
         if key in data and key not in result:
             result[key] = data[key]
 
