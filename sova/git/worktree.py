@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -120,6 +121,136 @@ async def create_worktree(
         branch=branch,
         issue_id=issue_id,
     )
+
+
+async def find_worktree_by_branch(branch: str, *, cwd: Path | None = None) -> Path | None:
+    """Find the worktree path where a branch is checked out.
+
+    Parses ``git worktree list --porcelain`` output to build a branch-to-path
+    mapping.  Returns the worktree path if found, or ``None``.
+    """
+    result = await run("git", "worktree", "list", "--porcelain", cwd=cwd)
+    if not result.success:
+        return None
+
+    current_path: str | None = None
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree ") :]
+        elif line.startswith("branch refs/heads/") and current_path is not None:
+            wt_branch = line[len("branch refs/heads/") :]
+            if wt_branch == branch:
+                return Path(current_path)
+
+    return None
+
+
+async def resolve_worktree_conflict(
+    branch: str,
+    *,
+    cwd: Path | None = None,
+) -> Path | None:
+    """Resolve a worktree conflict for a branch.
+
+    If *branch* is checked out in a worktree, remove the stale worktree so the
+    branch can be checked out elsewhere. Always runs ``git worktree prune``
+    first to clean up broken references.
+
+    Args:
+        branch: The branch name to resolve conflicts for.
+        cwd: Working directory for git commands.
+
+    Returns:
+        The path of the removed worktree, or None if no conflict existed.
+    """
+    prune_result = await run("git", "worktree", "prune", cwd=cwd)
+    if not prune_result.success:
+        log.warning("worktree.prune_failed", stderr=prune_result.stderr[:200])
+
+    wt_path = await find_worktree_by_branch(branch, cwd=cwd)
+    if wt_path is None:
+        return None
+
+    # Guard: never remove the main worktree (would destroy the repo)
+    toplevel = await run("git", "rev-parse", "--show-toplevel", cwd=cwd)
+    if toplevel.success and Path(toplevel.stdout.strip()).resolve() == wt_path.resolve():
+        log.warning("worktree.conflict_is_main", branch=branch, path=str(wt_path))
+        raise RuntimeError(
+            f"Branch {branch!r} is checked out in the main worktree ({wt_path}). "
+            "Cannot auto-resolve -- switch branches manually."
+        )
+
+    log.info("worktree.conflict_detected", branch=branch, path=str(wt_path))
+
+    # If the directory doesn't exist, prune already cleaned it up
+    if not wt_path.exists():
+        log.info("worktree.conflict_stale_ref", branch=branch, path=str(wt_path))
+        return wt_path
+
+    # Guard: check if an agent is actively using this worktree
+    active_pid = await _check_worktree_active_agent(wt_path)
+    if active_pid is not None:
+        msg = f"Cannot remove worktree {wt_path}: agent with PID {active_pid} is actively using it"
+        log.error("worktree.conflict_active_agent", path=str(wt_path), pid=active_pid)
+        raise RuntimeError(msg)
+
+    await cleanup_worktree(wt_path, cwd=cwd)
+    log.info("worktree.conflict_resolved", branch=branch, path=str(wt_path))
+    return wt_path
+
+
+async def _check_worktree_active_agent(worktree_path: Path) -> int | None:
+    """Check if an agent is actively using a worktree.
+
+    Queries the TaskRun DB table for non-terminal runs whose worktree_path
+    matches, then verifies PID liveness via ``os.kill(pid, 0)``.
+
+    Returns:
+        The PID of the active agent, or ``None`` if no active agent found.
+    """
+    try:
+        from sqlalchemy import select
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+    except ImportError:
+        # DB module genuinely not installed (CLI-only context with no DB) --
+        # no TaskRun tracking means no agent could own this worktree.
+        return None
+
+    _TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
+    resolved = str(worktree_path.resolve())
+
+    try:
+        async with await get_session() as session:
+            stmt = select(TaskRun).where(
+                TaskRun.worktree_path != "",
+                TaskRun.worktree_path.isnot(None),
+                TaskRun.status.notin_(_TERMINAL),
+                TaskRun.pid.isnot(None),
+            )
+            result = await session.execute(stmt)
+            runs = result.scalars().all()
+
+            for run_record in runs:
+                run_wt = str(Path(run_record.worktree_path).resolve())
+                if run_wt == resolved and run_record.pid:
+                    try:
+                        os.kill(run_record.pid, 0)
+                        return run_record.pid
+                    except ProcessLookupError:
+                        # PID is dead -- not an active agent
+                        continue
+                    except PermissionError:
+                        # Process exists but we lack permission to signal it
+                        return run_record.pid
+    except Exception:
+        log.warning("worktree.active_agent_check_failed", path=str(worktree_path), exc_info=True)
+        raise RuntimeError(
+            f"Cannot verify worktree safety for {worktree_path}: DB query failed. Refusing to remove (fail-closed)."
+        )
+
+    return None
 
 
 async def cleanup_worktree(worktree_path: Path, *, cwd: Path | None = None) -> None:
