@@ -33,11 +33,14 @@ from sova.git.operations import (
 from sova.git.pr import _parse_run_id
 from sova.git.worktree import (
     WorktreeInfo,
+    _check_worktree_active_agent,
     _copy_worktree_files,
     _ensure_compose_project_name,
     cleanup_worktree,
     create_worktree,
+    find_worktree_by_branch,
     list_worktrees,
+    resolve_worktree_conflict,
 )
 from sova.utils.shell import ShellResult
 
@@ -106,13 +109,17 @@ class TestCreateBranch:
 
 class TestSyncBranch:
     async def test_fetches_and_pulls(self) -> None:
-        with patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = _shell_ok()
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.return_value = _shell_ok()  # checkout
 
             await sync_branch("main", cwd=Path("/repo"))
 
-            calls = [c[0] for c in mock_run.call_args_list]
-            assert any("fetch" in args for args in calls)
+            checked_calls = [c[0] for c in mock_checked.call_args_list]
+            assert any("fetch" in args for args in checked_calls)
 
 
 class TestRebase:
@@ -846,6 +853,337 @@ class TestListWorktrees:
 
             worktrees = await list_worktrees(cwd=Path("/repo"))
             assert worktrees == []
+
+
+class TestFindWorktreeByBranch:
+    _PORCELAIN = (
+        "worktree /repo\n"
+        "HEAD abc1234\n"
+        "branch refs/heads/main\n"
+        "\n"
+        "worktree /repo/.claude/worktrees/42\n"
+        "HEAD def5678\n"
+        "branch refs/heads/feat/login\n"
+        "\n"
+    )
+
+    async def test_finds_existing_branch(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=self._PORCELAIN)
+            result = await find_worktree_by_branch("feat/login", cwd=Path("/repo"))
+            assert result == Path("/repo/.claude/worktrees/42")
+
+    async def test_finds_main_branch(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=self._PORCELAIN)
+            result = await find_worktree_by_branch("main", cwd=Path("/repo"))
+            assert result == Path("/repo")
+
+    async def test_returns_none_for_missing_branch(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=self._PORCELAIN)
+            result = await find_worktree_by_branch("feat/nonexistent", cwd=Path("/repo"))
+            assert result is None
+
+    async def test_returns_none_on_git_failure(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail()
+            result = await find_worktree_by_branch("main", cwd=Path("/repo"))
+            assert result is None
+
+    async def test_handles_detached_head(self) -> None:
+        porcelain = "worktree /repo/.claude/worktrees/99\nHEAD abc1234\ndetached\n\n"
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=porcelain)
+            result = await find_worktree_by_branch("feat/something", cwd=Path("/repo"))
+            assert result is None
+
+    @pytest.mark.parametrize(
+        "branch,expected_path",
+        [
+            ("feat/FOO-123/add-feature", "/repo/.claude/worktrees/1"),
+            ("user/name/WIP", "/repo/.claude/worktrees/2"),
+            ("release/v1.0", "/repo/.claude/worktrees/3"),
+        ],
+    )
+    async def test_special_branch_names(self, branch: str, expected_path: str) -> None:
+        porcelain = f"worktree {expected_path}\nHEAD abc1234\nbranch refs/heads/{branch}\n\n"
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=porcelain)
+            result = await find_worktree_by_branch(branch, cwd=Path("/repo"))
+            assert result == Path(expected_path)
+
+
+class TestResolveWorktreeConflict:
+    async def test_no_conflict(self) -> None:
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            # prune succeeds, porcelain shows no match
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout="worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n"),
+            ]
+            result = await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+            assert result is None
+
+    async def test_removes_stale_worktree(self) -> None:
+        wt_path = Path("/repo/.claude/worktrees/42")
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch.object(Path, "exists", return_value=True),
+            patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock) as mock_check,
+        ):
+            porcelain = "worktree /repo/.claude/worktrees/42\nHEAD def5678\nbranch refs/heads/feat/login\n\n"
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_ok(stdout="/repo\n"),  # git rev-parse --show-toplevel
+                _shell_ok(),  # git worktree remove --force
+            ]
+            mock_check.return_value = None  # no active agent
+            result = await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+            assert result == wt_path
+            mock_check.assert_awaited_once()
+
+    async def test_raises_on_main_worktree(self) -> None:
+        """Raise RuntimeError for main worktree conflicts -- cannot auto-resolve."""
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            porcelain = "worktree /repo\nHEAD abc1234\nbranch refs/heads/main\n\n"
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_ok(stdout="/repo\n"),  # git rev-parse --show-toplevel
+            ]
+            with pytest.raises(RuntimeError, match="main worktree"):
+                await resolve_worktree_conflict("main", cwd=Path("/repo"))
+            # Must NOT have called cleanup_worktree (no remove call)
+            remove_calls = [c for c in mock_run.call_args_list if "remove" in c[0]]
+            assert remove_calls == []
+
+    async def test_raises_on_toplevel_failure(self) -> None:
+        """Fail-closed: if rev-parse --show-toplevel fails, refuse to remove."""
+        porcelain = "worktree /repo/.claude/worktrees/42\nHEAD def5678\nbranch refs/heads/feat/login\n\n"
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_fail(stderr="fatal: not a git repository"),  # git rev-parse --show-toplevel
+            ]
+            with pytest.raises(RuntimeError, match="Cannot verify repository root"):
+                await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+            # Must NOT have called cleanup_worktree (no remove call)
+            remove_calls = [c for c in mock_run.call_args_list if "remove" in str(c)]
+            assert remove_calls == []
+
+    async def test_handles_stale_ref_no_directory(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch.object(Path, "exists", return_value=False),
+        ):
+            porcelain = "worktree /repo/.claude/worktrees/42\nHEAD def5678\nbranch refs/heads/feat/login\n\n"
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_ok(stdout="/repo\n"),  # git rev-parse --show-toplevel
+            ]
+            result = await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+            assert result == Path("/repo/.claude/worktrees/42")
+
+    async def test_refuses_removal_when_agent_active(self) -> None:
+        """Do not remove a worktree that an agent with a live PID is using."""
+        import os
+
+        porcelain = "worktree /repo/.claude/worktrees/42\nHEAD def5678\nbranch refs/heads/feat/login\n\n"
+
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch.object(Path, "exists", return_value=True),
+            patch("sova.git.worktree._check_worktree_active_agent", new_callable=AsyncMock) as mock_check,
+        ):
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_ok(stdout="/repo\n"),  # git rev-parse --show-toplevel
+            ]
+            mock_check.return_value = os.getpid()  # simulate live agent
+
+            with pytest.raises(RuntimeError, match="actively using"):
+                await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+
+            # cleanup_worktree must NOT have been called
+            remove_calls = [c for c in mock_run.call_args_list if "remove" in c[0]]
+            assert remove_calls == []
+
+    async def test_raises_on_db_failure(self) -> None:
+        """Fail-closed: DB query failure blocks worktree removal."""
+        porcelain = "worktree /repo/.claude/worktrees/42\nHEAD def5678\nbranch refs/heads/feat/login\n\n"
+
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch.object(Path, "exists", return_value=True),
+            patch(
+                "sova.git.worktree._check_worktree_active_agent",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("DB query failed"),
+            ),
+        ):
+            mock_run.side_effect = [
+                _shell_ok(),  # git worktree prune
+                _shell_ok(stdout=porcelain),  # git worktree list --porcelain
+                _shell_ok(stdout="/repo\n"),  # git rev-parse --show-toplevel
+            ]
+
+            with pytest.raises(RuntimeError, match="DB query failed"):
+                await resolve_worktree_conflict("feat/login", cwd=Path("/repo"))
+
+            # cleanup_worktree must NOT have been called
+            remove_calls = [c for c in mock_run.call_args_list if "remove" in c[0]]
+            assert remove_calls == []
+
+
+class TestCheckWorktreeActiveAgent:
+    """Tests for _check_worktree_active_agent()."""
+
+    @staticmethod
+    def _make_session_mock(runs: list) -> AsyncMock:
+        """Create a mock get_session that returns runs from execute()."""
+        from unittest.mock import MagicMock
+
+        mock_session = AsyncMock()
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = runs
+        mock_exec_result = MagicMock()
+        mock_exec_result.scalars.return_value = mock_scalars
+        mock_session.execute = AsyncMock(return_value=mock_exec_result)
+
+        # get_session is async, returns async context manager
+        mock_get_session = AsyncMock()
+        mock_get_session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
+        return mock_get_session
+
+    @staticmethod
+    def _make_run_record(worktree_path: str, pid: int) -> object:
+        from unittest.mock import MagicMock
+
+        record = MagicMock()
+        record.worktree_path = worktree_path
+        record.pid = pid
+        return record
+
+    async def test_returns_none_when_no_matching_runs(self) -> None:
+        mock_gs = self._make_session_mock([])
+        with patch("sova.db.session.get_session", mock_gs):
+            result = await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+        assert result is None
+
+    async def test_returns_pid_when_active_agent_found(self) -> None:
+        record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
+        mock_gs = self._make_session_mock([record])
+        with (
+            patch("sova.db.session.get_session", mock_gs),
+            patch("os.kill") as mock_kill,
+        ):
+            mock_kill.return_value = None
+            result = await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+        assert result == 99999
+
+    async def test_skips_dead_pid(self) -> None:
+        record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
+        mock_gs = self._make_session_mock([record])
+        with (
+            patch("sova.db.session.get_session", mock_gs),
+            patch("os.kill", side_effect=ProcessLookupError),
+        ):
+            result = await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+        assert result is None
+
+    async def test_returns_pid_on_permission_error(self) -> None:
+        record = self._make_run_record("/repo/.claude/worktrees/42", 99999)
+        mock_gs = self._make_session_mock([record])
+        with (
+            patch("sova.db.session.get_session", mock_gs),
+            patch("os.kill", side_effect=PermissionError),
+        ):
+            result = await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+        assert result == 99999
+
+    async def test_raises_on_db_failure(self) -> None:
+        mock_gs = AsyncMock(side_effect=RuntimeError("DB down"))
+        with patch("sova.db.session.get_session", mock_gs):
+            with pytest.raises(RuntimeError, match="Cannot verify worktree safety"):
+                await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+
+    async def test_returns_none_for_non_matching_path(self) -> None:
+        record = self._make_run_record("/other/path", 99999)
+        mock_gs = self._make_session_mock([record])
+        with patch("sova.db.session.get_session", mock_gs):
+            result = await _check_worktree_active_agent(Path("/repo/.claude/worktrees/42"))
+        assert result is None
+
+
+class TestResolveWorktreeConflictPruneFailed:
+    async def test_logs_warning_on_prune_failure(self) -> None:
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.worktree.find_worktree_by_branch", new_callable=AsyncMock) as mock_find,
+        ):
+            mock_run.return_value = _shell_fail(stderr="error: prune failed")
+            mock_find.return_value = None
+
+            result = await resolve_worktree_conflict("feat/test", cwd=Path("/repo"))
+
+        assert result is None
+        mock_run.assert_awaited_once()
+
+
+class TestSyncBranchWorktreeConflict:
+    async def test_retries_after_worktree_conflict(self) -> None:
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock) as mock_resolve,
+        ):
+            mock_checked.return_value = _shell_ok()  # fetch + pull
+            mock_run.side_effect = [
+                _shell_fail(stderr="fatal: 'feat/login' is already checked out at '/worktree'"),
+                _shell_ok(),  # retry checkout
+            ]
+            mock_resolve.return_value = Path("/worktree")
+
+            await sync_branch("feat/login", cwd=Path("/repo"))
+
+            mock_resolve.assert_awaited_once_with("feat/login", cwd=Path("/repo"))
+            assert mock_run.call_count == 2
+
+    async def test_raises_if_retry_still_fails(self) -> None:
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock),
+            patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock),
+        ):
+            mock_run.side_effect = [
+                _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'"),
+                _shell_fail(stderr="fatal: still checked out"),
+            ]
+
+            with pytest.raises(RuntimeError):
+                await sync_branch("feat/x", cwd=Path("/repo"))
+
+    async def test_propagates_resolve_exception(self) -> None:
+        """sync_branch() wraps and propagates errors from resolve_worktree_conflict()."""
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock),
+            patch(
+                "sova.git.worktree.resolve_worktree_conflict",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Worktree in use by PID 12345"),
+            ),
+        ):
+            mock_run.return_value = _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'")
+
+            with pytest.raises(RuntimeError, match="Failed to resolve worktree conflict"):
+                await sync_branch("feat/x", cwd=Path("/repo"))
 
 
 # ---------------------------------------------------------------------------

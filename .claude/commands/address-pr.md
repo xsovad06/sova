@@ -32,7 +32,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
    ```
    If checkout fails with "already checked out", `sync_branch()` in `sova/git/branch.py` auto-resolves the conflict via `resolve_worktree_conflict()`. For manual use, the worktree path can be found with:
    ```bash
-   WORKTREE_PATH=$(git worktree list --porcelain | grep -F -B2 "branch refs/heads/<HEAD_BRANCH>" | grep "^worktree " | cut -d" " -f2)
+   WORKTREE_PATH=$(git worktree list --porcelain | grep -F -B2 "branch refs/heads/<HEAD_BRANCH>" | grep "^worktree " | sed 's/^worktree //')
    ```
    Never resolve the worktree by issue number alone -- always use the branch name from the PR metadata.
 
