@@ -62,7 +62,7 @@ Follow the `/update-docs` workflow to ensure all documentation matches the curre
 
 1. Update tracked docs -- these will be committed
 2. Update local docs (CLAUDE.md files) -- these stay on disk for dev context
-3. Commit any tracked doc changes as part of the branch before proceeding
+3. Amend doc changes into the last commit (`git commit --amend --no-edit`) -- never create a standalone docs commit
 
 ### Phase 4: Push and Create/Update PR
 

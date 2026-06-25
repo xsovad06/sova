@@ -81,10 +81,10 @@ Only run if `.claude/agent-memory/` exists in the project.
 
 2. **Update documentation counts**: run verification commands (test count, service count, router count) and fix any drifted values in `AGENTS.md`, `README.md`, or `docs/VISION.md`.
 
-3. **Commit and push** if any files changed:
+3. **Amend into the last commit and push** if any files changed (never create a standalone docs commit):
    ```bash
    git add -A .claude/agent-memory/ AGENTS.md README.md docs/VISION.md .claude/rules/
-   git commit -m "docs: update counts and capture learnings from PR #<PR_NUMBER>"
+   git commit --amend --no-edit
    git push --force-with-lease
    ```
 

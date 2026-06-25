@@ -344,6 +344,26 @@ def _build_pr_item(
     )
 
 
+def _append_standalone_pr_items(
+    items: list[dict],
+    prs: list[dict],
+    linked_issue_numbers: set[str],
+    running_by_issue: dict[str, dict],
+    handoffs_by_issue: dict[str, dict],
+) -> None:
+    """Add work items for PRs not already covered by a queue task."""
+    for pr in prs:
+        issue_num = str(pr.get("linked_issue", "")) if pr.get("linked_issue") else None
+        if issue_num and issue_num in linked_issue_numbers:
+            continue
+        if issue_num:
+            linked_issue_numbers.add(issue_num)
+        pr_key = issue_num if issue_num else f"pr:{pr['number']}"
+        running = running_by_issue.get(pr_key)
+        handoff = handoffs_by_issue.get(pr_key) if not issue_num else handoffs_by_issue.get(issue_num)
+        items.append(_build_pr_item(pr, running, handoff, issue_num))
+
+
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
@@ -380,16 +400,13 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
             )
         )
 
-    for pr in prs:
-        issue_num = str(pr.get("linked_issue", "")) if pr.get("linked_issue") else None
-        if issue_num and issue_num in linked_issue_numbers:
-            continue
-        if issue_num:
-            linked_issue_numbers.add(issue_num)
-        pr_key = issue_num if issue_num else f"pr:{pr['number']}"
-        running = running_by_issue.get(pr_key)
-        handoff = handoffs_by_issue.get(pr_key) if not issue_num else handoffs_by_issue.get(issue_num)
-        items.append(_build_pr_item(pr, running, handoff, issue_num))
+    _append_standalone_pr_items(
+        items,
+        prs,
+        linked_issue_numbers,
+        running_by_issue,
+        handoffs_by_issue,
+    )
 
     _sort_items(items)
 
@@ -525,7 +542,7 @@ def _build_item(**kwargs: object) -> dict:
         "url": kwargs["url"],
         "state": state.value,
         "state_label": _STATE_LABELS.get(state, state.value),
-        "state_color": _STATE_COLORS.get(state, "bg-gray-600/30 text-gray-400"),
+        "state_color": _STATE_COLORS.get(state, _CLR_GRAY),
         "primary_action": kwargs["primary_action"],
         "secondary_actions": kwargs["secondary_actions"],
         "handoff_actions": kwargs["handoff_actions"],

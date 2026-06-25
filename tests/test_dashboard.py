@@ -2775,6 +2775,28 @@ class TestAgentsAPI:
             )
             assert resp.status_code == 200
 
+    async def test_work_items_returns_unified_payload(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        mock_result = {
+            "items": [{"issue_number": "42", "state": "triaged"}],
+            "running_count": 0,
+            "slots_available": 3,
+            "max_concurrent": 3,
+        }
+        with patch(
+            "sova.dashboard.services.work_item_service.get_work_items",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            resp = await client.get("/api/agents/work-items")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "items" in data
+            assert data["items"][0]["issue_number"] == "42"
+            assert data["running_count"] == 0
+            assert data["max_concurrent"] == 3
+
     async def test_agents_active_empty(self, client: AsyncClient) -> None:
         resp = await client.get("/api/agents/active")
         assert resp.status_code == 200
