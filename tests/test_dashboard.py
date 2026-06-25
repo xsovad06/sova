@@ -5783,6 +5783,73 @@ class TestJiraSetupAPI:
         assert "To Do" in data["suggested_mapping"]
 
 
+class TestJiraSSRFPrevention:
+    """Verify _validate_jira_base_url rejects internal/private addresses."""
+
+    def test_rejects_localhost(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="local address"):
+            _validate_jira_base_url("https://localhost/jira")
+
+    def test_rejects_loopback_ip(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="local address"):
+            _validate_jira_base_url("https://127.0.0.1/jira")
+
+    def test_rejects_private_10_range(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="private/reserved"):
+            _validate_jira_base_url("https://10.0.0.1/jira")
+
+    def test_rejects_private_172_range(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="private/reserved"):
+            _validate_jira_base_url("https://172.16.0.1/jira")
+
+    def test_rejects_private_192_range(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="private/reserved"):
+            _validate_jira_base_url("https://192.168.1.1/jira")
+
+    def test_rejects_link_local(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="private/reserved"):
+            _validate_jira_base_url("https://169.254.1.1/jira")
+
+    def test_rejects_http_scheme(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="only https"):
+            _validate_jira_base_url("http://example.atlassian.net")
+
+    def test_rejects_ipv6_loopback(self) -> None:
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        with pytest.raises(ValueError, match="local address"):
+            _validate_jira_base_url("https://[::1]/jira")
+
+    def test_accepts_valid_atlassian_url(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import _validate_jira_base_url
+
+        # Mock DNS resolution to return a public IP
+        with patch(
+            "socket.getaddrinfo",
+            return_value=[
+                (2, 1, 6, "", ("104.192.141.1", 0)),
+            ],
+        ):
+            result = _validate_jira_base_url("https://mycompany.atlassian.net")
+        assert result == "https://mycompany.atlassian.net"
+
+
 # ---------------------------------------------------------------------------
 # Roles API
 # ---------------------------------------------------------------------------

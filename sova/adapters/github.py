@@ -346,7 +346,11 @@ class GitHubAdapter(TaskAdapter):
 
         # gh issue create outputs the issue URL; extract the number and fetch full details.
         url = result.stdout.strip()
+        if not url or not url.startswith("https://github.com/"):
+            raise RuntimeError(f"Failed to parse issue URL from gh output: {url!r}")
         issue_number = url.rstrip("/").split("/")[-1]
+        if not issue_number.isdigit():
+            raise RuntimeError(f"Failed to parse issue number from URL: {url!r}")
         return await self.get_task(issue_number)
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:

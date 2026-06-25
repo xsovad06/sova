@@ -59,6 +59,9 @@ class JiraTestRequest(BaseModel):
     email: str
     api_token: str
 
+    def __repr_args__(self) -> list[tuple[str, object]]:
+        return [(k, v) for k, v in super().__repr_args__() if k != "api_token"]
+
 
 class JiraProjectsRequest(BaseModel):
     base_url: str

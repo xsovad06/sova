@@ -320,7 +320,9 @@ class JiraAdapter(TaskAdapter):
         number = key.split("-")[-1] if "-" in key else key
 
         # Story points: try standard field name, then common custom field
-        story_points_raw = fields.get("story_points") or fields.get("customfield_10028")
+        story_points_raw = fields.get("story_points")
+        if story_points_raw is None:
+            story_points_raw = fields.get("customfield_10028")
         story_points: float | None = None
         if story_points_raw is not None:
             try:
@@ -406,6 +408,8 @@ class JiraAdapter(TaskAdapter):
         if labels:
             fields["labels"] = labels
         if parent_key:
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,255}-\d+", parent_key):
+                raise ValueError(f"Invalid parent key format: {parent_key!r}")
             fields["parent"] = {"key": parent_key}
 
         response = await self._http.post("/issue", json={"fields": fields})
@@ -414,7 +418,9 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(msg)
 
         created = response.json()
-        issue_key = created.get("key", "")
+        issue_key = created.get("key")
+        if not issue_key:
+            raise RuntimeError(f"Jira API response missing issue key: {created}")
         return await self.get_task(issue_key)
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
