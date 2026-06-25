@@ -1483,7 +1483,11 @@ function _getKanbanOrder() {
 }
 
 function _saveKanbanOrder(order) {
-  localStorage.setItem(_kanbanOrderKey, JSON.stringify(order));
+  try {
+    localStorage.setItem(_kanbanOrderKey, JSON.stringify(order));
+  } catch (e) {
+    console.warn('Failed to save kanban order:', e);
+  }
 }
 
 function _columnKey(col) {
@@ -1590,6 +1594,8 @@ async function loadKanban() {
 }
 
 // -- Kanban drag-and-drop handlers (event delegation) --
+// Minimum px movement before a touch gesture becomes a drag (prevents accidental drags while scrolling)
+var _TOUCH_DRAG_THRESHOLD = 10;
 
 function _saveColumnOrder(cardList) {
   var colKey = cardList.getAttribute('data-column');
@@ -1602,11 +1608,13 @@ function _saveColumnOrder(cardList) {
   _saveKanbanOrder(order);
 }
 
+// Stop polling during drag to prevent the DOM from being replaced mid-interaction
 function _pauseKanbanPolling() {
   _kanbanDragging = true;
   if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
 }
 
+// Re-fetch kanban data and restart the 5s poll cycle after a drag completes
 function _resumeKanbanPolling() {
   _kanbanDragging = false;
   loadKanban();
@@ -1629,6 +1637,7 @@ function _resumeKanbanPolling() {
     e.dataTransfer.setData('text/plain', _kanbanDragRunId);
   });
 
+  // Dragover fires at ~60Hz; throttle DOM updates via requestAnimationFrame
   var _dragRafPending = false;
   container.addEventListener('dragover', function(e) {
     var cardList = e.target.closest('.kanban-card-list');
@@ -1652,10 +1661,12 @@ function _resumeKanbanPolling() {
     });
   });
 
+  // Remove placeholder when cursor leaves all card lists; use relatedTarget
+  // to avoid flicker when moving between child elements within the same list.
   container.addEventListener('dragleave', function(e) {
-    if (!e.target.closest('.kanban-card-list')) {
-      _removePlaceholder();
-    }
+    if (!e.target.closest('.kanban-card-list')) return;
+    if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.kanban-card-list')) return;
+    _removePlaceholder();
   });
 
   container.addEventListener('drop', function(e) {
@@ -1672,7 +1683,7 @@ function _resumeKanbanPolling() {
 
     // Only allow within-column reorder
     var sourceList = draggedCard.closest('.kanban-card-list');
-    if (sourceList !== targetList) {
+    if (!sourceList || sourceList !== targetList) {
       _removePlaceholder();
       return;
     }
@@ -1680,10 +1691,8 @@ function _resumeKanbanPolling() {
     if (_kanbanPlaceholder) {
       targetList.insertBefore(draggedCard, _kanbanPlaceholder);
       _removePlaceholder();
+      _saveColumnOrder(targetList);
     }
-
-    draggedCard.classList.remove('dragging');
-    _saveColumnOrder(targetList);
   });
 
   container.addEventListener('dragend', function(e) {
@@ -1719,7 +1728,7 @@ function _resumeKanbanPolling() {
     var dy = touch.clientY - _touchStartY;
 
     if (!_touchDragging) {
-      if (Math.sqrt(dx * dx + dy * dy) < 10) return;
+      if (Math.sqrt(dx * dx + dy * dy) < _TOUCH_DRAG_THRESHOLD) return;
       _touchDragging = true;
       _pauseKanbanPolling();
       _touchDragCard.classList.add('dragging');
