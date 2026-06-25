@@ -144,10 +144,17 @@ async def get_pipeline():
 
 @router.get("/agents/kanban")
 async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> dict[str, Any]:
-    """Get non-terminal TaskRuns grouped into Kanban columns by pipeline step."""
+    """Get non-terminal TaskRuns grouped into Kanban columns."""
+    from sova.config.loader import load_config
+    from sova.dashboard.project_context import get_project_dir
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    mode = cfg.dashboard.kanban_columns
+
     async with await get_session() as session:
-        columns = await control_service.get_kanban_columns(session, per_column=per_column)
-    return {"columns": columns}
+        columns = await control_service.get_kanban_columns(session, per_column=per_column, mode=mode)
+    return {"columns": columns, "mode": mode}
 
 
 @router.get("/agents/{run_id}/output")

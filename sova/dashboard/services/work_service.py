@@ -7,7 +7,7 @@ for the Work page (Active / History / Failed tabs).
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -446,11 +446,39 @@ def _step_to_dict(step: StepExecution) -> dict:
     }
 
 
-async def get_kanban_columns(session: AsyncSession, *, per_column: int = 10) -> list[dict]:
-    """Get non-terminal TaskRuns grouped into Kanban columns by pipeline step.
+_ROLE_COLUMN_POSITIONS: dict[str, int] = {
+    "backlog": 0,
+    "triaged": 1,
+    "researched": 2,
+    "developing": 3,
+    "in_review": 4,
+    "done": 5,
+}
 
-    Each column represents a pipeline step with runs currently at that step.
-    Columns are ordered by pipeline position. Empty columns are omitted.
+
+def _classify_run_role_based(run: TaskRun, variant: str) -> str:
+    """Classify a TaskRun into a role-based kanban column."""
+    role = run.role or ""
+
+    if role == "researcher":
+        return "researched"
+    if role.startswith("command:review") or role == "reviewer":
+        return "in_review"
+    if variant == "address_review":
+        return "in_review"
+    if role == "triage":
+        return "triaged"
+    if role in ("developer", "") or role.startswith("command:"):
+        return "developing"
+    return "developing"
+
+
+async def _fetch_active_runs_with_variants(
+    session: AsyncSession,
+) -> list[tuple[TaskRun, dict, str]]:
+    """Fetch non-terminal runs with summaries and resolved variants.
+
+    Returns a list of (run, summary_dict, variant) tuples.
     """
     stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL)).order_by(TaskRun.started_at.desc())
     result = await session.execute(stmt)
@@ -460,36 +488,63 @@ async def get_kanban_columns(session: AsyncSession, *, per_column: int = 10) -> 
         return []
 
     now = datetime.now(timezone.utc)
-
-    # Batch-fetch step execution history for accurate variant detection.
-    # get_step_progress can't distinguish shared steps (commit, validate, push)
-    # across pipelines without step history context.
     run_ids = [r.id for r in runs]
     steps_by_run = await _batch_step_names(session, run_ids)
 
-    # Group runs by (step, variant) so shared step names across pipelines
-    # (e.g., 'commit' in developer vs address_review) get separate columns.
-    columns: dict[tuple[str, str], list[dict]] = {}
+    items: list[tuple[TaskRun, dict, str]] = []
     for r in runs:
         summary = _build_run_summary(r, now)
+        step_names = steps_by_run.get(r.id, set())
+        if step_names & _RESEARCHER_ONLY:
+            variant = "researcher"
+        elif step_names & _ADDRESS_REVIEW_ONLY:
+            variant = "address_review"
+        else:
+            variant = summary["pipeline_variant"]
+        summary["pipeline_variant"] = variant
+        items.append((r, summary, variant))
+    return items
+
+
+async def get_kanban_columns(
+    session: AsyncSession,
+    *,
+    per_column: int = 10,
+    mode: Literal["step_based", "role_based"] = "step_based",
+) -> list[dict]:
+    """Get non-terminal TaskRuns grouped into Kanban columns.
+
+    Args:
+        per_column: Max runs per column in the response.
+        mode: Grouping mode -- "step_based" (by pipeline step) or
+              "role_based" (by role/status category).
+
+    Each column represents a pipeline step or role category with runs
+    currently at that step. Columns are ordered by position. Empty
+    columns are omitted.
+    """
+    items = await _fetch_active_runs_with_variants(session)
+    if not items:
+        return []
+
+    if mode == "role_based":
+        return _group_role_based(items, per_column)
+    return _group_step_based(items, per_column)
+
+
+def _group_step_based(items: list[tuple[TaskRun, dict, str]], per_column: int) -> list[dict]:
+    """Group runs by (step, variant) for step-based kanban columns."""
+    columns: dict[tuple[str, str], list[dict]] = {}
+    for r, summary, variant in items:
         step = r.current_step
         if step is None or step == "agent":
             step = "pending"
-            variant = "pending"
+            col_variant = "pending"
         else:
-            # Use step history for authoritative variant detection
-            step_names = steps_by_run.get(r.id, set())
-            if step_names & _RESEARCHER_ONLY:
-                variant = "researcher"
-            elif step_names & _ADDRESS_REVIEW_ONLY:
-                variant = "address_review"
-            else:
-                variant = summary["pipeline_variant"]
-        summary["pipeline_variant"] = variant
+            col_variant = variant
 
-        columns.setdefault((step, variant), []).append(summary)
+        columns.setdefault((step, col_variant), []).append(summary)
 
-    # Build result sorted by pipeline position
     result_columns = []
     for (col_step, col_variant), col_runs in columns.items():
         pipeline_name, position = _STEP_POSITIONS.get((col_step, col_variant), ("unknown", 999))
@@ -498,6 +553,31 @@ async def get_kanban_columns(session: AsyncSession, *, per_column: int = 10) -> 
             {
                 "name": col_step,
                 "pipeline": pipeline_name,
+                "position": position,
+                "count": len(col_runs),
+                "runs": limited_runs,
+            }
+        )
+
+    result_columns.sort(key=lambda c: c["position"])
+    return result_columns
+
+
+def _group_role_based(items: list[tuple[TaskRun, dict, str]], per_column: int) -> list[dict]:
+    """Group runs by role category for role-based kanban columns."""
+    columns: dict[str, list[dict]] = {}
+    for r, summary, variant in items:
+        col_name = _classify_run_role_based(r, variant)
+        columns.setdefault(col_name, []).append(summary)
+
+    result_columns = []
+    for col_name, col_runs in columns.items():
+        position = _ROLE_COLUMN_POSITIONS.get(col_name, 999)
+        limited_runs = col_runs[:per_column]
+        result_columns.append(
+            {
+                "name": col_name,
+                "pipeline": "role_based",
                 "position": position,
                 "count": len(col_runs),
                 "runs": limited_runs,
