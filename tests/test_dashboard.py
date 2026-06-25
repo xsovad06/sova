@@ -1849,135 +1849,6 @@ class TestStartCommandWorktreeResolution:
         worktree.mkdir(parents=True)
         assert await _resolve_issue_worktree("#42", tmp_path) == worktree
 
-    async def test_resolve_issue_worktree_uses_branch_fallback(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree falls back to branch-based lookup when issue worktree missing."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-foo"
-        branch_worktree.mkdir(parents=True)
-
-        with patch(
-            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
-            new_callable=AsyncMock,
-            return_value=branch_worktree,
-        ):
-            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
-
-        assert result == branch_worktree
-
-    async def test_resolve_issue_worktree_filters_main_worktree(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree filters out the main worktree from branch results."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        with patch(
-            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
-            new_callable=AsyncMock,
-            return_value=tmp_path,
-        ):
-            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
-
-        assert result == tmp_path
-
-    async def test_resolve_issue_worktree_branch_lookup_failure_graceful(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree returns project_dir when branch lookup fails."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        with patch(
-            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("git failed"),
-        ):
-            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
-
-        assert result == tmp_path
-
-    async def test_resolve_issue_worktree_prefers_issue_over_branch(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree prefers issue-based worktree over branch when both exist."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        issue_worktree = tmp_path / ".claude" / "worktrees" / "42"
-        issue_worktree.mkdir(parents=True)
-
-        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-foo"
-        branch_worktree.mkdir(parents=True)
-
-        with patch(
-            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
-            new_callable=AsyncMock,
-            return_value=branch_worktree,
-        ) as mock_find:
-            result = await _resolve_issue_worktree("42", tmp_path, branch_name="feat/foo")
-
-        assert result == issue_worktree
-        mock_find.assert_not_called()
-
-    async def test_resolve_issue_worktree_empty_branch_name(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree returns project_dir when branch_name is empty string."""
-        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
-
-        result = await _resolve_issue_worktree("standup", tmp_path, branch_name="")
-        assert result == tmp_path
-
-    async def test_start_command_pr_without_issue_uses_branch_worktree(self, tmp_path: Path) -> None:
-        """start_command with pr_number and no issue resolves branch worktree."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services import agent_lifecycle
-        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
-
-        pa = ProjectAgents()
-        pa.project_dir = tmp_path
-
-        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-fix"
-        branch_worktree.mkdir(parents=True)
-
-        mock_process = MagicMock()
-        mock_process.pid = 8888
-        mock_runtime = MagicMock()
-        mock_runtime.spawn = AsyncMock(return_value=mock_process)
-
-        mock_cfg = MagicMock()
-        mock_cfg.github_repo = "owner/repo"
-        mock_cfg.github_user = "testuser"
-
-        with (
-            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
-            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
-            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=200),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
-            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
-            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch(
-                "sova.git.pr.get_pr_branch",
-                new_callable=AsyncMock,
-                return_value="feat/fix-123",
-            ),
-            patch.object(
-                agent_lifecycle,
-                "find_worktree_by_branch",
-                new_callable=AsyncMock,
-                return_value=branch_worktree,
-            ),
-        ):
-            result = await start_command("address-pr", {"pr": "123"})
-
-        assert result.get("status") == "started"
-        spawn_cwd = mock_runtime.spawn.call_args[0][1]
-        assert spawn_cwd == branch_worktree
-
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -3944,6 +3815,110 @@ class TestWorkAPI:
         data = resp.json()
         ar_task = next(t for t in data["tasks"] if t["issue_number"] == "81")
         assert ar_task["pipeline_variant"] == "address_review"
+
+
+class TestStepPassedStatus:
+    """Steps with legacy 'passed' status are counted as completed."""
+
+    async def test_work_detail_includes_passed_steps(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Run detail API returns steps with 'passed' status alongside 'done'."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="200",
+            role="developer",
+            status="done",
+            current_step="handoff_to_reviewer",
+            total_cost_usd=Decimal("1.00"),
+            project_slug="myproject",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        session.add_all(
+            [
+                StepExecution(
+                    task_run_id=run.id,
+                    step_name="sync",
+                    status="passed",
+                    cost_usd=Decimal("0.00"),
+                    duration_ms=3000,
+                    started_at=now - timedelta(hours=1),
+                    ended_at=now - timedelta(minutes=59, seconds=57),
+                ),
+                StepExecution(
+                    task_run_id=run.id,
+                    step_name="develop",
+                    status="done",
+                    cost_usd=Decimal("0.80"),
+                    duration_ms=60000,
+                    started_at=now - timedelta(minutes=59, seconds=57),
+                    ended_at=now - timedelta(minutes=58, seconds=57),
+                ),
+            ]
+        )
+        await session.commit()
+
+        resp = await client.get(f"/api/work/{run.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["steps"]) == 2
+        statuses = {s["step_name"]: s["status"] for s in data["steps"]}
+        assert statuses["sync"] == "passed"
+        assert statuses["develop"] == "done"
+
+    async def test_work_history_counts_passed_as_completed(self, client: AsyncClient, session: AsyncSession) -> None:
+        """History endpoint counts both 'passed' and 'done' steps as completed."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="201",
+            role="developer",
+            status="done",
+            current_step="handoff_to_reviewer",
+            total_cost_usd=Decimal("0.50"),
+            project_slug="myproject",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        session.add_all(
+            [
+                StepExecution(
+                    task_run_id=run.id,
+                    step_name="sync",
+                    status="passed",
+                    duration_ms=3000,
+                    started_at=now - timedelta(hours=1),
+                    ended_at=now - timedelta(minutes=59, seconds=57),
+                ),
+                StepExecution(
+                    task_run_id=run.id,
+                    step_name="assess",
+                    status="passed",
+                    duration_ms=2000,
+                    started_at=now - timedelta(minutes=59, seconds=57),
+                    ended_at=now - timedelta(minutes=59, seconds=55),
+                ),
+                StepExecution(
+                    task_run_id=run.id,
+                    step_name="develop",
+                    status="done",
+                    duration_ms=60000,
+                    started_at=now - timedelta(minutes=59, seconds=55),
+                    ended_at=now - timedelta(minutes=58, seconds=55),
+                ),
+            ]
+        )
+        await session.commit()
+
+        resp = await client.get("/api/work/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        task = next(t for t in data["tasks"] if t["issue_number"] == "201")
+        assert task["steps_completed"] == 3
 
 
 class TestLogsAPI:

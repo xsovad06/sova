@@ -171,6 +171,64 @@ async def test_failed_run(session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_passed_status_counted_as_completed(session: AsyncSession):
+    """Steps with legacy 'passed' status are counted as completed in progress."""
+    from sova.dashboard.services.agent_status import get_agent_status
+
+    run = TaskRun(
+        issue_number="13",
+        role="developer",
+        status="running",
+        current_step="develop",
+        started_at=NOW - timedelta(minutes=5),
+    )
+    session.add(run)
+    await session.flush()
+
+    session.add_all(
+        [
+            StepExecution(
+                task_run_id=run.id,
+                step_name="sync",
+                status="passed",
+                duration_ms=3000,
+                started_at=NOW - timedelta(minutes=5),
+                ended_at=NOW - timedelta(minutes=4, seconds=57),
+            ),
+            StepExecution(
+                task_run_id=run.id,
+                step_name="assess",
+                status="passed",
+                duration_ms=2000,
+                started_at=NOW - timedelta(minutes=4, seconds=57),
+                ended_at=NOW - timedelta(minutes=4, seconds=55),
+            ),
+            StepExecution(
+                task_run_id=run.id,
+                step_name="create_worktree",
+                status="done",
+                duration_ms=500,
+                started_at=NOW - timedelta(minutes=4, seconds=55),
+                ended_at=NOW - timedelta(minutes=4, seconds=54),
+            ),
+            StepExecution(
+                task_run_id=run.id,
+                step_name="develop",
+                status="running",
+                duration_ms=0,
+                started_at=NOW - timedelta(seconds=30),
+            ),
+        ]
+    )
+    await session.commit()
+
+    status = await get_agent_status(run.id)
+    assert status is not None
+    assert status.completed_steps == ["sync", "assess", "create_worktree"]
+    assert abs(status.step_progress_pct - (3 / 15 * 100)) < 0.01
+
+
+@pytest.mark.asyncio
 async def test_stuck_detection_true(session: AsyncSession):
     """Run stuck in a step beyond threshold is detected."""
     from sova.dashboard.services.agent_status import get_agent_status
