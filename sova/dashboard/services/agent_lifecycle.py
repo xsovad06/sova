@@ -630,6 +630,14 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     cost = agent.last_result_cost or 0.0
 
+    if agent.output_writer:
+        agent.output_writer.close()
+
+    # Finalize the DB record BEFORE removing from pa.agents so the
+    # liveness sweep (which skips managed run_ids) cannot race us and
+    # stamp the run "interrupted" in the window between pop and finalize.
+    await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
+
     async with pa._lock:
         pa.agents.pop(run_id, None)
         pa.recently_completed.append(
@@ -641,11 +649,6 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 cost=cost,
             )
         )
-
-    if agent.output_writer:
-        agent.output_writer.close()
-
-    await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
 
     # Finalize lifecycle phase (only for issue-based runs)
     if agent.issue:
