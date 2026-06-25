@@ -150,6 +150,28 @@ class TomlConfig:
     jira_track_agent_work: bool = False
 
 
+def _add_jira_fields(task_source_table: object, config: TomlConfig) -> None:
+    """Populate Jira-specific fields on the task_source table."""
+    import tomlkit
+
+    jira_fields = [
+        ("jira_base_url", config.jira_base_url),
+        ("jira_email", config.jira_email),
+        ("jira_project_key", config.jira_project_key),
+        ("jira_component", config.jira_component),
+    ]
+    for key, value in jira_fields:
+        if value:
+            task_source_table.add(key, value)  # type: ignore[union-attr]
+    if config.jira_track_agent_work:
+        task_source_table.add("jira_track_agent_work", True)  # type: ignore[union-attr]
+    if config.jira_status_mapping:
+        mapping_table = tomlkit.inline_table()
+        for k, v in config.jira_status_mapping.items():
+            mapping_table.add(k, v)
+        task_source_table.add("jira_status_mapping", mapping_table)  # type: ignore[union-attr]
+
+
 def generate_sova_toml(config: TomlConfig) -> str:
     """Generate sova.toml content from wizard form data."""
     import tomlkit
@@ -166,21 +188,7 @@ def generate_sova_toml(config: TomlConfig) -> str:
     task_source_table = tomlkit.table()
     task_source_table.add("type", config.task_source)
     if config.task_source == "jira":
-        if config.jira_base_url:
-            task_source_table.add("jira_base_url", config.jira_base_url)
-        if config.jira_email:
-            task_source_table.add("jira_email", config.jira_email)
-        if config.jira_project_key:
-            task_source_table.add("jira_project_key", config.jira_project_key)
-        if config.jira_component:
-            task_source_table.add("jira_component", config.jira_component)
-        if config.jira_track_agent_work:
-            task_source_table.add("jira_track_agent_work", True)
-        if config.jira_status_mapping:
-            mapping_table = tomlkit.inline_table()
-            for k, v in config.jira_status_mapping.items():
-                mapping_table.add(k, v)
-            task_source_table.add("jira_status_mapping", mapping_table)
+        _add_jira_fields(task_source_table, config)
     doc.add("task_source", task_source_table)
 
     agent_table = tomlkit.table()
@@ -315,15 +323,34 @@ _SUGGESTED_STATUS_MAPPING: dict[str, str] = {
 }
 
 
+def _validate_jira_base_url(base_url: str) -> str:
+    """Validate and normalize a Jira base URL.
+
+    Ensures the URL uses https and points to an Atlassian domain,
+    preventing SSRF via user-controlled URL construction.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url.rstrip("/"))
+    if parsed.scheme not in ("https", "http"):
+        raise ValueError(f"Invalid Jira URL scheme: {parsed.scheme}")
+    if not parsed.hostname:
+        raise ValueError("Jira URL must include a hostname")
+    return f"{parsed.scheme}://{parsed.hostname}{f':{parsed.port}' if parsed.port else ''}"
+
+
 async def _jira_api_get(base_url: str, email: str, api_token: str, endpoint: str) -> httpx.Response:
     """Make an authenticated GET request to the Jira REST API v3."""
+    validated_base = _validate_jira_base_url(base_url)
     credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
     headers = {
         "Authorization": f"Basic {credentials}",
         "Accept": "application/json",
     }
+    # endpoint is always a hardcoded constant from callers (e.g. "myself", "project")
+    url = f"{validated_base}/rest/api/3/{endpoint}"
     async with httpx.AsyncClient(timeout=15.0) as client:
-        return await client.get(f"{base_url.rstrip('/')}/rest/api/3/{endpoint}", headers=headers)
+        return await client.get(url, headers=headers)
 
 
 async def test_jira_connection(base_url: str, email: str, api_token: str) -> dict:
