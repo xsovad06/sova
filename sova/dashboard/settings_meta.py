@@ -31,6 +31,7 @@ GROUPS: dict[str, str] = {
     "notification": "Notifications",
     "server": "Server",
     "external_reviews": "External Reviews",
+    "dashboard": "Dashboard",
 }
 
 GROUP_ORDER: list[str] = [
@@ -50,6 +51,7 @@ GROUP_ORDER: list[str] = [
     "notification",
     "server",
     "external_reviews",
+    "dashboard",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -447,6 +449,13 @@ _REGISTRY: list[SettingMeta] = [
         "Minimum coverage percentage on new code (must match SonarCloud quality gate)",
         "external_reviews",
         "number",
+    ),
+    # -- Dashboard --
+    SettingMeta(
+        "dashboard.kanban_columns",
+        "Kanban column grouping",
+        "How kanban columns are grouped: step_based (by pipeline step) or role_based (by role/status category)",
+        "dashboard",
     ),
 ]
 

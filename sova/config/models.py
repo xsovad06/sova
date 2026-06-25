@@ -243,6 +243,14 @@ class ExternalReviewsConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
+class DashboardConfig(BaseSettings):
+    """Dashboard UI configuration."""
+
+    kanban_columns: Literal["step_based", "role_based"] = "step_based"
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_DASHBOARD_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -292,6 +300,7 @@ class ProjectConfig(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
+    dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

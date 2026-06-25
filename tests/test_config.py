@@ -205,6 +205,35 @@ github_repo = "user/repo"
     assert cfg.notification.slack_webhook_url == ""
 
 
+def test_dashboard_section_loaded_from_toml(tmp_path: Path) -> None:
+    """Dashboard config is loaded from [dashboard] section in sova.toml."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[dashboard]
+kanban_columns = "role_based"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.dashboard.kanban_columns == "role_based"
+
+
+def test_dashboard_defaults_when_missing(tmp_path: Path) -> None:
+    """Without [dashboard] section, defaults are used."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.dashboard.kanban_columns == "step_based"
+
+
 def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
     """Legacy .conf files are no longer loaded; defaults are returned instead."""
     conf_dir = tmp_path / ".claude" / "scripts"

@@ -3437,6 +3437,170 @@ class TestGetKanbanColumnsDirect:
         assert cols[0]["name"] == "sync"
         assert cols[1]["name"] == "push"
 
+    async def test_role_based_empty(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        result = await get_kanban_columns(session, mode="role_based")
+        assert result == []
+
+    async def test_role_based_developer_runs(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="50",
+                    role="developer",
+                    status="running",
+                    current_step="develop",
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="51",
+                    role="developer",
+                    status="running",
+                    current_step="push",
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        assert len(cols) == 1
+        assert cols[0]["name"] == "developing"
+        assert cols[0]["pipeline"] == "role_based"
+        assert cols[0]["count"] == 2
+
+    async def test_role_based_mixed_roles(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="60",
+                    role="developer",
+                    status="running",
+                    current_step="develop",
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="61",
+                    role="researcher",
+                    status="running",
+                    current_step="research",
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="62",
+                    role="reviewer",
+                    status="running",
+                    current_step="review",
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        col_names = {c["name"] for c in cols}
+        assert col_names == {"developing", "researched", "in_review"}
+        assert all(c["pipeline"] == "role_based" for c in cols)
+
+    async def test_role_based_columns_sorted(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="70",
+                    role="reviewer",
+                    status="running",
+                    current_step="review",
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="71",
+                    role="developer",
+                    status="running",
+                    current_step="develop",
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        positions = [c["position"] for c in cols]
+        assert positions == sorted(positions)
+        assert cols[0]["name"] == "developing"
+        assert cols[1]["name"] == "in_review"
+
+    async def test_role_based_per_column_limit(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number=str(i),
+                    role="developer",
+                    status="running",
+                    current_step="develop",
+                    started_at=now,
+                )
+                for i in range(5)
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based", per_column=2)
+        assert len(cols) == 1
+        assert cols[0]["count"] == 5
+        assert len(cols[0]["runs"]) == 2
+
+    async def test_role_based_command_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="80",
+                role="command:review-pr",
+                status="running",
+                current_step="agent",
+                started_at=now,
+            )
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        assert len(cols) == 1
+        assert cols[0]["name"] == "in_review"
+
+    async def test_step_based_mode_is_default(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="90",
+                role="developer",
+                status="running",
+                current_step="develop",
+                started_at=now,
+            )
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session)
+        assert len(cols) == 1
+        assert cols[0]["name"] == "develop"
+        assert cols[0]["pipeline"] == "developer"
+
 
 class TestWorkAPI:
     """Tests for the new work API endpoints."""
