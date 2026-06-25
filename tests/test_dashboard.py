@@ -1821,33 +1821,103 @@ class TestStartCommandWorktreeResolution:
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == tmp_path, f"Expected project dir {tmp_path}, got {spawn_cwd}"
 
-    def test_resolve_issue_worktree_returns_worktree_path(self, tmp_path: Path) -> None:
+    async def test_resolve_issue_worktree_returns_worktree_path(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree returns worktree path when directory exists."""
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         worktree = tmp_path / ".claude" / "worktrees" / "42"
         worktree.mkdir(parents=True)
-        assert _resolve_issue_worktree("42", tmp_path) == worktree
+        assert await _resolve_issue_worktree("42", tmp_path) == worktree
 
-    def test_resolve_issue_worktree_returns_project_dir_when_missing(self, tmp_path: Path) -> None:
+    async def test_resolve_issue_worktree_returns_project_dir_when_missing(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree returns project_dir when no worktree exists."""
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
-        assert _resolve_issue_worktree("42", tmp_path) == tmp_path
+        assert await _resolve_issue_worktree("42", tmp_path) == tmp_path
 
-    def test_resolve_issue_worktree_handles_non_numeric_issue(self, tmp_path: Path) -> None:
+    async def test_resolve_issue_worktree_handles_non_numeric_issue(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree returns project_dir for non-numeric issue IDs."""
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
-        assert _resolve_issue_worktree("standup", tmp_path) == tmp_path
+        assert await _resolve_issue_worktree("standup", tmp_path) == tmp_path
 
-    def test_resolve_issue_worktree_strips_hash(self, tmp_path: Path) -> None:
+    async def test_resolve_issue_worktree_strips_hash(self, tmp_path: Path) -> None:
         """_resolve_issue_worktree strips leading # from issue number."""
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         worktree = tmp_path / ".claude" / "worktrees" / "42"
         worktree.mkdir(parents=True)
-        assert _resolve_issue_worktree("#42", tmp_path) == worktree
+        assert await _resolve_issue_worktree("#42", tmp_path) == worktree
+
+    async def test_resolve_issue_worktree_uses_branch_fallback(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree falls back to branch-based lookup when issue worktree missing."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-foo"
+        branch_worktree.mkdir(parents=True)
+
+        with patch(
+            "sova.git.worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=branch_worktree,
+        ):
+            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
+
+        assert result == branch_worktree
+
+    async def test_resolve_issue_worktree_filters_main_worktree(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree filters out the main worktree from branch results."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        with patch(
+            "sova.git.worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=tmp_path,
+        ):
+            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
+
+        assert result == tmp_path
+
+    async def test_resolve_issue_worktree_branch_lookup_failure_graceful(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree returns project_dir when branch lookup fails."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        with patch(
+            "sova.git.worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("git failed"),
+        ):
+            result = await _resolve_issue_worktree("address-pr", tmp_path, branch_name="feat/foo")
+
+        assert result == tmp_path
+
+    async def test_resolve_issue_worktree_prefers_issue_over_branch(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree prefers issue-based worktree over branch when both exist."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        issue_worktree = tmp_path / ".claude" / "worktrees" / "42"
+        issue_worktree.mkdir(parents=True)
+
+        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-foo"
+        branch_worktree.mkdir(parents=True)
+
+        with patch(
+            "sova.git.worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=branch_worktree,
+        ) as mock_find:
+            result = await _resolve_issue_worktree("42", tmp_path, branch_name="feat/foo")
+
+        assert result == issue_worktree
+        mock_find.assert_not_called()
 
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
