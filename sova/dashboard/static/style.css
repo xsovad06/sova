@@ -710,6 +710,36 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   overflow-y: auto;
 }
 
+/* Drag-and-drop states */
+.kanban-card.dragging {
+  opacity: 0.4;
+}
+
+.kanban-card[draggable="true"] {
+  cursor: grab;
+}
+
+.kanban-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.kanban-drop-placeholder {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--ctp-blue);
+  margin: 0.25rem 0;
+  opacity: 0.6;
+}
+
+.kanban-touch-clone {
+  position: fixed;
+  z-index: 300;
+  pointer-events: none;
+  opacity: 0.85;
+  transform: translate(-50%, -50%) rotate(2deg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+}
+
 /* ============================================================
    10. INTERACTIVE STEP PIPELINE
    ============================================================ */

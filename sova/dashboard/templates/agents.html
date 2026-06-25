@@ -1471,8 +1471,60 @@ function _pipelineLabel(pipeline) {
   return labels[pipeline] || pipeline;
 }
 
+// -- Kanban drag-and-drop state --
+var _kanbanDragging = false;
+var _kanbanDragRunId = null;
+var _kanbanOrderKey = 'sova-kanban-card-order';
+
+function _getKanbanOrder() {
+  try {
+    return JSON.parse(localStorage.getItem(_kanbanOrderKey)) || {};
+  } catch (e) { return {}; }
+}
+
+function _saveKanbanOrder(order) {
+  localStorage.setItem(_kanbanOrderKey, JSON.stringify(order));
+}
+
+function _columnKey(col) {
+  return col.name + '--' + (col.pipeline || '');
+}
+
+function _applyCardOrder(runs, columnKey, savedOrder) {
+  var order = savedOrder[columnKey];
+  if (!order || !order.length) return runs;
+  var byId = {};
+  runs.forEach(function(r) { byId[r.id] = r; });
+  var ordered = [];
+  order.forEach(function(id) {
+    if (byId[id]) { ordered.push(byId[id]); delete byId[id]; }
+  });
+  Object.keys(byId).forEach(function(id) { ordered.push(byId[id]); });
+  return ordered;
+}
+
+var _kanbanPlaceholder = null;
+
+function _removePlaceholder() {
+  if (_kanbanPlaceholder) { _kanbanPlaceholder.remove(); _kanbanPlaceholder = null; }
+}
+
+function _insertPlaceholder(targetCard, clientY) {
+  _removePlaceholder();
+  var rect = targetCard.getBoundingClientRect();
+  var midY = rect.top + rect.height / 2;
+  _kanbanPlaceholder = document.createElement('div');
+  _kanbanPlaceholder.className = 'kanban-drop-placeholder';
+  if (clientY < midY) {
+    targetCard.parentNode.insertBefore(_kanbanPlaceholder, targetCard);
+  } else {
+    targetCard.parentNode.insertBefore(_kanbanPlaceholder, targetCard.nextSibling);
+  }
+}
+
 async function loadKanban() {
   if (_agentView !== 'kanban') return;
+  if (_kanbanDragging) return;
   try {
     var data = await fetchAPI(apiUrl('/agents/kanban'));
     var container = document.getElementById('kanban-columns');
@@ -1484,17 +1536,20 @@ async function loadKanban() {
     }
 
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    var savedOrder = _getKanbanOrder();
 
     container.innerHTML = data.columns.map(function(col) {
+      var colKey = _columnKey(col);
       var pipelineBadge = col.pipeline && col.pipeline !== 'pending' && col.pipeline !== 'unknown'
         ? '<span class="text-xs text-gray-600 font-normal ml-1">' + escapeHtml(_pipelineLabel(col.pipeline)) + '</span>'
         : '';
       var countBadge = '<span class="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-xs rounded-full bg-accent/20 text-accent">' + col.count + '</span>';
 
-      var cardsHtml = (col.runs || []).map(function(run) {
+      var sortedRuns = _applyCardOrder(col.runs || [], colKey, savedOrder);
+      var cardsHtml = sortedRuns.map(function(run) {
         var rc = roleColor(run.role);
 
-        return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block">' +
+        return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block" draggable="true" data-run-id="' + run.id + '">' +
           '<div class="flex items-center justify-between mb-1.5">' +
             '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(String(run.issue_number)) + '</span>' +
             '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + statusDot(run.status) + '"></span>' +
@@ -1521,7 +1576,7 @@ async function loadKanban() {
           '</span>' +
           countBadge +
         '</div>' +
-        '<div class="kanban-card-list p-2 space-y-2">' +
+        '<div class="kanban-card-list p-2 space-y-2" data-column="' + escapeHtml(colKey) + '">' +
           cardsHtml +
           overflowHint +
         '</div>' +
@@ -1533,6 +1588,198 @@ async function loadKanban() {
     if (errContainer) errContainer.innerHTML = '<p class="text-red-400 text-sm py-8 text-center w-full">Failed to load pipeline view</p>';
   }
 }
+
+// -- Kanban drag-and-drop handlers (event delegation) --
+
+function _saveColumnOrder(cardList) {
+  var colKey = cardList.getAttribute('data-column');
+  if (!colKey) return;
+  var cards = cardList.querySelectorAll('.kanban-card[data-run-id]');
+  var ids = [];
+  cards.forEach(function(c) { ids.push(Number(c.getAttribute('data-run-id'))); });
+  var order = _getKanbanOrder();
+  order[colKey] = ids;
+  _saveKanbanOrder(order);
+}
+
+function _pauseKanbanPolling() {
+  _kanbanDragging = true;
+  if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
+}
+
+function _resumeKanbanPolling() {
+  _kanbanDragging = false;
+  loadKanban();
+  if (_agentView === 'kanban' && !_kanbanPollInterval) {
+    _kanbanPollInterval = setInterval(loadKanban, 5000);
+  }
+}
+
+(function() {
+  var container = document.getElementById('kanban-columns');
+  if (!container) return;
+
+  container.addEventListener('dragstart', function(e) {
+    var card = e.target.closest('.kanban-card[data-run-id]');
+    if (!card) return;
+    _pauseKanbanPolling();
+    _kanbanDragRunId = card.getAttribute('data-run-id');
+    card.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', _kanbanDragRunId);
+  });
+
+  var _dragRafPending = false;
+  container.addEventListener('dragover', function(e) {
+    var cardList = e.target.closest('.kanban-card-list');
+    if (!cardList) return;
+    var card = e.target.closest('.kanban-card[data-run-id]');
+    if (card && card.getAttribute('data-run-id') === _kanbanDragRunId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    if (_dragRafPending) return;
+    var clientY = e.clientY;
+    var targetCard = card;
+    _dragRafPending = true;
+    requestAnimationFrame(function() {
+      _dragRafPending = false;
+      if (targetCard) {
+        _insertPlaceholder(targetCard, clientY);
+      } else {
+        _removePlaceholder();
+      }
+    });
+  });
+
+  container.addEventListener('dragleave', function(e) {
+    if (!e.target.closest('.kanban-card-list')) {
+      _removePlaceholder();
+    }
+  });
+
+  container.addEventListener('drop', function(e) {
+    e.preventDefault();
+    var draggedId = e.dataTransfer.getData('text/plain');
+    if (!/^\d+$/.test(draggedId)) { _removePlaceholder(); return; }
+    var draggedCard = container.querySelector('.kanban-card[data-run-id="' + draggedId + '"]');
+    var targetList = e.target.closest('.kanban-card-list');
+
+    if (!draggedCard || !targetList) {
+      _removePlaceholder();
+      return;
+    }
+
+    // Only allow within-column reorder
+    var sourceList = draggedCard.closest('.kanban-card-list');
+    if (sourceList !== targetList) {
+      _removePlaceholder();
+      return;
+    }
+
+    if (_kanbanPlaceholder) {
+      targetList.insertBefore(draggedCard, _kanbanPlaceholder);
+      _removePlaceholder();
+    }
+
+    draggedCard.classList.remove('dragging');
+    _saveColumnOrder(targetList);
+  });
+
+  container.addEventListener('dragend', function(e) {
+    _removePlaceholder();
+    var card = e.target.closest('.kanban-card[data-run-id]');
+    if (card) card.classList.remove('dragging');
+    _kanbanDragRunId = null;
+    _resumeKanbanPolling();
+  });
+
+  // -- Touch drag-and-drop --
+  var _touchDragCard = null;
+  var _touchClone = null;
+  var _touchStartX = 0;
+  var _touchStartY = 0;
+  var _touchDragging = false;
+
+  container.addEventListener('touchstart', function(e) {
+    var card = e.target.closest('.kanban-card[data-run-id]');
+    if (!card) return;
+    _touchDragCard = card;
+    _touchDragging = false;
+    var touch = e.touches[0];
+    _touchStartX = touch.clientX;
+    _touchStartY = touch.clientY;
+  }, { passive: true });
+
+  var _touchRafPending = false;
+  container.addEventListener('touchmove', function(e) {
+    if (!_touchDragCard) return;
+    var touch = e.touches[0];
+    var dx = touch.clientX - _touchStartX;
+    var dy = touch.clientY - _touchStartY;
+
+    if (!_touchDragging) {
+      if (Math.sqrt(dx * dx + dy * dy) < 10) return;
+      _touchDragging = true;
+      _pauseKanbanPolling();
+      _touchDragCard.classList.add('dragging');
+      _touchClone = _touchDragCard.cloneNode(true);
+      _touchClone.classList.add('kanban-touch-clone');
+      _touchClone.style.width = _touchDragCard.offsetWidth + 'px';
+      document.body.appendChild(_touchClone);
+    }
+
+    e.preventDefault();
+    _touchClone.style.left = touch.clientX + 'px';
+    _touchClone.style.top = touch.clientY + 'px';
+
+    if (_touchRafPending) return;
+    var clientY = touch.clientY;
+    var clientX = touch.clientX;
+    var dragCard = _touchDragCard;
+    _touchRafPending = true;
+    requestAnimationFrame(function() {
+      _touchRafPending = false;
+      var elem = document.elementFromPoint(clientX, clientY);
+      if (elem) {
+        var targetCard = elem.closest('.kanban-card[data-run-id]');
+        if (targetCard && targetCard !== dragCard) {
+          var targetList = targetCard.closest('.kanban-card-list');
+          var sourceList = dragCard.closest('.kanban-card-list');
+          if (targetList === sourceList) {
+            _insertPlaceholder(targetCard, clientY);
+          }
+        }
+      }
+    });
+  }, { passive: false });
+
+  container.addEventListener('touchend', function(e) {
+    if (!_touchDragCard) return;
+    if (!_touchDragging) {
+      _touchDragCard = null;
+      return;
+    }
+
+    if (_touchClone) { _touchClone.remove(); _touchClone = null; }
+    _touchDragCard.classList.remove('dragging');
+
+    // Use existing placeholder position for drop target
+    if (_kanbanPlaceholder) {
+      var targetList = _kanbanPlaceholder.closest('.kanban-card-list');
+      var sourceList = _touchDragCard.closest('.kanban-card-list');
+      if (targetList && targetList === sourceList) {
+        targetList.insertBefore(_touchDragCard, _kanbanPlaceholder);
+        _saveColumnOrder(targetList);
+      }
+    }
+    _removePlaceholder();
+
+    _touchDragCard = null;
+    _touchDragging = false;
+    _resumeKanbanPolling();
+  });
+})();
 
 // Initialize the saved view preference
 if (_agentView === 'kanban') {
