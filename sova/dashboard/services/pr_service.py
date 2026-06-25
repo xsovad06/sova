@@ -70,9 +70,7 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
 
         status = (ctx.get("status") or "").upper()
         conclusion = (ctx.get("conclusion") or "").upper()
-        if status in ("PENDING", "IN_PROGRESS", "QUEUED"):
-            states.add("pending")
-        elif conclusion in (
+        if conclusion in (
             "FAILURE",
             "ERROR",
             "TIMED_OUT",
