@@ -6,9 +6,12 @@ tech stack detection, and sova.toml generation.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
 
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -138,6 +141,13 @@ class TomlConfig:
     ai_coauthor: bool = True
     pr_title_format: str = "conventional"
     pr_auto_link: bool = True
+    # Jira-specific fields
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_project_key: str = ""
+    jira_component: str = ""
+    jira_status_mapping: dict[str, str] | None = None
+    jira_track_agent_work: bool = False
 
 
 def generate_sova_toml(config: TomlConfig) -> str:
@@ -155,6 +165,22 @@ def generate_sova_toml(config: TomlConfig) -> str:
 
     task_source_table = tomlkit.table()
     task_source_table.add("type", config.task_source)
+    if config.task_source == "jira":
+        if config.jira_base_url:
+            task_source_table.add("jira_base_url", config.jira_base_url)
+        if config.jira_email:
+            task_source_table.add("jira_email", config.jira_email)
+        if config.jira_project_key:
+            task_source_table.add("jira_project_key", config.jira_project_key)
+        if config.jira_component:
+            task_source_table.add("jira_component", config.jira_component)
+        if config.jira_track_agent_work:
+            task_source_table.add("jira_track_agent_work", True)
+        if config.jira_status_mapping:
+            mapping_table = tomlkit.inline_table()
+            for k, v in config.jira_status_mapping.items():
+                mapping_table.add(k, v)
+            task_source_table.add("jira_status_mapping", mapping_table)
     doc.add("task_source", task_source_table)
 
     agent_table = tomlkit.table()
@@ -270,6 +296,101 @@ def _detect_cmd(project: Path, makefile_target: str, pkg_script: str, fallback: 
     if pkg.exists() and f'"{pkg_script}"' in pkg.read_text(errors="ignore"):
         return f"npm run {pkg_script}"
     return fallback
+
+
+_SUGGESTED_STATUS_MAPPING: dict[str, str] = {
+    "To Do": "backlog",
+    "Backlog": "backlog",
+    "Open": "backlog",
+    "New": "needs_spec",
+    "Refinement": "needs_spec",
+    "In Progress": "in_progress",
+    "In Development": "in_progress",
+    "Code Review": "in_review",
+    "Review": "in_review",
+    "In Review": "in_review",
+    "Done": "done",
+    "Closed": "done",
+    "Resolved": "done",
+}
+
+
+async def _jira_api_get(base_url: str, email: str, api_token: str, endpoint: str) -> httpx.Response:
+    """Make an authenticated GET request to the Jira REST API v3."""
+    credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.get(f"{base_url.rstrip('/')}/rest/api/3/{endpoint}", headers=headers)
+
+
+async def test_jira_connection(base_url: str, email: str, api_token: str) -> dict:
+    """Test Jira connection credentials by calling /rest/api/3/myself."""
+    try:
+        resp = await _jira_api_get(base_url, email, api_token, "myself")
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "status": "ok",
+                "display_name": data.get("displayName", ""),
+                "email": data.get("emailAddress", ""),
+            }
+        return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+    except httpx.HTTPError as e:
+        return {"status": "error", "detail": str(e)}
+
+
+async def discover_jira_projects(base_url: str, email: str, api_token: str) -> dict:
+    """List accessible Jira projects."""
+    try:
+        resp = await _jira_api_get(base_url, email, api_token, "project")
+        if resp.status_code != 200:
+            return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+        projects = [
+            {
+                "key": p.get("key", ""),
+                "name": p.get("name", ""),
+                "lead": (p.get("lead") or {}).get("displayName", ""),
+            }
+            for p in resp.json()
+        ]
+        return {"status": "ok", "projects": projects}
+    except httpx.HTTPError as e:
+        return {"status": "error", "detail": str(e)}
+
+
+async def discover_jira_statuses(
+    base_url: str,
+    email: str,
+    api_token: str,
+    project_key: str,
+) -> dict:
+    """Discover workflow statuses for a Jira project and suggest mapping."""
+    try:
+        resp = await _jira_api_get(base_url, email, api_token, f"project/{project_key}/statuses")
+        if resp.status_code != 200:
+            return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+
+        # Parse statuses from all issue types
+        seen: set[str] = set()
+        statuses: list[dict[str, str]] = []
+        for issue_type in resp.json():
+            for s in issue_type.get("statuses", []):
+                name = s.get("name", "")
+                if name and name not in seen:
+                    seen.add(name)
+                    category = s.get("statusCategory", {}).get("name", "")
+                    statuses.append({"name": name, "category": category})
+
+        suggested_mapping = {
+            s["name"]: _SUGGESTED_STATUS_MAPPING[s["name"]] for s in statuses if s["name"] in _SUGGESTED_STATUS_MAPPING
+        }
+
+        return {"status": "ok", "statuses": statuses, "suggested_mapping": suggested_mapping}
+    except httpx.HTTPError as e:
+        return {"status": "error", "detail": str(e)}
 
 
 def _read_existing_toml(project: Path) -> dict:

@@ -319,6 +319,40 @@ class GitHubAdapter(TaskAdapter):
             )
         return parsed
 
+    async def create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: list[str] | None = None,
+        issue_type: str = "",
+        parent_key: str = "",
+    ) -> Task:
+        args = [
+            "issue",
+            "create",
+            "--repo",
+            self.repo,
+            "--title",
+            title,
+        ]
+        if body:
+            args.extend(["--body", body])
+        if labels:
+            args.extend(["--label", ",".join(labels)])
+
+        result = await self._gh(*args)
+        if not result.success:
+            raise RuntimeError(f"Failed to create issue: {result.stderr[:200]}")
+
+        # gh issue create outputs the issue URL; extract the number and fetch full details.
+        url = result.stdout.strip()
+        issue_number = url.rstrip("/").split("/")[-1]
+        return await self.get_task(issue_number)
+
+    async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
+        # GitHub uses labels for state, not workflow transitions.
+        return []
+
     async def _clear_state_labels(self, task_id: str) -> None:
         """Remove all agent state labels from an issue."""
         result = await self._gh(

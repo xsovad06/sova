@@ -42,6 +42,18 @@ _DEFAULT_TRANSITIONS: dict[TaskState, list[str]] = {
 }
 
 
+def _build_adf_doc(text: str) -> dict:
+    """Build an Atlassian Document Format (ADF) document from plain text.
+
+    Splits on double newlines for multi-paragraph support.
+    """
+    paragraphs = text.split("\n\n") if text else [""]
+    content = [{"type": "paragraph", "content": [{"type": "text", "text": p}]} for p in paragraphs if p.strip()]
+    if not content:
+        content = [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]
+    return {"type": "doc", "version": 1, "content": content}
+
+
 class JiraAdapter(TaskAdapter):
     """Task adapter backed by Jira Cloud REST API v3."""
 
@@ -139,6 +151,10 @@ class JiraAdapter(TaskAdapter):
                     "issuetype",
                     "priority",
                     "created",
+                    "story_points",
+                    "customfield_10028",
+                    "sprint",
+                    "components",
                 ],
             },
         )
@@ -232,14 +248,10 @@ class JiraAdapter(TaskAdapter):
 
     async def post_comment(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
-        adf_body = {
-            "body": {
-                "type": "doc",
-                "version": 1,
-                "content": [{"type": "paragraph", "content": [{"type": "text", "text": body}]}],
-            },
-        }
-        response = await self._http.post(f"/issue/{issue_key}/comment", json=adf_body)
+        response = await self._http.post(
+            f"/issue/{issue_key}/comment",
+            json={"body": _build_adf_doc(body)},
+        )
         if response.status_code not in (200, 201):
             log.warning("post_comment.failed", issue=issue_key, status=response.status_code)
 
@@ -257,16 +269,10 @@ class JiraAdapter(TaskAdapter):
 
     async def edit_body(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
-        adf_body = {
-            "fields": {
-                "description": {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [{"type": "paragraph", "content": [{"type": "text", "text": body}]}],
-                },
-            },
-        }
-        response = await self._http.put(f"/issue/{issue_key}", json=adf_body)
+        response = await self._http.put(
+            f"/issue/{issue_key}",
+            json={"fields": {"description": _build_adf_doc(body)}},
+        )
         if response.status_code not in (200, 204):
             msg = f"Failed to edit body for {issue_key}: {response.text[:200]}"
             raise RuntimeError(msg)
@@ -310,7 +316,25 @@ class JiraAdapter(TaskAdapter):
         created = fields.get("created", "")
 
         milestone = fix_versions[0]["name"] if fix_versions else ""
+        fix_version_names = [fv["name"] for fv in fix_versions]
         number = key.split("-")[-1] if "-" in key else key
+
+        # Story points: try standard field name, then common custom field
+        story_points_raw = fields.get("story_points") or fields.get("customfield_10028")
+        story_points: float | None = None
+        if story_points_raw is not None:
+            try:
+                story_points = float(story_points_raw)
+            except (TypeError, ValueError):
+                pass
+
+        sprint_data = fields.get("sprint")
+        sprint_name = ""
+        if isinstance(sprint_data, dict):
+            sprint_name = sprint_data.get("name", "")
+
+        components_data = fields.get("components", [])
+        component_names = [c["name"] for c in components_data if isinstance(c, dict) and "name" in c]
 
         return Task(
             id=number,
@@ -324,10 +348,14 @@ class JiraAdapter(TaskAdapter):
             metadata={
                 "key": key,
                 "status": status.get("name", ""),
-                "issue_type": issue_type,
                 "jira_priority": priority_name,
                 "created_at": created,
             },
+            issue_type=issue_type,
+            story_points=story_points,
+            sprint=sprint_name,
+            components=component_names,
+            fix_versions=fix_version_names,
         )
 
     @staticmethod
@@ -360,13 +388,58 @@ class JiraAdapter(TaskAdapter):
             if resp.status_code not in (200, 204):
                 log.warning("clear_labels.failed", issue=issue_key, status=resp.status_code)
 
-    async def _trigger_transition(self, issue_key: str, target_state: TaskState) -> None:
+    async def create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: list[str] | None = None,
+        issue_type: str = "",
+        parent_key: str = "",
+    ) -> Task:
+        effective_type = issue_type or "Task"
+        fields: dict = {
+            "project": {"key": self.project_key},
+            "summary": title,
+            "issuetype": {"name": effective_type},
+            "description": _build_adf_doc(body),
+        }
+        if labels:
+            fields["labels"] = labels
+        if parent_key:
+            fields["parent"] = {"key": parent_key}
+
+        response = await self._http.post("/issue", json={"fields": fields})
+        if response.status_code not in (200, 201):
+            msg = f"Failed to create issue: {response.text[:200]}"
+            raise RuntimeError(msg)
+
+        created = response.json()
+        issue_key = created.get("key", "")
+        return await self.get_task(issue_key)
+
+    async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
+        issue_key = self._resolve_key(task_id)
         response = await self._http.get(f"/issue/{issue_key}/transitions")
         if response.status_code != 200:
-            log.warning("transition.fetch_failed", issue=issue_key, status=response.status_code)
-            return
+            log.warning("transitions.fetch_failed", issue=issue_key, status=response.status_code)
+            return []
 
-        transitions = response.json().get("transitions", [])
+        result: list[dict[str, str]] = []
+        for t in response.json().get("transitions", []):
+            to_status = t.get("to", {})
+            result.append(
+                {
+                    "id": t.get("id", ""),
+                    "name": t.get("name", ""),
+                    "to_status": to_status.get("name", ""),
+                }
+            )
+        return result
+
+    async def _trigger_transition(self, issue_key: str, target_state: TaskState) -> None:
+        transitions = await self.get_available_transitions(issue_key)
+        if not transitions:
+            return
 
         target_names = list(_DEFAULT_TRANSITIONS.get(target_state, []))
         config_name = self._state_transitions.get(target_state.value)

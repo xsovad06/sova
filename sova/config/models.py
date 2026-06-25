@@ -45,6 +45,7 @@ class TaskSourceConfig(BaseSettings):
     jira_jql_filter: str = ""
     jira_state_transitions: dict[str, str] = Field(default_factory=dict)
     jira_status_mapping: dict[str, str] = Field(default_factory=dict)
+    jira_track_agent_work: bool = False
 
     @field_validator("jira_status_mapping")
     @classmethod
