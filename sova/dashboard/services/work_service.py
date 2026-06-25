@@ -446,6 +446,9 @@ def _step_to_dict(step: StepExecution) -> dict:
     }
 
 
+# Positions for all role-based kanban columns. "backlog" and "done" are included
+# for sort ordering but won't appear in practice: the DB query filters to
+# non-terminal runs, so no run reaches "done", and no active run maps to "backlog".
 _ROLE_COLUMN_POSITIONS: dict[str, int] = {
     "backlog": 0,
     "triaged": 1,
@@ -468,6 +471,8 @@ def _classify_run_role_based(run: TaskRun, variant: str) -> str:
         return "in_review"
     if role == "triage":
         return "triaged"
+    if role.startswith("command:integrate") or role.startswith("command:ship") or role.startswith("command:approve"):
+        return "in_review"
     if role in ("developer", "") or role.startswith("command:"):
         return "developing"
     return "developing"

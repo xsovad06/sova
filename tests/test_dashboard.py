@@ -3258,6 +3258,15 @@ class TestKanbanAPI:
         for col in commit_cols:
             assert col["count"] == 1
 
+    async def test_kanban_endpoint_returns_mode(self, client: AsyncClient) -> None:
+        """The /api/agents/kanban response includes a 'mode' field."""
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "mode" in data
+        assert data["mode"] in ("step_based", "role_based")
+        assert "columns" in data
+
 
 class TestGetKanbanColumnsDirect:
     """Direct unit tests for get_kanban_columns (bypasses API router)."""
@@ -3580,6 +3589,54 @@ class TestGetKanbanColumnsDirect:
         cols = await get_kanban_columns(session, mode="role_based")
         assert len(cols) == 1
         assert cols[0]["name"] == "in_review"
+
+    async def test_role_based_triage_run(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="85",
+                role="triage",
+                status="running",
+                current_step="agent",
+                started_at=now,
+            )
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        assert len(cols) == 1
+        assert cols[0]["name"] == "triaged"
+
+    async def test_role_based_integration_commands(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.control_service import get_kanban_columns
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="86",
+                    role="command:integrate-pr",
+                    status="running",
+                    current_step="agent",
+                    started_at=now,
+                ),
+                TaskRun(
+                    issue_number="87",
+                    role="command:ship-pr",
+                    status="running",
+                    current_step="agent",
+                    started_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+        cols = await get_kanban_columns(session, mode="role_based")
+        assert len(cols) == 1
+        assert cols[0]["name"] == "in_review"
+        assert cols[0]["count"] == 2
 
     async def test_step_based_mode_is_default(self, session: AsyncSession) -> None:
         from sova.dashboard.services.control_service import get_kanban_columns

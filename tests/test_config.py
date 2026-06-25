@@ -234,6 +234,14 @@ github_repo = "user/repo"
     assert cfg.dashboard.kanban_columns == "step_based"
 
 
+def test_dashboard_rejects_invalid_kanban_mode(tmp_path: Path) -> None:
+    """Invalid kanban_columns value is rejected by Literal validation."""
+    from sova.config.models import DashboardConfig
+
+    with pytest.raises(ValidationError):
+        DashboardConfig(kanban_columns="invalid_mode")
+
+
 def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
     """Legacy .conf files are no longer loaded; defaults are returned instead."""
     conf_dir = tmp_path / ".claude" / "scripts"

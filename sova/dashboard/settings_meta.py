@@ -456,6 +456,7 @@ _REGISTRY: list[SettingMeta] = [
         "Kanban column grouping",
         "How kanban columns are grouped: step_based (by pipeline step) or role_based (by role/status category)",
         "dashboard",
+        "string",
     ),
 ]
 
