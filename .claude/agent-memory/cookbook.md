@@ -159,6 +159,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **SonarCloud CE Task failures are transient infrastructure errors** -- "CE Task finished abnormally with status: FAILED" means the SonarCloud server-side processing crashed, not a code quality issue. The scanner uploaded successfully but server processing failed. Fix: amend the top commit to change the SHA and force-push to trigger a fresh `pull_request_target` run. PAT may lack `actions: write` to `gh run rerun` directly. [confirmed: 0]
 - **Wait for CodeRabbit to finish before merging after /address-pr** -- CodeRabbit shows as `pending` StatusContext during review. Dismissing the old CHANGES_REQUESTED and merging while CodeRabbit is still reviewing the new push means its new findings land post-merge. Poll `gh pr checks` until CodeRabbit is no longer pending, then also verify `gh pr view --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions. PRs #134, #172, #189. [confirmed: 2]
 
+## Git Worktree Management
+
+- **Worktree conflict resolution must check PID liveness before removal** -- `resolve_worktree_conflict()` queries `TaskRun` DB for non-terminal runs using the worktree, then checks PID liveness via `os.kill(pid, 0)`. DB query failure is fail-closed (blocks removal). `PermissionError` from `os.kill` treated as live process. Never remove the main worktree (`Path.resolve()` comparison). File: `sova/git/worktree.py`. [confirmed: 0]
+- **`sync_branch()` auto-retries after worktree conflict resolution** -- catches "already checked out" errors from `git checkout`, delegates to `resolve_worktree_conflict()`, then retries checkout once. Resolver exceptions are wrapped with branch context. File: `sova/git/branch.py`. [confirmed: 0]
+
 ## Rebase / Git Workflow
 
 - **`git checkout --theirs` for complete file rewrites during garbled rebase conflicts** -- when a feature branch rewrites a file and main added features to the old version, the diff algorithm produces cross-function conflict markers. Take incoming version with `--theirs`, then manually re-add main's features. [confirmed: 0]
