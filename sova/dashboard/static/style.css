@@ -748,6 +748,9 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 .sova-step-seg {
   position: relative;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: opacity 150ms ease, filter 150ms ease;
 }
 
@@ -762,8 +765,9 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
 /* Step label (visible on md+ screens) */
 .sova-step-label {
   display: none;
-  font-size: 0.625rem;
-  color: rgb(var(--ctp-text-rgb) / 0.8);
+  font-size: 0.6875rem;
+  color: #fff;
+  text-shadow: 0 0 2px rgba(0,0,0,0.5);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -786,19 +790,54 @@ body[data-sidebar-collapsed="true"] .sidebar-divider {
   animation: sova-step-pulse 2s ease-in-out infinite;
 }
 
-/* Detail panel */
-.sova-step-detail {
-  max-height: 0;
-  opacity: 0;
+/* Expandable step row accordion */
+.sova-step-row {
+  border: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+  border-radius: 0.375rem;
   overflow: hidden;
-  transition: max-height 250ms ease, opacity 200ms ease, margin 250ms ease;
-  margin-top: 0;
 }
 
-.sova-step-detail.sova-step-detail-open {
-  max-height: 300px;
-  opacity: 1;
-  margin-top: 0.75rem;
+.sova-step-row-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  transition: background-color 150ms ease;
+}
+
+.sova-step-row-header:hover {
+  background: var(--color-surface-hover);
+}
+
+.sova-step-row.sova-step-expanded .sova-step-row-header {
+  border-bottom: 1px solid rgb(var(--ctp-surface1-rgb) / 0.3);
+}
+
+.sova-step-row-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 250ms ease;
+}
+
+.sova-step-chevron {
+  transition: transform 200ms ease;
+  flex-shrink: 0;
+}
+
+.sova-step-row.sova-step-expanded .sova-step-chevron {
+  transform: rotate(180deg);
+}
+
+.sova-step-highlight {
+  box-shadow: 0 0 0 2px rgb(var(--ctp-blue-rgb) / 0.5);
+  transition: box-shadow 300ms ease;
 }
 
 /* Sidebar tooltips: only visible when collapsed */

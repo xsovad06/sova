@@ -873,6 +873,7 @@ var STEP_LABELS = {
 
 var STEP_STATUS_COLORS = {
   done:        { bg: 'var(--ctp-green)',    text: 'text-accent-green' },
+  passed:      { bg: 'var(--ctp-green)',    text: 'text-accent-green' },
   failed:      { bg: 'var(--ctp-red)',      text: 'text-accent-red' },
   error:       { bg: 'var(--ctp-red)',      text: 'text-accent-red' },
   gate_failed: { bg: 'var(--ctp-yellow)',   text: 'text-accent-yellow' },
@@ -911,7 +912,7 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
 
   var idx = currentStep ? steps.indexOf(currentStep) : -1;
   var segments = steps.map(function(step, i) {
-    var h = compact ? 'h-1.5' : (interactive ? 'h-3' : 'h-2.5');
+    var h = compact ? 'h-1.5' : (interactive ? 'h-5' : 'h-2.5');
     var w = 'flex-1 ' + h;
     var rounded = '';
     if (i === 0) rounded = ' rounded-l';
@@ -969,114 +970,27 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
 
   var barHtml = '<div class="flex gap-0.5' + (interactive ? ' items-stretch' : '') + '">' + segments.join('') + '</div>' + stepLabelHtml;
 
-  if (interactive) {
-    barHtml += '<div class="sova-step-detail"></div>';
-  }
-
   return barHtml;
 }
 
-function _stepStatusColor(status) {
-  var sc = STEP_STATUS_COLORS[status];
-  return sc ? sc.text : 'text-gray-500';
-}
-
-function _renderStepDetailPanel(stepName, stepMap) {
-  var exec = stepMap ? stepMap[stepName] || null : null;
-  var label = STEP_LABELS[stepName] || stepName;
-
-  if (!exec) {
-    return '<div class="bg-surface-hover rounded p-3 text-sm">' +
-      '<span class="text-gray-400">' + escapeHtml(label) + '</span>' +
-      '<span class="text-xs text-gray-600 ml-2">pending</span>' +
-    '</div>';
-  }
-
-  var statusCls = _stepStatusColor(exec.status);
-  var rows = [];
-  rows.push('<div class="flex items-center gap-3 mb-2">' +
-    '<span class="font-medium text-sm text-gray-200">' + escapeHtml(label) + '</span>' +
-    '<span class="text-xs font-medium ' + statusCls + '">' + escapeHtml(exec.status) + '</span>' +
-  '</div>');
-
-  var details = [];
-  if (exec.duration_formatted || exec.duration_ms) {
-    details.push('<span class="text-gray-500">Duration:</span> <span class="text-gray-300">' +
-      escapeHtml(exec.duration_formatted || formatDuration(exec.duration_ms)) + '</span>');
-  }
-  if (exec.cost_usd != null) {
-    details.push('<span class="text-gray-500">Cost:</span> <span class="text-accent-green">$' +
-      exec.cost_usd.toFixed(4) + '</span>');
-  }
-  if (exec.retry_count > 0) {
-    details.push('<span class="text-gray-500">Retries:</span> <span class="text-accent-yellow">' +
-      exec.retry_count + '</span>');
-  }
-  if (details.length > 0) {
-    rows.push('<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs">' + details.join('') + '</div>');
-  }
-
-  if (exec.error_message) {
-    rows.push('<div class="mt-2 text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto">' +
-      escapeHtml(exec.error_message) + '</div>');
-  }
-  if (exec.gate_check_result) {
-    var gateText;
-    try { gateText = typeof exec.gate_check_result === 'string' ? exec.gate_check_result : JSON.stringify(exec.gate_check_result); }
-    catch (e) { gateText = '[Unable to serialize gate result]'; }
-    rows.push('<div class="mt-2 text-xs text-accent-yellow bg-accent-yellow/5 rounded p-2 max-h-24 overflow-y-auto">' +
-      '<span class="text-gray-500">Gate:</span> ' + escapeHtml(gateText) + '</div>');
-  }
-  if (exec.output_summary) {
-    rows.push('<div class="mt-2 text-xs text-gray-400 bg-surface-hover rounded p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">' +
-      escapeHtml(exec.output_summary) + '</div>');
-  }
-
-  return '<div class="bg-surface-hover rounded-lg p-3 border border-gray-700/50">' + rows.join('') + '</div>';
-}
-
-function initInteractivePipeline(container, stepData) {
-  var panel = container.querySelector('.sova-step-detail');
-  if (!panel) return;
-
-  if (!stepData || !Array.isArray(stepData)) { stepData = []; }
-
-  var stepMap = {};
-  stepData.forEach(function(s) { stepMap[s.step_name] = s; });
-
-  // Store stepMap on container for re-init safety
-  container._sovaStepMap = stepMap;
-
-  // Use event delegation: single listener on container, filter for .sova-step-seg clicks.
-  // Remove previous listener if re-initialized (e.g., during polling updates).
+function initInteractivePipeline(container) {
   if (container._sovaPipelineHandler) {
     container.removeEventListener('click', container._sovaPipelineHandler);
   }
 
-  var _openStep = null;
-
   container._sovaPipelineHandler = function(e) {
     var seg = e.target.closest('.sova-step-seg');
     if (!seg) return;
-
     var step = seg.getAttribute('data-step');
     if (!step) return;
 
     var segs = container.querySelectorAll('.sova-step-seg');
-
-    if (_openStep === step) {
-      panel.classList.remove('sova-step-detail-open');
-      panel.innerHTML = '';
-      _openStep = null;
-      segs.forEach(function(s) { s.classList.remove('sova-step-active'); });
-      return;
-    }
-
-    _openStep = step;
-    panel.innerHTML = _renderStepDetailPanel(step, container._sovaStepMap);
-    panel.classList.add('sova-step-detail-open');
     segs.forEach(function(s) { s.classList.remove('sova-step-active'); });
     seg.classList.add('sova-step-active');
+
+    if (typeof scrollToStep === 'function') {
+      scrollToStep(step);
+    }
   };
 
   container.addEventListener('click', container._sovaPipelineHandler);

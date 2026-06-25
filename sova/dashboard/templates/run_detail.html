@@ -41,44 +41,35 @@
   </div>
 </div>
 
-<!-- Tab bar -->
-<div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
-  <button onclick="switchDetailTab('steps')" id="dtab-steps"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white"
-    data-tooltip="Step-by-step execution timeline" data-tooltip-pos="bottom">Steps</button>
-  <button onclick="switchDetailTab('output')" id="dtab-output"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
-    data-tooltip="Raw agent output" data-tooltip-pos="bottom">Output</button>
-  <button onclick="switchDetailTab('error')" id="dtab-error"
-    class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300 hidden"
-    data-tooltip="Error details" data-tooltip-pos="bottom">Error</button>
-</div>
-
-<!-- Steps tab -->
-<div id="dpanel-steps" class="bg-surface-card rounded-lg border border-gray-700/50">
-  <div class="p-4" id="step-timeline">
-    <p class="text-gray-500 text-sm">Loading...</p>
+<!-- Run-level error banner -->
+<div id="run-error-banner" class="hidden mb-4 bg-accent-red/5 border border-accent-red/30 rounded-lg p-3">
+  <pre class="text-sm text-accent-red whitespace-pre-wrap" id="run-error-text"></pre>
+  <div id="sync-commands-action" class="hidden mt-3 flex items-center gap-3">
+    <button type="button" onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
+      Sync Commands
+    </button>
+    <span id="sync-commands-status" class="text-xs text-gray-500"></span>
   </div>
 </div>
 
-<!-- Output tab -->
-<div id="dpanel-output" class="hidden bg-surface-card rounded-lg border border-gray-700/50">
-  <div class="p-4 font-mono text-xs text-gray-300 max-h-[600px] overflow-y-auto whitespace-pre-wrap" id="output-content">
-    <p class="text-gray-500">No output available for this run.</p>
+<!-- Step list header -->
+<div class="flex items-center justify-between mb-3">
+  <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Steps</h3>
+  <div class="flex items-center gap-2" id="step-list-controls" style="display:none">
+    <button onclick="expandAllSteps()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Expand All</button>
+    <span class="text-gray-700">|</span>
+    <button onclick="collapseAllSteps()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Collapse All</button>
   </div>
 </div>
 
-<!-- Error tab -->
-<div id="dpanel-error" class="hidden bg-surface-card rounded-lg border border-accent-red/50">
-  <div class="p-4">
-    <pre class="text-sm text-gray-300 whitespace-pre-wrap" id="error-message"></pre>
-    <div id="sync-commands-action" class="hidden mt-4 flex items-center gap-3">
-      <button type="button" id="btn-sync-commands" onclick="syncCommands()" class="px-4 py-2 text-sm bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">
-        Sync Commands
-      </button>
-      <span id="sync-commands-status" class="text-xs text-gray-500"></span>
-    </div>
-  </div>
+<!-- Expandable step list -->
+<div id="step-list" class="space-y-1">
+  <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+
+<!-- Fallback output (when no steps exist yet) -->
+<div id="run-output-fallback" class="hidden mt-4 bg-surface-card rounded-lg border border-gray-700/50">
+  <div class="p-4 font-mono text-xs text-gray-300 max-h-[400px] overflow-y-auto whitespace-pre-wrap" id="fallback-output-content"></div>
 </div>
 
 <!-- Resume chain -->
@@ -99,23 +90,13 @@
 
 {% block scripts %}
 <script>
-var currentDetailTab = 'steps';
+var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
+var _outputCursor = 0;
+var _outputPollTimer = null;
+var _outputTargetStep = null;
 
-function switchDetailTab(tab) {
-  currentDetailTab = tab;
-  ['steps', 'output', 'error'].forEach(function(t) {
-    var panel = document.getElementById('dpanel-' + t);
-    var btn = document.getElementById('dtab-' + t);
-    if (!panel || !btn) return;
-    if (t === tab) {
-      panel.classList.remove('hidden');
-      btn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white';
-    } else {
-      panel.classList.add('hidden');
-      btn.className = btn.className.replace('border-accent text-white', 'border-transparent text-gray-500 hover:text-gray-300');
-      btn.className = 'px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300' + (btn.classList.contains('hidden') ? ' hidden' : '');
-    }
-  });
+function safeStepId(name) {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 async function loadRunDetail() {
@@ -123,7 +104,6 @@ async function loadRunDetail() {
     var data = await fetchAPI(apiUrl('/work/{{ run_id }}'));
     var run = data.run;
     var steps = data.steps;
-    var pipeline = data.pipeline;
 
     document.getElementById('detail-issue').innerHTML = issueLink(run.issue_number);
 
@@ -138,7 +118,6 @@ async function loadRunDetail() {
 
     document.getElementById('detail-cost').textContent = '$' + parseFloat(run.total_cost_usd || 0).toFixed(4);
 
-    // PR + branch info
     var infoEl = document.getElementById('run-info');
     var infoParts = [];
     if (run.branch_name) infoParts.push('Branch: <span class="text-gray-300">' + escapeHtml(run.branch_name) + '</span>');
@@ -149,12 +128,10 @@ async function loadRunDetail() {
       infoEl.innerHTML = infoParts.join('<span class="text-gray-700 mx-2">|</span>');
     }
 
-    // Pipeline bar (interactive with step data)
     var pipelineContainer = document.getElementById('pipeline-bar');
     pipelineContainer.innerHTML = renderStepPipeline(run.current_step, run.role, false, run.pipeline_variant, {interactive: true, stepData: steps});
-    initInteractivePipeline(pipelineContainer, steps);
+    initInteractivePipeline(pipelineContainer);
 
-    // Resume chain
     var chainEl = document.getElementById('resume-chain');
     if (run.resumed_from_id) {
       var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
@@ -165,7 +142,6 @@ async function loadRunDetail() {
       '</div>';
     }
 
-    // Show appropriate action buttons
     var restartable = ['failed', 'interrupted', 'paused'];
     var nonTerminal = ['running', 'developing', 'pending'];
     document.getElementById('actions-section').classList.remove('hidden');
@@ -180,42 +156,18 @@ async function loadRunDetail() {
       document.getElementById('btn-mark-failed').classList.remove('hidden');
     }
 
-    // Error tab
+    // Run-level error banner
     if (run.error_message) {
-      document.getElementById('dtab-error').classList.remove('hidden');
-      document.getElementById('error-message').textContent = run.error_message;
-      var syncAction = document.getElementById('sync-commands-action');
-      syncAction.classList.add('hidden');
+      var banner = document.getElementById('run-error-banner');
+      banner.classList.remove('hidden');
+      document.getElementById('run-error-text').textContent = run.error_message;
       if (run.error_message.indexOf('sova commands update') !== -1) {
-        syncAction.classList.remove('hidden');
+        document.getElementById('sync-commands-action').classList.remove('hidden');
       }
     }
 
-    // Steps
-    if (steps.length === 0) {
-      document.getElementById('step-timeline').innerHTML = '<p class="text-gray-500 text-sm">No steps recorded</p>';
-      switchDetailTab('output');
-    } else {
-      document.getElementById('step-timeline').innerHTML = '<div class="space-y-2">' +
-        steps.map(function(s) {
-          var stepColors = s.status === 'done' ? { bg: 'bg-accent-green/5', dot: 'bg-accent-green', text: 'text-accent-green' } :
-                           s.status === 'failed' ? { bg: 'bg-accent-red/5', dot: 'bg-accent-red', text: 'text-accent-red' } :
-                           { bg: 'bg-surface-hover', dot: 'bg-gray-500', text: 'text-gray-400' };
-
-          return '<div class="flex items-center gap-3 p-3 rounded ' + stepColors.bg + '">' +
-            '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + stepColors.dot + '"></span>' +
-            '<span class="text-sm font-medium w-36">' + escapeHtml(STEP_LABELS[s.step_name] || s.step_name) + '</span>' +
-            '<span class="text-xs text-gray-500 w-20">' + (s.duration_formatted || formatDuration(s.duration_ms)) + '</span>' +
-            '<span class="text-xs text-accent-green w-20">$' + parseFloat(s.cost_usd || 0).toFixed(4) + '</span>' +
-            '<span class="text-xs ' + stepColors.text + '">' + s.status + '</span>' +
-            (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-xs">' + escapeHtml(s.error_message) + '</span>' : '') +
-          '</div>';
-        }).join('') +
-      '</div>';
-    }
-
-    // Output tab: try to load from agent output if still running
-    tryLoadOutput(run);
+    // Render step list
+    renderStepList(steps, run);
 
     // Load run chain
     loadRunChain(run.issue_number, run.id);
@@ -224,29 +176,198 @@ async function loadRunDetail() {
   }
 }
 
-var _outputCursor = 0;
-var _outputPollTimer = null;
-var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
+function renderStepList(steps, run) {
+  if (_outputPollTimer) {
+    clearTimeout(_outputPollTimer);
+    _outputPollTimer = null;
+  }
+  _outputCursor = 0;
 
-async function tryLoadOutput(run) {
+  if (steps.length === 0) {
+    document.getElementById('step-list').innerHTML = '<p class="text-gray-500 text-sm p-4">No steps recorded</p>';
+    // Show fallback output area
+    var fallback = document.getElementById('run-output-fallback');
+    fallback.classList.remove('hidden');
+    _outputTargetStep = null;
+    tryLoadOutput(run, 'fallback-output-content');
+    return;
+  }
+
+  document.getElementById('step-list-controls').style.display = '';
+
+  // Determine which step gets the raw output
+  _outputTargetStep = null;
+  for (var i = steps.length - 1; i >= 0; i--) {
+    if (steps[i].status === 'failed') { _outputTargetStep = steps[i].step_name; break; }
+  }
+  if (!_outputTargetStep) {
+    for (var j = steps.length - 1; j >= 0; j--) {
+      var st = steps[j].status;
+      if (st && st !== 'pending' && st !== 'skipped') { _outputTargetStep = steps[j].step_name; break; }
+    }
+  }
+
+  var html = steps.map(function(s) {
+    var stepDone = s.status === 'done' || s.status === 'passed';
+    var dotCls = stepDone ? 'bg-accent-green' :
+                 s.status === 'failed' ? 'bg-accent-red' :
+                 s.status === 'running' || s.status === 'in_progress' ? 'bg-accent' :
+                 s.status === 'gate_failed' ? 'bg-accent-yellow' :
+                 'bg-gray-500';
+    var statusCls = stepDone ? 'text-accent-green' :
+                    s.status === 'failed' ? 'text-accent-red' :
+                    s.status === 'running' || s.status === 'in_progress' ? 'text-accent' :
+                    s.status === 'gate_failed' ? 'text-accent-yellow' :
+                    'text-gray-500';
+    var label = STEP_LABELS[s.step_name] || s.step_name;
+    var dur = s.duration_formatted || formatDuration(s.duration_ms) || '--';
+    var cost = s.cost_usd != null ? '$' + parseFloat(s.cost_usd).toFixed(4) : '--';
+    var isOutputTarget = s.step_name === _outputTargetStep;
+
+    // Header row
+    var sid = safeStepId(s.step_name);
+    var row = '<div class="sova-step-row" id="step-row-' + sid + '">' +
+      '<button class="sova-step-row-header" onclick="toggleStep(\'' + escapeHtml(s.step_name) + '\')">' +
+        '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + dotCls + '"></span>' +
+        '<span class="text-sm font-medium w-40 text-left truncate">' + escapeHtml(label) + '</span>' +
+        '<span class="text-xs text-gray-500 w-20">' + escapeHtml(dur) + '</span>' +
+        '<span class="text-xs text-accent-green w-20">' + escapeHtml(cost) + '</span>' +
+        '<span class="text-xs font-medium ' + statusCls + ' w-16">' + escapeHtml(s.status) + '</span>' +
+        (s.error_message ? '<span class="text-xs text-accent-red ml-auto truncate max-w-[200px]">' + escapeHtml(s.error_message) + '</span>' : '') +
+        '<svg class="sova-step-chevron w-4 h-4 text-gray-600 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>' +
+      '</button>';
+
+    // Body (hidden by default)
+    row += '<div class="sova-step-row-body">' +
+      '<div class="px-4 py-3">';
+
+    // Metrics row
+    var metrics = [];
+    if (s.duration_formatted || s.duration_ms) metrics.push('<span class="text-gray-500">Duration:</span> <span class="text-gray-300">' + escapeHtml(dur) + '</span>');
+    if (s.cost_usd != null) metrics.push('<span class="text-gray-500">Cost:</span> <span class="text-accent-green">' + escapeHtml(cost) + '</span>');
+    if (s.retry_count > 0) metrics.push('<span class="text-gray-500">Retries:</span> <span class="text-accent-yellow">' + s.retry_count + '</span>');
+    if (metrics.length > 0) row += '<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-3">' + metrics.join('') + '</div>';
+
+    // Output summary
+    if (s.output_summary) {
+      row += '<div class="text-xs text-gray-400 bg-surface-hover rounded p-2 max-h-32 overflow-y-auto whitespace-pre-wrap mb-2">' + escapeHtml(s.output_summary) + '</div>';
+    }
+
+    // Gate check result
+    if (s.gate_check_result) {
+      var gateText;
+      try { gateText = typeof s.gate_check_result === 'string' ? s.gate_check_result : JSON.stringify(s.gate_check_result); }
+      catch (e) { gateText = String(s.gate_check_result); }
+      row += '<div class="text-xs text-accent-yellow bg-accent-yellow/5 rounded p-2 max-h-24 overflow-y-auto mb-2"><span class="text-gray-500">Gate:</span> ' + escapeHtml(gateText) + '</div>';
+    }
+
+    // Error message
+    if (s.error_message) {
+      row += '<div class="text-xs text-accent-red bg-accent-red/5 rounded p-2 max-h-24 overflow-y-auto mb-2">' + escapeHtml(s.error_message) + '</div>';
+      if (s.error_message.indexOf('sova commands update') !== -1) {
+        row += '<div class="mt-2 flex items-center gap-3"><button onclick="syncCommands(event)" class="px-3 py-1.5 text-xs bg-accent/20 text-accent border border-accent/40 rounded hover:bg-accent/30 transition-colors">Sync Commands</button><span class="text-xs text-gray-500 sync-commands-status"></span></div>';
+      }
+    }
+
+    // Raw output embed (only on target step)
+    if (isOutputTarget) {
+      row += '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
+        '<div class="text-xs text-gray-500 uppercase mb-2">Agent Output</div>' +
+        '<div class="font-mono text-xs text-gray-300 max-h-[400px] overflow-y-auto whitespace-pre-wrap bg-[var(--color-surface)] rounded p-3" id="inline-output-content">Loading...</div>' +
+      '</div>';
+    }
+
+    row += '</div></div></div>';
+    return row;
+  }).join('');
+
+  document.getElementById('step-list').innerHTML = html;
+
+  // Auto-expand the output target step (and failed steps)
+  if (_outputTargetStep) {
+    toggleStep(_outputTargetStep);
+  }
+
+  // Start output loading
+  if (_outputTargetStep) {
+    tryLoadOutput(run, 'inline-output-content');
+  }
+}
+
+function toggleStep(stepName) {
+  var row = document.getElementById('step-row-' + safeStepId(stepName));
+  if (!row) return;
+  var body = row.querySelector('.sova-step-row-body');
+  if (!body) return;
+  if (row.classList.contains('sova-step-expanded')) {
+    body.style.maxHeight = body.scrollHeight + 'px';
+    requestAnimationFrame(function() { body.style.maxHeight = '0'; });
+    row.classList.remove('sova-step-expanded');
+  } else {
+    row.classList.add('sova-step-expanded');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.addEventListener('transitionend', function handler() {
+      body.removeEventListener('transitionend', handler);
+      if (row.classList.contains('sova-step-expanded')) body.style.maxHeight = 'none';
+    });
+  }
+}
+
+function expandAllSteps() {
+  document.querySelectorAll('.sova-step-row:not(.sova-step-expanded)').forEach(function(row) {
+    var body = row.querySelector('.sova-step-row-body');
+    if (!body) return;
+    row.classList.add('sova-step-expanded');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.addEventListener('transitionend', function handler() {
+      body.removeEventListener('transitionend', handler);
+      if (row.classList.contains('sova-step-expanded')) body.style.maxHeight = 'none';
+    });
+  });
+}
+
+function collapseAllSteps() {
+  document.querySelectorAll('.sova-step-row.sova-step-expanded').forEach(function(row) {
+    var body = row.querySelector('.sova-step-row-body');
+    if (!body) return;
+    body.style.maxHeight = body.scrollHeight + 'px';
+    requestAnimationFrame(function() { body.style.maxHeight = '0'; });
+    row.classList.remove('sova-step-expanded');
+  });
+}
+
+function scrollToStep(stepName) {
+  var row = document.getElementById('step-row-' + safeStepId(stepName));
+  if (!row) return;
+  if (!row.classList.contains('sova-step-expanded')) {
+    toggleStep(stepName);
+  }
+  row.scrollIntoView({behavior: 'smooth', block: 'center'});
+  row.classList.add('sova-step-highlight');
+  setTimeout(function() { row.classList.remove('sova-step-highlight'); }, 1500);
+}
+
+async function tryLoadOutput(run, targetId) {
   try {
     var data = await fetchAPI(apiUrl('/agents/' + run.id + '/output?since=' + _outputCursor));
     if (data.lines && data.lines.length > 0) {
-      var el = document.getElementById('output-content');
-      if (_outputCursor === 0) {
-        el.textContent = data.lines.join('\n');
-      } else {
-        el.textContent += '\n' + data.lines.join('\n');
+      var el = document.getElementById(targetId);
+      if (el) {
+        if (_outputCursor === 0) {
+          el.textContent = data.lines.join('\n');
+        } else {
+          el.textContent += '\n' + data.lines.join('\n');
+        }
+        _outputCursor += data.lines.length;
+        el.scrollTop = el.scrollHeight;
       }
-      _outputCursor += data.lines.length;
-      el.scrollTop = el.scrollHeight;
     }
   } catch (e) {
     // Agent output not available
   }
 
   if (!_TERMINAL.includes(run.status)) {
-    _outputPollTimer = setTimeout(function() { tryLoadOutput(run); }, 2000);
+    _outputPollTimer = setTimeout(function() { tryLoadOutput(run, targetId); }, 2000);
   }
 }
 
@@ -326,12 +447,12 @@ async function markFailed() {
   }
 }
 
-async function syncCommands() {
-  var btn = document.getElementById('btn-sync-commands');
-  var status = document.getElementById('sync-commands-status');
-  btn.disabled = true;
-  btn.textContent = 'Syncing...';
-  status.textContent = '';
+async function syncCommands(e) {
+  var btn = e && e.target ? e.target : null;
+  var status = (btn && btn.parentElement && btn.parentElement.querySelector('.sync-commands-status'))
+    || document.getElementById('sync-commands-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
+  if (status) status.textContent = '';
   try {
     var res = await fetch(apiUrl('/setup/commands/sync'), {
       method: 'POST',
@@ -339,26 +460,19 @@ async function syncCommands() {
     });
     if (!res.ok) {
       var err = await res.json();
-      status.textContent = 'Error: ' + (err.detail || res.status);
-      status.className = 'text-xs text-accent-red';
-      btn.disabled = false;
-      btn.textContent = 'Sync Commands';
+      if (status) { status.textContent = 'Error: ' + (err.detail || res.status); status.className = 'text-xs text-accent-red'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Sync Commands'; }
       return;
     }
     var data = await res.json();
     var msg = data.updated + ' updated, ' + data.skipped + ' unchanged';
-    if (data.conflicts.length > 0) {
-      msg += ', ' + data.conflicts.length + ' conflict(s)';
-    }
-    status.textContent = msg;
-    status.className = 'text-xs text-accent-green';
-    btn.textContent = 'Synced';
+    if (data.conflicts.length > 0) msg += ', ' + data.conflicts.length + ' conflict(s)';
+    if (status) { status.textContent = msg; status.className = 'text-xs text-accent-green'; }
+    if (btn) btn.textContent = 'Synced';
     showToast('Commands synced: ' + msg, 'success');
-  } catch (e) {
-    status.textContent = 'Failed: ' + e.message;
-    status.className = 'text-xs text-accent-red';
-    btn.disabled = false;
-    btn.textContent = 'Sync Commands';
+  } catch (ex) {
+    if (status) { status.textContent = 'Failed: ' + ex.message; status.className = 'text-xs text-accent-red'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Sync Commands'; }
   }
 }
 
