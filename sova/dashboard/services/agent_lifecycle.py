@@ -394,15 +394,31 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
 
 
-def _resolve_issue_worktree(issue: str, project_dir: Path) -> Path:
-    """Return the worktree path for an issue if one exists, else project_dir."""
+async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name: str = "") -> Path:
+    """Return the worktree path for an issue if one exists, else project_dir.
+
+    Falls back to branch-based lookup via ``find_worktree_by_branch()`` when
+    the issue-based directory doesn't exist but *branch_name* is provided.
+    Filters out the main worktree to avoid running in the project root.
+    """
     issue_id = issue.lstrip("#").strip()
-    if not issue_id or not issue_id.isdigit():
-        return project_dir
-    candidate = project_dir / _CLAUDE_DIR / "worktrees" / issue_id
-    if candidate.is_dir():
-        log.info("command.using_worktree", issue=issue_id, path=str(candidate))
-        return candidate
+    if issue_id and issue_id.isdigit():
+        candidate = project_dir / _CLAUDE_DIR / "worktrees" / issue_id
+        if candidate.is_dir():
+            log.info("command.using_worktree", issue=issue_id, path=str(candidate))
+            return candidate
+
+    if branch_name:
+        try:
+            from sova.git.worktree import find_worktree_by_branch
+
+            wt_path = await find_worktree_by_branch(branch_name, cwd=project_dir)
+            if wt_path is not None and wt_path.resolve() != project_dir.resolve():
+                log.info("command.using_branch_worktree", branch=branch_name, path=str(wt_path))
+                return wt_path
+        except Exception:
+            log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
+
     return project_dir
 
 
@@ -491,7 +507,24 @@ async def start_command(
             _evict_completed_for_issue(pa, issue)
 
         project_dir = pa.project_dir
-        cwd = _resolve_issue_worktree(issue, project_dir) if issue else project_dir
+
+        branch_name = ""
+        if pr_number:
+            try:
+                from sova.config.loader import load_config
+                from sova.git.pr import get_pr_branch
+
+                cfg = load_config(project_dir)
+                if cfg.github_repo:
+                    branch_name = await get_pr_branch(
+                        pr_number,
+                        repo=cfg.github_repo,
+                        github_user=cfg.github_user,
+                    )
+            except Exception:
+                log.debug("command.pr_branch_lookup_failed", pr=pr_number, exc_info=True)
+
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
         prompt = _resolve_command_prompt(command, args, project_dir)
 
         try:
