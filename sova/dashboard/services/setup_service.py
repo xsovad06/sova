@@ -388,6 +388,13 @@ async def discover_jira_projects(base_url: str, email: str, api_token: str) -> d
         return {"status": "error", "detail": str(e)}
 
 
+def _validate_jira_project_key(project_key: str) -> str:
+    """Validate and return a safe Jira project key (uppercase letters + optional digits)."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,255}", project_key):
+        raise ValueError(f"Invalid Jira project key: {project_key!r}")
+    return project_key
+
+
 async def discover_jira_statuses(
     base_url: str,
     email: str,
@@ -396,7 +403,8 @@ async def discover_jira_statuses(
 ) -> dict:
     """Discover workflow statuses for a Jira project and suggest mapping."""
     try:
-        resp = await _jira_api_get(base_url, email, api_token, f"project/{project_key}/statuses")
+        safe_key = _validate_jira_project_key(project_key)
+        resp = await _jira_api_get(base_url, email, api_token, f"project/{safe_key}/statuses")
         if resp.status_code != 200:
             return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
 
@@ -416,6 +424,8 @@ async def discover_jira_statuses(
         }
 
         return {"status": "ok", "statuses": statuses, "suggested_mapping": suggested_mapping}
+    except ValueError as e:
+        return {"status": "error", "detail": str(e)}
     except httpx.HTTPError as e:
         return {"status": "error", "detail": str(e)}
 
