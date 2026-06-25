@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
+from sova.core.state import STEP_DONE_STATUSES
 from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
 from sova.utils.logging import get_logger
 
@@ -77,7 +78,7 @@ async def get_agent_status(
             )
             steps = result.scalars().all()
 
-            completed = [s.step_name for s in steps if s.status == "done"]
+            completed = [s.step_name for s in steps if s.status in STEP_DONE_STATUSES]
             is_terminal = task_run.status in _TERMINAL_STATUSES
 
             # Progress percentage
@@ -159,7 +160,7 @@ async def get_all_agent_statuses(
             try:
                 progress = get_step_progress(run.current_step, role=run.role, pr_number=run.pr_number)
                 run_steps = steps_by_run.get(run.id, [])
-                completed = [s.step_name for s in run_steps if s.status == "done"]
+                completed = [s.step_name for s in run_steps if s.status in STEP_DONE_STATUSES]
 
                 step_progress_pct = _compute_progress_pct(
                     run.status, progress["step_index"], progress["total_steps"], len(completed)
@@ -224,7 +225,7 @@ def _compute_time_in_step(task_run: TaskRun, steps: list[StepExecution], *, is_t
     now = datetime.now(timezone.utc)
 
     # Find the latest in-progress step (not done)
-    in_progress = [s for s in steps if s.status != "done"]
+    in_progress = [s for s in steps if s.status not in STEP_DONE_STATUSES]
     if in_progress:
         latest = in_progress[-1]
         if latest.started_at:
@@ -277,7 +278,7 @@ async def _fetch_step_averages(
         .where(
             TaskRun.status == "done",
             StepExecution.step_name.in_(pipeline_steps),
-            StepExecution.status == "done",
+            StepExecution.status.in_(STEP_DONE_STATUSES),
         )
         .group_by(StepExecution.task_run_id)
         .having(func.count(StepExecution.step_name.distinct()) >= min_steps)
@@ -300,8 +301,9 @@ async def _fetch_step_averages(
         )
         .where(
             StepExecution.task_run_id.in_(select(subq.c.task_run_id)),
-            StepExecution.status == "done",
+            StepExecution.status.in_(STEP_DONE_STATUSES),
             StepExecution.step_name.in_(pipeline_steps),
+            StepExecution.duration_ms > 0,
         )
         .group_by(StepExecution.step_name)
     )

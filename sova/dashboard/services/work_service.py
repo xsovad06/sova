@@ -12,7 +12,7 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sova.core.state import TASK_RUN_TERMINAL
+from sova.core.state import STEP_DONE_STATUSES, TASK_RUN_TERMINAL
 from sova.dashboard.services.control_service import (
     _ADDRESS_REVIEW_ONLY,
     _RESEARCHER_ONLY,
@@ -137,7 +137,7 @@ async def get_work_history(
         completed_steps = await session.scalar(
             select(func.count(StepExecution.id)).where(
                 StepExecution.task_run_id == r.id,
-                StepExecution.status == "done",
+                StepExecution.status.in_(STEP_DONE_STATUSES),
             )
         )
 
