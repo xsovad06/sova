@@ -326,17 +326,45 @@ _SUGGESTED_STATUS_MAPPING: dict[str, str] = {
 def _validate_jira_base_url(base_url: str) -> str:
     """Validate and normalize a Jira base URL.
 
-    Ensures the URL uses https and points to an Atlassian domain,
-    preventing SSRF via user-controlled URL construction.
+    Ensures the URL uses HTTPS and the hostname is not a private/internal
+    address. Rejects localhost, loopback, link-local, and RFC-1918 private
+    IP ranges to prevent SSRF.
     """
+    import ipaddress
+    import socket
     from urllib.parse import urlparse
 
     parsed = urlparse(base_url.rstrip("/"))
-    if parsed.scheme not in ("https", "http"):
-        raise ValueError(f"Invalid Jira URL scheme: {parsed.scheme}")
-    if not parsed.hostname:
+    if parsed.scheme != "https":
+        raise ValueError(f"Invalid Jira URL scheme: {parsed.scheme!r} (only https is allowed)")
+    hostname = parsed.hostname
+    if not hostname:
         raise ValueError("Jira URL must include a hostname")
-    return f"{parsed.scheme}://{parsed.hostname}{f':{parsed.port}' if parsed.port else ''}"
+
+    # Block well-known internal hostnames
+    _blocked = {"localhost", "localhost.localdomain", "127.0.0.1", "::1", "[::1]"}
+    if hostname.lower() in _blocked:
+        raise ValueError(f"Jira URL must not point to a local address: {hostname!r}")
+
+    # Resolve hostname and reject private/reserved IPs
+    try:
+        addr = ipaddress.ip_address(hostname)
+    except ValueError:
+        # Not a literal IP -- resolve DNS
+        try:
+            resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            for _family, _type, _proto, _canonname, sockaddr in resolved:
+                addr = ipaddress.ip_address(sockaddr[0])
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    raise ValueError(f"Jira URL hostname {hostname!r} resolves to a private/reserved address: {addr}")
+        except socket.gaierror:
+            # Cannot resolve -- allow (the actual HTTP request will fail)
+            pass
+    else:
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise ValueError(f"Jira URL must not point to a private/reserved address: {hostname!r}")
+
+    return f"https://{hostname}{f':{parsed.port}' if parsed.port else ''}"
 
 
 async def _jira_api_get(base_url: str, email: str, api_token: str, endpoint: str) -> httpx.Response:
@@ -349,7 +377,7 @@ async def _jira_api_get(base_url: str, email: str, api_token: str, endpoint: str
     }
     # endpoint is always a hardcoded constant from callers (e.g. "myself", "project")
     url = f"{validated_base}/rest/api/3/{endpoint}"
-    async with httpx.AsyncClient(timeout=15.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
         return await client.get(url, headers=headers)
 
 
@@ -365,7 +393,8 @@ async def test_jira_connection(base_url: str, email: str, api_token: str) -> dic
                 "email": data.get("emailAddress", ""),
             }
         return {"status": "error", "detail": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-    except httpx.HTTPError as e:
+    except Exception as e:
+        log.exception("jira_test.failed")
         return {"status": "error", "detail": str(e)}
 
 

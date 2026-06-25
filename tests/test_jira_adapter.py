@@ -688,6 +688,21 @@ class TestParseIssueRichMetadata:
         task = adapter._parse_issue(raw)
         assert task.story_points == 3.0
 
+    def test_story_points_zero_is_valid(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["story_points"] = 0
+        task = adapter._parse_issue(raw)
+        assert task.story_points == 0.0
+
+    def test_story_points_zero_not_overridden_by_custom_field(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["story_points"] = 0
+        raw["fields"]["customfield_10028"] = 5
+        task = adapter._parse_issue(raw)
+        assert task.story_points == 0.0
+
     def test_story_points_none_when_missing(self) -> None:
         adapter = _adapter()
         task = adapter._parse_issue(_issue_json())

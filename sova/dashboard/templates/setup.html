@@ -471,6 +471,10 @@ async function testJiraConnection() {
       result.textContent = 'Connection failed: ' + (data.detail || 'unknown error');
       result.className = 'mt-2 px-3 py-2 rounded text-xs bg-accent-red/10 text-accent-red';
     }
+  } catch (err) {
+    result.classList.remove('hidden');
+    result.textContent = 'Request failed: ' + err.message;
+    result.className = 'mt-2 px-3 py-2 rounded text-xs bg-accent-red/10 text-accent-red';
   } finally {
     btn.textContent = 'Test Connection';
     btn.disabled = false;
