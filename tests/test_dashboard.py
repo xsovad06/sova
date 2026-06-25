@@ -1859,7 +1859,7 @@ class TestStartCommandWorktreeResolution:
         branch_worktree.mkdir(parents=True)
 
         with patch(
-            "sova.git.worktree.find_worktree_by_branch",
+            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
             new_callable=AsyncMock,
             return_value=branch_worktree,
         ):
@@ -1874,7 +1874,7 @@ class TestStartCommandWorktreeResolution:
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         with patch(
-            "sova.git.worktree.find_worktree_by_branch",
+            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
             new_callable=AsyncMock,
             return_value=tmp_path,
         ):
@@ -1889,7 +1889,7 @@ class TestStartCommandWorktreeResolution:
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
 
         with patch(
-            "sova.git.worktree.find_worktree_by_branch",
+            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
             new_callable=AsyncMock,
             side_effect=RuntimeError("git failed"),
         ):
@@ -1910,7 +1910,7 @@ class TestStartCommandWorktreeResolution:
         branch_worktree.mkdir(parents=True)
 
         with patch(
-            "sova.git.worktree.find_worktree_by_branch",
+            "sova.dashboard.services.agent_lifecycle.find_worktree_by_branch",
             new_callable=AsyncMock,
             return_value=branch_worktree,
         ) as mock_find:
@@ -1918,6 +1918,65 @@ class TestStartCommandWorktreeResolution:
 
         assert result == issue_worktree
         mock_find.assert_not_called()
+
+    async def test_resolve_issue_worktree_empty_branch_name(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree returns project_dir when branch_name is empty string."""
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_worktree
+
+        result = await _resolve_issue_worktree("standup", tmp_path, branch_name="")
+        assert result == tmp_path
+
+    async def test_start_command_pr_without_issue_uses_branch_worktree(self, tmp_path: Path) -> None:
+        """start_command with pr_number and no issue resolves branch worktree."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+
+        branch_worktree = tmp_path / ".claude" / "worktrees" / "feat-fix"
+        branch_worktree.mkdir(parents=True)
+
+        mock_process = MagicMock()
+        mock_process.pid = 8888
+        mock_runtime = MagicMock()
+        mock_runtime.spawn = AsyncMock(return_value=mock_process)
+
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=200),
+            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.git.pr.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/fix-123",
+            ),
+            patch.object(
+                agent_lifecycle,
+                "find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=branch_worktree,
+            ),
+        ):
+            result = await start_command("address-pr", {"pr": "123"})
+
+        assert result.get("status") == "started"
+        spawn_cwd = mock_runtime.spawn.call_args[0][1]
+        assert spawn_cwd == branch_worktree
 
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
