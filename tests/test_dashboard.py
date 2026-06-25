@@ -7163,3 +7163,327 @@ class TestInstallationAPI:
         assert "guidelines" in data
         assert "updated" in data["commands"]
         assert "updated" in data["guidelines"]
+
+
+# ---------------------------------------------------------------------------
+# Output reader resilience
+# ---------------------------------------------------------------------------
+
+
+class TestReadOutputResilience:
+    """_read_output and _read_stderr must log and surface errors instead of dying silently."""
+
+    async def test_read_output_logs_exception_and_writes_error_line(self) -> None:
+        """When stdout_lines raises, the error should be logged and written to the output file."""
+        from collections import deque
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_output import _read_output
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def exploding_lines():
+            yield '{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}'
+            raise RuntimeError("pipe broken")
+
+        mock_process.stdout_lines = exploding_lines
+
+        mock_writer = MagicMock()
+        agent = AgentState(
+            run_id=1,
+            issue="10",
+            role="developer",
+            process=mock_process,
+            output_writer=mock_writer,
+            output_lines=deque(maxlen=5000),
+        )
+
+        with patch("sova.dashboard.services.agent_output.log") as mock_log:
+            await _read_output(agent)
+
+        assert len(agent.output_lines) >= 1
+        assert "hello" in agent.output_lines[0]
+        mock_log.exception.assert_called_once()
+        error_writes = [call for call in mock_writer.write_line.call_args_list if "output reader" in str(call).lower()]
+        assert len(error_writes) == 1
+
+    async def test_read_stderr_logs_exception(self) -> None:
+        """When stderr_lines raises, the error should be logged."""
+        from collections import deque
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_output import _read_stderr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def exploding_stderr():
+            yield "some warning"
+            raise RuntimeError("stderr pipe broken")
+
+        mock_process.stderr_lines = exploding_stderr
+
+        mock_writer = MagicMock()
+        agent = AgentState(
+            run_id=2,
+            issue="11",
+            role="developer",
+            process=mock_process,
+            output_writer=mock_writer,
+            output_lines=deque(maxlen=5000),
+        )
+
+        with patch("sova.dashboard.services.agent_output.log") as mock_log:
+            await _read_stderr(agent)
+
+        mock_log.exception.assert_called_once()
+
+    async def test_read_output_reraises_cancelled_error(self) -> None:
+        """CancelledError must still propagate (not be caught by the general handler)."""
+        import asyncio
+        from collections import deque
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_output import _read_output
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def cancelled_lines():
+            raise asyncio.CancelledError()
+            yield  # noqa: RET503
+
+        mock_process.stdout_lines = cancelled_lines
+
+        agent = AgentState(
+            run_id=3,
+            issue="12",
+            role="developer",
+            process=mock_process,
+            output_lines=deque(maxlen=5000),
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await _read_output(agent)
+
+
+# ---------------------------------------------------------------------------
+# Finalize-before-pop ordering (race fix)
+# ---------------------------------------------------------------------------
+
+
+class TestWaitAndFinalizeOrdering:
+    """_wait_and_finalize must finalize the DB record before removing from pa.agents."""
+
+    async def test_agent_in_pa_agents_during_finalize(self) -> None:
+        """The run_id must still be in pa.agents when _finalize_task_run is called."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=50,
+            issue="100",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[50] = agent
+
+        was_in_agents_during_finalize = []
+
+        async def tracking_finalize(run_id, *, exit_code, agent):
+            was_in_agents_during_finalize.append(run_id in pa.agents)
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, side_effect=tracking_finalize),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert was_in_agents_during_finalize == [True], (
+            "_finalize_task_run must be called while run_id is still in pa.agents"
+        )
+        assert 50 not in pa.agents, "run_id should be removed from pa.agents after finalization"
+
+    async def test_finalize_before_pop_prevents_sweep_race(self) -> None:
+        """Sweep should skip runs still in pa.agents, preventing the interrupted race."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=1)
+
+        agent = AgentState(
+            run_id=51,
+            issue="101",
+            role="command:integrate-pr",
+            process=mock_process,
+            pr_number=200,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[51] = agent
+
+        finalize_call_order = []
+
+        async def recording_finalize(run_id, *, exit_code, agent):
+            finalize_call_order.append(("finalize", run_id in pa.agents))
+
+        with (
+            patch.object(
+                agent_lifecycle,
+                "_check_pr_merged_on_failure",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                agent_lifecycle,
+                "_finalize_task_run",
+                new_callable=AsyncMock,
+                side_effect=recording_finalize,
+            ),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        assert finalize_call_order[0] == ("finalize", True)
+
+
+# ---------------------------------------------------------------------------
+# Liveness sweep merge-role awareness
+# ---------------------------------------------------------------------------
+
+
+class TestLivenessSweepMergeCheck:
+    """_liveness_sweep_loop should check PR merge status for merge-role runs."""
+
+    @staticmethod
+    def _patch_sweep_deps(**extra_patches):
+        """Context manager patching sweep dependencies to use the test in-memory DB."""
+        from contextlib import ExitStack
+        from unittest.mock import patch
+
+        async def _test_get_session(project_dir=None):  # noqa: ARG001
+            return await get_session()
+
+        stack = ExitStack()
+        stack.enter_context(patch("sova.db.session.get_session", _test_get_session))
+        stack.enter_context(patch("sova.dashboard.services.control_service._is_process_alive", return_value=False))
+        for target, mock_val in extra_patches.items():
+            stack.enter_context(patch(target, **mock_val))
+        return stack
+
+    async def test_sweep_marks_merged_pr_as_done(self) -> None:
+        """Dead-PID merge-role run with merged PR should get status 'done', not 'interrupted'."""
+        from unittest.mock import AsyncMock
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="42",
+                    role="command:integrate-pr",
+                    status="running",
+                    pid=999999,
+                    pr_number=100,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure": {
+                    "new_callable": AsyncMock,
+                    "return_value": True,
+                },
+            }
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "done"
+            assert "merged" in (refreshed.error_message or "").lower()
+
+    async def test_sweep_marks_non_merge_role_as_interrupted(self) -> None:
+        """Dead-PID non-merge-role run should still get 'interrupted'."""
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="43",
+                    role="developer",
+                    status="running",
+                    pid=999998,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        with self._patch_sweep_deps():
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "interrupted"
+
+    async def test_sweep_skips_managed_runs(self) -> None:
+        """Runs still in pa.agents should be skipped by the sweep."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.control_service import _projects
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="44",
+                    role="developer",
+                    status="running",
+                    pid=999997,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        from sova.dashboard.services.agent_pool import ProjectAgents
+
+        mock_pa = ProjectAgents()
+        mock_pa.agents[run_id] = MagicMock()
+
+        original = dict(_projects)
+        _projects["__default__"] = mock_pa
+        try:
+            with self._patch_sweep_deps():
+                from sova.dashboard.app import _liveness_sweep_once
+
+                await _liveness_sweep_once(None, is_multi=False)
+        finally:
+            _projects.clear()
+            _projects.update(original)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "running", "managed run should not be touched by sweep"
