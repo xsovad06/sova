@@ -163,10 +163,10 @@ class TestParseIssue:
         task = adapter._parse_issue(_issue_json(key="TEST-7"))
         assert task.metadata["key"] == "TEST-7"
 
-    def test_issue_type_in_metadata(self) -> None:
+    def test_issue_type_field(self) -> None:
         adapter = _adapter()
         task = adapter._parse_issue(_issue_json(issue_type="Bug"))
-        assert task.metadata["issue_type"] == "Bug"
+        assert task.issue_type == "Bug"
 
     def test_jira_priority_in_metadata(self) -> None:
         adapter = _adapter()
@@ -188,7 +188,7 @@ class TestParseIssue:
         raw = _issue_json()
         del raw["fields"]["issuetype"]
         task = adapter._parse_issue(raw)
-        assert task.metadata["issue_type"] == ""
+        assert task.issue_type == ""
 
     def test_missing_priority_defaults_empty(self) -> None:
         adapter = _adapter()
@@ -572,6 +572,158 @@ class TestGetPrReviews:
         adapter = _adapter()
         result = await adapter.get_pr_reviews(42)
         assert result == []
+
+
+class TestCreateIssue:
+    @respx.mock
+    async def test_create_issue_basic(self) -> None:
+        adapter = _adapter()
+        respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+            return_value=Response(201, json={"id": "10042", "key": "TEST-42", "self": "..."}),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-42").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-42", summary="New task")),
+        )
+        task = await adapter.create_issue("New task", "Description text")
+        assert task.id == "42"
+        assert task.title == "New task"
+
+    @respx.mock
+    async def test_create_issue_with_parent_key(self) -> None:
+        adapter = _adapter()
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+            return_value=Response(201, json={"id": "10043", "key": "TEST-43"}),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-43").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-43", issue_type="Sub-task")),
+        )
+        task = await adapter.create_issue("Sub-task title", "body", issue_type="Sub-task", parent_key="TEST-42")
+        assert task.id == "43"
+        body = json.loads(route.calls[0].request.content)
+        assert body["fields"]["parent"]["key"] == "TEST-42"
+        assert body["fields"]["issuetype"]["name"] == "Sub-task"
+
+    @respx.mock
+    async def test_create_issue_with_labels(self) -> None:
+        adapter = _adapter()
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+            return_value=Response(201, json={"key": "TEST-44"}),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-44").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-44")),
+        )
+        await adapter.create_issue("Title", labels=["bug", "priority:high"])
+        body = json.loads(route.calls[0].request.content)
+        assert body["fields"]["labels"] == ["bug", "priority:high"]
+
+    @respx.mock
+    async def test_create_issue_failure_raises(self) -> None:
+        adapter = _adapter()
+        respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+            return_value=Response(400, text="Bad request"),
+        )
+        with pytest.raises(RuntimeError, match="Failed to create issue"):
+            await adapter.create_issue("Bad issue")
+
+    @respx.mock
+    async def test_create_issue_multi_paragraph_body(self) -> None:
+        adapter = _adapter()
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue").mock(
+            return_value=Response(201, json={"key": "TEST-45"}),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-45").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-45")),
+        )
+        await adapter.create_issue("Title", "Para 1\n\nPara 2\n\nPara 3")
+        body = json.loads(route.calls[0].request.content)
+        adf_content = body["fields"]["description"]["content"]
+        assert len(adf_content) == 3
+        assert adf_content[0]["content"][0]["text"] == "Para 1"
+        assert adf_content[2]["content"][0]["text"] == "Para 3"
+
+
+class TestGetAvailableTransitions:
+    @respx.mock
+    async def test_returns_transitions(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "transitions": [
+                        {"id": "11", "name": "To Do", "to": {"name": "To Do", "id": "1"}},
+                        {"id": "21", "name": "In Progress", "to": {"name": "In Progress", "id": "2"}},
+                        {"id": "31", "name": "Done", "to": {"name": "Done", "id": "3"}},
+                    ],
+                },
+            ),
+        )
+        result = await adapter.get_available_transitions("1")
+        assert len(result) == 3
+        assert result[0] == {"id": "11", "name": "To Do", "to_status": "To Do"}
+        assert result[1] == {"id": "21", "name": "In Progress", "to_status": "In Progress"}
+
+    @respx.mock
+    async def test_returns_empty_on_api_error(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(403, text="Forbidden"),
+        )
+        result = await adapter.get_available_transitions("1")
+        assert result == []
+
+
+class TestParseIssueRichMetadata:
+    def test_story_points_from_standard_field(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["story_points"] = 5.0
+        task = adapter._parse_issue(raw)
+        assert task.story_points == 5.0
+
+    def test_story_points_from_custom_field(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["customfield_10028"] = 3
+        task = adapter._parse_issue(raw)
+        assert task.story_points == 3.0
+
+    def test_story_points_none_when_missing(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json())
+        assert task.story_points is None
+
+    def test_sprint_name_extracted(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["sprint"] = {"id": 1, "name": "Sprint 5", "state": "active"}
+        task = adapter._parse_issue(raw)
+        assert task.sprint == "Sprint 5"
+
+    def test_sprint_empty_when_missing(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json())
+        assert task.sprint == ""
+
+    def test_components_extracted(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["components"] = [{"name": "Backend"}, {"name": "API"}]
+        task = adapter._parse_issue(raw)
+        assert task.components == ["Backend", "API"]
+
+    def test_fix_versions_extracted(self) -> None:
+        adapter = _adapter()
+        raw = _issue_json()
+        raw["fields"]["fixVersions"] = [{"name": "v1.0"}, {"name": "v1.1"}]
+        task = adapter._parse_issue(raw)
+        assert task.fix_versions == ["v1.0", "v1.1"]
+        assert task.milestone == "v1.0"
+
+    def test_issue_type_as_first_class_field(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(_issue_json(issue_type="Bug"))
+        assert task.issue_type == "Bug"
 
 
 class TestStateLabelMappings:

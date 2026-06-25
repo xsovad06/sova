@@ -45,6 +45,32 @@ class ConfigureRequest(BaseModel):
     ai_coauthor: bool = True
     pr_title_format: str = "conventional"
     pr_auto_link: bool = True
+    # Jira-specific fields
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_project_key: str = ""
+    jira_component: str = ""
+    jira_status_mapping: dict[str, str] | None = None
+    jira_track_agent_work: bool = False
+
+
+class JiraTestRequest(BaseModel):
+    base_url: str
+    email: str
+    api_token: str
+
+
+class JiraProjectsRequest(BaseModel):
+    base_url: str
+    email: str
+    api_token: str
+
+
+class JiraStatusesRequest(BaseModel):
+    base_url: str
+    email: str
+    api_token: str
+    project_key: str
 
 
 @router.post("/setup/browse")
@@ -105,6 +131,12 @@ async def configure_project(req: ConfigureRequest):
         ai_coauthor=req.ai_coauthor,
         pr_title_format=req.pr_title_format,
         pr_auto_link=req.pr_auto_link,
+        jira_base_url=req.jira_base_url,
+        jira_email=req.jira_email,
+        jira_project_key=req.jira_project_key,
+        jira_component=req.jira_component,
+        jira_status_mapping=req.jira_status_mapping,
+        jira_track_agent_work=req.jira_track_agent_work,
     )
     toml_content = setup_service.generate_sova_toml(toml_cfg)
 
@@ -166,3 +198,21 @@ async def sync_commands() -> dict[str, object]:
             "conflicts": guide_result.conflicts,
         },
     }
+
+
+@router.post("/setup/jira/test")
+async def test_jira_connection(req: JiraTestRequest):
+    """Test Jira connection credentials."""
+    return await setup_service.test_jira_connection(req.base_url, req.email, req.api_token)
+
+
+@router.post("/setup/jira/projects")
+async def discover_jira_projects(req: JiraProjectsRequest):
+    """List accessible Jira projects."""
+    return await setup_service.discover_jira_projects(req.base_url, req.email, req.api_token)
+
+
+@router.post("/setup/jira/statuses")
+async def discover_jira_statuses(req: JiraStatusesRequest):
+    """Discover workflow statuses for a Jira project."""
+    return await setup_service.discover_jira_statuses(req.base_url, req.email, req.api_token, req.project_key)

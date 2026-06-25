@@ -33,6 +33,12 @@ class Task:
     url: str = ""
     milestone: str = ""
     metadata: dict = field(default_factory=dict)
+    # Rich metadata (optional, populated by adapters that support them)
+    issue_type: str = ""
+    story_points: float | None = None
+    sprint: str = ""
+    components: list[str] = field(default_factory=list)
+    fix_versions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -124,3 +130,33 @@ class TaskAdapter(ABC):
     @abstractmethod
     async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
         """Fetch all reviews on a pull request."""
+
+    @abstractmethod
+    async def create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: list[str] | None = None,
+        issue_type: str = "",
+        parent_key: str = "",
+    ) -> Task:
+        """Create a new issue/task on the tracker.
+
+        Args:
+            title: Issue title/summary.
+            body: Issue body/description (markdown for GitHub, plain text for Jira ADF).
+            labels: Labels to apply to the new issue.
+            issue_type: Issue type name (e.g. "Task", "Bug", "Sub-task"). Adapter-specific.
+            parent_key: Parent issue key for sub-task creation (Jira only).
+
+        Returns:
+            The created Task with populated fields.
+        """
+
+    @abstractmethod
+    async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
+        """Discover valid workflow transitions for a task.
+
+        Returns a list of transition dicts, each with keys: id, name, to_status.
+        For trackers without workflow transitions (e.g. GitHub), returns an empty list.
+        """

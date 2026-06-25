@@ -163,7 +163,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "last_run": last_runs.get(t.id),
                 "created_at": t.metadata.get("created_at", ""),
                 "assignees": t.assignees,
-                "issue_type": t.metadata.get("issue_type", ""),
+                "issue_type": t.issue_type,
                 "jira_status": t.metadata.get("status", ""),
                 "jira_priority": t.metadata.get("jira_priority", ""),
                 "jira_key": t.metadata.get("key", ""),

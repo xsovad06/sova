@@ -228,6 +228,13 @@ _REGISTRY: list[SettingMeta] = [
         "task_source",
         "object",
     ),
+    SettingMeta(
+        "task_source.jira_track_agent_work",
+        "Track agent work (Jira)",
+        "Create Jira sub-tasks to track agent activity on parent issues",
+        "task_source",
+        "boolean",
+    ),
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),

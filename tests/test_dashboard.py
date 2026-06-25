@@ -5670,6 +5670,118 @@ class TestTomlConfigGeneration:
         content = generate_sova_toml(cfg)
         assert 'max_budget = "25.00"' in content
 
+    def test_generate_sova_toml_jira_config(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
+
+        cfg = TomlConfig(
+            task_source="jira",
+            jira_base_url="https://test.atlassian.net",
+            jira_email="user@example.com",
+            jira_project_key="PROJ",
+            jira_component="Backend",
+            jira_track_agent_work=True,
+            jira_status_mapping={"In Progress": "in_progress", "Done": "done"},
+        )
+        content = generate_sova_toml(cfg)
+        assert 'type = "jira"' in content
+        assert 'jira_base_url = "https://test.atlassian.net"' in content
+        assert 'jira_email = "user@example.com"' in content
+        assert 'jira_project_key = "PROJ"' in content
+        assert 'jira_component = "Backend"' in content
+        assert "jira_track_agent_work = true" in content
+        assert "jira_status_mapping" in content
+
+    def test_generate_sova_toml_jira_no_optional_fields(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig, generate_sova_toml
+
+        cfg = TomlConfig(
+            task_source="jira",
+            jira_base_url="https://test.atlassian.net",
+            jira_email="user@example.com",
+            jira_project_key="PROJ",
+        )
+        content = generate_sova_toml(cfg)
+        assert 'type = "jira"' in content
+        assert "jira_component" not in content
+        assert "jira_track_agent_work" not in content
+        assert "jira_status_mapping" not in content
+
+    def test_toml_config_jira_defaults(self) -> None:
+        from sova.dashboard.services.setup_service import TomlConfig
+
+        cfg = TomlConfig()
+        assert cfg.jira_base_url == ""
+        assert cfg.jira_email == ""
+        assert cfg.jira_project_key == ""
+        assert cfg.jira_component == ""
+        assert cfg.jira_status_mapping is None
+        assert cfg.jira_track_agent_work is False
+
+
+class TestJiraSetupAPI:
+    async def test_jira_test_connection_success(self, client) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        with patch("sova.dashboard.services.setup_service._jira_api_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MagicMock(
+                status_code=200, json=lambda: {"displayName": "Test User", "emailAddress": "e@x.com"}
+            )
+            resp = await client.post(
+                "/api/setup/jira/test",
+                json={"base_url": "https://test.atlassian.net", "email": "e@x.com", "api_token": "t"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["display_name"] == "Test User"
+
+    async def test_jira_projects_success(self, client) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        with patch("sova.dashboard.services.setup_service._jira_api_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MagicMock(
+                status_code=200, json=lambda: [{"key": "PROJ", "name": "My Project", "lead": {"displayName": "Lead"}}]
+            )
+            resp = await client.post(
+                "/api/setup/jira/projects",
+                json={"base_url": "https://test.atlassian.net", "email": "e@x.com", "api_token": "t"},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert len(data["projects"]) == 1
+        assert data["projects"][0]["key"] == "PROJ"
+
+    async def test_jira_statuses_success(self, client) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        with patch("sova.dashboard.services.setup_service._jira_api_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MagicMock(
+                status_code=200,
+                json=lambda: [
+                    {
+                        "statuses": [
+                            {"name": "To Do", "statusCategory": {"name": "To Do"}},
+                            {"name": "In Progress", "statusCategory": {"name": "In Progress"}},
+                        ],
+                    }
+                ],
+            )
+            resp = await client.post(
+                "/api/setup/jira/statuses",
+                json={
+                    "base_url": "https://test.atlassian.net",
+                    "email": "e@x.com",
+                    "api_token": "t",
+                    "project_key": "TEST",
+                },
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert len(data["statuses"]) == 2
+        assert "To Do" in data["suggested_mapping"]
+
 
 # ---------------------------------------------------------------------------
 # Roles API

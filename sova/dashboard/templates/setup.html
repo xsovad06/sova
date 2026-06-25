@@ -92,17 +92,79 @@
           <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="block text-xs text-gray-400 mb-1">Source</label>
-              <select name="task_source" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              <select name="task_source" onchange="toggleJiraSection(this.value)" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
                 <option value="github">GitHub Issues</option>
                 <option value="jira">JIRA</option>
                 <option value="linear">Linear</option>
                 <option value="manual">Manual</option>
               </select>
             </div>
-            <div>
+            <div id="github-repo-field">
               <label class="block text-xs text-gray-400 mb-1">GitHub Repo</label>
               <input name="github_repo" type="text" placeholder="owner/repo" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
             </div>
+          </div>
+        </div>
+
+        <!-- Jira Setup Wizard (shown when task_source = jira) -->
+        <div id="jira-wizard" class="hidden space-y-4">
+          <!-- Step A: Credentials -->
+          <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+            <h3 class="text-sm font-semibold text-gray-300 mb-3">Jira Credentials</h3>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">Base URL</label>
+                <input name="jira_base_url" type="text" placeholder="https://yoursite.atlassian.net" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">Email</label>
+                <input name="jira_email" type="email" placeholder="you@company.com" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              </div>
+            </div>
+            <div class="mt-3">
+              <label class="block text-xs text-gray-400 mb-1">API Token</label>
+              <div class="flex gap-2">
+                <input name="jira_api_token" type="password" placeholder="Jira API token (not stored in config)" class="flex-1 bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+                <button type="button" onclick="testJiraConnection()" id="jira-test-btn"
+                  class="px-4 py-2 bg-accent/20 text-accent rounded hover:bg-accent/30 transition-colors text-xs font-medium whitespace-nowrap">
+                  Test Connection
+                </button>
+              </div>
+              <p class="text-xs text-gray-500 mt-1">API token is used for testing only and not saved to sova.toml. Set SOVA_TASK_JIRA_API_TOKEN env var at runtime.</p>
+            </div>
+            <div id="jira-test-result" class="hidden mt-2 px-3 py-2 rounded text-xs"></div>
+          </div>
+
+          <!-- Step B: Project Selection (shown after successful test) -->
+          <div id="jira-project-section" class="hidden bg-surface-card rounded-lg p-4 border border-gray-700/50">
+            <h3 class="text-sm font-semibold text-gray-300 mb-3">Jira Project</h3>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">Project</label>
+                <select name="jira_project_key" onchange="onJiraProjectSelected(this.value)" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+                  <option value="">Select a project...</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-400 mb-1">Component (optional)</label>
+                <input name="jira_component" type="text" placeholder="e.g. RBAC, Backend" class="w-full bg-surface border border-gray-600 rounded px-3 py-2 text-sm text-gray-200">
+              </div>
+            </div>
+            <div class="mt-3">
+              <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input name="jira_track_agent_work" type="checkbox" class="rounded border-gray-600 bg-surface">
+                Create sub-tasks to track agent work
+              </label>
+            </div>
+          </div>
+
+          <!-- Step C: Status Mapping (shown after project selection) -->
+          <div id="jira-status-section" class="hidden bg-surface-card rounded-lg p-4 border border-gray-700/50">
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-semibold text-gray-300">Status Mapping</h3>
+              <span class="text-xs text-gray-500">Map your Jira statuses to SOVA states</span>
+            </div>
+            <div id="jira-status-table"></div>
           </div>
         </div>
 
@@ -366,14 +428,131 @@ async function installProject(updateOnly) {
   }
 }
 
+// -- Jira wizard functions --
+
+let jiraStatusMapping = {};
+
+function toggleJiraSection(source) {
+  const jiraWizard = document.getElementById('jira-wizard');
+  const githubField = document.getElementById('github-repo-field');
+  if (source === 'jira') {
+    jiraWizard.classList.remove('hidden');
+    githubField.classList.add('hidden');
+  } else {
+    jiraWizard.classList.add('hidden');
+    githubField.classList.remove('hidden');
+  }
+}
+
+async function testJiraConnection() {
+  const btn = document.getElementById('jira-test-btn');
+  const result = document.getElementById('jira-test-result');
+  btn.textContent = 'Testing...';
+  btn.disabled = true;
+
+  try {
+    const fd = new FormData(document.getElementById('setup-form'));
+    const res = await fetch(`${API_PREFIX}/setup/jira/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        base_url: fd.get('jira_base_url'),
+        email: fd.get('jira_email'),
+        api_token: fd.get('jira_api_token'),
+      }),
+    });
+    const data = await res.json();
+    result.classList.remove('hidden');
+    if (data.status === 'ok') {
+      result.textContent = 'Connected as: ' + data.display_name + ' (' + data.email + ')';
+      result.className = 'mt-2 px-3 py-2 rounded text-xs bg-accent-green/10 text-accent-green';
+      await loadJiraProjects();
+    } else {
+      result.textContent = 'Connection failed: ' + (data.detail || 'unknown error');
+      result.className = 'mt-2 px-3 py-2 rounded text-xs bg-accent-red/10 text-accent-red';
+    }
+  } finally {
+    btn.textContent = 'Test Connection';
+    btn.disabled = false;
+  }
+}
+
+async function loadJiraProjects() {
+  const fd = new FormData(document.getElementById('setup-form'));
+  const res = await fetch(`${API_PREFIX}/setup/jira/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      base_url: fd.get('jira_base_url'),
+      email: fd.get('jira_email'),
+      api_token: fd.get('jira_api_token'),
+    }),
+  });
+  const data = await res.json();
+  if (data.status !== 'ok') return;
+
+  const select = document.querySelector('[name="jira_project_key"]');
+  select.innerHTML = '<option value="">Select a project...</option>';
+  data.projects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.key;
+    opt.textContent = p.key + ' - ' + p.name;
+    select.appendChild(opt);
+  });
+  document.getElementById('jira-project-section').classList.remove('hidden');
+}
+
+async function onJiraProjectSelected(projectKey) {
+  if (!projectKey) {
+    document.getElementById('jira-status-section').classList.add('hidden');
+    return;
+  }
+
+  const fd = new FormData(document.getElementById('setup-form'));
+  const res = await fetch(`${API_PREFIX}/setup/jira/statuses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      base_url: fd.get('jira_base_url'),
+      email: fd.get('jira_email'),
+      api_token: fd.get('jira_api_token'),
+      project_key: projectKey,
+    }),
+  });
+  const data = await res.json();
+  if (data.status !== 'ok') return;
+
+  jiraStatusMapping = data.suggested_mapping || {};
+  const sovaStates = ['backlog', 'triaged', 'researched', 'in_progress', 'in_review', 'done', 'needs_spec', 'human_only'];
+  const table = document.getElementById('jira-status-table');
+  table.innerHTML = '<div class="grid grid-cols-3 gap-2 text-xs text-gray-400 mb-2 font-medium"><span>Jira Status</span><span>Category</span><span>SOVA State</span></div>';
+
+  data.statuses.forEach(s => {
+    const suggested = jiraStatusMapping[s.name] || '';
+    const row = document.createElement('div');
+    row.className = 'grid grid-cols-3 gap-2 items-center mb-1';
+    row.innerHTML = `
+      <span class="text-sm text-gray-200">${s.name}</span>
+      <span class="text-xs text-gray-400">${s.category}</span>
+      <select data-jira-status="${s.name}" class="bg-surface border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
+              onchange="jiraStatusMapping[this.dataset.jiraStatus] = this.value || undefined; if(!this.value) delete jiraStatusMapping[this.dataset.jiraStatus]">
+        <option value="">-- skip --</option>
+        ${sovaStates.map(st => `<option value="${st}" ${suggested === st ? 'selected' : ''}>${st}</option>`).join('')}
+      </select>`;
+    table.appendChild(row);
+  });
+  document.getElementById('jira-status-section').classList.remove('hidden');
+}
+
 document.getElementById('setup-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   if (!currentProjectPath) { alert('Select and scan a project first'); return; }
 
   const fd = new FormData(e.target);
+  const taskSource = fd.get('task_source');
   const body = {
     project_path: currentProjectPath,
-    task_source: fd.get('task_source'),
+    task_source: taskSource,
     github_repo: fd.get('github_repo'),
     base_branch: fd.get('base_branch'),
     branch_naming: fd.get('branch_naming'),
@@ -388,6 +567,20 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
     pr_title_format: fd.get('pr_title_format'),
     pr_auto_link: !!fd.get('pr_auto_link'),
   };
+
+  if (taskSource === 'jira') {
+    body.jira_base_url = fd.get('jira_base_url') || '';
+    body.jira_email = fd.get('jira_email') || '';
+    body.jira_project_key = fd.get('jira_project_key') || '';
+    body.jira_component = fd.get('jira_component') || '';
+    body.jira_track_agent_work = !!fd.get('jira_track_agent_work');
+    const mapping = {};
+    let hasMapping = false;
+    for (const [k, v] of Object.entries(jiraStatusMapping)) {
+      if (v) { mapping[k] = v; hasMapping = true; }
+    }
+    if (hasMapping) body.jira_status_mapping = mapping;
+  }
 
   const res = await fetch(`${API_PREFIX}/setup/configure`, {
     method: 'POST',

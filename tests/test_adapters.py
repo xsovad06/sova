@@ -64,6 +64,27 @@ class TestTask:
         assert task.url == ""
         assert task.milestone == ""
         assert task.metadata == {}
+        assert task.issue_type == ""
+        assert task.story_points is None
+        assert task.sprint == ""
+        assert task.components == []
+        assert task.fix_versions == []
+
+    def test_task_rich_metadata(self) -> None:
+        task = Task(
+            id="1",
+            title="Test",
+            issue_type="Bug",
+            story_points=5.0,
+            sprint="Sprint 3",
+            components=["Backend", "API"],
+            fix_versions=["v1.0", "v1.1"],
+        )
+        assert task.issue_type == "Bug"
+        assert task.story_points == 5.0
+        assert task.sprint == "Sprint 3"
+        assert task.components == ["Backend", "API"]
+        assert task.fix_versions == ["v1.0", "v1.1"]
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +111,8 @@ class TestTaskAdapterInterface:
             "get_state",
             "link_pr",
             "get_pr_reviews",
+            "create_issue",
+            "get_available_transitions",
         ]
 
         class IncompleteAdapter(TaskAdapter):
@@ -438,6 +461,53 @@ class TestGitHubAdapter:
 
         call_args = mock_run.call_args[0]
         assert "comment" in call_args
+
+    # -- create_issue --
+
+    async def test_create_issue(self, mock_run: AsyncMock) -> None:
+        view_json = json.dumps(
+            {
+                "number": 99,
+                "title": "New issue",
+                "body": "Issue body",
+                "state": "OPEN",
+                "labels": [{"name": "bug"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/issues/99",
+            }
+        )
+        # First call: gh issue create returns the issue URL
+        # Second call: gh issue view returns full JSON
+        mock_run.side_effect = [
+            _shell_result(stdout="https://github.com/user/repo/issues/99\n"),
+            _shell_result(stdout=view_json),
+        ]
+
+        task = await self.adapter.create_issue("New issue", "Issue body", ["bug"])
+
+        assert task.id == "99"
+        assert task.title == "New issue"
+        create_args = mock_run.call_args_list[0][0]
+        assert "issue" in create_args
+        assert "create" in create_args
+        assert "--title" in create_args
+        assert "New issue" in create_args
+        assert "--label" in create_args
+        assert "bug" in create_args
+
+    async def test_create_issue_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Permission denied")
+
+        with pytest.raises(RuntimeError, match="Failed to create issue"):
+            await self.adapter.create_issue("Test", "body")
+
+    # -- get_available_transitions --
+
+    async def test_get_available_transitions_returns_empty(self, mock_run: AsyncMock) -> None:
+        result = await self.adapter.get_available_transitions("42")
+        assert result == []
+        mock_run.assert_not_called()
 
     # -- get_pr_reviews --
 
