@@ -34,6 +34,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Immutable spawn fields (role) don't need `current_step` gating** -- `role` is set at spawn and never changes, so `role == "researcher"` is safe as a sufficient condition for all steps. Only `pr_number`-based detection needs the gate. [confirmed: 0]
 - **Track notified IDs, not state transitions, for completion alerts** -- track seen `run_id`s to avoid missed/duplicate completion notifications. [confirmed: 1]
 - **Type URL path params as `int` when they are IDs** -- prevents XSS via JS escape sequences in Jinja2 `<script>` blocks. [confirmed: 0]
+- **Coerce API numeric fields before innerHTML insertion** -- `innerHTML += data.total_updates` is a DOM-XSS sink if the field is non-numeric. Use `Number(data.field)` with `Number.isFinite()` guard before rendering. PR #217 CodeRabbit. [confirmed: 0]
+- **UI summaries must render all non-zero API response categories** -- sync summary only showing `updated` and `conflicts` but not `skipped` loses user-facing information. Include all result categories the API returns. PR #217 CodeRabbit. [confirmed: 0]
 - **Disable async action buttons during operations** -- set `button.disabled = true` at function start, re-enable in `finally`. [confirmed: 1]
 - **No nested `<a>` tags: check if parent container is already a link** -- `issueLink()` / `prLink()` produce `<a>` elements; if the surrounding card is also an `<a>` (e.g., dashboard agent strip), the browser breaks the outer link prematurely. Use plain text inside `<a>` containers, links inside `<div onclick>` containers. File: `sova/dashboard/templates/dashboard.html`. [confirmed: 1]
 - **marked.js v15 heading renderer uses token object, not positional args** -- `heading({ tokens, depth })` with `this.parser.parseInline(tokens)`, not `heading(text, level)`. Configure via `marked.use({ renderer: { heading(token) { ... } } })` not `new Renderer()` + `setOptions()`. File: `sova/dashboard/templates/spec.html`. [confirmed: 1]
@@ -172,6 +174,10 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Fork-based PRs require fetching from the correct remote** -- `gh pr view --json headRepositoryOwner` reveals which remote hosts the branch. Use `git fetch <fork-remote> <branch>` before checkout. [confirmed: 0]
 - **`git rebase --continue` rejects `--no-edit`** -- use `GIT_EDITOR=true git rebase --continue` to skip the editor. [confirmed: 0]
 - **Pre-push invariant failures on code outside your diff** -- invariant hooks check the full codebase, not just changed files. If an invariant fails on code from a commit on `main` that your branch hasn't picked up yet, rebase onto `main` before pushing. Common with `money-decimal` when main refactored `decimal_to_json` -> `float()`. PR #204. [confirmed: 0]
+
+## Config System
+
+- **Config field fallback must normalize whitespace before truthy check** -- `cfg.check_cmd or fallback` treats `"   "` (whitespace-only) as configured, bypassing fallback logic. Use `(cfg.check_cmd.strip() if cfg.check_cmd else "") or fallback`. File: `sova/commands/templates.py`. PR #217 CodeRabbit. [confirmed: 0]
 
 ## Input Normalization
 
