@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ from sova.dashboard.services.agent_pool import (
     _prune_completed,
 )
 from sova.dashboard.services.output_service import OutputWriter
+from sova.git.worktree import find_worktree_by_branch
 from sova.ipc.runtime import get_runtime
 from sova.utils.logging import get_logger
 from sova.utils.shell import run as run_shell
@@ -410,13 +412,11 @@ async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name:
 
     if branch_name:
         try:
-            from sova.git.worktree import find_worktree_by_branch
-
             wt_path = await find_worktree_by_branch(branch_name, cwd=project_dir)
             if wt_path is not None and wt_path.resolve() != project_dir.resolve():
                 log.info("command.using_branch_worktree", branch=branch_name, path=str(wt_path))
                 return wt_path
-        except Exception:
+        except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError):
             log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
 
     return project_dir
@@ -521,7 +521,9 @@ async def start_command(
                         repo=cfg.github_repo,
                         github_user=cfg.github_user,
                     )
-            except Exception:
+                    if not branch_name:
+                        log.debug("command.pr_branch_empty", pr=pr_number)
+            except (RuntimeError, KeyError, subprocess.CalledProcessError, FileNotFoundError):
                 log.debug("command.pr_branch_lookup_failed", pr=pr_number, exc_info=True)
 
         cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
