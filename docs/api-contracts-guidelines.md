@@ -133,13 +133,14 @@ result = await self._gh("api", "graphql", "-f", f"query={mutation}", "-f", f"pro
 
 ## Adapter ABC Contract
 
-`TaskAdapter` in `sova/adapters/base.py` defines 13 abstract methods:
+`TaskAdapter` in `sova/adapters/base.py` defines 15 abstract methods:
 
 | Category | Methods |
 |----------|---------|
 | Read | `list_tasks`, `get_task`, `get_state`, `get_pr_reviews` |
-| State | `transition_state`, `assign`, `add_label`, `remove_label` |
+| State | `transition_state`, `assign`, `add_label`, `remove_label`, `get_available_transitions` |
 | Content | `post_comment`, `post_pr_comment`, `post_pr_review`, `edit_body`, `link_pr` |
+| Create | `create_issue` |
 
 Constructor: `__init__(self, repo: str, github_user: str = "")`.
 
