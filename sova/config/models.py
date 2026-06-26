@@ -244,6 +244,16 @@ class ExternalReviewsConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
+class SecurityConfig(BaseSettings):
+    """Prompt injection guard configuration."""
+
+    prompt_guard: bool = True
+    prompt_guard_threshold: float = Field(0.7, ge=0, le=1)
+    custom_deny_patterns: list[str] = Field(default_factory=list)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_SECURITY_")
+
+
 class DashboardConfig(BaseSettings):
     """Dashboard UI configuration."""
 
@@ -309,6 +319,7 @@ class ProjectConfig(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
 

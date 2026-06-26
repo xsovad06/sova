@@ -12,12 +12,15 @@ from sova.llm.client import (
     set_provider,
 )
 from sova.llm.cost import record_cost
+from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, create_provider
 
 __all__ = [
     "LLMProvider",
     "LLMResult",
+    "PromptInjectionError",
+    "ScanResult",
     "StreamEvent",
     "create_provider",
     "get_provider",
@@ -27,5 +30,6 @@ __all__ = [
     "record_cost",
     "reset_provider",
     "resolve_model",
+    "scan_prompt",
     "set_provider",
 ]
