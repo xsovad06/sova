@@ -225,7 +225,7 @@ def compute_work_item_state(
 
     if handoff and handoff.get("status") == "awaiting_action":
         next_actions = handoff.get("next_actions", [])
-        action_ids = {a.get("id", a.get("action", "")) for a in next_actions}
+        action_ids = {a.get("id") or a.get("action") or a.get("command") or "" for a in next_actions}
         if action_ids & _SPEC_ACTION_IDS:
             return WorkItemState.SPEC_REVIEW
         return WorkItemState.HANDOFF_PENDING
@@ -476,12 +476,16 @@ async def _fetch_all_sources(
 
 
 def _index_running_agents(agents_data: dict) -> dict[str, dict]:
-    """Index running agents by issue number."""
+    """Index running agents by issue number (or pr:<number> for standalone PRs)."""
     result: dict[str, dict] = {}
     for agent in agents_data.get("agents", []):
-        issue = str(agent.get("issue", ""))
+        issue = str(agent.get("issue") or "")
         if issue:
             result[issue] = agent
+            continue
+        pr_num = agent.get("pr_number")
+        if pr_num is not None:
+            result[f"pr:{pr_num}"] = agent
     return result
 
 

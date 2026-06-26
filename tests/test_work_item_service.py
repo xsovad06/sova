@@ -72,6 +72,15 @@ class TestComputeWorkItemState:
             == WorkItemState.SPEC_REVIEW
         )
 
+    def test_handoff_spec_review_command_key(self) -> None:
+        """Spec actions using 'command' key (not 'id') are recognized."""
+        assert (
+            _state(
+                handoff={"status": "awaiting_action", "next_actions": [{"command": "approve-spec"}]},
+            )
+            == WorkItemState.SPEC_REVIEW
+        )
+
     def test_handoff_completed_ignored(self) -> None:
         assert (
             _state(
@@ -300,6 +309,13 @@ class TestIndexHelpers:
         assert "42" in idx
         assert "99" in idx
         assert "" not in idx
+
+    def test_index_running_agents_pr_fallback(self) -> None:
+        """Agents with pr_number but no issue are indexed under pr:<number>."""
+        data = {"agents": [{"issue": "", "pr_number": 55, "run_id": 4, "role": "developer"}]}
+        idx = _index_running_agents(data)
+        assert "pr:55" in idx
+        assert idx["pr:55"]["run_id"] == 4
 
     def test_index_handoffs_filters_completed(self) -> None:
         handoffs = [

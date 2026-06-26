@@ -283,7 +283,8 @@ function _renderActionBtn(action, issueKey) {
   var args = action.handler_args || {};
   var onclick;
   if (action.handler === 'start_agent') {
-    onclick = "quickStartRole('" + escapeJsStr(String(args.issue || issueKey)) + "', '" + escapeJsStr(args.role || 'developer') + "'" +
+    var issueArg = args.issue ? String(args.issue) : '';
+    onclick = "quickStartRole('" + escapeJsStr(issueArg) + "', '" + escapeJsStr(args.role || 'developer') + "'" +
       (args.pr ? ', ' + Number(args.pr) : '') + ")";
   } else if (action.handler === 'run_command') {
     var cmdArgs = [];
