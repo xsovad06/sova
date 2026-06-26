@@ -24,6 +24,13 @@ max_rounds = 2
 [notification]
 desktop = true
 
+[external_reviews]
+enabled = true
+tools = ["sonarcloud", "coderabbit"]
+
+[external_reviews.sonarcloud]
+project_key = "xsovad06_sova"
+
 [commit]
 format = "conventional"
 pr_title_format = "conventional"

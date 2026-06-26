@@ -19,8 +19,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Testing
 
-- **Mock `side_effect` must not rely on `call_count` with `asyncio.gather`** -- when two async calls run concurrently via `asyncio.gather`, invocation order is non-deterministic. Route responses by inspecting the URL/args passed to `side_effect`, not by counting calls. PR #211 CodeRabbit. [confirmed: 0]
-- **Assert context side effects, not just return values** -- when a step's `execute()` updates both the return `StepResult` and the shared `ExecutionContext` (e.g., `ctx.add_cost()`), test both. A regression in context mutation passes if only `result.cost_usd` is asserted. PR #99 CodeRabbit. [confirmed: 0]
+- **Mock `side_effect` must not rely on `call_count` with `asyncio.gather`** -- when two async calls run concurrently via `asyncio.gather`, invocation order is non-deterministic. Route responses by inspecting the URL/args passed to `side_effect`, not by counting calls. [confirmed: 0]
 
 ## Dashboard / Frontend
 
@@ -29,11 +28,9 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Multi-action handoffs expand into a sub-row, not cramped inline** -- single-action handoffs (e.g., "Integrate PR") render on the main row. Multi-action handoffs (e.g., spec review with 4 buttons) expand into a second line below the title with summary text + buttons. [confirmed: 1]
 - **Clickable card pattern: cursor-pointer + stopPropagation on nested buttons** -- add `cursor-pointer hover:opacity-80` on clickable element with `onclick`. All nested interactive elements must call `event.stopPropagation()`. File: `sova/dashboard/templates/agents.html`. [confirmed: 1]
 - **Update redirect chains when consolidating pages** -- when page A merges into B and old routes C,D redirected to A, update C,D to redirect to B. Also update sidebar nav, back-links, "View all" links, architecture.md page counts, and delete dead templates. [confirmed: 1]
-- **Diff against base after large CSS edits** -- easy to accidentally delete pre-existing rules. After multi-line CSS edits, run `diff <(git show main:path) <(cat path)`. [confirmed: 0]
 - **Static file paths must be absolute `/static/...`, not prefix-relative** -- multi-project mode prefixes cause 404s with relative paths. [confirmed: 0]
 - **Skip validation on draft creation, validate on save** -- POST creates scaffold, PUT validates. Otherwise drafts are rejected by their own skeleton. [confirmed: 0]
 - **Request validators must not be stricter than backend dispatch** -- Pydantic validators that restrict to a hardcoded set (e.g., `BUILTIN_ROLE_NAMES`) block backend features the downstream dispatcher handles (custom roles, nicknames). Validate structure (non-empty, normalized) without restricting values, or let the service layer validate. PR #173 review. [confirmed: 0]
-- **Paginated endpoints must return `{items, total}` dict, not bare list** -- adding pagination to a list endpoint is a breaking change for all callers. [confirmed: 0]
 - **Immutable spawn fields (role) don't need `current_step` gating** -- `role` is set at spawn and never changes, so `role == "researcher"` is safe as a sufficient condition for all steps. Only `pr_number`-based detection needs the gate. [confirmed: 0]
 - **Track notified IDs, not state transitions, for completion alerts** -- track seen `run_id`s to avoid missed/duplicate completion notifications. [confirmed: 1]
 - **Type URL path params as `int` when they are IDs** -- prevents XSS via JS escape sequences in Jinja2 `<script>` blocks. [confirmed: 0]
@@ -46,10 +43,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Place DOM hydration before early-return cache checks in polling functions** -- polling functions often cache `_lastUpdated` and early-return when data hasn't changed. If DOM hydration (e.g., `issueLink()`) depends on async state (`SOVA_GITHUB_REPO`) that isn't ready on the first call, the early-return blocks all future hydration attempts. Move hydration before the cache check. PR #184. [confirmed: 1]
 - **Grep for removed DOM element IDs in template JS after redesigns** -- when a template redesign removes an HTML element (e.g., a select box), `getElementById()` returns null and `.value` throws TypeError. Grep the template's `<script>` for the element ID. PR #134 `agent-role` select. [confirmed: 0]
 - **Frontend state groups must include all backend actionable states** -- `_ACTIONABLE_STATES` on the backend and `stateGroupOrder` on the frontend must stay in sync. Missing states cause items to silently disappear from the UI. PR #134 `human_only`. [confirmed: 0]
-- **Use `escapeJsStr()` not `escapeHtml()` for JS string context** -- `escapeHtml()` escapes HTML entities but not single quotes or backslashes. Inline event handlers like `onclick="fn('...')"` need JS string escaping. File: `sova/dashboard/static/app.js`. [confirmed: 0]
+- **Use `escapeJsStr()` not `escapeHtml()` for JS string context** -- `escapeHtml()` escapes HTML entities but not single quotes or backslashes. Inline event handlers like `onclick="fn('...')"` need JS string escaping. File: `sova/dashboard/static/app.js`. PR #228 review. [confirmed: 1]
 - **Polling-based `innerHTML` refresh kills open dropdowns** -- [promoted] to `.claude/rules/architecture.md` (Dashboard JS polling corollary). Track `_cardMenuOpen`, skip re-renders while open, reset flag in all grid-replacing functions.
 
-- **PR widget role actions must use `quickStartRole`, not `runCommand`** -- `runCommand` routes through the command endpoint which can't resolve issue numbers from PR context, causing all actions to share `issue="address-pr"` and conflict. Role-based actions (address-pr, develop) must use `quickStartRole(issue, role, prNum)` which routes through the agent endpoint with proper issue dedup. Command-based actions (integrate-pr, ship-pr, review-pr) can use `runCommand` but should pass `linked_issue` in args. PR #204. [confirmed: 0]
+- **PR widget role actions must use `quickStartRole`, not `runCommand`** -- `runCommand` routes through the command endpoint which can't resolve issue numbers from PR context, causing all actions to share `issue="address-pr"` and conflict. Role-based actions (address-pr, develop) must use `quickStartRole(issue, role, prNum)` which routes through the agent endpoint with proper issue dedup. Command-based actions (integrate-pr, ship-pr, review-pr) can use `runCommand` but should pass `linked_issue` in args. PR #204. [confirmed: 1]
+- **Context menu PR commands must use server-provided action list, not hardcode** -- unconditional "Ship PR" button for all PR-backed tasks bypasses the server state machine, exposing invalid actions (ship on draft/failed PRs). Gate on `secondary_actions.length` and render only server-provided entries. PR #218 CodeRabbit. [confirmed: 1]
 - **Display filter vs sort key divergence hides broken logic** -- `indexOf('priority:')` prefix check matches both `"priority:high"` and `"priority: high"`, but dict exact match `label in {"priority:high": 1}` only hits one format. When filters hide a field from display, sort/logic bugs become invisible. Normalize before matching: `label.replace(" ", "")`. File: `sova/dashboard/services/queue_service.py:_extract_label_priority()`. [confirmed: 1]
 - **Modal focus management requires three fixes for `display: none` toggling** -- (1) `offsetParent` returns `null` for elements inside `position: fixed` containers, so `el.offsetParent !== null` filters out ALL modal children -- use `!el.disabled` only; (2) synchronous `.focus()` after removing Tailwind `hidden` class silently fails before browser layout -- wrap in `setTimeout(fn, 0)`; (3) keydown listener on the modal element only fires when a descendant already has focus -- use `document.addEventListener` with a `!modal.contains(document.activeElement)` guard to pull escaped focus back. PR #178. [confirmed: 1]
 
@@ -57,6 +55,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Sanitize `role_name` before worktree/branch construction** -- `run_label` derived from CLI `--role` is used unsanitized in `f"feat/{ctx.run_label}"` (branch) and `worktree_id` (path). Characters like `/` or `..` cause `ValueError` in `create_worktree()` but `CreateWorktreeStep` only catches `RuntimeError`. Either validate at CLI entry or catch both exceptions. Files: `sova/core/steps/create_worktree.py`, `sova/cli/commands/run.py`. PR #183 CodeRabbit. [confirmed: 0]
 - **Worktree rediscovery must work for issueless address-review runs** -- `_discover_address_review_context()` gates on `ctx.has_issue`, blocking worktree recovery for issueless resumed runs. Use `ctx.run_label` as fallback `worktree_id` when no issue. File: `sova/roles/developer.py`. PR #183 CodeRabbit. [confirmed: 0]
+- **Non-issue PR commands must use PR-scoped pseudo-issue, not command name** -- `_resolve_command_context()` fell back to `issue = command` (e.g., `"address-pr"`) for PRs without linked issues. Two concurrent address-pr commands on different PRs shared the same pseudo-issue, triggering conflict detection. Fix: `issue = f"pr-{pr_number}" if pr_number else command`. The `"pr-N"` format is not all-digits so `_resolve_issue_worktree()` correctly skips numeric path and falls through to branch lookup. File: `sova/dashboard/services/agent_lifecycle.py:_resolve_command_context()`. [confirmed: 1]
 
 ## Persona / Detection
 
@@ -80,6 +79,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## GitHub API
 
+- **Label names use `area: X` format (space after colon)** -- `gh issue create --label "type:fix"` fails because the actual label is `"type: fix"`. Always check `gh label list` for exact names. Available type labels: `type: feature`, `type: task`, `type: infra`, `bug`. Area labels: `area: dashboard`, `area: orchestrator`, `area: sova-db`, `area: sova-cli`, `area: adapters`, `area: commands`, `area: knowledge`, `area: sova`, `area: security`. Priority labels: `priority: critical/high/medium/low`. [confirmed: 1]
 - **`pull_request_target` reads workflow from base branch, not PR branch** -- [promoted] to `.claude/rules/architecture.md`. Full entry with `author_association` gating and security model.
 - **Required status checks with `integration_id` reject user-posted statuses** -- workaround: temporarily remove check from ruleset via API, merge, re-add. Needs OAuth keyring token. [confirmed: 1]
 - **Auto-approve fork PR CI via file-safety gating** -- `pull_request_target` workflow checks changed files against sensitive patterns (`.github/workflows/*`, `pyproject.toml`, `Makefile`, `invariants/*`, dependency files). Safe PRs: auto-approve via `POST /actions/runs/{id}/approve` with retry loop. Sensitive PRs: post review checklist comment. Gate on `author_association` in `(NONE, FIRST_TIMER, FIRST_TIME_CONTRIBUTOR)`. File: `.github/workflows/fork-pr-gate.yml`. [confirmed: 0]
@@ -87,7 +87,6 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **GitHub project board Phase field is independent of milestones** -- updating milestone does NOT update Projects V2 board Phase field. Separate API mutations required. [confirmed: 1]
 - **Always use `_gh()` helper in GitHubAdapter** -- never call `run()` directly; `_gh()` resolves per-project auth. [confirmed: 1]
 - **Use `urlparse` before splitting API URLs for ID extraction** -- `details_url` can include query params. Use `urlparse(url).path` first. File: `sova/git/pr.py:_parse_run_id()`. [confirmed: 1]
-- **Reset file context at `diff --git` boundaries in diff parsers** -- git metadata lines get misclassified as context lines without reset. [confirmed: 0]
 - **Retry at both adapter AND caller levels** -- adapter retry handles common case, caller retry handles mocked adapters and inter-attempt failures. [confirmed: 0]
 - **CI `fetch-depth: 0` alone doesn't fetch other branches** -- `actions/checkout@v4` fetches full history of the current ref only. Invariant scripts that use `origin/main..HEAD` need explicit `git fetch origin main:refs/remotes/origin/main` step, otherwise they silently pass (empty commit range). [confirmed: 0]
 
@@ -107,7 +106,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **AssessStep must guard against duplicate developer runs when a PR exists** -- rejects with error suggesting address-review. Bypass: `--force` or `--pr`. [confirmed: 1]
 - **CI poll must validate PR head SHA after force-push** -- pass `expected_sha` to `_poll_ci()`, verify via `gh pr view --json headRefOid`. [confirmed: 1]
 - **ResolveExternalReviewsStep must include github_user threads** -- filter by both CodeRabbit bot logins AND `ctx.config.github_user`. [confirmed: 0]
-- **StepExecution status values must match downstream queries** -- `agent_status.py` filters on `status == "done"`, so `_update_step_execution` and `_execute_with_retries` must write `"done"` (not `"passed"` or `"completed"`). Mismatch drops successful steps from history/ETA. PR #204 CodeRabbit. [confirmed: 0]
+- **StepExecution status queries must use `STEP_DONE_STATUSES`** -- legacy WorkflowEngine wrote `"passed"`, current writes `"done"`. Use `STEP_DONE_STATUSES = frozenset({"done", "passed"})` from `sova.core.state` in all step completion queries. Hardcoding `status == "done"` drops 843 legacy records. PR #228. [confirmed: 1]
 - **Guard all DB writes in retry loops with try/except** -- `_create_step_execution()` and `_update_step_execution()` can fail (connection lost, disk full). Unguarded DB failures crash the workflow; wrap in try/except, log with `exc_info=True`, and continue. PR #201. [confirmed: 0]
 - **Prefer budget over wall-clock timeout as the primary agent governor** -- `agent.step_timeout` (1800s) is configurable; budget is the better control. [confirmed: 1]
 - **Multi-project dashboard requires project-scoped URLs** -- APIs and pages live under `/p/{slug}/...` in multi-project mode. [confirmed: 1]
@@ -121,17 +120,12 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## Adapters / Task Sources
 
 - **JQL values must be sanitized before interpolation** -- use `re.sub(r'["\\\x00-\x1f]', "", value)` to strip dangerous characters. File: `sova/adapters/jira.py`. [confirmed: 1]
-- **Lazy httpx.AsyncClient needs explicit close()** -- add `async def close()` to prevent connection pool leaks. File: `sova/adapters/jira.py`. [confirmed: 0]
 - **Secret Pydantic fields need `repr=False`** -- fields with API tokens should use `Field("", repr=False)`. Also applies to request models in routers, not just config models. [confirmed: 1]
 - **`or` operator treats 0 as falsy in field fallbacks** -- `fields.get('x') or fields.get('y')` skips valid 0 values. Use explicit `None` check: `v = fields.get('x'); if v is None: v = fields.get('y')`. File: `sova/adapters/jira.py` story_points. PR #229 review. [confirmed: 0]
 
 ## Refactoring / Code Quality
 
-- **Narrow `except Exception` to specific types in non-fatal blocks** -- catch `(ImportError, RuntimeError, OSError)` instead. [confirmed: 0]
-- **Import shared constants instead of duplicating literal sets** -- duplicates drift silently. [confirmed: 0]
-- **Extracted helpers must use concrete types, not `object`** -- use `TYPE_CHECKING` imports. [confirmed: 0]
 - **Slug lookup must reject non-conforming input, not sanitize it** -- use `re.fullmatch()` to reject bad slugs. [confirmed: 1]
-- **Cancel-then-await: use `asyncio.gather(return_exceptions=True)`** -- avoids SonarCloud S7497. [confirmed: 0]
 
 ## Command Distribution
 
@@ -149,9 +143,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## External Review Tools
 
 - **External API queries must distinguish failure (`None`) from empty result (`[]`)** -- [promoted] to `.claude/rules/architecture.md`. Includes `_GH_STATE_MAP` fallback trap.
+- **Enable `external_reviews` in sova.toml for repos with CodeRabbit/SonarCloud** -- `enabled` defaults to `false`, silently skipping steps 11-12 (wait + address findings). Without it, the LLM reviewer (step 15) runs on unvalidated code, duplicating issues static tools would catch for free. Deterministic-before-LLM ordering only works when enabled. [confirmed: 0]
 - **`dismiss_stale_reviews_on_push` prevents CHANGES_REQUESTED accumulation** -- set in GitHub ruleset. [confirmed: 0]
-- **Redact CI logs before injecting into LLM prompts** -- strip tokens/API keys with regex. [confirmed: 0]
-- **GraphQL queries in command docs must include all referenced fields** -- pagination instructions need `pageInfo { hasNextPage endCursor }` in selection set. [confirmed: 0]
 - **`--force-with-lease` fails against unfetched fork refs** -- `git fetch <fork-url> <branch>` before push. [confirmed: 1]
 - **SonarCloud CE Task failures are transient infrastructure errors** -- "CE Task finished abnormally with status: FAILED" means the SonarCloud server-side processing crashed, not a code quality issue. The scanner uploaded successfully but server processing failed. Fix: amend the top commit to change the SHA and force-push to trigger a fresh `pull_request_target` run. PAT may lack `actions: write` to `gh run rerun` directly. [confirmed: 0]
 - **Wait for CodeRabbit to finish before merging after /address-pr** -- CodeRabbit shows as `pending` StatusContext during review. Dismissing the old CHANGES_REQUESTED and merging while CodeRabbit is still reviewing the new push means its new findings land post-merge. Poll `gh pr checks` until CodeRabbit is no longer pending, then also verify `gh pr view --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions. PRs #134, #172, #189. [confirmed: 2]
@@ -159,24 +152,19 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## Unified State / Work Items
 
 - **Check `conclusion` before `status` in GitHub CI rollup parsing** -- GitHub API can return `status: "IN_PROGRESS"` with `conclusion: "SUCCESS"` for completed checks. Checking status first causes stale "CI Running" display. File: `sova/dashboard/services/pr_service.py:_summarize_ci()`. [confirmed: 1]
-- **Handoff action lookup must check all field name variants** -- pipeline-written handoffs use `"id"`, manually-written use `"action"`, some use `"command"`. Match against `{id, action, command, label}`. File: `sova/dashboard/routers/handoff.py`. [confirmed: 1]
+- **Handoff action lookup must check all field name variants** -- pipeline-written handoffs use `"id"`, manually-written use `"action"`, some use `"command"`. Match against `{id, action, command, label}`. ALL consumers of action IDs (lookup, state classification, execution) must use the same field set -- `compute_work_item_state()` initially missed `command`, causing spec actions to stay `handoff_pending`. File: `sova/dashboard/routers/handoff.py`, `sova/dashboard/services/work_item_service.py`. [confirmed: 2]
 - **Infer handoff mode from action name when mode field is missing** -- `build_action_command()` defaults to `"unknown"` type when `mode` is empty. If `action` or `command` field has a value, infer `"claude-command"`. File: `sova/dashboard/services/handoff_service.py`. [confirmed: 1]
-- **Server-side state computation eliminates client-side join inconsistencies** -- three independent widgets (task browser, PR tracker, handoff panel) computing state independently contradict each other. Single `compute_work_item_state()` with priority cascade (running > handoff > PR > label) replaces all three. File: `sova/dashboard/services/work_item_service.py`. [confirmed: 1]
+- **Server-side state computation eliminates client-side join inconsistencies** -- three independent widgets (task browser, PR tracker, handoff panel) computing state independently contradict each other. Single `compute_work_item_state()` with priority cascade (running > handoff > PR > label) replaces all three. File: `sova/dashboard/services/work_item_service.py`. [confirmed: 2]
 - **Issue-backed PRs default to `integrate-pr`, standalone PRs to `ship-pr`** -- `integrate-pr` runs full pipeline (merge + knowledge extraction + review ingestion); `ship-pr` only rebases/pushes. Use `issue_number` presence to select. [confirmed: 1]
 - **Null guard all `getElementById` calls in event handlers** -- standalone PR rows may not have dropdown elements. `document.getElementById('card-menu-...')` returns null, `.classList` throws TypeError, killing all subsequent JS on the page. Guard with `if (!menu) return;`. [confirmed: 1]
+- **New identifier formats must propagate to ALL lookup/index/matching sites** -- introducing `pr:<N>` as work-item key required updates in 5 places: handoff router lookup, `_index_handoffs()`, `_index_running_agents()`, handoff button onclick, and `_renderActionBtn()`. Grep for all consumers of the old format before shipping. PR #218 CodeRabbit rounds 2-3. [confirmed: 1]
+- **Builder functions with default-empty collections hide missing data** -- `_build_item(handoff_actions=[], handoff_summary="")` meant PR-only items always showed empty handoff despite `compute_work_item_state()` returning `handoff_pending`. Every caller must explicitly pass computed values; default-empty masks the bug. PR #218 CodeRabbit. [confirmed: 1]
+- **Omit keys with empty values from API action args** -- `args["issue"] = issue_number or ""` for standalone PRs sends `"issue": ""` which downstream code treats differently from missing key. Guard: `if issue_number: args["issue"] = issue_number`. PR #218 self-review. [confirmed: 0]
 
 ## Git Worktree Management
 
 - **Worktree conflict resolution must check PID liveness before removal** -- `resolve_worktree_conflict()` queries `TaskRun` DB for non-terminal runs using the worktree, then checks PID liveness via `os.kill(pid, 0)`. DB query failure is fail-closed (blocks removal). `PermissionError` from `os.kill` treated as live process. Never remove the main worktree (`Path.resolve()` comparison). File: `sova/git/worktree.py`. [confirmed: 0]
 - **`sync_branch()` auto-retries after worktree conflict resolution** -- catches "already checked out" errors from `git checkout`, delegates to `resolve_worktree_conflict()`, then retries checkout once. Resolver exceptions are wrapped with branch context. File: `sova/git/branch.py`. [confirmed: 0]
-
-## Rebase / Git Workflow
-
-- **`git checkout --theirs` for complete file rewrites during garbled rebase conflicts** -- when a feature branch rewrites a file and main added features to the old version, the diff algorithm produces cross-function conflict markers. Take incoming version with `--theirs`, then manually re-add main's features. [confirmed: 0]
-- **Review fix commits conflict with themselves after earlier rebase integration** -- when rebase conflict resolution already incorporates a fix (e.g., adding `harden` to `_actionLabels`), the later fix commit tries to add the same thing and conflicts. Resolve by keeping the already-integrated version. [confirmed: 0]
-- **Test assertions drift after rebase onto main** -- feature branch tests may assert pre-rebase default values. After rebase, run tests and update assertions to match main's current state (e.g., `"harden"` -> `"spec"` for NEEDS_SPEC action). [confirmed: 0]
-- **Fork-based PRs require fetching from the correct remote** -- `gh pr view --json headRepositoryOwner` reveals which remote hosts the branch. Use `git fetch <fork-remote> <branch>` before checkout. [confirmed: 0]
-- **Pre-push invariant failures on code outside your diff** -- invariant hooks check the full codebase, not just changed files. Rebase onto `main` before pushing. [confirmed: 0]
 
 ## Config System
 
@@ -206,8 +194,6 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Runtime-specific prompt formatting is not abstracted** -- `start_agent()` builds prompts for Claude Code (bash-fenced CLI commands), but alternative runtimes (Aider) expect task descriptions, not shell commands. Prompt construction should be runtime-aware or delegated to the runtime itself. PR #181 SOVA review. [confirmed: 0]
 - **`start_command` is Claude Code-specific but routes through generic runtime** -- Claude commands (`/{command}`, `.claude/commands/`) are meaningless to non-Claude runtimes. Guard with `runtime.name != "claude-code"` check before building command prompts. PR #181 CodeRabbit. [confirmed: 0]
-- **Config metadata descriptions must match validation constraints** -- `step_timeout` description said "0 = no limit" but validator used `gt=0` (rejecting 0). Keep metadata and Pydantic constraints in sync. PR #181 CodeRabbit. [confirmed: 0]
-- **Subprocess version checks must verify exit code** -- `_check_cli_available()` returned `True` regardless of `proc.returncode`. Non-zero exit means the tool is broken. PR #181 CodeRabbit. [confirmed: 0]
 
 ## Common Mistakes (tracked by occurrence)
 
