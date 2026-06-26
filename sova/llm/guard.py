@@ -79,7 +79,7 @@ _DIRECT_INJECTION_PATTERNS: list[_PatternEntry] = [
         0.85,
     ),
     (
-        re.compile(r"(?i)override\s+(?:your|the|all)?\s*(?:system|previous|prior)\s+(?:prompt|instructions?)"),
+        re.compile(r"(?i)override\s+(?:(?:your|the|all)\s+)?(?:system|previous|prior)\s+(?:prompt|instructions?)"),
         "direct_injection",
         0.9,
     ),
