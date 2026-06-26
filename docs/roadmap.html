@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-26</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-27</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -526,6 +526,14 @@ flowchart TD
       I157["#157 Record routing\nin CostRecord"]:::autonomous
       I155 --> I156
       I156 --> I157
+    end
+    subgraph CHAIN_J["Chain J: Spec-Driven Pipeline"]
+      direction TB
+      I245["#245 Spec-anchored\nreview"]:::autonomous
+      I246["#246 Provenance\nthreading"]:::autonomous
+      I247["#247 Spec-mediated\ncontext compression"]:::autonomous
+      I245 --> I246
+      I246 --> I247
     end
     I188["#188 Phase milestone\ncreation in setup"]:::autonomous
   end
@@ -765,6 +773,9 @@ flowchart TD
       <li>#149 (Run detail API, done) enables #124 (Interactive step viz)</li>
       <li>#145 (Kanban API, done) enables #121 (Kanban pipeline view)</li>
       <li>#157 (Model routing) and #117 (Ollama) feed into #119 (Cost-optimized routing, deferred)</li>
+      <li>#245 (Spec-anchored review) + #246 (Provenance) synergize with #224-227 (Knowledge System) -- richer memory extraction from decision rationale</li>
+      <li>#247 (Spec context compression) synergizes with #155-157 (Model Routing) -- reduced context enables cheaper model tiers</li>
+      <li>#245 (Spec-anchored review) extends #241 (Feed prior findings to reviewer) -- spec adds intent verification beyond deduplication</li>
     </ul>
   </div>
 </div>
@@ -924,6 +935,23 @@ flowchart TD
         <div class="task-row">
           <span class="task-number">#157</span>
           <span class="task-title">Record model routing decisions in CostRecord</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#245</span>
+          <span class="task-title">Spec-anchored review: verify implementation against spec intent</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #245</div>
+        <div class="task-row">
+          <span class="task-number">#246</span>
+          <span class="task-title">Provenance threading: spec as living decision record across pipeline</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #245, #246</div>
+        <div class="task-row">
+          <span class="task-number">#247</span>
+          <span class="task-title">Spec-mediated context compression for token efficiency</span>
           <span class="task-badge badge-autonomous">agentic</span>
         </div>
         <div class="task-row">
@@ -1250,6 +1278,9 @@ gantt
     #155 Complexity scorer           :t155, 2026-08-04, 1d
     #156 Model routing rules         :t156, after t155, 2d
     #157 Routing in CostRecord       :t157, after t156, 1d
+    #245 Spec-anchored review        :t245, 2026-08-04, 2d
+    #246 Provenance threading        :t246, after t245, 4d
+    #247 Spec context compression    :t247, after t246, 3d
     #188 Phase milestones in setup   :t188, 2026-08-11, 2d
 
   section Tier 4 LLM Infra
@@ -1286,7 +1317,7 @@ gantt
       <ul>
         <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154)</li>
         <li><strong>Tier 2</strong> (COMPLETE): Pipeline Reliability (#206-208) + Step Visualization (#149-151) + Kanban (#145-148)</li>
-        <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157)</li>
+        <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157), Spec-Driven Pipeline (#245-247)</li>
         <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
@@ -1297,7 +1328,7 @@ gantt
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
-        <li><strong>Agentic (7 tier remaining):</strong> #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Agentic (10 tier remaining):</strong> #155, #156, #157, #161, #164, #165, #198, #199, #245, #246, #247 -- API/service layers with clear acceptance criteria</li>
         <li><strong>Human (5 issues):</strong> #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
         <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
         <li><strong>Health audit (6 issues):</strong> #235-240 -- all agentic, well-scoped with clear file lists</li>
