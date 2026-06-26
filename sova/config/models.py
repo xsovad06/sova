@@ -252,6 +252,14 @@ class DashboardConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_DASHBOARD_")
 
 
+class OutputConfig(BaseSettings):
+    """Agent output storage configuration."""
+
+    retention_days: int = Field(30, ge=1)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_OUTPUT_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -302,6 +310,7 @@ class ProjectConfig(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

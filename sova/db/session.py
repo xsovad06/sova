@@ -140,6 +140,7 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
 
     _engine = create_async_engine(url, connect_args=connect_args)
     _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+    _engines[url] = (_engine, _session_factory)
 
     if run_migrations:
         _backup_db(url)

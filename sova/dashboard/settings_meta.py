@@ -32,6 +32,7 @@ GROUPS: dict[str, str] = {
     "server": "Server",
     "external_reviews": "External Reviews",
     "dashboard": "Dashboard",
+    "output": "Output Storage",
 }
 
 GROUP_ORDER: list[str] = [
@@ -52,6 +53,7 @@ GROUP_ORDER: list[str] = [
     "server",
     "external_reviews",
     "dashboard",
+    "output",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -464,6 +466,14 @@ _REGISTRY: list[SettingMeta] = [
         "How kanban columns are grouped: step_based (by pipeline step) or role_based (by role/status category)",
         "dashboard",
         "string",
+    ),
+    # -- Output Storage --
+    SettingMeta(
+        "output.retention_days",
+        "Retention (days)",
+        "Days to keep agent output lines after run completion",
+        "output",
+        "number",
     ),
 ]
 
