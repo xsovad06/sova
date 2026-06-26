@@ -128,7 +128,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **JQL values must be sanitized before interpolation** -- use `re.sub(r'["\\\x00-\x1f]', "", value)` to strip dangerous characters. File: `sova/adapters/jira.py`. [confirmed: 1]
 - **Lazy httpx.AsyncClient needs explicit close()** -- add `async def close()` to prevent connection pool leaks. File: `sova/adapters/jira.py`. [confirmed: 0]
-- **Secret Pydantic fields need `repr=False`** -- fields with API tokens should use `Field("", repr=False)`. [confirmed: 0]
+- **Secret Pydantic fields need `repr=False`** -- fields with API tokens should use `Field("", repr=False)`. Also applies to request models in routers, not just config models. [confirmed: 1]
+- **`or` operator treats 0 as falsy in field fallbacks** -- `fields.get('x') or fields.get('y')` skips valid 0 values. Use explicit `None` check: `v = fields.get('x'); if v is None: v = fields.get('y')`. File: `sova/adapters/jira.py` story_points. PR #229 review. [confirmed: 0]
 
 ## Refactoring / Code Quality
 
