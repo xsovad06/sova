@@ -73,49 +73,74 @@ _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 
 
-async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
-    """Periodically check for dead agent processes and mark their TaskRuns as interrupted."""
+async def _mark_dead_run(run: object, project_dir: Path) -> None:
+    """Mark a single dead-PID TaskRun as done (if merged) or interrupted."""
     from datetime import datetime, timezone
 
+    from sova.dashboard.services.agent_lifecycle import _MERGE_ROLES, _check_pr_merged_on_failure
+
+    cmd_name = (run.role or "").removeprefix("command:").removeprefix("/").split()[0]
+    if cmd_name in _MERGE_ROLES and run.pr_number is not None:
+        if await _check_pr_merged_on_failure(run.pr_number, project_dir):
+            run.status = "done"
+            run.error_message = f"Agent process died but PR #{run.pr_number} was merged successfully"
+            run.ended_at = datetime.now(timezone.utc)
+            log.info("sweep.merged_despite_crash", run_id=run.id, pr=run.pr_number)
+            return
+
+    run.status = "interrupted"
+    run.error_message = "Agent process died unexpectedly"
+    run.ended_at = datetime.now(timezone.utc)
+
+
+def _collect_sweep_dirs(project_dir: Path | None, *, is_multi: bool) -> list[Path]:
+    """Build the list of project directories to sweep."""
+    dirs: list[Path] = []
+    if is_multi:
+        for path_str in list_projects().values():
+            p = Path(path_str)
+            if p.is_dir():
+                dirs.append(p)
+    else:
+        dirs.append((project_dir or Path.cwd()).resolve())
+    return dirs
+
+
+async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> None:
+    """Single pass: check for dead agent processes and mark their TaskRuns."""
     from sqlalchemy import select
 
     from sova.dashboard.services.control_service import _is_process_alive, _projects
     from sova.db.models import TaskRun
     from sova.db.session import get_session
 
+    managed_run_ids_by_dir: dict[Path, set[int]] = {}
+    for pa in _projects.values():
+        managed_run_ids_by_dir.setdefault(pa.project_dir.resolve(), set()).update(pa.agents.keys())
+
+    for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
+        managed = managed_run_ids_by_dir.get(d, set())
+        async with await get_session(project_dir=d) as session:
+            async with session.begin():
+                stmt = select(TaskRun).where(
+                    TaskRun.status.notin_(_TERMINAL),
+                    TaskRun.pid.isnot(None),
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+
+                for run in runs:
+                    if run.id in managed or _is_process_alive(run.pid):
+                        continue
+                    await _mark_dead_run(run, d)
+
+
+async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
+    """Periodically check for dead agent processes and mark their TaskRuns."""
     while True:
         await asyncio.sleep(_SWEEP_INTERVAL)
         try:
-            managed_run_ids: set[int] = set()
-            for pa in _projects.values():
-                managed_run_ids.update(pa.agents.keys())
-
-            dirs: list[Path] = []
-            if is_multi:
-                for _slug, path_str in list_projects().items():
-                    p = Path(path_str)
-                    if p.is_dir():
-                        dirs.append(p)
-            else:
-                dirs.append((project_dir or Path.cwd()).resolve())
-
-            for d in dirs:
-                async with await get_session(project_dir=d) as session:
-                    async with session.begin():
-                        stmt = select(TaskRun).where(
-                            TaskRun.status.notin_(_TERMINAL),
-                            TaskRun.pid.isnot(None),
-                        )
-                        result = await session.execute(stmt)
-                        runs = result.scalars().all()
-
-                        for run in runs:
-                            if run.id in managed_run_ids:
-                                continue
-                            if not _is_process_alive(run.pid):
-                                run.status = "interrupted"
-                                run.error_message = "Agent process died unexpectedly"
-                                run.ended_at = datetime.now(timezone.utc)
+            await _liveness_sweep_once(project_dir, is_multi=is_multi)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -177,7 +202,7 @@ def create_app(
         if is_multi:
             log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
 
-            for _slug, path_str in list_projects().items():
+            for path_str in list_projects().values():
                 p = Path(path_str)
                 if p.is_dir():
                     await init_db_for_project(p)
