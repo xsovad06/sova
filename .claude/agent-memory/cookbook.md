@@ -195,6 +195,12 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Runtime-specific prompt formatting is not abstracted** -- `start_agent()` builds prompts for Claude Code (bash-fenced CLI commands), but alternative runtimes (Aider) expect task descriptions, not shell commands. Prompt construction should be runtime-aware or delegated to the runtime itself. PR #181 SOVA review. [confirmed: 0]
 - **`start_command` is Claude Code-specific but routes through generic runtime** -- Claude commands (`/{command}`, `.claude/commands/`) are meaningless to non-Claude runtimes. Guard with `runtime.name != "claude-code"` check before building command prompts. PR #181 CodeRabbit. [confirmed: 0]
 
+## Security / Input Validation
+
+- **Regex optional groups need atomic structure to prevent backtracking** -- `(?:your|the|all)?\s*` allows polynomial backtracking because the optional word and trailing whitespace can match independently. Use `(?:(?:your|the|all)\s+)?` so the word and its trailing space form a single optional unit. SonarCloud security hotspot. File: `sova/llm/guard.py`. PR #248. [confirmed: 0]
+- **DB-backed writers must seed sequence from existing records on re-adoption** -- `OutputWriter._next_line_number` starts at 0, but re-adopted runs may already have persisted rows. Query `MAX(line_number)` on first flush and continue from there. Without this, duplicate composite key violations occur. File: `sova/core/output.py`. PR #248. [confirmed: 0]
+- **Scan result `safe` flag must align with configured threshold** -- `ScanResult.safe` using a hardcoded 0.5 cutoff while `guard_prompt` uses `prompt_guard_threshold` (configurable) causes inconsistent results. Either derive `safe` from the same threshold or document it as advisory. File: `sova/llm/guard.py`. PR #248 CodeRabbit. [confirmed: 0]
+
 ## Common Mistakes (tracked by occurrence)
 
 - **`except X as exc:` + `log.warning(..., exc_info=True)` leaves `exc` unused** -- remove `as exc` or ruff F841 fires. (occurrences: 2) [confirmed: 1]
