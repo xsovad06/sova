@@ -6,8 +6,12 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+from sova.utils.logging import get_logger
+
 if TYPE_CHECKING:
     from sova.dashboard.services.agent_pool import AgentState
+
+log = get_logger(component="dashboard.output")
 
 
 def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = None) -> list[str]:
@@ -50,6 +54,15 @@ async def _read_output(agent: AgentState) -> None:
                     agent.output_writer.write_line(text)
     except asyncio.CancelledError:
         raise
+    except Exception:
+        log.exception("output_reader.failed", run_id=agent.run_id)
+        msg = "[ERROR] Output reader crashed -- agent may still be running"
+        agent.output_lines.append(msg)
+        if agent.output_writer:
+            try:
+                agent.output_writer.write_line(msg)
+            except (OSError, ValueError):
+                log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
 
 
 def _parse_stream_line(line: str, agent: AgentState) -> str:
@@ -101,3 +114,5 @@ async def _read_stderr(agent: AgentState) -> None:
                     agent.output_writer.write_line(text)
     except asyncio.CancelledError:
         raise
+    except Exception:
+        log.exception("stderr_reader.failed", run_id=agent.run_id)
