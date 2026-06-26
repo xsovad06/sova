@@ -229,6 +229,8 @@ function showToast(message, type, duration) {
    5. CONFIRMATION MODAL
    ============================================================ */
 
+var _sovaModalOpen = false;
+
 /**
  * sovaConfirm(message, options) -> Promise<boolean>
  *
@@ -242,9 +244,10 @@ function sovaConfirm(message, options) {
   var cancelText = opts.cancelText || 'Cancel';
   var isDanger = opts.confirmClass === 'danger';
 
-  if (document.querySelector('.sova-modal-backdrop')) {
+  if (_sovaModalOpen) {
     return Promise.resolve(false);
   }
+  _sovaModalOpen = true;
 
   return new Promise(function(resolve) {
     var backdrop = document.createElement('div');
@@ -271,6 +274,7 @@ function sovaConfirm(message, options) {
       '</div>';
 
     function close(result) {
+      _sovaModalOpen = false;
       if (backdrop.parentElement) backdrop.remove();
       document.removeEventListener('keydown', onKey);
       resolve(result);
@@ -280,7 +284,7 @@ function sovaConfirm(message, options) {
 
     function onKey(e) {
       if (e.key === 'Escape') close(false);
-      if (e.key === 'Enter' && document.activeElement === confirmBtn) { e.preventDefault(); close(true); }
+      if (e.key === 'Enter') { e.preventDefault(); close(true); }
     }
 
     backdrop.addEventListener('click', function(e) {
@@ -302,7 +306,7 @@ function sovaConfirm(message, options) {
     });
 
     setTimeout(function() {
-      confirmBtn.focus();
+      if (backdrop.parentNode) confirmBtn.focus();
     }, 0);
   });
 }
