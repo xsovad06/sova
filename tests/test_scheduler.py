@@ -163,7 +163,7 @@ class TestWatchLoop:
 
         tasks = [_make_task("1", state=TaskState.RESEARCHED)]
         adapter = _mock_adapter(tasks=tasks)
-        config = _make_config()
+        config = _make_config(watch=WatchConfig(veto_seconds=1))
 
         loop = WatchLoop(config=config, adapter=adapter)
 
@@ -481,7 +481,7 @@ class TestWatchParallelIntegration:
             _make_task("2", state=TaskState.TRIAGED),
         ]
         adapter = _mock_adapter(tasks=tasks, default_state=TaskState.RESEARCHED)
-        config = _make_config(max_parallel_agents=2)
+        config = _make_config(max_parallel_agents=2, watch=WatchConfig(veto_seconds=1))
 
         executor = ParallelExecutor(config=config)
         loop = WatchLoop(config=config, adapter=adapter, executor=executor)
