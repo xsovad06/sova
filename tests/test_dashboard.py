@@ -5662,6 +5662,29 @@ class TestOutputService:
         assert lines == []
         assert total == 0
 
+    @pytest.mark.asyncio
+    async def test_readopted_run_seeds_line_number(self, session) -> None:
+        """A new OutputWriter on a run with existing output continues numbering."""
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 200)
+        # First writer writes 3 lines
+        w1 = OutputWriter(Path("/tmp/fake"), run_id=200)
+        w1.write_line("Line 0")
+        w1.write_line("Line 1")
+        w1.write_line("Line 2")
+        await w1.close()
+
+        # Second writer (re-adoption) should continue from line 3
+        w2 = OutputWriter(Path("/tmp/fake"), run_id=200)
+        w2.write_line("Line 3")
+        w2.write_line("Line 4")
+        await w2.close()
+
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=200)
+        assert total == 5
+        assert lines == ["Line 0", "Line 1", "Line 2", "Line 3", "Line 4"]
+
 
 # ---------------------------------------------------------------------------
 # Agent Output -- stream-json parsing

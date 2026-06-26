@@ -50,8 +50,22 @@ class OutputWriter:
         if not self._buffer:
             return
 
+        from sqlalchemy import func, select
+
         from sova.db.models import OutputLine
         from sova.db.session import get_session
+
+        # Seed counter from DB on first flush to avoid collisions on re-adopted runs
+        if self._next_line_number == 0:
+            try:
+                async with await get_session(project_dir=self._project_dir) as session:
+                    max_ln = await session.scalar(
+                        select(func.max(OutputLine.line_number)).where(OutputLine.task_run_id == self._run_id)
+                    )
+                    if max_ln is not None:
+                        self._next_line_number = max_ln + 1
+            except Exception:
+                log.warning("output_writer.seed_line_number_failed", run_id=self._run_id, exc_info=True)
 
         lines_to_flush = self._buffer[:]
         self._buffer.clear()
