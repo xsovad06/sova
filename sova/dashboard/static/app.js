@@ -271,10 +271,7 @@ function sovaConfirm(message, options) {
       '</div>';
 
     function close(result) {
-      backdrop.classList.remove('sova-modal-visible');
-      setTimeout(function() {
-        if (backdrop.parentElement) backdrop.remove();
-      }, 150);
+      if (backdrop.parentElement) backdrop.remove();
       document.removeEventListener('keydown', onKey);
       resolve(result);
     }
