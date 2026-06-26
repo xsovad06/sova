@@ -42,9 +42,7 @@ class PromptInjectionError(Exception):
 # Zero-width and homoglyph normalization
 # ---------------------------------------------------------------------------
 
-_ZERO_WIDTH_CHARS = re.compile(
-    "[\u2060\ufeff\u00ad\u034f\u180e\u2000-\u200f\u202a-\u202f\u2066-\u2069]"
-)
+_ZERO_WIDTH_CHARS = re.compile("[\u2060\ufeff\u00ad\u034f\u180e\u2000-\u200f\u202a-\u202f\u2066-\u2069]")
 
 
 def _normalize_text(text: str) -> str:
@@ -242,7 +240,9 @@ def _get_compiled_custom(raw: str) -> re.Pattern[str] | None:
 
 
 def _check_builtin_patterns(
-    normalized: str, flags: list[str], details: dict[str, float],
+    normalized: str,
+    flags: list[str],
+    details: dict[str, float],
 ) -> float:
     """Check built-in patterns and return the max score."""
     max_score = 0.0
@@ -257,7 +257,10 @@ def _check_builtin_patterns(
 
 
 def _check_custom_patterns(
-    normalized: str, custom_deny_patterns: list[str], flags: list[str], details: dict[str, float],
+    normalized: str,
+    custom_deny_patterns: list[str],
+    flags: list[str],
+    details: dict[str, float],
 ) -> float:
     """Check custom deny patterns and return the max score."""
     max_score = 0.0
