@@ -32,8 +32,8 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | N
         if agent is not None:
             lines = list(agent.output_lines)
             return lines[since:]
-        lines, _total = await read_lines(pa.project_dir, run_id, since)
-        if lines:
+        lines, total = await read_lines(pa.project_dir, run_id, since)
+        if lines or total > 0:
             return lines
         legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
         lines, _total = read_lines_from_file(legacy_path, since)
@@ -46,6 +46,15 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | N
     return lines[since:]
 
 
+async def _buffer_line(agent: AgentState, text: str) -> None:
+    """Append a line to the agent's deque and optionally persist to DB."""
+    agent.output_lines.append(text)
+    if agent.output_writer:
+        agent.output_writer.write_line(text)
+        if agent.output_writer.should_flush():
+            await agent.output_writer.flush()
+
+
 async def _read_output(agent: AgentState) -> None:
     """Background task to read stdout lines into the agent's deque and DB."""
     try:
@@ -54,22 +63,16 @@ async def _read_output(agent: AgentState) -> None:
         async for line in agent.process.stdout_lines():
             text = _parse_stream_line(line, agent)
             if text:
-                agent.output_lines.append(text)
-                if agent.output_writer:
-                    agent.output_writer.write_line(text)
-                    if agent.output_writer.should_flush():
-                        await agent.output_writer.flush()
+                await _buffer_line(agent, text)
     except asyncio.CancelledError:
         raise
     except Exception:
         log.exception("output_reader.failed", run_id=agent.run_id)
         msg = "[ERROR] Output reader crashed -- agent may still be running"
-        agent.output_lines.append(msg)
-        if agent.output_writer:
-            try:
-                agent.output_writer.write_line(msg)
-            except Exception:
-                log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
+        try:
+            await _buffer_line(agent, msg)
+        except Exception:
+            log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
 
 
 def _parse_stream_line(line: str, agent: AgentState) -> str:
@@ -115,12 +118,7 @@ async def _read_stderr(agent: AgentState) -> None:
             return
         async for line in agent.process.stderr_lines():
             if line.strip():
-                text = f"[stderr] {line}"
-                agent.output_lines.append(text)
-                if agent.output_writer:
-                    agent.output_writer.write_line(text)
-                    if agent.output_writer.should_flush():
-                        await agent.output_writer.flush()
+                await _buffer_line(agent, f"[stderr] {line}")
     except asyncio.CancelledError:
         raise
     except Exception:
