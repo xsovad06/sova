@@ -126,12 +126,13 @@ async def _costs(*, project_dir: Path | None) -> None:
 def cleanup(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be cleaned up.")] = False,
+    logs: Annotated[bool, typer.Option("--logs", help="Also clean up old agent output lines from the DB.")] = False,
 ) -> None:
-    """Remove stale worktrees."""
-    asyncio.run(_cleanup(project_dir=project, dry_run=dry_run))
+    """Remove stale worktrees and optionally old output logs."""
+    asyncio.run(_cleanup(project_dir=project, dry_run=dry_run, clean_logs=logs))
 
 
-async def _cleanup(*, project_dir: Path | None, dry_run: bool) -> None:
+async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool) -> None:
     from sova.utils.shell import run
 
     resolved_dir = project_dir or Path.cwd()
@@ -147,13 +148,20 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool) -> None:
 
     if not stale:
         console.print("[green]No stale worktrees found.[/green]")
-        return
-
-    if dry_run:
+    elif dry_run:
         _preview_stale_worktrees(stale)
-        return
+    else:
+        await _remove_worktrees(stale, resolved_dir)
 
-    await _remove_worktrees(stale, resolved_dir)
+    if clean_logs and not dry_run:
+        from sova.config.loader import load_config
+        from sova.core.output import cleanup_old_output
+        from sova.db.session import init_db
+
+        await init_db(resolved_dir)
+        cfg = load_config(resolved_dir)
+        deleted = await cleanup_old_output(resolved_dir, cfg.output.retention_days)
+        console.print(f"[green]Cleaned up {deleted} old output line(s).[/green]")
 
 
 def _parse_worktree_output(stdout: str) -> list[dict[str, str]]:

@@ -14,15 +14,16 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.output")
 
 
-def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = None) -> list[str]:
+async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = None) -> list[str]:
     """Get output lines since the given cursor.
 
-    If run_id is specified, returns output for that specific agent.
-    Falls back to the persisted output file when the agent is not in memory.
+    If *run_id* is specified, returns output for that specific agent.
+    Falls back to the DB-persisted output when the agent is not in memory,
+    then to a legacy log file for pre-migration runs.
     Otherwise returns output for the first (legacy single-agent compat).
     """
     from sova.dashboard.services.agent_pool import _get_project_agents
-    from sova.dashboard.services.output_service import read_lines
+    from sova.dashboard.services.output_service import read_lines, read_lines_from_file
 
     pa = _get_project_agents(slug)
 
@@ -31,7 +32,11 @@ def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = 
         if agent is not None:
             lines = list(agent.output_lines)
             return lines[since:]
-        lines, _total = read_lines(pa.project_dir, run_id, since)
+        lines, _total = await read_lines(pa.project_dir, run_id, since)
+        if lines:
+            return lines
+        legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
+        lines, _total = read_lines_from_file(legacy_path, since)
         return lines
 
     if not pa.agents:
@@ -42,7 +47,7 @@ def get_output(since: int = 0, slug: str | None = None, *, run_id: int | None = 
 
 
 async def _read_output(agent: AgentState) -> None:
-    """Background task to read stdout lines into the agent's deque and output file."""
+    """Background task to read stdout lines into the agent's deque and DB."""
     try:
         if agent.process is None:
             return
@@ -52,6 +57,8 @@ async def _read_output(agent: AgentState) -> None:
                 agent.output_lines.append(text)
                 if agent.output_writer:
                     agent.output_writer.write_line(text)
+                    if agent.output_writer.should_flush():
+                        await agent.output_writer.flush()
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -61,7 +68,7 @@ async def _read_output(agent: AgentState) -> None:
         if agent.output_writer:
             try:
                 agent.output_writer.write_line(msg)
-            except (OSError, ValueError):
+            except Exception:
                 log.debug("output_reader.error_line_write_failed", run_id=agent.run_id, exc_info=True)
 
 
@@ -102,7 +109,7 @@ def _parse_stream_line(line: str, agent: AgentState) -> str:
 
 
 async def _read_stderr(agent: AgentState) -> None:
-    """Background task to capture stderr lines into the agent's output deque and file."""
+    """Background task to capture stderr lines into the agent's output deque and DB."""
     try:
         if agent.process is None:
             return
@@ -112,6 +119,8 @@ async def _read_stderr(agent: AgentState) -> None:
                 agent.output_lines.append(text)
                 if agent.output_writer:
                     agent.output_writer.write_line(text)
+                    if agent.output_writer.should_flush():
+                        await agent.output_writer.flush()
     except asyncio.CancelledError:
         raise
     except Exception:

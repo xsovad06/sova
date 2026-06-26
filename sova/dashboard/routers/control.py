@@ -23,7 +23,7 @@ async def agent_status():
 
 @router.get("/control/output")
 async def agent_output(since: int = 0):
-    lines = control_service.get_output(since)
+    lines = await control_service.get_output(since)
     return {"lines": lines, "total": since + len(lines)}
 
 

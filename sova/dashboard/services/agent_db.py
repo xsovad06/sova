@@ -44,21 +44,6 @@ async def _create_task_run(
         return None
 
 
-async def _set_output_file_path(run_id: int, path: Path, project_dir: Path) -> None:
-    """Store the output file path on the TaskRun record."""
-    try:
-        from sova.db.models import TaskRun
-        from sova.db.session import get_session
-
-        async with await get_session(project_dir=project_dir) as session:
-            async with session.begin():
-                task_run = await session.get(TaskRun, run_id)
-                if task_run:
-                    task_run.output_file_path = str(path)
-    except Exception:
-        log.debug("output_file_path.set_failed", run_id=run_id, exc_info=True)
-
-
 async def _update_task_run_pid(run_id: int, pid: int, project_dir: Path) -> None:
     """Set the PID on an existing TaskRun after process spawn."""
     try:

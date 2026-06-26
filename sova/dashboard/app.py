@@ -199,6 +199,8 @@ def create_app(
         )
         set_runtime(create_runtime(cfg.agent.runtime))
 
+        from sova.core.output import cleanup_old_output
+
         if is_multi:
             log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
 
@@ -207,9 +209,11 @@ def create_app(
                 if p.is_dir():
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
+                    await cleanup_old_output(p, cfg.output.retention_days)
         else:
             await init_db(resolved)
             await recover_stale_runs(resolved)
+            await cleanup_old_output(resolved, cfg.output.retention_days)
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
         yield

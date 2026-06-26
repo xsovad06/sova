@@ -2,6 +2,6 @@
 
 from sova.core.output import (  # noqa: F401
     OutputWriter,
-    output_path,
     read_lines,
+    read_lines_from_file,
 )

@@ -1,80 +1,161 @@
-"""Output persistence -- write and read agent output to per-run log files.
+"""Output persistence -- write and read agent output via the database.
 
-Each agent run gets a plain-text log file at:
-  <project_dir>/.claude/agent-output/<run_id>.log
+Each agent run's output lines are stored in the ``output_lines`` table,
+keyed by ``task_run_id``.  The ``OutputWriter`` buffers lines in memory
+and bulk-inserts them on flush (threshold-based or explicit close).
 
-Dashboard-spawned agents write lines as they stream (in addition to the
-in-memory deque for real-time display).  CLI-spawned agents write step
-markers and summaries during WorkflowEngine execution.
-
-Files are append-only and survive dashboard restarts.
+For live-streaming of active agents the dashboard uses the in-memory
+``AgentState.output_lines`` deque -- this module handles only the
+durable persistence layer that survives process restarts.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
 
 from sova.utils.logging import get_logger
 
 log = get_logger(component="output")
 
-_OUTPUT_DIR = ".claude/agent-output"
-
-
-def _output_dir(project_dir: Path) -> Path:
-    d = project_dir / _OUTPUT_DIR
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def output_path(project_dir: Path, run_id: int) -> Path:
-    return _output_dir(project_dir) / f"{run_id}.log"
+_DEFAULT_FLUSH_THRESHOLD = 50
 
 
 class OutputWriter:
-    """Append-only writer for a single run's output file."""
+    """Buffered writer that persists output lines to the database."""
 
-    def __init__(self, project_dir: Path, run_id: int) -> None:
-        self._path = output_path(project_dir, run_id)
-        self._fh = open(self._path, "a", encoding="utf-8")  # noqa: SIM115
-        self._lock = Lock()
+    def __init__(self, project_dir: Path, run_id: int, *, flush_threshold: int = _DEFAULT_FLUSH_THRESHOLD) -> None:
+        self._project_dir = project_dir
+        self._run_id = run_id
+        self._flush_threshold = flush_threshold
+        self._buffer: list[str] = []
+        self._next_line_number: int = 0
+        self._closed = False
 
     @property
-    def path(self) -> Path:
-        return self._path
+    def run_id(self) -> int:
+        return self._run_id
 
     def write_line(self, text: str) -> None:
-        with self._lock:
-            self._fh.write(text.rstrip("\n") + "\n")
-            self._fh.flush()
+        """Buffer a line for later DB persistence (synchronous, no I/O)."""
+        if self._closed:
+            return
+        self._buffer.append(text.rstrip("\n"))
 
-    def close(self) -> None:
-        with self._lock:
-            if not self._fh.closed:
-                self._fh.close()
+    def should_flush(self) -> bool:
+        return len(self._buffer) >= self._flush_threshold
 
-    def __del__(self) -> None:
+    async def flush(self) -> None:
+        """Bulk-insert buffered lines to the database."""
+        if not self._buffer:
+            return
+
+        from sova.db.models import OutputLine
+        from sova.db.session import get_session
+
+        lines_to_flush = self._buffer[:]
+        self._buffer.clear()
+
+        records = [
+            OutputLine(task_run_id=self._run_id, line_number=self._next_line_number + i, text=text)
+            for i, text in enumerate(lines_to_flush)
+        ]
+        self._next_line_number += len(records)
+
         try:
-            self.close()
+            async with await get_session(project_dir=self._project_dir) as session:
+                async with session.begin():
+                    session.add_all(records)
         except Exception:
-            pass
+            log.warning("output_writer.flush_failed", run_id=self._run_id, lines=len(records), exc_info=True)
+            self._next_line_number -= len(records)
+            self._buffer = [r.text for r in records] + self._buffer
+
+    async def close(self) -> None:
+        """Flush remaining lines and mark closed."""
+        if self._closed:
+            return
+        await self.flush()
+        self._closed = True
 
 
-def read_lines(project_dir: Path, run_id: int, since: int = 0) -> tuple[list[str], int]:
-    """Read output lines from a run's log file.
+async def read_lines(
+    project_dir: Path,
+    run_id: int,
+    since: int = 0,
+) -> tuple[list[str], int]:
+    """Read output lines from the database.
 
-    Returns (lines_from_offset, total_line_count).
+    Returns ``(lines_from_offset, total_line_count)``.
     """
-    path = output_path(project_dir, run_id)
-    if not path.exists():
+    from sqlalchemy import func, select
+
+    from sova.db.models import OutputLine
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                total: int = (
+                    await session.execute(select(func.count()).where(OutputLine.task_run_id == run_id))
+                ).scalar() or 0
+
+                if total == 0:
+                    return [], 0
+
+                rows = await session.execute(
+                    select(OutputLine.text)
+                    .where(OutputLine.task_run_id == run_id, OutputLine.line_number >= since)
+                    .order_by(OutputLine.line_number)
+                )
+                lines = [row[0] for row in rows]
+                return lines, total
+    except Exception:
+        log.warning("read_lines.failed", run_id=run_id, exc_info=True)
         return [], 0
 
+
+def read_lines_from_file(path: Path, since: int = 0) -> tuple[list[str], int]:
+    """Read output lines from a legacy log file (backward compat)."""
+    if not path.exists():
+        return [], 0
     try:
         with open(path, encoding="utf-8") as f:
             all_lines = [line.rstrip("\n") for line in f]
     except OSError:
         return [], 0
-
     total = len(all_lines)
     return all_lines[since:], total
+
+
+async def cleanup_old_output(project_dir: Path, retention_days: int = 30) -> int:
+    """Delete output lines for runs that ended more than *retention_days* ago.
+
+    Returns the number of deleted rows.
+    """
+    from sqlalchemy import delete, select
+
+    from sova.db.models import OutputLine, TaskRun
+    from sova.db.session import get_session
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                old_run_ids = [
+                    row[0]
+                    for row in await session.execute(
+                        select(TaskRun.id).where(TaskRun.ended_at.isnot(None), TaskRun.ended_at < cutoff)
+                    )
+                ]
+                if not old_run_ids:
+                    return 0
+
+                result = await session.execute(delete(OutputLine).where(OutputLine.task_run_id.in_(old_run_ids)))
+                deleted: int = result.rowcount
+        log.info("output.cleanup", deleted=deleted, retention_days=retention_days)
+        return deleted
+    except Exception:
+        log.warning("output.cleanup_failed", exc_info=True)
+        return 0
