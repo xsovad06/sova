@@ -69,6 +69,7 @@ _NESTED_SECTIONS = (
     "server",
     "external_reviews",
     "dashboard",
+    "output",
 )
 
 

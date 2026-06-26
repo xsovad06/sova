@@ -44,6 +44,7 @@ class TaskRun(Base):
     step_executions: Mapped[list["StepExecution"]] = relationship(back_populates="task_run")
     failure_records: Mapped[list["FailureRecord"]] = relationship(back_populates="task_run")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="task_run")
+    output_lines: Mapped[list["OutputLine"]] = relationship(back_populates="task_run", cascade="all, delete-orphan")
 
     @validates("issue_number")
     def _normalize_issue_number(self, _key: str, value: str | None) -> str | None:
@@ -60,6 +61,22 @@ class TaskRun(Base):
         Index("ix_task_runs_status", "status"),
         Index("ix_task_runs_project", "project_slug"),
     )
+
+
+class OutputLine(Base):
+    """Individual output line persisted from an agent run."""
+
+    __tablename__ = "output_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    task_run: Mapped["TaskRun"] = relationship(back_populates="output_lines")
+
+    __table_args__ = (Index("ix_output_lines_run_lineno", "task_run_id", "line_number"),)
 
 
 class StepExecution(Base):
