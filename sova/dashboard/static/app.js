@@ -242,6 +242,10 @@ function sovaConfirm(message, options) {
   var cancelText = opts.cancelText || 'Cancel';
   var isDanger = opts.confirmClass === 'danger';
 
+  if (document.querySelector('.sova-modal-backdrop')) {
+    return Promise.resolve(false);
+  }
+
   return new Promise(function(resolve) {
     var backdrop = document.createElement('div');
     backdrop.className = 'sova-modal-backdrop';
@@ -275,8 +279,11 @@ function sovaConfirm(message, options) {
       resolve(result);
     }
 
+    var confirmBtn = backdrop.querySelector('.sova-modal-confirm');
+
     function onKey(e) {
       if (e.key === 'Escape') close(false);
+      if (e.key === 'Enter' && document.activeElement === confirmBtn) { e.preventDefault(); close(true); }
     }
 
     backdrop.addEventListener('click', function(e) {
@@ -285,7 +292,7 @@ function sovaConfirm(message, options) {
     backdrop.querySelector('.sova-modal-cancel').addEventListener('click', function() {
       close(false);
     });
-    backdrop.querySelector('.sova-modal-confirm').addEventListener('click', function() {
+    confirmBtn.addEventListener('click', function() {
       close(true);
     });
     document.addEventListener('keydown', onKey);
@@ -297,7 +304,9 @@ function sovaConfirm(message, options) {
       });
     });
 
-    backdrop.querySelector('.sova-modal-confirm').focus();
+    setTimeout(function() {
+      confirmBtn.focus();
+    }, 0);
   });
 }
 
