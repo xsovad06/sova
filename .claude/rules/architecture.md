@@ -30,7 +30,7 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
-- 19 pages: dashboard, agents, run_detail, lifecycle, costs, queue, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks
+- 20 pages: dashboard, agents, run_detail, lifecycle, costs, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
 - 17 API routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles, spec, prs
 - 25 services: run, cost, memory, control (facade), handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, output (re-export facade for core/output), role, spec, pr

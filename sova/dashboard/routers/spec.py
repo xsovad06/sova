@@ -27,6 +27,13 @@ async def list_pending() -> dict:
     return {"specs": specs}
 
 
+@router.get("/all")
+async def list_all() -> dict:
+    """List all specs (draft, approved, rejected)."""
+    specs = spec_service.list_all_specs()
+    return {"specs": specs}
+
+
 @router.get("/{issue_number}", responses={404: {"description": "No spec found for this issue"}})
 async def get_spec(issue_number: str) -> dict:
     """Get the spec for a specific issue."""

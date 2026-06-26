@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Specs - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Specs</h2>
+  <div class="flex items-center gap-3">
+    <input type="text" id="spec-search" placeholder="Search by issue or title..."
+      class="px-3 py-1.5 rounded-lg bg-surface border border-gray-700/50 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50 w-64"
+      oninput="filterSpecs()">
+    <select id="spec-status-filter" onchange="filterSpecs()"
+      class="px-3 py-1.5 rounded-lg bg-surface border border-gray-700/50 text-sm text-gray-300 focus:outline-none focus:border-accent/50">
+      <option value="">All statuses</option>
+      <option value="draft">Draft</option>
+      <option value="approved">Approved</option>
+      <option value="rejected">Rejected</option>
+    </select>
+  </div>
+</div>
+
+<div id="specs-content">
+  <p class="text-gray-500 text-sm">Loading...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var specsData = [];
+
+var statusConfig = {
+  draft:    { label: 'Draft',    badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30', icon: 'Needs review' },
+  approved: { label: 'Approved', badge: 'bg-accent-green/20 text-accent-green',   border: 'border-accent-green/30',  icon: '' },
+  rejected: { label: 'Rejected', badge: 'bg-accent-red/20 text-accent-red',       border: 'border-accent-red/30',    icon: '' },
+};
+
+var complexityConfig = {
+  trivial:  'bg-gray-600/30 text-gray-400',
+  simple:   'bg-accent-green/20 text-accent-green',
+  moderate: 'bg-accent-yellow/20 text-accent-yellow',
+  complex:  'bg-accent-red/20 text-accent-red',
+  unknown:  'bg-gray-600/30 text-gray-500',
+};
+
+var statusGroupOrder = ['draft', 'approved', 'rejected'];
+
+function renderSpecCard(spec) {
+  var cfg = statusConfig[spec.status] || statusConfig.draft;
+  var cplx = complexityConfig[spec.complexity] || complexityConfig.unknown;
+  var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+
+  var questionsHtml = '';
+  if (spec.has_open_questions && spec.open_questions && spec.open_questions.length > 0) {
+    questionsHtml = '<span class="px-1.5 py-0.5 rounded text-xs bg-accent-yellow/15 text-accent-yellow">' +
+      spec.open_questions.length + ' question' + (spec.open_questions.length > 1 ? 's' : '') + '</span>';
+  }
+
+  return '<a href="' + prefix + '/spec/' + escapeHtml(spec.issue_number) + '" ' +
+    'class="block bg-surface-card rounded-lg border ' + cfg.border + ' p-4 hover:bg-surface-card/80 transition-colors cursor-pointer">' +
+    '<div class="flex items-center gap-3">' +
+      '<span class="text-sm font-medium text-accent whitespace-nowrap">#' + escapeHtml(spec.issue_number) + '</span>' +
+      '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(spec.title) + '</span>' +
+      '<div class="flex items-center gap-2 shrink-0">' +
+        questionsHtml +
+        '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cplx + '">' + escapeHtml(spec.complexity) + '</span>' +
+        '<span class="px-1.5 py-0.5 rounded text-xs ' + cfg.badge + '">' + cfg.label + '</span>' +
+      '</div>' +
+    '</div>' +
+    (spec.created ? '<div class="mt-1.5 text-xs text-gray-600">Created ' + escapeHtml(spec.created) + '</div>' : '') +
+  '</a>';
+}
+
+function renderSpecs(specs) {
+  var container = document.getElementById('specs-content');
+
+  if (specs.length === 0) {
+    container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
+      '<p class="text-gray-500">No specs found</p>' +
+      '<p class="text-xs text-gray-600 mt-1">Specs are created when the researcher agent runs on issues</p>' +
+    '</div>';
+    return;
+  }
+
+  var groups = {};
+  specs.forEach(function(spec) {
+    if (!groups[spec.status]) groups[spec.status] = [];
+    groups[spec.status].push(spec);
+  });
+
+  var html = '';
+  statusGroupOrder.forEach(function(status) {
+    var items = groups[status];
+    if (!items || items.length === 0) return;
+
+    var cfg = statusConfig[status] || statusConfig.draft;
+    var isCollapsed = status !== 'draft';
+    var collapseId = 'group-' + status;
+
+    html += '<div class="mt-6 first:mt-0">' +
+      '<button onclick="toggleSpecGroup(\'' + collapseId + '\')" class="flex items-center gap-3 mb-3 w-full text-left group">' +
+        '<span id="' + collapseId + '-arrow" class="text-xs text-gray-600 transition-transform' + (isCollapsed ? '' : ' rotate-90') + '">&#9654;</span>' +
+        '<h3 class="text-sm font-medium text-gray-400 whitespace-nowrap">' + cfg.label + '</h3>' +
+        '<span class="text-xs text-gray-600">(' + items.length + ')</span>' +
+        '<div class="flex-1 border-t border-gray-700/30"></div>' +
+      '</button>' +
+      '<div id="' + collapseId + '" class="space-y-2' + (isCollapsed ? ' hidden' : '') + '">';
+
+    items.forEach(function(spec) {
+      html += renderSpecCard(spec);
+    });
+
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
+}
+
+function toggleSpecGroup(id) {
+  var el = document.getElementById(id);
+  var arrow = document.getElementById(id + '-arrow');
+  if (el.classList.contains('hidden')) {
+    el.classList.remove('hidden');
+    arrow.classList.add('rotate-90');
+  } else {
+    el.classList.add('hidden');
+    arrow.classList.remove('rotate-90');
+  }
+}
+
+function filterSpecs() {
+  var query = (document.getElementById('spec-search').value || '').toLowerCase();
+  var statusFilter = document.getElementById('spec-status-filter').value;
+
+  var filtered = specsData.filter(function(spec) {
+    if (statusFilter && spec.status !== statusFilter) return false;
+    if (query) {
+      var haystack = ('#' + spec.issue_number + ' ' + spec.title).toLowerCase();
+      if (haystack.indexOf(query) === -1) return false;
+    }
+    return true;
+  });
+
+  renderSpecs(filtered);
+}
+
+async function loadSpecs() {
+  try {
+    var data = await fetchAPI(apiUrl('/spec/all'));
+    specsData = data.specs;
+    filterSpecs();
+  } catch (e) {
+    console.error('Failed to load specs:', e);
+    document.getElementById('specs-content').innerHTML =
+      '<p class="text-accent-red text-sm">Failed to load specs</p>';
+  }
+}
+
+loadSpecs();
+</script>
+{% endblock %}
