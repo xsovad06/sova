@@ -1472,7 +1472,6 @@ class TestDuplicateAgentPrevention:
                 return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=2),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1511,7 +1510,6 @@ class TestDuplicateAgentPrevention:
                 return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=3) as mock_create,
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1552,7 +1550,6 @@ class TestDuplicateAgentPrevention:
                 return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=4),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1591,7 +1588,6 @@ class TestDuplicateAgentPrevention:
                 return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -1629,7 +1625,6 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
@@ -1775,7 +1770,6 @@ class TestStartCommandWorktreeResolution:
             patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
@@ -1808,7 +1802,6 @@ class TestStartCommandWorktreeResolution:
             patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
@@ -1869,7 +1862,6 @@ class TestStartCommandWorktreeResolution:
             patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "get_runtime", return_value=mock_runtime),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=100),
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch("sova.dashboard.services.agent_output._read_output", new_callable=AsyncMock),
@@ -4750,7 +4742,6 @@ class TestMergeAwareFinalization:
                 return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99) as mock_create,
-            patch.object(agent_lifecycle, "_set_output_file_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
@@ -5516,64 +5507,160 @@ class TestStepProgress:
 
 
 class TestOutputService:
-    """Tests for the output persistence layer."""
+    """Tests for the DB-backed output persistence layer."""
 
-    def test_output_writer_creates_file(self, tmp_path) -> None:
-        from sova.core.output import OutputWriter
+    async def _create_run(self, session: AsyncSession, run_id: int) -> None:
+        """Create a TaskRun record for FK constraint."""
+        async with session.begin():
+            session.add(TaskRun(id=run_id, role="developer", status="running"))
 
-        writer = OutputWriter(tmp_path, run_id=1)
-        assert writer.path.exists()
-        writer.close()
-
-    def test_output_writer_write_and_read(self, tmp_path) -> None:
+    @pytest.mark.asyncio
+    async def test_output_writer_write_and_read(self, session) -> None:
         from sova.core.output import OutputWriter, read_lines
 
-        writer = OutputWriter(tmp_path, run_id=2)
+        await self._create_run(session, 1)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=1)
         writer.write_line("Hello, world")
         writer.write_line("Second line")
-        writer.close()
+        await writer.close()
 
-        lines, total = read_lines(tmp_path, run_id=2)
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=1)
         assert total == 2
         assert lines == ["Hello, world", "Second line"]
 
-    def test_output_writer_read_with_offset(self, tmp_path) -> None:
+    @pytest.mark.asyncio
+    async def test_output_writer_read_with_offset(self, session) -> None:
         from sova.core.output import OutputWriter, read_lines
 
-        writer = OutputWriter(tmp_path, run_id=3)
+        await self._create_run(session, 2)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=2)
         writer.write_line("Line 1")
         writer.write_line("Line 2")
         writer.write_line("Line 3")
-        writer.close()
+        await writer.close()
 
-        lines, total = read_lines(tmp_path, run_id=3, since=1)
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=2, since=1)
         assert total == 3
         assert lines == ["Line 2", "Line 3"]
 
-    def test_read_lines_missing_file(self, tmp_path) -> None:
+    @pytest.mark.asyncio
+    async def test_read_lines_empty_run(self) -> None:
         from sova.core.output import read_lines
 
-        lines, total = read_lines(tmp_path, run_id=999)
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=999)
         assert lines == []
         assert total == 0
 
-    def test_output_writer_strips_trailing_newlines(self, tmp_path) -> None:
+    @pytest.mark.asyncio
+    async def test_output_writer_strips_trailing_newlines(self, session) -> None:
         from sova.core.output import OutputWriter, read_lines
 
-        writer = OutputWriter(tmp_path, run_id=4)
+        await self._create_run(session, 3)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=3)
         writer.write_line("Line with newline\n")
-        writer.close()
+        await writer.close()
 
-        lines, total = read_lines(tmp_path, run_id=4)
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=3)
         assert total == 1
         assert lines == ["Line with newline"]
 
-    def test_output_path(self, tmp_path) -> None:
-        from sova.core.output import output_path
+    @pytest.mark.asyncio
+    async def test_flush_threshold(self, session) -> None:
+        from sova.core.output import OutputWriter
 
-        path = output_path(tmp_path, run_id=42)
-        assert path.name == "42.log"
-        assert ".claude/agent-output" in str(path)
+        await self._create_run(session, 4)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=4, flush_threshold=3)
+        writer.write_line("A")
+        writer.write_line("B")
+        assert not writer.should_flush()
+        writer.write_line("C")
+        assert writer.should_flush()
+        await writer.close()
+
+    @pytest.mark.asyncio
+    async def test_closed_writer_ignores_writes(self, session) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 5)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=5)
+        writer.write_line("Before close")
+        await writer.close()
+        writer.write_line("After close")
+
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=5)
+        assert total == 1
+        assert lines == ["Before close"]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_old_output(self, session) -> None:
+        from sova.core.output import OutputWriter, cleanup_old_output, read_lines
+
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    id=100,
+                    role="developer",
+                    status="done",
+                    ended_at=datetime.now(timezone.utc) - timedelta(days=60),
+                )
+            )
+
+        writer = OutputWriter(Path("/tmp/fake"), run_id=100)
+        writer.write_line("old output")
+        await writer.close()
+
+        deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+        assert deleted == 1
+
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=100)
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_preserves_recent_output(self, session) -> None:
+        from sova.core.output import OutputWriter, cleanup_old_output, read_lines
+
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    id=101,
+                    role="developer",
+                    status="done",
+                    ended_at=datetime.now(timezone.utc) - timedelta(days=5),
+                )
+            )
+
+        writer = OutputWriter(Path("/tmp/fake"), run_id=101)
+        writer.write_line("recent output")
+        await writer.close()
+
+        deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+        assert deleted == 0
+
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=101)
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_legacy_file_read(self, tmp_path) -> None:
+        from sova.core.output import read_lines_from_file
+
+        log_file = tmp_path / "42.log"
+        log_file.write_text("line one\nline two\nline three\n")
+
+        lines, total = read_lines_from_file(log_file)
+        assert total == 3
+        assert lines == ["line one", "line two", "line three"]
+
+        lines, total = read_lines_from_file(log_file, since=1)
+        assert total == 3
+        assert lines == ["line two", "line three"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_file_read_missing(self, tmp_path) -> None:
+        from sova.core.output import read_lines_from_file
+
+        lines, total = read_lines_from_file(tmp_path / "nonexistent.log")
+        assert lines == []
+        assert total == 0
 
 
 # ---------------------------------------------------------------------------
@@ -7366,6 +7453,8 @@ class TestReadOutputResilience:
         mock_process.stdout_lines = exploding_lines
 
         mock_writer = MagicMock()
+        mock_writer.should_flush.return_value = False
+        mock_writer.flush = AsyncMock()
         agent = AgentState(
             run_id=1,
             issue="10",
@@ -7402,6 +7491,8 @@ class TestReadOutputResilience:
         mock_process.stderr_lines = exploding_stderr
 
         mock_writer = MagicMock()
+        mock_writer.should_flush.return_value = False
+        mock_writer.flush = AsyncMock()
         agent = AgentState(
             run_id=2,
             issue="11",
@@ -7710,6 +7801,7 @@ class TestWaitAndFinalizeOutputWriter:
         mock_process = AsyncMock()
         mock_process.wait = AsyncMock(return_value=0)
         mock_writer = MagicMock()
+        mock_writer.close = AsyncMock()
 
         agent = AgentState(
             run_id=60,
@@ -7731,7 +7823,7 @@ class TestWaitAndFinalizeOutputWriter:
         ):
             await agent_lifecycle._wait_and_finalize(pa, agent)
 
-        mock_writer.close.assert_called_once()
+        mock_writer.close.assert_awaited_once()
 
     async def test_output_writer_close_error_does_not_block_finalize(self) -> None:
         """If output_writer.close() raises, finalization must still proceed."""
@@ -7744,7 +7836,7 @@ class TestWaitAndFinalizeOutputWriter:
         mock_process = AsyncMock()
         mock_process.wait = AsyncMock(return_value=0)
         mock_writer = MagicMock()
-        mock_writer.close.side_effect = OSError("disk full")
+        mock_writer.close = AsyncMock(side_effect=OSError("disk full"))
 
         agent = AgentState(
             run_id=61,
@@ -7795,6 +7887,8 @@ class TestOutputReaderWriteLineFallback:
         mock_process.stdout_lines = exploding_stdout
 
         mock_writer = MagicMock()
+        mock_writer.should_flush.return_value = False
+        mock_writer.flush = AsyncMock()
         # First write_line call succeeds (for "line1"), second fails (for error message)
         mock_writer.write_line.side_effect = [None, OSError("disk full")]
 
