@@ -68,6 +68,7 @@ _NESTED_SECTIONS = (
     "notification",
     "server",
     "external_reviews",
+    "security",
     "dashboard",
     "output",
 )

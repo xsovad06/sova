@@ -31,6 +31,7 @@ GROUPS: dict[str, str] = {
     "notification": "Notifications",
     "server": "Server",
     "external_reviews": "External Reviews",
+    "security": "Security",
     "dashboard": "Dashboard",
     "output": "Output Storage",
 }
@@ -52,6 +53,7 @@ GROUP_ORDER: list[str] = [
     "notification",
     "server",
     "external_reviews",
+    "security",
     "dashboard",
     "output",
 ]
@@ -458,6 +460,28 @@ _REGISTRY: list[SettingMeta] = [
         "Minimum coverage percentage on new code (must match SonarCloud quality gate)",
         "external_reviews",
         "number",
+    ),
+    # -- Security --
+    SettingMeta(
+        "security.prompt_guard",
+        "Prompt injection guard",
+        "Scan assembled LLM prompts for injection patterns before sending",
+        "security",
+        "boolean",
+    ),
+    SettingMeta(
+        "security.prompt_guard_threshold",
+        "Guard threshold",
+        "Risk score threshold (0-1) above which prompts are blocked",
+        "security",
+        "number",
+    ),
+    SettingMeta(
+        "security.custom_deny_patterns",
+        "Custom deny patterns",
+        "Additional regex patterns to flag as prompt injection (one per line)",
+        "security",
+        "list",
     ),
     # -- Dashboard --
     SettingMeta(

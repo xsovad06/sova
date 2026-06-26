@@ -55,6 +55,9 @@ async def invoke(
     timeout: float | None = 600,
 ) -> LLMResult:
     """Run a prompt via the active LLM provider."""
+    from sova.llm.guard import guard_prompt
+
+    guard_prompt(prompt)
     return await get_provider().invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
 
 
@@ -81,6 +84,9 @@ async def invoke_streaming(
     max_budget_usd: Decimal | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Stream output from the active LLM provider."""
+    from sova.llm.guard import guard_prompt
+
+    guard_prompt(prompt)
     async for event in get_provider().invoke_streaming(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event
 

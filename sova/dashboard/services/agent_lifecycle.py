@@ -574,7 +574,7 @@ async def start_command(
 
 # -- Completion handling ------------------------------------------------------
 
-_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
+_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge", "ship-pr"})
 
 
 async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path | None) -> bool:
