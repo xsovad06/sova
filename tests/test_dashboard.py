@@ -2131,7 +2131,7 @@ class TestHandoffAPI:
         control_dir.mkdir(parents=True)
         handoff_data = {
             "id": "test-123",
-            "source": "ship-pr",
+            "source": "integrate-pr",
             "status": "awaiting_action",
             "summary": "Test handoff",
             "created_at": "2026-04-20T10:00:00Z",
@@ -2151,7 +2151,7 @@ class TestHandoffAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["has_handoff"] is True
-        assert data["handoff"]["source"] == "ship-pr"
+        assert data["handoff"]["source"] == "integrate-pr"
         assert len(data["handoff"]["next_actions"]) == 1
 
     async def test_clear_handoff_no_file(self, client: AsyncClient) -> None:
@@ -3509,7 +3509,7 @@ class TestGetKanbanColumnsDirect:
                 ),
                 TaskRun(
                     issue_number="87",
-                    role="command:ship-pr",
+                    role="command:approve-merge",
                     status="running",
                     current_step="agent",
                     started_at=now,
@@ -5480,10 +5480,10 @@ class TestStepProgress:
         assert result["pipeline_variant"] == "command"
         assert result["step_index"] == 0
 
-    def test_command_role_ship_pr(self) -> None:
+    def test_command_role_approve_merge(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
-        result = get_step_progress(None, role="command:ship-pr")
+        result = get_step_progress(None, role="command:approve-merge")
         assert result["pipeline_variant"] == "command"
 
     def test_researcher_role_unaffected_by_command_check(self) -> None:
@@ -5684,6 +5684,76 @@ class TestOutputService:
         lines, total = await read_lines(Path("/tmp/fake"), run_id=200)
         assert total == 5
         assert lines == ["Line 0", "Line 1", "Line 2", "Line 3", "Line 4"]
+
+    @pytest.mark.asyncio
+    async def test_double_close_is_noop(self, session) -> None:
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 6)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=6)
+        writer.write_line("data")
+        await writer.close()
+        await writer.close()  # second close is a no-op
+
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=6)
+        assert total == 1
+        assert lines == ["data"]
+
+    @pytest.mark.asyncio
+    async def test_flush_failure_recovery(self, session) -> None:
+        from unittest.mock import patch
+
+        from sova.core.output import OutputWriter, read_lines
+
+        await self._create_run(session, 7)
+        writer = OutputWriter(Path("/tmp/fake"), run_id=7, flush_threshold=2)
+        writer.write_line("line1")
+        writer.write_line("line2")
+
+        # First flush fails -- lines should be preserved in buffer
+        with patch("sova.db.session.get_session", side_effect=Exception("db down")):
+            await writer.flush()
+
+        assert len(writer._buffer) == 2, "failed flush should restore buffer"
+
+        # Second flush succeeds -- lines reach DB
+        await writer.close()
+        lines, total = await read_lines(Path("/tmp/fake"), run_id=7)
+        assert total == 2
+        assert lines == ["line1", "line2"]
+
+    @pytest.mark.asyncio
+    async def test_cleanup_old_output_exception(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.output import cleanup_old_output
+
+        with patch("sova.db.session.get_session", side_effect=Exception("db error")):
+            deleted = await cleanup_old_output(Path("/tmp/fake"), retention_days=30)
+        assert deleted == 0
+
+    @pytest.mark.asyncio
+    async def test_read_lines_exception(self) -> None:
+        from unittest.mock import patch
+
+        from sova.core.output import read_lines
+
+        with patch("sova.db.session.get_session", side_effect=Exception("db error")):
+            lines, total = await read_lines(Path("/tmp/fake"), run_id=999)
+        assert lines == []
+        assert total == 0
+
+    def test_legacy_file_read_oserror(self, tmp_path) -> None:
+        from unittest.mock import patch
+
+        from sova.core.output import read_lines_from_file
+
+        log_file = tmp_path / "broken.log"
+        log_file.write_text("data")
+        with patch("builtins.open", side_effect=OSError("permission denied")):
+            lines, total = read_lines_from_file(log_file)
+        assert lines == []
+        assert total == 0
 
 
 # ---------------------------------------------------------------------------
@@ -7218,10 +7288,10 @@ class TestDetectVariantCommandRoles:
 
         assert _detect_variant(None, role="command:integrate-pr") == "command"
 
-    def test_detect_variant_command_ship(self) -> None:
+    def test_detect_variant_command_approve_merge(self) -> None:
         from sova.dashboard.services.work_service import _detect_variant
 
-        assert _detect_variant("running", role="command:ship-pr") == "command"
+        assert _detect_variant("running", role="command:approve-merge") == "command"
 
     def test_detect_variant_command_review_pr(self) -> None:
         from sova.dashboard.services.work_service import _detect_variant
@@ -7931,3 +8001,114 @@ class TestOutputReaderWriteLineFallback:
         assert any("output reader crashed" in line.lower() for line in agent.output_lines)
         mock_log.exception.assert_called_once()
         mock_log.debug.assert_called_once()
+
+
+class TestGetOutputBranches:
+    """Cover get_output fallback branches in agent_output.py."""
+
+    async def test_get_output_in_memory_agent(self) -> None:
+        """When run_id matches an in-memory agent, return from deque."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_output import get_output
+
+        mock_agent = MagicMock()
+        mock_agent.output_lines = deque(["line0", "line1", "line2"])
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {42: mock_agent}
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            lines = await get_output(since=1, run_id=42)
+        assert lines == ["line1", "line2"]
+
+    async def test_get_output_db_fallback(self, session) -> None:
+        """When run_id is not in memory, fall back to DB read."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from sova.core.output import OutputWriter
+        from sova.dashboard.services.agent_output import get_output
+        from sova.db.models import TaskRun
+
+        async with session.begin():
+            session.add(TaskRun(id=200, role="developer", status="done"))
+
+        writer = OutputWriter(Path("/tmp/fake"), run_id=200)
+        writer.write_line("db line")
+        await writer.close()
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {}
+        mock_pa.project_dir = Path("/tmp/fake")
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            lines = await get_output(since=0, run_id=200)
+        assert lines == ["db line"]
+
+    async def test_get_output_no_run_id_returns_first_agent(self) -> None:
+        """Without run_id, return first agent's output (legacy compat)."""
+        from collections import deque
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_output import get_output
+
+        mock_agent = MagicMock()
+        mock_agent.output_lines = deque(["first", "second"])
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {1: mock_agent}
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            lines = await get_output(since=0)
+        assert lines == ["first", "second"]
+
+    async def test_get_output_no_run_id_no_agents(self) -> None:
+        """Without run_id and no agents, return empty list."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_output import get_output
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {}
+
+        with patch("sova.dashboard.services.agent_pool._get_project_agents", return_value=mock_pa):
+            lines = await get_output(since=0)
+        assert lines == []
+
+
+class TestReadStderrFlushTrigger:
+    """Cover _read_stderr flush threshold path."""
+
+    async def test_stderr_triggers_flush(self) -> None:
+        from collections import deque
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_output import _read_stderr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = AsyncMock()
+
+        async def stderr_lines():
+            yield "warning line"
+
+        mock_process.stderr_lines = stderr_lines
+
+        mock_writer = MagicMock()
+        mock_writer.should_flush.return_value = True
+        mock_writer.flush = AsyncMock()
+        agent = AgentState(
+            run_id=80,
+            issue="400",
+            role="developer",
+            process=mock_process,
+            output_writer=mock_writer,
+            output_lines=deque(maxlen=5000),
+        )
+
+        await _read_stderr(agent)
+
+        mock_writer.write_line.assert_called_once()
+        mock_writer.flush.assert_awaited_once()
+        assert any("stderr" in line for line in agent.output_lines)
