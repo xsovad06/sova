@@ -43,7 +43,7 @@ class PromptInjectionError(Exception):
 # ---------------------------------------------------------------------------
 
 _ZERO_WIDTH_CHARS = re.compile(
-    "[\u200b\u200c\u200d\u2060\ufeff\u00ad\u034f\u180e\u2000-\u200f\u202a-\u202f\u2066-\u2069]"
+    "[\u2060\ufeff\u00ad\u034f\u180e\u2000-\u200f\u202a-\u202f\u2066-\u2069]"
 )
 
 
@@ -96,12 +96,12 @@ _ROLE_SWITCHING_PATTERNS: list[_PatternEntry] = [
     (
         re.compile(r"(?i)you\s+are\s+now\s+(?:a|an|the)\s+\w+"),
         "role_switch",
-        0.7,
+        0.65,
     ),
     (
         re.compile(r"(?i)act\s+as\s+(?:a|an|the)\s+(?:different|new)\s+\w+"),
         "role_switch",
-        0.7,
+        0.65,
     ),
     (
         re.compile(r"(?i)switch\s+(?:to|into)\s+(?:a\s+)?(?:new\s+)?(?:role|mode|persona|character)"),
@@ -160,12 +160,12 @@ _BOUNDARY_MANIPULATION: list[_PatternEntry] = [
 
 _OBFUSCATION_PATTERNS: list[_PatternEntry] = [
     (
-        re.compile(r"(?i)base64[:\s]+[A-Za-z0-9+/]{40,}={0,2}"),
+        re.compile(r"(?i)base64[:\s]+[a-z0-9+/]{40,}={0,2}"),
         "obfuscation",
         0.6,
     ),
     (
-        re.compile(r"(?i)decode\s+(?:the\s+following|this)\s*:\s*[A-Za-z0-9+/]{20,}"),
+        re.compile(r"(?i)decode\s+(?:the\s+following|this)\s*:\s*[a-z0-9+/]{20,}"),
         "obfuscation",
         0.7,
     ),
@@ -219,8 +219,57 @@ _ALLOWLIST: frozenset[str] = _build_allowlist()
 
 
 # ---------------------------------------------------------------------------
+# Custom deny pattern cache
+# ---------------------------------------------------------------------------
+
+_compiled_custom_cache: dict[str, re.Pattern[str] | None] = {}
+
+
+def _get_compiled_custom(raw: str) -> re.Pattern[str] | None:
+    """Return a compiled regex for a custom deny pattern, caching the result."""
+    if raw not in _compiled_custom_cache:
+        try:
+            _compiled_custom_cache[raw] = re.compile(raw, re.IGNORECASE)
+        except re.error:
+            log.warning("Invalid custom deny pattern: %s", raw)
+            _compiled_custom_cache[raw] = None
+    return _compiled_custom_cache[raw]
+
+
+# ---------------------------------------------------------------------------
 # Core scanner
 # ---------------------------------------------------------------------------
+
+
+def _check_builtin_patterns(
+    normalized: str, flags: list[str], details: dict[str, float],
+) -> float:
+    """Check built-in patterns and return the max score."""
+    max_score = 0.0
+    for pattern, category, weight in _ALL_PATTERNS:
+        if pattern.search(normalized):
+            flag = f"{category}:{pattern.pattern[:60]}"
+            if flag not in flags:
+                flags.append(flag)
+            details[category] = max(details.get(category, 0.0), weight)
+            max_score = max(max_score, weight)
+    return max_score
+
+
+def _check_custom_patterns(
+    normalized: str, custom_deny_patterns: list[str], flags: list[str], details: dict[str, float],
+) -> float:
+    """Check custom deny patterns and return the max score."""
+    max_score = 0.0
+    for raw_pattern in custom_deny_patterns:
+        compiled = _get_compiled_custom(raw_pattern)
+        if compiled is not None and compiled.search(normalized):
+            flag = f"custom:{raw_pattern[:60]}"
+            if flag not in flags:
+                flags.append(flag)
+            details["custom"] = max(details.get("custom", 0.0), 0.8)
+            max_score = max(max_score, 0.8)
+    return max_score
 
 
 def scan_prompt(text: str, *, custom_deny_patterns: list[str] | None = None) -> ScanResult:
@@ -235,34 +284,13 @@ def scan_prompt(text: str, *, custom_deny_patterns: list[str] | None = None) -> 
     normalized = _normalize_text(text)
     flags: list[str] = []
     details: dict[str, float] = {}
-    max_score = 0.0
 
-    # Check built-in patterns
-    for pattern, category, weight in _ALL_PATTERNS:
-        if pattern.search(normalized):
-            flag = f"{category}:{pattern.pattern[:60]}"
-            if flag not in flags:
-                flags.append(flag)
-            current = details.get(category, 0.0)
-            details[category] = max(current, weight)
-            max_score = max(max_score, weight)
-
-    # Check custom deny patterns
+    max_score = _check_builtin_patterns(normalized, flags, details)
     if custom_deny_patterns:
-        for raw_pattern in custom_deny_patterns:
-            try:
-                compiled = re.compile(raw_pattern, re.IGNORECASE)
-                if compiled.search(normalized):
-                    flag = f"custom:{raw_pattern[:60]}"
-                    if flag not in flags:
-                        flags.append(flag)
-                    details["custom"] = max(details.get("custom", 0.0), 0.8)
-                    max_score = max(max_score, 0.8)
-            except re.error:
-                log.warning("Invalid custom deny pattern: %s", raw_pattern)
+        max_score = max(max_score, _check_custom_patterns(normalized, custom_deny_patterns, flags, details))
 
     return ScanResult(
-        safe=max_score < 0.5,
+        safe=max_score < 0.5,  # Advisory: guard_prompt uses the configurable threshold
         risk_score=round(max_score, 2),
         flags=flags,
         details=details,
@@ -280,7 +308,7 @@ def guard_prompt(prompt: str) -> None:
     try:
         config = load_config()
     except Exception:
-        # Config loading failure should not block LLM calls
+        log.debug("guard_prompt: config load failed, guard bypassed", exc_info=True)
         return
 
     security = config.security
