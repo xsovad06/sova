@@ -54,6 +54,22 @@
      - Update start dates and "after" references in the Gantt chart (Section 3)
      - Update the subtitle date at the top of <body>
 
+  7. NEW GROUP / SUBGRAPH ADDED
+     - Each major group gets its own <pre class="mermaid"> block
+     - Blocks stack vertically via normal HTML flow
+     - Use the parallel-grid CSS class for 2-column layouts
+     - Keep each diagram small (one group = one diagram)
+     - Independent items without deps use task-row HTML, not Mermaid
+
+  VERTICAL LAYOUT
+  ~~~~~~~~~~~~~~~
+  The dependency graph uses multiple small Mermaid diagrams stacked
+  vertically via HTML, not one giant diagram:
+    - Critical path tiers: one diagram with subgraphs connected by edges
+    - Parallel tracks: individual small diagrams in a 2-column CSS grid
+    - Independent items: HTML task-row lists (no Mermaid needed)
+    - Cross-group dependencies noted textually in a notes box
+
   STYLE REFERENCE
   ~~~~~~~~~~~~~~~
   classDef mapping (Mermaid graph node colors):
@@ -75,10 +91,8 @@
 
   REGENERATION
   ~~~~~~~~~~~~
-  To regenerate this file from scratch based on current GitHub Issues:
-    Ask Claude: "regenerate docs/roadmap.html from current GitHub Issues"
-  This will fetch all open issues, their labels, milestones, and dependency
-  info from the task plan memory, and rebuild all four sections.
+  To regenerate this file from scratch: run /create-roadmap
+  To sync with current GitHub Issue states: run /update-roadmap
 
   Always update the subtitle date after any edit:
     <p class="subtitle">... updated YYYY-MM-DD</p>
@@ -362,6 +376,41 @@
     .two-col { grid-template-columns: 1fr; }
   }
 
+  .subsection-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 2rem 0 1rem;
+    padding-bottom: 0.375rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .parallel-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+
+  .grid-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.375rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cross-deps {
+    margin-top: 1rem;
+  }
+
+  @media (max-width: 768px) {
+    .parallel-grid { grid-template-columns: 1fr; }
+  }
+
   @media print {
     body { background: white; color: #1e293b; padding: 1rem; }
     .diagram-container { border-color: #e2e8f0; background: white; }
@@ -399,71 +448,53 @@
     <div class="legend-item"><div class="legend-dot dot-done"></div> Done</div>
   </div>
 
+  <!-- Critical Path -->
+  <h3 class="subsection-title">Critical Path</h3>
   <div class="diagram-container">
     <pre class="mermaid">
-%%{init: {
-  'theme': 'dark',
-  'themeVariables': {
-    'primaryColor': '#3b82f6',
-    'primaryTextColor': '#e2e8f0',
-    'lineColor': '#64748b',
-    'secondaryColor': '#1e293b',
-    'tertiaryColor': '#334155',
-    'fontSize': '13px'
-  }
-}}%%
 flowchart TD
-  subgraph TIER1["TIER 1: START NOW"]
+  subgraph TIER1["TIER 1: START NOW (Complete)"]
     direction TB
-
     subgraph CHAIN_A["Chain A: Agent Runtime"]
       direction TB
       I158["#158 AgentRuntime ABC\n(DONE)"]:::done
       I159["#159 SubprocessRuntime\n(DONE)"]:::done
       I160["#160 MockRuntime\n(DONE)"]:::done
-
       I158 --> I159
       I159 --> I160
     end
-
     subgraph CHAIN_B["Chain B: Status Badges"]
       direction TB
       I152["#152 Agent status\naggregator service\n(DONE)"]:::done
       I153["#153 Status badge\nUI component\n(DONE)"]:::done
       I154["#154 WebSocket\nreal-time status\n(DONE)"]:::done
-
       I152 --> I153
       I153 -.-> I154
     end
   end
 
-  subgraph TIER2["TIER 2: DASHBOARD POLISH (Jul-Aug)"]
+  subgraph TIER2["TIER 2: DASHBOARD POLISH (Complete)"]
     direction TB
-
     subgraph CHAIN_H["Chain H: Pipeline Reliability"]
       direction TB
       I208["#208 Worktree conflict\nresolution\n(DONE)"]:::done
       I207["#207 CI polling\ntimeout\n(DONE)"]:::done
       I206["#206 SonarCloud coverage\ngate handling\n(DONE)"]:::done
     end
-
     subgraph CHAIN_C["Chain C: Step Visualization"]
       direction TB
       I149["#149 Run detail API\n(DONE)"]:::done
       I150["#150 Clickable step\npipeline bar\n(DONE)"]:::done
       I151["#151 Step detail panel\ncost, duration, errors\n(DONE)"]:::done
-
       I149 --> I150
       I150 --> I151
     end
-
     subgraph CHAIN_D["Chain D: Kanban Pipeline"]
       direction TB
       I145["#145 Kanban API\nendpoint\n(DONE)"]:::done
       I146["#146 Kanban board\nUI component\n(DONE)"]:::done
       I147["#147 Configurable\ncolumn grouping\n(DONE)"]:::done
       I148["#148 Drag-drop\nreordering\n(DONE)"]:::done
-
       I145 --> I146
       I146 -.-> I147
       I146 -.-> I148
@@ -472,37 +503,30 @@ flowchart TD
 
   subgraph TIER3["TIER 3: PIPELINE EXTENSIONS (Aug-Sep)"]
     direction TB
-
     subgraph CHAIN_E["Chain E: Spec Pipeline"]
       direction TB
       I161["#161 SpecStep for\nspec generation"]:::autonomous
       I162["#162 Pause-for-approval\nin WorkflowEngine"]:::guided
       I163["#163 Approval resume\nendpoint + UI"]:::guided
-
       I161 --> I162
       I162 --> I163
     end
-
     subgraph CHAIN_F["Chain F: Planner Role"]
       direction TB
       I164["#164 PlannerRole\nclass"]:::autonomous
       I165["#165 Planning pipeline\nsteps"]:::autonomous
       I166["#166 Start planner\nwithout issue"]:::guided
-
       I164 --> I165
       I165 --> I166
     end
-
     subgraph CHAIN_G["Chain G: Model Routing"]
       direction TB
       I155["#155 Task complexity\nscorer"]:::autonomous
       I156["#156 Complexity-to-model\nrouting rules"]:::autonomous
       I157["#157 Record routing\nin CostRecord"]:::autonomous
-
       I155 --> I156
       I156 --> I157
     end
-
     I188["#188 Phase milestone\ncreation in setup"]:::autonomous
   end
 
@@ -516,97 +540,14 @@ flowchart TD
     I6["#6 Measure velocity\nSOVA vs manual"]:::guided
     I21["#21 Launch blog post"]:::human
     I20["#20 Tag v0.1.0"]:::critical
-
     I6 --> I21
     I21 --> I20
   end
 
-  subgraph HEALTH["HEALTH AUDIT (parallel track)"]
-    direction TB
-    I235["#235 DB hardening\nFK indexes + engine lock"]:::autonomous
-    I236["#236 Split agent_lifecycle\ninto focused modules"]:::autonomous
-    I237["#237 Reviewer parsing\n+ complexity"]:::autonomous
-    I238["#238 Cache + concurrency\nsafety"]:::autonomous
-    I239["#239 Test coverage\nscheduler + knowledge"]:::autonomous
-    I240["#240 Health check\n+ config masking"]:::autonomous
-    I235 -.-> I238
-  end
-
-  subgraph KNOWLEDGE["KNOWLEDGE SYSTEM"]
-    direction TB
-    I224["#224 Semantic memory\nsearch (embeddings)"]:::autonomous
-    I225["#225 Memory relationship\ngraph"]:::autonomous
-    I226["#226 Relevance-filtered\nmemory injection"]:::autonomous
-    I227["#227 Memory lifecycle\nconsolidation + decay"]:::autonomous
-    I224 --> I226
-    I225 -.-> I226
-  end
-
-  subgraph AGENT_QUALITY["AGENT QUALITY"]
-    direction TB
-    I232["#232 Inner dev loop\nbuild-check-fix"]:::autonomous
-    I233["#233 Regression tracking\ntest snapshots"]:::autonomous
-    I234["#234 Multi-perspective\nreview panel"]:::autonomous
-    I241["#241 Feed prior findings\nto reviewer"]:::autonomous
-    I205["#205 RTK token\ncompression"]:::medium
-  end
-
-  subgraph DEFERRED["DEFERRED (post-v0.1.0)"]
-    direction TB
-    I118["#118 A2A protocol"]:::medium
-    I119["#119 Cost-optimized\nmodel routing"]:::medium
-    I122["#122 Event-sourced\nrun journal"]:::medium
-    I125["#125 MCP\nself-inspection"]:::medium
-    I126["#126 YAML workflow\ndefinitions"]:::medium
-    I127["#127 Spatial canvas\nview"]:::medium
-    I128["#128 Workflow\nexport system"]:::medium
-    I33["#33 VM deployment\nalways-on mode"]:::medium
-    I24["#24 Monetization\nevaluation"]:::medium
-    I133["#133 JIRA board\nfilter recipes"]:::medium
-  end
-
-  subgraph GFI["GOOD FIRST ISSUES (parallel track)"]
-    direction TB
-    I135["#135 Route handler\nreturn types"]:::autonomous
-    I136["#136 __all__ exports\nto init files"]:::autonomous
-    I137["#137 Extract magic\nnumbers"]:::autonomous
-    I138["#138 Costs page\nerror handling"]:::autonomous
-    I139["#139 Empty state\ncomponent"]:::autonomous
-    I140["#140 Aria labels\naccessibility"]:::autonomous
-    I141["#141 Standardize API\nerror responses"]:::autonomous
-    I144["#144 Centralize status\ncolor mappings"]:::autonomous
-  end
-
-  subgraph BUGS["BUGS"]
-    direction TB
-    I186b["#186 Spec modal\nstacking fix"]:::high
-  end
-
-  subgraph FEATURES["STANDALONE FEATURES"]
-    direction TB
-    I187b["#187 Specs listing\npage in sidebar"]:::medium
-    I121["#121 Kanban pipeline\nview (agents)"]:::medium
-    I123["#123 Per-agent\nstatus badges\n(deps done)"]:::medium
-    I124["#124 Interactive step\nvisualization"]:::medium
-  end
-
-  subgraph SECURITY["SECURITY HARDENING"]
-    direction TB
-    I198["#198 Prompt injection\nguard (mid-pipeline)"]:::high
-    I199["#199 LLM output\negress filter"]:::medium
-    I198 --> I199
-  end
-
-  %% Cross-tier dependencies
   TIER1 --> TIER2
   TIER2 --> TIER3
   TIER3 --> TIER4
   TIER4 --> RELEASE
-  I157 -.-> I119
-  I117 -.-> I119
-  I152 --> I123
-  I149 --> I124
-  I145 --> I121
 
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
   classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
@@ -616,6 +557,215 @@ flowchart TD
   classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
   classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
     </pre>
+  </div>
+
+  <!-- Parallel Tracks -->
+  <h3 class="subsection-title">Parallel Tracks</h3>
+  <div class="parallel-grid">
+    <div class="diagram-container">
+      <div class="grid-label">Health Audit</div>
+      <pre class="mermaid">
+flowchart TD
+  I235["#235 DB hardening\nFK indexes + engine lock"]:::autonomous
+  I236["#236 Split agent_lifecycle\ninto focused modules"]:::autonomous
+  I237["#237 Reviewer parsing\n+ complexity"]:::autonomous
+  I238["#238 Cache + concurrency\nsafety"]:::autonomous
+  I239["#239 Test coverage\nscheduler + knowledge"]:::autonomous
+  I240["#240 Health check\n+ config masking"]:::autonomous
+  I235 -.-> I238
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+      </pre>
+    </div>
+    <div class="diagram-container">
+      <div class="grid-label">Knowledge System</div>
+      <pre class="mermaid">
+flowchart TD
+  I224["#224 Semantic memory\nsearch (embeddings)"]:::autonomous
+  I225["#225 Memory relationship\ngraph"]:::autonomous
+  I226["#226 Relevance-filtered\nmemory injection"]:::autonomous
+  I227["#227 Memory lifecycle\nconsolidation + decay"]:::autonomous
+  I224 --> I226
+  I225 -.-> I226
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+      </pre>
+    </div>
+    <div class="diagram-container">
+      <div class="grid-label">Security Hardening</div>
+      <pre class="mermaid">
+flowchart TD
+  I198["#198 Prompt injection\nguard (mid-pipeline)"]:::high
+  I199["#199 LLM output\negress filter"]:::medium
+  I198 --> I199
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+      </pre>
+    </div>
+    <div class="diagram-container">
+      <div class="grid-label">Agent Quality</div>
+      <pre class="mermaid">
+flowchart TD
+  I232["#232 Inner dev loop\nbuild-check-fix"]:::autonomous
+  I233["#233 Regression tracking\ntest snapshots"]:::autonomous
+  I234["#234 Multi-perspective\nreview panel"]:::autonomous
+  I241["#241 Feed prior findings\nto reviewer"]:::autonomous
+  I205["#205 RTK token\ncompression"]:::medium
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+      </pre>
+    </div>
+  </div>
+
+  <!-- Standalone Items -->
+  <h3 class="subsection-title">Bugs &amp; Standalone Features</h3>
+  <div class="diagram-container">
+    <div class="task-row">
+      <span class="task-number">#186</span>
+      <span class="task-title">Fix spec approval modal stacking (Enter key + repeated clicks)</span>
+      <span class="task-badge badge-high">bug</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#187</span>
+      <span class="task-title">Add Specs listing page to sidebar</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#121</span>
+      <span class="task-title">Kanban pipeline view (agents page)</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#123</span>
+      <span class="task-title">Per-agent status badges (deps: #152 done)</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#124</span>
+      <span class="task-title">Interactive step visualization (deps: #149 done)</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+  </div>
+
+  <!-- Good First Issues -->
+  <h3 class="subsection-title">Good First Issues</h3>
+  <div class="diagram-container">
+    <div class="task-row">
+      <span class="task-number">#135</span>
+      <span class="task-title">Add return type hints to route handlers</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#136</span>
+      <span class="task-title">Add __all__ exports to 8 empty __init__.py files</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#137</span>
+      <span class="task-title">Extract magic numbers as named constants</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#138</span>
+      <span class="task-title">Add error handling to costs page fetch calls</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#139</span>
+      <span class="task-title">Add reusable empty state component</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#140</span>
+      <span class="task-title">Add aria labels and accessibility attributes</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#141</span>
+      <span class="task-title">Standardize API error responses across routers</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#144</span>
+      <span class="task-title">Centralize status color mappings</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+  </div>
+
+  <!-- Deferred -->
+  <h3 class="subsection-title">Deferred (post-v0.1.0)</h3>
+  <div class="diagram-container">
+    <div class="task-row">
+      <span class="task-number">#118</span>
+      <span class="task-title">A2A (Agent-to-Agent) protocol</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#119</span>
+      <span class="task-title">Cost-optimized model routing by task complexity</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#122</span>
+      <span class="task-title">Event-sourced run journal with integrity verification</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#125</span>
+      <span class="task-title">MCP endpoint for agent self-inspection</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#126</span>
+      <span class="task-title">Declarative YAML workflow definitions for custom roles</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#127</span>
+      <span class="task-title">Spatial canvas view for multi-issue portfolio</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#128</span>
+      <span class="task-title">Workflow export system: portable skills</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#33</span>
+      <span class="task-title">VM deployment and always-on operation mode</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#24</span>
+      <span class="task-title">Evaluate monetization: open-core vs hosted vs consulting</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#133</span>
+      <span class="task-title">JIRA board filter recipes and status mapping guide</span>
+    </div>
+  </div>
+
+  <!-- Cross-tier Dependencies -->
+  <div class="notes cross-deps">
+    <strong>Cross-tier Dependencies</strong>
+    <ul>
+      <li>#152 (Status aggregator, done) enables #123 (Per-agent badges)</li>
+      <li>#149 (Run detail API, done) enables #124 (Interactive step viz)</li>
+      <li>#145 (Kanban API, done) enables #121 (Kanban pipeline view)</li>
+      <li>#157 (Model routing) and #117 (Ollama) feed into #119 (Cost-optimized routing, deferred)</li>
+    </ul>
   </div>
 </div>
 
@@ -1165,6 +1315,15 @@ gantt
     startOnLoad: true,
     securityLevel: 'loose',
     fontFamily: 'Inter, system-ui, sans-serif',
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#3b82f6',
+      primaryTextColor: '#e2e8f0',
+      lineColor: '#64748b',
+      secondaryColor: '#1e293b',
+      tertiaryColor: '#334155',
+      fontSize: '13px'
+    },
     flowchart: {
       useMaxWidth: true,
       htmlLabels: true,
