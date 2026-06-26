@@ -69,8 +69,8 @@ class TestDashboardHandoff:
     def test_create_minimal(self) -> None:
         from sova.ipc.handoff import DashboardHandoff
 
-        h = DashboardHandoff(source="ship-pr", status="awaiting_action", summary="Rebased and pushed.")
-        assert h.source == "ship-pr"
+        h = DashboardHandoff(source="integrate-pr", status="awaiting_action", summary="Rebased and pushed.")
+        assert h.source == "integrate-pr"
         assert h.status == "awaiting_action"
         assert h.id  # auto-generated UUID
         assert h.created_at  # auto-generated timestamp
@@ -80,7 +80,7 @@ class TestDashboardHandoff:
         from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
         h = DashboardHandoff(
-            source="ship-pr",
+            source="integrate-pr",
             status="awaiting_action",
             issue="#42",
             pr_number=15,

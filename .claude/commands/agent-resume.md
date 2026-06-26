@@ -58,7 +58,7 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '.[] | "\(.user.login
 ### 3. Act Based on Situation
 
 **PR is behind base branch** -- rebase and push:
-- Run the same logic as `ship-pr` (fetch, rebase, push)
+- Fetch latest base, rebase the PR branch, push with --force-with-lease
 - If there are merge conflicts, attempt to resolve them (read each conflicted file, understand both sides of each conflict marker, resolve, `git add`, `git rebase --continue` -- up to 3 rebase steps)
 - If resolution fails, run `git rebase --abort` and write a failed handoff listing conflicting files
 - Write handoff with merge options
