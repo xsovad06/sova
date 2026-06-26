@@ -454,6 +454,124 @@ class TestSpecService:
         assert results[0]["issue_number"] == "20"
         assert results[1]["issue_number"] == "10"
 
+    def test_approve_spec_non_draft_rejected(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import approve_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: approved\n**Complexity**: simple\n")
+
+        result = approve_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "already" in result["error"]
+
+    def test_reject_spec_not_found(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import reject_spec
+
+        result = reject_spec("99", project_dir=tmp_path)
+        assert "error" in result
+
+    def test_reject_spec_non_draft_non_rejected(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import reject_spec
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: approved\n**Complexity**: simple\n")
+
+        result = reject_spec("42", project_dir=tmp_path)
+        assert "error" in result
+        assert "cannot reject" in result["error"]
+
+    def test_iter_all_specs_skips_non_md_files(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        (specs_dir / "42-draft.md").write_text("# Spec\n\n**Status**: draft\n")
+        (specs_dir / "notes.txt").write_text("not a spec")
+
+        results = list_all_specs(project_dir=tmp_path)
+        assert len(results) == 1
+
+    def test_iter_all_specs_skips_no_issue_prefix(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        (specs_dir / "no-issue-number.md").write_text("# Spec\n\n**Status**: draft\n")
+
+        results = list_all_specs(project_dir=tmp_path)
+        assert results == []
+
+    def test_iter_all_specs_handles_parse_error(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        (specs_dir / "42-good.md").write_text("# Spec\n\n**Status**: draft\n")
+
+        with patch("sova.dashboard.services.spec_service._parse_spec", side_effect=ValueError("bad")):
+            results = list_all_specs(project_dir=tmp_path)
+        assert results == []
+
+    def test_write_answers(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text(
+            "# Spec\n\n**Status**: draft\n\n"
+            "## Open Questions\n\n- Should we use X or Y?\n- What about Z?\n"
+        )
+
+        write_answers("42", {"0": "Use X", "1": "Z is fine"}, project_dir=tmp_path)
+
+        text = spec.read_text()
+        assert "Q: Should we use X or Y? A: Use X" in text
+        assert "Q: What about Z? A: Z is fine" in text
+
+    def test_write_answers_no_spec_file(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        # Should not raise
+        write_answers("99", {"0": "answer"}, project_dir=tmp_path)
+
+    def test_write_answers_empty_answers(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        original = "# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Q1?\n"
+        spec.write_text(original)
+
+        write_answers("42", {}, project_dir=tmp_path)
+        # File unchanged (early return on empty answers)
+        assert spec.read_text() == original
+
+    def test_write_answers_no_questions(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        original = "# Spec\n\n**Status**: draft\n"
+        spec.write_text(original)
+
+        write_answers("42", {"0": "answer"}, project_dir=tmp_path)
+        assert spec.read_text() == original
+
+    def test_extract_open_questions_skips_paren_lines(self) -> None:
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n(this is a note)\n- Real question?\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "Real question?"
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -660,3 +778,106 @@ class TestSpecRouter:
                 await reject_spec("99")
 
         mock_clear.assert_not_called()
+
+    async def test_list_pending_endpoint(self) -> None:
+        from sova.dashboard.routers.spec import list_pending
+        from sova.dashboard.services import spec_service
+
+        with patch.object(
+            spec_service,
+            "list_pending_specs",
+            return_value=[{"issue_number": "42", "status": "draft"}],
+        ):
+            result = await list_pending()
+
+        assert len(result["specs"]) == 1
+        assert result["specs"][0]["status"] == "draft"
+
+    async def test_get_spec_endpoint(self) -> None:
+        from sova.dashboard.routers.spec import get_spec
+        from sova.dashboard.services import spec_service
+
+        with patch.object(
+            spec_service,
+            "read_spec",
+            return_value={"issue_number": "42", "status": "draft"},
+        ):
+            result = await get_spec("42")
+
+        assert result["issue_number"] == "42"
+
+    async def test_get_spec_not_found(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import get_spec
+        from sova.dashboard.services import spec_service
+
+        with patch.object(spec_service, "read_spec", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_spec("99")
+        assert exc_info.value.status_code == 404
+
+    async def test_approve_spec_not_found(self) -> None:
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import spec_service
+
+        with patch.object(spec_service, "approve_spec", return_value={"error": "Not found"}):
+            with pytest.raises(HTTPException) as exc_info:
+                await approve_spec("99")
+        assert exc_info.value.status_code == 404
+
+    async def test_revise_spec_spawn_failure(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        with (
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("No slots"),
+            ),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            with pytest.raises(RuntimeError, match="No slots"):
+                await revise_spec("42")
+
+        mock_clear.assert_not_called()
+
+    async def test_skip_spec_success(self) -> None:
+        from sova.dashboard.routers.spec import skip_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        with (
+            patch.object(
+                control_service,
+                "start_agent",
+                new_callable=AsyncMock,
+                return_value={"pid": 456},
+            ),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            result = await skip_spec("42")
+
+        assert result["status"] == "skipped"
+        assert result["agent"]["pid"] == 456
+        mock_clear.assert_called_once_with(issue="42")
+
+    async def test_reject_spec_success_clears_handoff(self) -> None:
+        from sova.dashboard.routers.spec import reject_spec
+        from sova.dashboard.services import handoff_service, spec_service
+
+        with (
+            patch.object(
+                spec_service,
+                "reject_spec",
+                return_value={"status": "rejected", "issue_number": "42"},
+            ),
+            patch.object(handoff_service, "clear_handoff") as mock_clear,
+        ):
+            result = await reject_spec("42")
+
+        assert result["status"] == "rejected"
+        mock_clear.assert_called_once_with(issue="42")
