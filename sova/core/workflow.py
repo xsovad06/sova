@@ -100,8 +100,8 @@ class WorkflowEngine:
             self._ctx.task_run_id = self._task_run_id
 
         self._output_writer = OutputWriter(self._ctx.project_dir, self._task_run_id)
-        await self._set_output_file_path(str(self._output_writer.path))
         self._output_writer.write_line(f"=== Workflow started: {self._ctx.display_label}, role={self._ctx.role} ===")
+        await self._output_writer.flush()
 
         result = WorkflowResult(
             success=False,
@@ -129,8 +129,8 @@ class WorkflowEngine:
             log.warning("workflow.budget_exceeded", cost=str(self._ctx.cost_usd))
             result.final_status = TaskStatus.PAUSED
             result.error = f"Budget exceeded: ${self._ctx.cost_usd}"
-            self._write_output(f"PAUSED: {result.error}")
-            self._close_output()
+            await self._write_output(f"PAUSED: {result.error}")
+            await self._close_output()
             await self._record_failure(step.name, "budget_exceeded", result.error)
             await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
             await self._sync_task_run_context()
@@ -143,13 +143,13 @@ class WorkflowEngine:
             return True
 
         await self._set_current_step(step.name)
-        self._write_output(f"\n--- Step: {step.name} ---")
+        await self._write_output(f"\n--- Step: {step.name} ---")
 
         record = await self._execute_with_retries(step)
         result.step_records.append(record)
 
         if record.result and record.result.summary:
-            self._write_output(record.result.summary)
+            await self._write_output(record.result.summary)
 
         if record.status == "failed":
             result.steps_failed += 1
@@ -167,8 +167,8 @@ class WorkflowEngine:
             await self._update_task_run_status(result.final_status, error=result.error)
             await self._sync_task_run_context()
 
-            self._write_output(f"FAILED: {result.error}")
-            self._close_output()
+            await self._write_output(f"FAILED: {result.error}")
+            await self._close_output()
 
             role_label = self._ctx.role.capitalize()
             project_name = self._ctx.project_dir.name
@@ -203,8 +203,8 @@ class WorkflowEngine:
         """Write final state after all steps complete successfully."""
         result.success = True
         result.final_status = TaskStatus.DONE
-        self._write_output(f"\n=== Workflow completed: ${result.total_cost_usd} ===")
-        self._close_output()
+        await self._write_output(f"\n=== Workflow completed: ${result.total_cost_usd} ===")
+        await self._close_output()
         await self._update_task_run_status(TaskStatus.DONE)
         await self._finalize_task_run()
 
@@ -289,13 +289,15 @@ class WorkflowEngine:
 
     # -- Output helpers --
 
-    def _write_output(self, text: str) -> None:
+    async def _write_output(self, text: str) -> None:
         if self._output_writer:
             self._output_writer.write_line(text)
+            if self._output_writer.should_flush():
+                await self._output_writer.flush()
 
-    def _close_output(self) -> None:
+    async def _close_output(self) -> None:
         if self._output_writer:
-            self._output_writer.close()
+            await self._output_writer.close()
             self._output_writer = None
 
     # -- DB persistence --
@@ -336,13 +338,6 @@ class WorkflowEngine:
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.current_step = step_name
-
-    async def _set_output_file_path(self, path: str) -> None:
-        """Store the output file path on the TaskRun record."""
-        async with await get_session() as session, session.begin():
-            task_run = await session.get(TaskRun, self._task_run_id)
-            if task_run:
-                task_run.output_file_path = path
 
     async def _update_task_run_status(self, status: TaskStatus, *, error: str | None = None) -> None:
         """Update the TaskRun status and optional error message."""

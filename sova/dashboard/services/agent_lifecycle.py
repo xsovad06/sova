@@ -20,7 +20,6 @@ from sova.dashboard.services.agent_db import (
     _fetch_run_states,
     _finalize_orphaned_run,
     _finalize_task_run,
-    _set_output_file_path,
     _update_task_run_pid,
 )
 from sova.dashboard.services.agent_pool import (
@@ -333,7 +332,6 @@ async def start_agent(
             await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
 
         writer = OutputWriter(cwd, run_id)
-        await _set_output_file_path(run_id, writer.path, cwd)
 
         agent = AgentState(
             run_id=run_id,
@@ -552,7 +550,6 @@ async def start_command(
         await _link_run_to_lifecycle(run_id, issue, role, project_dir)
 
         writer = OutputWriter(project_dir, run_id)
-        await _set_output_file_path(run_id, writer.path, project_dir)
 
         agent = AgentState(
             run_id=run_id,
@@ -577,7 +574,7 @@ async def start_command(
 
 # -- Completion handling ------------------------------------------------------
 
-_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge", "ship-pr"})
+_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
 
 async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path | None) -> bool:
@@ -632,8 +629,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     if agent.output_writer:
         try:
-            agent.output_writer.close()
-        except (OSError, ValueError):
+            await agent.output_writer.close()
+        except Exception:
             log.warning("output_writer.close_failed", run_id=run_id, exc_info=True)
 
     # Finalize the DB record BEFORE removing from pa.agents so the

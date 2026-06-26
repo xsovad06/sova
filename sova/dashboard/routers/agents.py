@@ -171,7 +171,7 @@ async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> di
 @router.get("/agents/{run_id}/output")
 async def get_agent_output(run_id: int, since: int = 0):
     """Get output lines for a specific agent."""
-    lines = control_service.get_output(since, run_id=run_id)
+    lines = await control_service.get_output(since, run_id=run_id)
     return {"lines": lines, "total": since + len(lines)}
 
 

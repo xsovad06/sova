@@ -18,9 +18,6 @@ from sova.dashboard.services.agent_db import (
 from sova.dashboard.services.agent_db import (
     _finalize_task_run as _finalize_task_run,
 )
-from sova.dashboard.services.agent_db import (
-    _set_output_file_path as _set_output_file_path,
-)
 from sova.dashboard.services.agent_handoff import _process_auto_handoff as _process_auto_handoff
 from sova.dashboard.services.agent_lifecycle import (
     _ADDRESS_REVIEW_ONLY as _ADDRESS_REVIEW_ONLY,
