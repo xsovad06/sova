@@ -41,7 +41,7 @@ SOVA has four main components:
   - `handoff_service.py` -- read/write/archive handoff files (mtime-cached)
   - Dashboard renders handoff action buttons on the agents page (awaiting_action/completed/failed). Failed runs also show a "Re-run" button that pre-fills issue, role, and PR number.
   - `_process_auto_handoff()` in `agent_handoff.py` auto-triggers `HandoffAction` entries with `auto_execute=True` after agent exit, enabling autonomous role chaining. The `auto_execute` flag is set per `pipeline.auto_handoff` / `pipeline.auto_address_review` config
-  - Enables chaining: `integrate-pr` (full pipeline) or `ship-pr` -> `agent-resume` -> `approve-merge` (step-by-step)
+  - Enables chaining: `integrate-pr` (full pipeline: rebase, CI, merge, cleanup)
 - **Claude command execution**: `agent_lifecycle.start_command()` runs Claude Code commands from handoff actions (re-exported via `control_service` facade)
 - Tests: `tests/test_dashboard.py` + `tests/test_batch_service.py` (pytest + httpx ASGITransport, in-memory SQLite via `sqlite+aiosqlite://`), run via `make test-py`
 

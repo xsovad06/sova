@@ -382,7 +382,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-23</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-26</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -442,16 +442,16 @@ flowchart TD
 
     subgraph CHAIN_H["Chain H: Pipeline Reliability"]
       direction TB
-      I208["#208 Worktree conflict\nresolution"]:::autonomous
-      I207["#207 CI polling\ntimeout"]:::autonomous
-      I206["#206 SonarCloud coverage\ngate handling"]:::autonomous
+      I208["#208 Worktree conflict\nresolution\n(DONE)"]:::done
+      I207["#207 CI polling\ntimeout\n(DONE)"]:::done
+      I206["#206 SonarCloud coverage\ngate handling\n(DONE)"]:::done
     end
 
     subgraph CHAIN_C["Chain C: Step Visualization"]
       direction TB
       I149["#149 Run detail API\n(DONE)"]:::done
-      I150["#150 Clickable step\npipeline bar"]:::guided
-      I151["#151 Step detail panel\ncost, duration, errors"]:::guided
+      I150["#150 Clickable step\npipeline bar\n(DONE)"]:::done
+      I151["#151 Step detail panel\ncost, duration, errors\n(DONE)"]:::done
 
       I149 --> I150
       I150 --> I151
@@ -460,9 +460,9 @@ flowchart TD
     subgraph CHAIN_D["Chain D: Kanban Pipeline"]
       direction TB
       I145["#145 Kanban API\nendpoint\n(DONE)"]:::done
-      I146["#146 Kanban board\nUI component"]:::guided
-      I147["#147 Configurable\ncolumn grouping"]:::medium
-      I148["#148 Drag-drop\nreordering"]:::medium
+      I146["#146 Kanban board\nUI component\n(DONE)"]:::done
+      I147["#147 Configurable\ncolumn grouping\n(DONE)"]:::done
+      I148["#148 Drag-drop\nreordering\n(DONE)"]:::done
 
       I145 --> I146
       I146 -.-> I147
@@ -519,6 +519,36 @@ flowchart TD
 
     I6 --> I21
     I21 --> I20
+  end
+
+  subgraph HEALTH["HEALTH AUDIT (parallel track)"]
+    direction TB
+    I235["#235 DB hardening\nFK indexes + engine lock"]:::autonomous
+    I236["#236 Split agent_lifecycle\ninto focused modules"]:::autonomous
+    I237["#237 Reviewer parsing\n+ complexity"]:::autonomous
+    I238["#238 Cache + concurrency\nsafety"]:::autonomous
+    I239["#239 Test coverage\nscheduler + knowledge"]:::autonomous
+    I240["#240 Health check\n+ config masking"]:::autonomous
+    I235 -.-> I238
+  end
+
+  subgraph KNOWLEDGE["KNOWLEDGE SYSTEM"]
+    direction TB
+    I224["#224 Semantic memory\nsearch (embeddings)"]:::autonomous
+    I225["#225 Memory relationship\ngraph"]:::autonomous
+    I226["#226 Relevance-filtered\nmemory injection"]:::autonomous
+    I227["#227 Memory lifecycle\nconsolidation + decay"]:::autonomous
+    I224 --> I226
+    I225 -.-> I226
+  end
+
+  subgraph AGENT_QUALITY["AGENT QUALITY"]
+    direction TB
+    I232["#232 Inner dev loop\nbuild-check-fix"]:::autonomous
+    I233["#233 Regression tracking\ntest snapshots"]:::autonomous
+    I234["#234 Multi-perspective\nreview panel"]:::autonomous
+    I241["#241 Feed prior findings\nto reviewer"]:::autonomous
+    I205["#205 RTK token\ncompression"]:::medium
   end
 
   subgraph DEFERRED["DEFERRED (post-v0.1.0)"]
@@ -638,46 +668,55 @@ flowchart TD
       <!-- Tier 2 -->
       <div class="timeline-label">Tier 2<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Jul-Aug</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#208</span>
           <span class="task-title">Worktree conflict resolution for headless agents</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#207</span>
           <span class="task-title">CI polling timeout for headless agents</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#206</span>
           <span class="task-title">SonarCloud coverage gate handling in address-pr</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
         <div class="task-row done">
           <span class="task-number">#149</span>
           <span class="task-title">Enhance run detail API with full step data</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#150</span>
           <span class="task-title">Clickable step pipeline bar on run detail page</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #150</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#151</span>
           <span class="task-title">Step detail panel with cost, duration, errors</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
         </div>
         <div class="task-row done">
           <span class="task-number">#145</span>
           <span class="task-title">Kanban API endpoint for agent pipeline view</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#146</span>
           <span class="task-title">Kanban board UI component on agents page</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
+        </div>
+        <div class="task-row done">
+          <span class="task-number">#147</span>
+          <span class="task-title">Configurable kanban column grouping</span>
+          <span class="task-badge badge-done">done</span>
+        </div>
+        <div class="task-row done">
+          <span class="task-number">#148</span>
+          <span class="task-title">Kanban drag-drop card reordering</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -866,6 +905,105 @@ flowchart TD
 
       <div class="phase-divider"></div>
 
+      <!-- Health Audit -->
+      <div class="timeline-label">Audit<br><span style="font-weight:400;font-size:0.65rem;color:var(--green)">Parallel</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#235</span>
+          <span class="task-title">DB hardening: FK indexes + engine init lock</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#236</span>
+          <span class="task-title">Split agent_lifecycle.py into focused modules</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#237</span>
+          <span class="task-title">Harden reviewer JSON parsing + reduce complexity</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#238</span>
+          <span class="task-title">Replace manual TTL caches + concurrency locks</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#239</span>
+          <span class="task-title">Expand scheduler + knowledge.sharing test coverage</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#240</span>
+          <span class="task-title">Health check endpoint + config credential masking</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
+      <!-- Knowledge System -->
+      <div class="timeline-label">Knowledge<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#224</span>
+          <span class="task-title">Semantic memory search via embeddings</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#225</span>
+          <span class="task-title">Memory relationship graph for connected retrieval</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #224</div>
+        <div class="task-row">
+          <span class="task-number">#226</span>
+          <span class="task-title">Relevance-filtered memory injection into prompts</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#227</span>
+          <span class="task-title">Memory lifecycle management: consolidation + decay</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
+      <!-- Agent Quality -->
+      <div class="timeline-label">Quality<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#232</span>
+          <span class="task-title">Inner dev loop: build-check-fix cycle within DevelopStep</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#233</span>
+          <span class="task-title">Regression tracking: snapshot passing tests before changes</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#234</span>
+          <span class="task-title">Multi-perspective review: panel of reviewers</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#241</span>
+          <span class="task-title">Feed prior findings to reviewer context</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#205</span>
+          <span class="task-title">RTK token compression for headless agent runs</span>
+          <span class="task-badge badge-guided">hybrid</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
       <!-- Deferred -->
       <div class="timeline-label">Deferred<br><span style="font-weight:400;font-size:0.65rem;color:var(--text-muted)">Post v0.1.0</span></div>
       <div class="timeline-content">
@@ -909,14 +1047,6 @@ flowchart TD
           <span class="task-number">#133</span>
           <span class="task-title">JIRA board filter recipes and status mapping guide</span>
         </div>
-        <div class="task-row">
-          <span class="task-number">#147</span>
-          <span class="task-title">Configurable kanban column grouping</span>
-        </div>
-        <div class="task-row">
-          <span class="task-number">#148</span>
-          <span class="task-title">Kanban drag-drop card reordering</span>
-        </div>
       </div>
     </div>
   </div>
@@ -948,15 +1078,17 @@ gantt
     #153 Status badge UI             :done, t153, 2026-06-22, 1d
     #154 WebSocket real-time status   :done, t154, 2026-06-23, 1d
 
-  section Tier 2 Pipeline Reliability + Dashboard
-    #208 Worktree conflict resolution :t208, 2026-07-01, 2d
-    #207 CI polling timeout           :t207, 2026-07-01, 2d
-    #206 SonarCloud coverage gate     :t206, 2026-07-03, 2d
+  section Tier 2 Complete
+    #208 Worktree conflict resolution :done, t208, 2026-06-25, 1d
+    #207 CI polling timeout           :done, t207, 2026-06-24, 1d
+    #206 SonarCloud coverage gate     :done, t206, 2026-06-24, 1d
     #149 Run detail API              :done, t149, 2026-06-23, 1d
-    #150 Step pipeline bar           :t150, 2026-07-07, 3d
-    #151 Step detail panel           :t151, after t150, 3d
+    #150 Step pipeline bar           :done, t150, 2026-06-23, 1d
+    #151 Step detail panel           :done, t151, 2026-06-26, 1d
     #145 Kanban API endpoint         :done, t145, 2026-06-23, 1d
-    #146 Kanban board UI             :t146, 2026-07-07, 4d
+    #146 Kanban board UI             :done, t146, 2026-06-23, 1d
+    #147 Kanban column grouping      :done, t147, 2026-06-25, 1d
+    #148 Kanban drag-drop            :done, t148, 2026-06-25, 1d
 
   section Tier 3 Pipeline Extensions
     #161 SpecStep                    :t161, 2026-08-04, 2d
@@ -972,6 +1104,14 @@ gantt
 
   section Tier 4 LLM Infra
     #117 Ollama local models         :t117, 2026-09-01, 5d
+
+  section Health Audit
+    #235 DB hardening                :t235, 2026-07-01, 1d
+    #236 Split agent_lifecycle       :t236, 2026-07-01, 2d
+    #237 Reviewer robustness         :t237, 2026-07-01, 2d
+    #238 Cache + concurrency safety  :t238, after t235, 1d
+    #239 Test coverage gaps          :t239, 2026-07-01, 3d
+    #240 Health check + config       :t240, 2026-07-01, 1d
 
   section Security Hardening
     #198 Prompt injection guard      :t198, 2026-07-14, 3d
@@ -994,23 +1134,27 @@ gantt
     <div class="notes">
       <strong>Critical Path to v0.1.0</strong>
       <ul>
-        <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154) -- all done</li>
-        <li><strong>Tier 2</strong> (Jul-Aug): Pipeline Reliability (#208, #207, #206) + Step Visualization (#150-151, #149 done) + Kanban (#146, #145 done) -- mix of agentic + human</li>
+        <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154)</li>
+        <li><strong>Tier 2</strong> (COMPLETE): Pipeline Reliability (#206-208) + Step Visualization (#149-151) + Kanban (#145-148)</li>
         <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157)</li>
         <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
-        <li><strong>Recently completed</strong>: #149 (run detail API), #145 (kanban API), #154 (WebSocket status), #153 (status badge UI), #152 (status aggregator), #160 (MockRuntime), #159 (SubprocessRuntime), #158 (AgentRuntime ABC), #167 (circuit breaker), #142 (input validation), #143 (keyboard dismiss), #169 (clear sentinel), #110 (SpecStep epic), #116 (Agent Runtime epic)</li>
+        <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
+        <li><strong>Recently completed</strong>: #151 (step detail panel), #148 (kanban drag-drop), #147 (kanban columns), #208 (worktree conflicts), #207 (CI timeout), #206 (SonarCloud gate), #150 (step pipeline bar), #146 (kanban board UI), #220 (Jira lifecycle), #219 (worktree isolation)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
-        <li><strong>Agentic (10 remaining):</strong> #206, #207, #208, #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
-        <li><strong>Human (9 issues):</strong> #146, #150, #151, #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
+        <li><strong>Agentic (7 tier remaining):</strong> #155, #156, #157, #161, #164, #165, #198, #199 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Human (5 issues):</strong> #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
         <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
+        <li><strong>Health audit (6 issues):</strong> #235-240 -- all agentic, well-scoped with clear file lists</li>
+        <li><strong>Knowledge system (4 issues):</strong> #224-227 -- semantic search, graph, injection, lifecycle</li>
+        <li><strong>Agent quality (5 issues):</strong> #232-234, #241, #205 -- dev loop, regression, review quality</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
-        <li><strong>Deferred (12 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
+        <li><strong>Deferred (10 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
       </ul>
     </div>
   </div>

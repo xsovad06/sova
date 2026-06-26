@@ -58,6 +58,9 @@ Detailed explanation of WHAT, WHY, and HOW.
 
 Types: feat, fix, refactor, test, docs, chore, perf
 
+Check the project's commit format invariant or AGENTS.md for valid scopes.
+Do NOT invent new scopes -- pre-push hooks may reject them.
+
 ### Step 4: Verify
 
 ```bash
