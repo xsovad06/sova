@@ -373,6 +373,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_queue(request: Request, slug: str):
         return _project_page(request, templates, slug, "queue.html", "queue")
 
+    @app.get("/p/{slug}/specs")
+    async def project_specs(request: Request, slug: str):
+        return _project_page(request, templates, slug, "specs.html", "specs")
+
     @app.get("/p/{slug}/logs")
     async def project_logs(request: Request, slug: str):
         return _project_page(request, templates, slug, "logs.html", "logs")
@@ -483,6 +487,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     @app.get("/queue")
     async def queue_page(request: Request):
         return templates.TemplateResponse(request, "queue.html", {"page": "queue"})
+
+    @app.get("/specs")
+    async def specs_page(request: Request):
+        return templates.TemplateResponse(request, "specs.html", {"page": "specs"})
 
     @app.get("/logs")
     async def logs_page(request: Request):

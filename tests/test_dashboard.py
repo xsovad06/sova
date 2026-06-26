@@ -2484,6 +2484,17 @@ class TestTasksAPI:
         assert b"bulk-bar" in resp.content
         assert b"select-all" in resp.content
 
+    async def test_specs_page_renders(self, client: AsyncClient) -> None:
+        resp = await client.get("/specs")
+        assert resp.status_code == 200
+        assert b"Specs" in resp.content
+
+    async def test_specs_page_has_search_and_filter(self, client: AsyncClient) -> None:
+        resp = await client.get("/specs")
+        assert resp.status_code == 200
+        assert b"spec-search" in resp.content
+        assert b"spec-status-filter" in resp.content
+
 
 class TestMilestoneBadge:
     """Tests for _milestone_badge helper in queue_service."""

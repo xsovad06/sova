@@ -158,8 +158,8 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
     return {"status": "rejected", "issue_number": issue_number}
 
 
-def list_pending_specs(project_dir: Path | None = None) -> list[dict]:
-    """List all draft specs awaiting approval."""
+def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
+    """Parse all spec files in the specs directory into structured dicts."""
     specs = _specs_dir(project_dir)
     if not specs.exists():
         return []
@@ -177,9 +177,23 @@ def list_pending_specs(project_dir: Path | None = None) -> list[dict]:
         except Exception:
             log.warning("spec.parse_failed", file=str(f), exc_info=True)
             continue
-        if parsed["status"] == "draft":
-            results.append(parsed)
+        results.append(parsed)
+    return results
 
+
+def list_pending_specs(project_dir: Path | None = None) -> list[dict]:
+    """List all draft specs awaiting approval."""
+    return [s for s in _iter_all_specs(project_dir) if s["status"] == "draft"]
+
+
+_STATUS_SORT_ORDER = {"draft": 0, "approved": 1, "rejected": 2}
+
+
+def list_all_specs(project_dir: Path | None = None) -> list[dict]:
+    """List all specs (draft, approved, rejected) sorted by status then created date descending."""
+    results = _iter_all_specs(project_dir)
+    results.sort(key=lambda s: s.get("created") or "", reverse=True)
+    results.sort(key=lambda s: _STATUS_SORT_ORDER.get(s["status"], 99))
     return results
 
 

@@ -415,6 +415,45 @@ class TestSpecService:
         issue_numbers = {r["issue_number"] for r in results}
         assert issue_numbers == {"42", "44"}
 
+    def test_list_all_specs(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        draft = "# Spec\n\n**Status**: draft\n**Complexity**: simple\n**Created**: 2026-06-20\n"
+        approved = "# Spec\n\n**Status**: approved\n**Complexity**: moderate\n**Created**: 2026-06-18\n"
+        rejected = "# Spec\n\n**Status**: rejected\n**Complexity**: complex\n**Created**: 2026-06-19\n"
+        (specs_dir / "42-draft.md").write_text(draft)
+        (specs_dir / "43-approved.md").write_text(approved)
+        (specs_dir / "44-rejected.md").write_text(rejected)
+
+        results = list_all_specs(project_dir=tmp_path)
+        assert len(results) == 3
+        # Draft first, then approved, then rejected
+        assert results[0]["status"] == "draft"
+        assert results[1]["status"] == "approved"
+        assert results[2]["status"] == "rejected"
+
+    def test_list_all_specs_empty_dir(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        results = list_all_specs(project_dir=tmp_path)
+        assert results == []
+
+    def test_list_all_specs_sort_within_status(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        (specs_dir / "10-old.md").write_text("# Spec\n\n**Status**: draft\n**Created**: 2026-06-10\n")
+        (specs_dir / "20-new.md").write_text("# Spec\n\n**Status**: draft\n**Created**: 2026-06-20\n")
+
+        results = list_all_specs(project_dir=tmp_path)
+        assert len(results) == 2
+        # Newest first within the draft group
+        assert results[0]["issue_number"] == "20"
+        assert results[1]["issue_number"] == "10"
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -473,6 +512,24 @@ class TestSpecRouter:
         specs_dir = tmp_path / ".claude" / "specs"
         specs_dir.mkdir(parents=True)
         return specs_dir
+
+    async def test_list_all_endpoint(self, tmp_path: Path, _spec_dir: Path) -> None:
+        """GET /spec/all returns all specs."""
+        from sova.dashboard.routers.spec import list_all
+        from sova.dashboard.services import spec_service
+
+        with patch.object(
+            spec_service,
+            "list_all_specs",
+            return_value=[
+                {"issue_number": "42", "status": "draft"},
+                {"issue_number": "43", "status": "approved"},
+            ],
+        ):
+            result = await list_all()
+
+        assert len(result["specs"]) == 2
+        assert result["specs"][0]["status"] == "draft"
 
     async def test_approve_clears_handoff_after_spawn(self, tmp_path: Path, _spec_dir: Path) -> None:
         """Handoff is only cleared AFTER start_agent succeeds."""
