@@ -67,7 +67,6 @@ class OutputWriter:
             except Exception:
                 log.warning("output_writer.seed_line_number_failed", run_id=self._run_id, exc_info=True)
 
-
         lines_to_flush = self._buffer[:]
         self._buffer.clear()
 

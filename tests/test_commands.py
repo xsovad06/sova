@@ -33,8 +33,9 @@ def canonical_dir(tmp_path: Path) -> Path:
     )
 
     # An autonomous-only command
-    (cmd_dir / "ship-pr.md").write_text(
-        "---\nname: ship-pr\ndescription: Ship a PR.\nuser-invocable: true\ncategory: autonomous\n---\n\nShip it.\n"
+    (cmd_dir / "review-pr.md").write_text(
+        "---\nname: review-pr\ndescription: Review a PR.\nuser-invocable: true\n"
+        "category: autonomous\n---\n\nReview it.\n"
     )
 
     # A project management command (no template vars)
@@ -73,7 +74,7 @@ class TestCatalog:
         commands = discover(canonical_dir)
         assert len(commands) == 3
         names = {c.name for c in commands}
-        assert names == {"develop", "ship-pr", "standup"}
+        assert names == {"develop", "review-pr", "standup"}
 
     def test_command_entry_fields(self, canonical_dir: Path) -> None:
         """CommandEntry has expected fields from frontmatter."""
@@ -382,7 +383,7 @@ class TestDistribution:
         cfg = ProjectConfig()
         install_commands(canonical_dir, target_dir, cfg, include_autonomous=False)
 
-        assert not (target_dir / "ship-pr.md").exists()
+        assert not (target_dir / "review-pr.md").exists()
         assert (target_dir / "develop.md").exists()
 
     def test_install_includes_autonomous_when_opted_in(self, canonical_dir: Path, target_dir: Path) -> None:
@@ -393,7 +394,7 @@ class TestDistribution:
         cfg = ProjectConfig()
         install_commands(canonical_dir, target_dir, cfg, include_autonomous=True)
 
-        assert (target_dir / "ship-pr.md").exists()
+        assert (target_dir / "review-pr.md").exists()
 
     def test_update_changes_only_modified(self, canonical_dir: Path, target_dir: Path) -> None:
         """update_commands() only writes commands whose source changed."""

@@ -19,7 +19,7 @@ _synthesis_cache: dict[tuple[str, int], tuple[float, list[dict] | None]] = {}
 _issue_pr_cache: dict[str, tuple[float, int | None]] = {}
 _SYNTHESIS_TTL_SECONDS = 60
 
-_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge", "ship-pr"})
+_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
 
 def _check_ttl_cache(cache: dict, key: object) -> tuple[bool, object]:

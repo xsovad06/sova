@@ -104,27 +104,28 @@ The `style` field controls how the button appears in the dashboard:
 | `danger` | Red | Destructive or irreversible actions (abort, close, force-push) |
 | `neutral` | Gray | Informational or wait actions (wait for CI, skip) |
 
-## Example: ship-pr Handoff
+## Example: integrate-pr Handoff
 
-After `ship-pr` rebases and pushes a PR:
+After `integrate-pr` rebases, pushes, and waits for CI:
 
 ```json
 {
   "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "created_at": "2026-04-16T14:30:00Z",
-  "source": "ship-pr",
+  "source": "integrate-pr",
   "issue": "#42",
   "pr_number": 15,
   "branch": "feat/add-caching",
   "status": "awaiting_action",
-  "summary": "Rebased PR #15 onto main and pushed. CI checks are pending.",
+  "summary": "Rebased PR #15 onto main, pushed, and CI passed. Ready to merge.",
   "details": {
     "actions_taken": [
       "Pulled latest main",
       "Rebased feat/add-caching onto main (no conflicts)",
-      "Force-pushed with lease"
+      "Force-pushed with lease",
+      "CI checks passed"
     ],
-    "ci_status": "pending"
+    "ci_status": "passed"
   },
   "next_actions": [
     {
@@ -135,15 +136,6 @@ After `ship-pr` rebases and pushes a PR:
       "command": "approve-merge",
       "args": {"pr": 15, "issue": "#42"},
       "style": "approve"
-    },
-    {
-      "id": "wait-ci",
-      "label": "Wait for CI",
-      "description": "Poll CI checks every 60s and notify when done",
-      "mode": "claude-command",
-      "command": "agent-resume",
-      "args": {"pr": 15, "wait_for": "ci"},
-      "style": "neutral"
     },
     {
       "id": "abort",
