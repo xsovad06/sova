@@ -246,6 +246,12 @@ def build_action_command(action: dict) -> dict:
     command = action.get("command", "")
     args = action.get("args", {})
 
+    if not mode:
+        cmd_name = command or action.get("action", "") or action.get("id", "")
+        if cmd_name:
+            mode = "claude-command"
+            command = command or cmd_name
+
     if mode == "agent":
         ticket = args.get("issue") or args.get("ticket") or str(args.get("pr", ""))
         return {"type": "agent", "issue": ticket, "role": args.get("role"), "pr_number": args.get("pr")}

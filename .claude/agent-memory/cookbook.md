@@ -24,6 +24,9 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Dashboard / Frontend
 
+- **Badges use `rounded-full`, buttons use `rounded`** -- visual distinction between read-only state indicators (pills) and clickable actions (rectangles). Badges: `px-2 py-0.5 rounded-full`. Buttons: `px-3 py-1 rounded`. Without this, users can't tell what's clickable. [confirmed: 1]
+- **Fixed-width columns for right-aligned badge/button groups** -- wrap PR badge, state badge, and action button in a fixed-width container (e.g., `style="width:340px"`) with internal fixed-width divs. Without this, variable text widths cause ragged vertical alignment across rows. [confirmed: 1]
+- **Multi-action handoffs expand into a sub-row, not cramped inline** -- single-action handoffs (e.g., "Integrate PR") render on the main row. Multi-action handoffs (e.g., spec review with 4 buttons) expand into a second line below the title with summary text + buttons. [confirmed: 1]
 - **Clickable card pattern: cursor-pointer + stopPropagation on nested buttons** -- add `cursor-pointer hover:opacity-80` on clickable element with `onclick`. All nested interactive elements must call `event.stopPropagation()`. File: `sova/dashboard/templates/agents.html`. [confirmed: 1]
 - **Update redirect chains when consolidating pages** -- when page A merges into B and old routes C,D redirected to A, update C,D to redirect to B. Also update sidebar nav, back-links, "View all" links, architecture.md page counts, and delete dead templates. [confirmed: 1]
 - **Diff against base after large CSS edits** -- easy to accidentally delete pre-existing rules. After multi-line CSS edits, run `diff <(git show main:path) <(cat path)`. [confirmed: 0]
@@ -57,20 +60,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Persona / Detection
 
-- **Persona detection order: frameworks before languages** -- `detect_persona()` must check framework markers (Django, FastAPI, Odoo) before generic language markers (Python). Module: `sova/knowledge/personas.py`. [confirmed: 0]
 
 ## LLM / Provider Abstraction
 
 - **Global singleton init at startup breaks multi-project** -- `set_provider()` at dashboard startup sets one process-global provider. Gate behind `if not is_multi:` or resolve per-request. [confirmed: 0]
-- **Subprocess streaming must drain stderr and check exit code** -- `_start_streaming_process()` reads stdout but never consumes stderr. Concurrently drain stderr, check exit code after completion. [confirmed: 0]
-- **Provider factory must forward ALL config fields to constructor** -- `create_provider("litellm")` silently ignored config fields. Always pass config fields through. [confirmed: 0]
-- **Unused API parameters silently violate contracts** -- `invoke()` accepts `max_tokens` but never passes it through. Either forward, raise, or remove from signature. [confirmed: 0]
-- **Streaming and non-streaming paths must have matching fallback behavior** -- `invoke()` retries with fallback, `invoke_streaming()` raises immediately. [confirmed: 0]
-- **Cost tracking errors must fail-safe, not fail-silent** -- returning `Decimal('0')` on error defeats budget enforcement. Return sentinel or raise. [confirmed: 0]
-- **Provider timeout defaults must be consistent** -- use `timeout_seconds or 600` consistently across providers. [confirmed: 0]
-- **Restrict fallback retries to transient API errors** -- check `status_code in {408, 429, 500, 502, 503, 504}`, not broad `except Exception`. [confirmed: 0]
 - **MCP tool servers must bind project context at creation, not per-call** -- close over project path in `register_tools()`, never expose in tool schemas. [confirmed: 0]
-- **CLI subcommand `--project` may mismatch global provider init** -- `_init_llm_provider()` loads config from cwd, not the `--project` path. [confirmed: 0]
 - **Validate command names before building file paths** -- `command.lstrip("/")` allows `..` and `/` to escape `.claude/commands/`. Reject names containing path separators or `..` before `Path()` construction. File: `sova/llm/provider.py:_assert_command_exists()`. PR #174 CodeRabbit + Koda. [confirmed: 1]
 - **`claude -p` treats missing slash commands as plain text** -- if `/research` is not in `.claude/commands/`, `claude -p "/research 30"` sends it as a conversational prompt, returns near-zero tokens, and silently does nothing. Always validate command file exists before `invoke_command()`. File: `sova/llm/provider.py:_assert_command_exists()`. [confirmed: 1]
 - **Target projects desync from canonical commands** -- [promoted] to `.claude/rules/architecture.md`. Worktrees inherit at creation time; missing commands waste budget on self-recovery.
@@ -162,6 +156,15 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **SonarCloud CE Task failures are transient infrastructure errors** -- "CE Task finished abnormally with status: FAILED" means the SonarCloud server-side processing crashed, not a code quality issue. The scanner uploaded successfully but server processing failed. Fix: amend the top commit to change the SHA and force-push to trigger a fresh `pull_request_target` run. PAT may lack `actions: write` to `gh run rerun` directly. [confirmed: 0]
 - **Wait for CodeRabbit to finish before merging after /address-pr** -- CodeRabbit shows as `pending` StatusContext during review. Dismissing the old CHANGES_REQUESTED and merging while CodeRabbit is still reviewing the new push means its new findings land post-merge. Poll `gh pr checks` until CodeRabbit is no longer pending, then also verify `gh pr view --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions. PRs #134, #172, #189. [confirmed: 2]
 
+## Unified State / Work Items
+
+- **Check `conclusion` before `status` in GitHub CI rollup parsing** -- GitHub API can return `status: "IN_PROGRESS"` with `conclusion: "SUCCESS"` for completed checks. Checking status first causes stale "CI Running" display. File: `sova/dashboard/services/pr_service.py:_summarize_ci()`. [confirmed: 1]
+- **Handoff action lookup must check all field name variants** -- pipeline-written handoffs use `"id"`, manually-written use `"action"`, some use `"command"`. Match against `{id, action, command, label}`. File: `sova/dashboard/routers/handoff.py`. [confirmed: 1]
+- **Infer handoff mode from action name when mode field is missing** -- `build_action_command()` defaults to `"unknown"` type when `mode` is empty. If `action` or `command` field has a value, infer `"claude-command"`. File: `sova/dashboard/services/handoff_service.py`. [confirmed: 1]
+- **Server-side state computation eliminates client-side join inconsistencies** -- three independent widgets (task browser, PR tracker, handoff panel) computing state independently contradict each other. Single `compute_work_item_state()` with priority cascade (running > handoff > PR > label) replaces all three. File: `sova/dashboard/services/work_item_service.py`. [confirmed: 1]
+- **Issue-backed PRs default to `integrate-pr`, standalone PRs to `ship-pr`** -- `integrate-pr` runs full pipeline (merge + knowledge extraction + review ingestion); `ship-pr` only rebases/pushes. Use `issue_number` presence to select. [confirmed: 1]
+- **Null guard all `getElementById` calls in event handlers** -- standalone PR rows may not have dropdown elements. `document.getElementById('card-menu-...')` returns null, `.classList` throws TypeError, killing all subsequent JS on the page. Guard with `if (!menu) return;`. [confirmed: 1]
+
 ## Git Worktree Management
 
 - **Worktree conflict resolution must check PID liveness before removal** -- `resolve_worktree_conflict()` queries `TaskRun` DB for non-terminal runs using the worktree, then checks PID liveness via `os.kill(pid, 0)`. DB query failure is fail-closed (blocks removal). `PermissionError` from `os.kill` treated as live process. Never remove the main worktree (`Path.resolve()` comparison). File: `sova/git/worktree.py`. [confirmed: 0]
@@ -173,8 +176,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Review fix commits conflict with themselves after earlier rebase integration** -- when rebase conflict resolution already incorporates a fix (e.g., adding `harden` to `_actionLabels`), the later fix commit tries to add the same thing and conflicts. Resolve by keeping the already-integrated version. [confirmed: 0]
 - **Test assertions drift after rebase onto main** -- feature branch tests may assert pre-rebase default values. After rebase, run tests and update assertions to match main's current state (e.g., `"harden"` -> `"spec"` for NEEDS_SPEC action). [confirmed: 0]
 - **Fork-based PRs require fetching from the correct remote** -- `gh pr view --json headRepositoryOwner` reveals which remote hosts the branch. Use `git fetch <fork-remote> <branch>` before checkout. [confirmed: 0]
-- **`git rebase --continue` rejects `--no-edit`** -- use `GIT_EDITOR=true git rebase --continue` to skip the editor. [confirmed: 0]
-- **Pre-push invariant failures on code outside your diff** -- invariant hooks check the full codebase, not just changed files. If an invariant fails on code from a commit on `main` that your branch hasn't picked up yet, rebase onto `main` before pushing. Common with `money-decimal` when main refactored `decimal_to_json` -> `float()`. PR #204. [confirmed: 0]
+- **Pre-push invariant failures on code outside your diff** -- invariant hooks check the full codebase, not just changed files. Rebase onto `main` before pushing. [confirmed: 0]
 
 ## Config System
 

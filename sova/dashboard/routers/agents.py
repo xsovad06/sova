@@ -112,6 +112,15 @@ class RunCommandRequest(BaseModel):
     args: dict | None = None
 
 
+@router.get("/agents/work-items")
+async def get_work_items() -> dict:
+    """Get unified work items with computed state and actions."""
+    from sova.dashboard.project_context import get_project_dir
+    from sova.dashboard.services.work_item_service import get_work_items as _get_work_items
+
+    return await _get_work_items(get_project_dir())
+
+
 @router.get("/agents/active")
 async def get_active_agents():
     """Get all running + recently completed agents (dashboard + external)."""

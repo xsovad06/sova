@@ -81,4 +81,5 @@ Ensure:
 - Each commit = ONE logical change
 - Earlier commits should not depend on later ones
 - Keep commits small -- easier to review and revert
+- Never create standalone doc-count commits (e.g., "docs: update counts") -- fold doc/count updates into the commit that introduced the change (the one that added the service, step, test, etc.)
 - NEVER use emojis in any output

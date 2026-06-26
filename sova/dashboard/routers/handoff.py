@@ -60,13 +60,20 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
     handoff = None
     action = None
     norm_issue = str(req.issue).lstrip("#").strip() if req.issue else ""
+    norm_pr = ""
+    if norm_issue.startswith("pr:"):
+        norm_pr = norm_issue.removeprefix("pr:")
+        norm_issue = ""
     for h in all_handoffs:
         h_issue = str(h.get("issue") or "").lstrip("#").strip()
+        h_pr = str(h.get("pr_number") or "")
         if norm_issue and h_issue != norm_issue:
+            continue
+        if norm_pr and h_pr != norm_pr:
             continue
         actions = h.get("next_actions", [])
         match = next(
-            (a for a in actions if req.action_id in {a.get("id"), a.get("command"), a.get("label")}),
+            (a for a in actions if req.action_id in {a.get("id"), a.get("action"), a.get("command"), a.get("label")}),
             None,
         )
         if match:
@@ -78,10 +85,15 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
         synthesized = await get_synthesized_handoff()
         if synthesized:
             s_issue = str(synthesized.get("issue") or "").lstrip("#").strip()
-            if not norm_issue or s_issue == norm_issue:
+            s_pr = str(synthesized.get("pr_number") or "")
+            if (not norm_issue or s_issue == norm_issue) and (not norm_pr or s_pr == norm_pr):
                 actions = synthesized.get("next_actions", [])
                 match = next(
-                    (a for a in actions if req.action_id in {a.get("id"), a.get("command"), a.get("label")}),
+                    (
+                        a
+                        for a in actions
+                        if req.action_id in {a.get("id"), a.get("action"), a.get("command"), a.get("label")}
+                    ),
                     None,
                 )
                 if match:
