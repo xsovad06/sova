@@ -24,6 +24,7 @@ jobs:
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read
@@ -47,11 +48,11 @@ jobs:
 
       - name: Install package with test dependencies
         if: github.event_name == 'push' || github.event_name == 'pull_request_target'
-        run: pip install -e ".[dev]" pytest-cov
+        run: pip install -e ".[dev]" pytest-cov pytest-timeout
 
       - name: Run tests with coverage
         if: github.event_name == 'push' || github.event_name == 'pull_request_target'
-        run: pytest tests/ --cov=sova --cov-report=xml -q
+        run: pytest tests/ --cov=sova --cov-report=xml -q --timeout=60
 
       - name: Find associated PR
         id: find-pr
