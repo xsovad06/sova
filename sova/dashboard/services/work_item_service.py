@@ -109,7 +109,6 @@ _ROLE_LABELS: dict[str, str] = {
     "triage": "Triaging",
     "command:address-pr": "Addressing",
     "command:integrate-pr": "Integrating",
-    "command:ship-pr": "Shipping",
     "command:review-pr": "Reviewing",
     "command:after-merge": "Cleaning up",
     "command:spec": "Writing Spec",
@@ -199,10 +198,8 @@ def _get_actions(
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
         S.PR_READY_TO_MERGE: (
-            cmd("integrate", "Integrate", "success", "integrate-pr")
-            if i
-            else cmd("ship_pr", "Ship PR", "success", "ship-pr", pr_only=True),
-            [review] if i else [review, integrate],
+            cmd("integrate", "Integrate", "success", "integrate-pr"),
+            [review],
         ),
         S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
     }
