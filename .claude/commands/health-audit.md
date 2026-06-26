@@ -293,69 +293,11 @@ with the issue numbers and links.
 3. Wait for explicit user confirmation before creating any issues
 4. After creation, report all issue numbers
 
-## Phase D: Generate Wave Prompts
+## Phase D: Update Roadmap
 
-After creating the issues, generate **one self-contained prompt per execution
-wave**. A wave is a set of task groups that can be worked on in parallel because
-they have no dependencies on each other. Each prompt is designed to be pasted
-into a separate Claude Code session (or run as parallel agents).
-
-### Wave structure
-
-Build waves from the dependency graph produced in Phase B:
-
-- **Wave 1**: groups with no dependencies (the critical path root)
-- **Wave 2**: groups whose dependencies are all in Wave 1
-- **Wave 3**: groups whose dependencies are all in Waves 1-2
-- ...continue until all groups are assigned
-
-Groups within the same wave can be run in **parallel sessions**.
-
-### Prompt format
-
-For each wave, generate a single fenced code block containing a prompt that:
-
-1. **Opens with context**: which wave this is, which issues it covers, what was
-   already completed in prior waves (if any).
-2. **Lists every finding** in the wave's groups with:
-   - The issue number and title
-   - Each finding's location, issue description, and recommended fix
-   - The exact files to modify
-3. **Includes verification**: run the project's test and lint commands after all
-   changes, ensure 0 test failures and 0 lint warnings.
-4. **Ends with commit instructions**: use conventional commits, one commit per
-   logical change, no fix-on-fix.
-
-If a wave contains multiple groups that can run in parallel, the prompt should
-instruct Claude Code to use the Agent tool to spawn parallel sub-agents -- one
-per group -- so all groups in the wave execute concurrently within a single
-session.
-
-### Output
-
-Present the wave prompts to the user as numbered, fenced blocks they can
-copy-paste:
-
-```
-## Wave 1 (sequential prerequisite)
-
-Paste this into a Claude Code session:
-
-\`\`\`
-<prompt content>
-\`\`\`
-
-## Wave 2 (parallel -- 3 groups)
-
-Paste this into a Claude Code session (spawns parallel agents internally):
-
-\`\`\`
-<prompt content>
-\`\`\`
-```
-
-Also append the wave prompts to `docs/HEALTH-AUDIT.md` under a "## Wave Prompts"
-section so they are preserved alongside the findings.
+After creating issues, run `/update-roadmap` to integrate the new audit issues
+into the project's visual roadmap and vision document. This ensures the backlog,
+roadmap, and issue tracker stay in sync.
 
 ## Constraints
 - Do NOT fabricate findings. If you are unsure whether an issue exists, say so and

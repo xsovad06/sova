@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-06-23
+> **Last updated**: 2026-06-26
 
 ## What This Becomes
 
@@ -53,7 +53,7 @@ sova/
     design-system.md               # Dashboard design system reference
     handoff-protocol.md            # Agent handoff protocol
     naming-journey.md              # How SOVA got its name
-  tests/                           # pytest suite (1,380+ test functions)
+  tests/                           # pytest suite (1,982 test functions)
   deploy/                          # systemd + launchd service files
 ```
 
@@ -186,8 +186,7 @@ type = "github"          # github | jira | linear | manual (planned)
 - `link_pr(id, pr_url)` -- associate PR with task
 - `get_pr_reviews(pr)` -- get reviews for a pull request
 
-**Implemented**: GitHub (full, including Projects V2 board integration).
-**Supported**: JIRA Cloud (httpx-based, async).
+**Implemented**: GitHub (full, including Projects V2 board integration), JIRA Cloud (httpx-based, async, with lifecycle enrichment).
 **Planned**: Linear, Odoo (via MCP).
 
 ## Persona System
@@ -271,7 +270,7 @@ Each browser tab is a fully independent workspace -- its own agent status, costs
 | Phase 4 | Dashboard | FastAPI app factory, services, routers, templates, 370 tests |
 | Phase 5 | Scheduler + Server | WatchLoop, ParallelExecutor, SOVAServer, systemd/launchd, 403 tests |
 | Phase 6 | Cutover | Removed ~5,500 lines bash, migration commands, 503 tests |
-| Post-phase | Hardening | Handoff actions, multi-project, batch ops, design system, lifecycle, 1,380+ tests |
+| Post-phase | Hardening | Handoff actions, multi-project, batch ops, design system, lifecycle, 1,982 tests |
 
 ## Release Roadmap (P3: v0.1 Public Release)
 
@@ -296,7 +295,8 @@ Target: October 2026.
 | ~~#32~~ | ~~Team knowledge sharing~~ | ~~sync generalizable learnings across SOVA installations~~ (done) |
 | ~~#51~~ | ~~Visual role builder~~ | ~~dashboard page for composing custom agent roles as workflow DAGs~~ (done) |
 | #24 | Evaluate monetization | Q1 2027 decision: open-core vs hosted vs consulting |
-| -- | Additional adapters | JIRA, Linear, Odoo task source adapters |
+| ~~--~~ | ~~JIRA adapter~~ | ~~JIRA Cloud task source with lifecycle enrichment~~ (done: #220) |
+| -- | Additional adapters | Linear, Odoo task source adapters |
 | -- | Additional personas | Go, React, Rust framework guidance |
 | -- | Intelligent model routing | dynamically select Opus/Sonnet/Haiku based on task complexity |
 

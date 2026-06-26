@@ -205,7 +205,6 @@ This repo has Claude Code commands in `.claude/commands/`:
 
 ### Shipping Pipeline
 - `/integrate-pr` -- full pipeline: rebase, CI, merge, cleanup, learn (one click)
-- `/ship-pr` -- rebase approved PR, push, write handoff for dashboard
 - `/approve-merge` -- merge PR (squash), delete branch, post-merge cleanup
 - `/agent-resume` -- smart router: assess PR state and decide next action
 

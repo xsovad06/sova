@@ -15,10 +15,13 @@ Review this session's work and extract reusable knowledge into the project's kno
 
 ## Knowledge Architecture
 
-This project uses a three-tier knowledge system:
+This project uses a four-tier knowledge system:
 
-### Tier 1: `docs/*-guidelines.md` (canonical, always loaded via CLAUDE.md)
-Domain-specific guidelines loaded into every session. Primary destination for patterns that apply to all contributors (human and agent).
+### Tier 0: `~/.claude/shared-knowledge/` (cross-project patterns)
+Reusable patterns that apply across multiple repositories. Loaded by agent startup scripts.
+
+### Tier 1: `.claude/rules/*.md` (canonical, always loaded via CLAUDE.md)
+Stable patterns loaded into every session via CLAUDE.md. Primary destination for confirmed conventions.
 
 ### Tier 2: `.claude/agent-memory/` (agent learnings, loaded by morning agent)
 Lessons learned from development and review cycles. Destination for agent-specific patterns that improve autonomous development quality.
@@ -41,7 +44,7 @@ For each finding, determine the right destination:
 
 | Finding type | Destination |
 |---|---|
-| Domain-specific patterns (security, performance, etc.) | `docs/<domain>-guidelines.md` |
+| Domain-specific patterns (security, performance, etc.) | `.claude/rules/<domain>.md` |
 | ORM/framework gotchas, review lessons, recurring mistakes | `.claude/agent-memory/cookbook.md` (under matching domain section) |
 | Agent workflow or project pattern changes | `.claude/agent-memory/MEMORY.md` |
 | User preferences, workflow, collaboration style | User auto-memory |
@@ -56,10 +59,8 @@ Before writing anything:
 
 ### 4. Write Knowledge
 
-**For `docs/*-guidelines.md` (Tier 1):**
-- Follow the existing structure and formatting
-- Write full explanations with code examples where helpful
-- These are for all contributors -- avoid agent-specific jargon
+**For `.claude/rules/*.md` (Tier 1):**
+- Follow the existing structure and formatting of the target file. Write concise entries with bold labels, then the lesson. These are always loaded -- keep entries actionable and specific to this project.
 
 **For `.claude/agent-memory/` (Tier 2):**
 - One line per pattern -- bold label, then the lesson
@@ -76,7 +77,7 @@ Agent memory files should stay concise:
 - `MEMORY.md` -- under 20 lines (index only)
 - `cookbook.md` -- under 200 lines (prune oldest `[confirmed: 0]` entries if needed)
 
-If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `docs/*-guidelines.md` file and remove the agent-memory entry.
+If a pattern has matured from agent-memory into a stable convention, promote it to the appropriate `.claude/rules/*.md` file and remove the agent-memory entry.
 
 ### 6. Summary
 
@@ -104,5 +105,5 @@ List what was extracted and where it was saved. Flag any patterns promoted from 
 - Update existing entries when the pattern evolved
 - Keep entries actionable -- someone reading them should know exactly what to do
 - No session-specific context (task details, in-progress work)
-- **Promote mature patterns** from agent-memory to `docs/*-guidelines.md`
+- **Promote mature patterns** from agent-memory to `.claude/rules/*.md`
 - NEVER use emojis in any output

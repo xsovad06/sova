@@ -86,16 +86,23 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
     If rebase was a no-op (already up to date), continue to the next step.
 
-11. **Push and wait for CI**:
+11. **Push and wait for CI** (MANDATORY -- do not skip):
    ```bash
    git push --force-with-lease
    ```
-   After pushing, poll CI until it completes (max 10 minutes):
+   After pushing, poll CI checks on the PR until ALL required checks complete (max 15 minutes, poll every 30s):
    ```bash
-   gh run list --branch $(git branch --show-current) --limit 1 --json databaseId,status,conclusion
+   gh pr checks <PR_NUMBER> --json name,bucket --jq '.[] | "\(.bucket)\t\(.name)"'
    ```
-   If CI fails, analyze the failure, fix, amend the commit, and re-push (max 2 retries).
-   If CI passes, continue. If still pending after max wait, report status and continue anyway.
+   Wait until every check shows `pass`, `fail`, or `skipping` -- no `pending` remaining.
+
+   **If any check fails**: fetch the failure logs, analyze, fix the code, re-push, and re-poll (max 2 retries):
+   ```bash
+   gh run view <RUN_ID> --log-failed
+   ```
+   Common CI failures: commit-format invariant (wrong scope/type), test timeouts, lint errors, SonarCloud coverage.
+
+   **Only continue to step 12 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
 
 12. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
    - Fixed: `Fixed: [what changed].` or `Added [what].`
