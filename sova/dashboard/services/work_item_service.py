@@ -477,9 +477,8 @@ def _index_running_agents(agents_data: dict) -> dict[str, dict]:
     result: dict[str, dict] = {}
     for agent in agents_data.get("agents", []):
         issue = str(agent.get("issue") or "")
-        if issue:
+        if issue and issue.isdigit():
             result[issue] = agent
-            continue
         pr_num = agent.get("pr_number")
         if pr_num is not None:
             result[f"pr:{pr_num}"] = agent
@@ -493,12 +492,11 @@ def _index_handoffs(handoffs: list[dict]) -> dict[str, dict]:
         if h.get("status") != "awaiting_action":
             continue
         issue = str(h.get("issue", ""))
-        if issue:
+        if issue and issue.isdigit():
             result[issue] = h
-        else:
-            pr_num = h.get("pr_number")
-            if pr_num:
-                result[f"pr:{pr_num}"] = h
+        pr_num = h.get("pr_number")
+        if pr_num:
+            result[f"pr:{pr_num}"] = h
     return result
 
 

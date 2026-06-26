@@ -319,6 +319,21 @@ class TestIndexHelpers:
         assert "pr:55" in idx
         assert idx["pr:55"]["run_id"] == 4
 
+    def test_index_running_agents_non_numeric_issue_uses_pr_key(self) -> None:
+        """Non-numeric issue (command name fallback) should index under pr:<number>."""
+        data = {"agents": [{"issue": "address-pr", "pr_number": 243, "run_id": 5, "role": "command:address-pr"}]}
+        idx = _index_running_agents(data)
+        assert "address-pr" not in idx
+        assert "pr:243" in idx
+        assert idx["pr:243"]["run_id"] == 5
+
+    def test_index_running_agents_numeric_issue_with_pr(self) -> None:
+        """Numeric issue with pr_number should index under both keys."""
+        data = {"agents": [{"issue": "198", "pr_number": 248, "run_id": 6, "role": "command:address-pr"}]}
+        idx = _index_running_agents(data)
+        assert "198" in idx
+        assert "pr:248" in idx
+
     def test_index_handoffs_filters_completed(self) -> None:
         handoffs = [
             {"issue": "42", "status": "awaiting_action", "next_actions": []},
@@ -335,6 +350,15 @@ class TestIndexHelpers:
         idx = _index_handoffs(handoffs)
         assert "pr:200" in idx
         assert idx["pr:200"]["pr_number"] == 200
+
+    def test_index_handoffs_non_numeric_issue_uses_pr_key(self) -> None:
+        """Non-numeric issue (command name fallback) should index under pr:<number>."""
+        handoffs = [
+            {"issue": "address-pr", "pr_number": 243, "status": "awaiting_action", "next_actions": []},
+        ]
+        idx = _index_handoffs(handoffs)
+        assert "address-pr" not in idx
+        assert "pr:243" in idx
 
     def test_index_prs_by_issue(self) -> None:
         prs = [
