@@ -318,6 +318,53 @@ class TestGitHubAdapter:
         assert "--add-label" in call_args
         assert "agent:ready" in call_args
 
+    async def test_add_label_auto_creates_missing_label(self, mock_run: AsyncMock) -> None:
+        """When label doesn't exist, auto-create it and retry."""
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="label 'agent:custom' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(),  # retry add-label succeeds
+        ]
+
+        await self.adapter.add_label("42", "agent:custom")
+
+        assert mock_run.call_count == 3
+        # Second call should be label create
+        create_args = mock_run.call_args_list[1][0]
+        assert "label" in create_args
+        assert "create" in create_args
+        assert "agent:custom" in create_args
+
+    async def test_add_label_auto_create_fails_raises(self, mock_run: AsyncMock) -> None:
+        """When label create itself fails, raise RuntimeError."""
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="label 'x' not found"),
+            _shell_result(returncode=1, stderr="Permission denied"),
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to create label"):
+            await self.adapter.add_label("42", "x")
+
+    async def test_add_label_retry_after_create_fails_raises(self, mock_run: AsyncMock) -> None:
+        """When retry after label create also fails, raise RuntimeError."""
+        mock_run.side_effect = [
+            _shell_result(returncode=1, stderr="label 'x' not found"),
+            _shell_result(),  # label create succeeds
+            _shell_result(returncode=1, stderr="Unexpected error"),
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to add label"):
+            await self.adapter.add_label("42", "x")
+
+    async def test_add_label_non_notfound_error_raises(self, mock_run: AsyncMock) -> None:
+        """When first add-label fails with non-'not found' error, raise immediately."""
+        mock_run.return_value = _shell_result(returncode=1, stderr="Network timeout")
+
+        with pytest.raises(RuntimeError, match="Failed to add label"):
+            await self.adapter.add_label("42", "agent:ready")
+
+        assert mock_run.call_count == 1
+
     async def test_remove_label(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
 
@@ -340,6 +387,20 @@ class TestGitHubAdapter:
         assert "42" in call_args
         assert "--body" in call_args
         assert "Updated body content" in call_args
+
+    async def test_edit_body_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Permission denied")
+
+        with pytest.raises(RuntimeError, match="Failed to edit body"):
+            await self.adapter.edit_body("42", "content")
+
+    # -- transition_state error handling --
+
+    async def test_transition_state_done_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Not found")
+
+        with pytest.raises(RuntimeError, match="Failed to close issue"):
+            await self.adapter.transition_state("42", TaskState.DONE)
 
     # -- post_comment --
 

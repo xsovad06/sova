@@ -116,48 +116,26 @@ class GitHubAdapter(TaskAdapter):
 
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         if new_state == TaskState.DONE:
-            await self._gh("issue", "close", task_id, "--repo", self.repo)
+            result = await self._gh("issue", "close", task_id, "--repo", self.repo)
+            if not result.success:
+                raise RuntimeError(f"Failed to close issue #{task_id}: {result.stderr[:200]}")
             await self._move_on_board(task_id, new_state)
             return
 
         label = _STATE_LABELS.get(new_state)
         if label:
             await self._clear_state_labels(task_id)
-            await self._gh(
-                "issue",
-                "edit",
-                task_id,
-                "--repo",
-                self.repo,
-                "--add-label",
-                label,
-            )
+            await self._add_label(task_id, label)
 
         await self._move_on_board(task_id, new_state)
 
     async def assign(self, task_id: str, agent_role: str) -> None:
         # GitHub assignees are users, not roles. We use the configured
         # github_user from ProjectConfig. For now, add the role as a label.
-        await self._gh(
-            "issue",
-            "edit",
-            task_id,
-            "--repo",
-            self.repo,
-            "--add-label",
-            f"role:{agent_role}",
-        )
+        await self._add_label(task_id, f"role:{agent_role}")
 
     async def add_label(self, task_id: str, label: str) -> None:
-        await self._gh(
-            "issue",
-            "edit",
-            task_id,
-            "--repo",
-            self.repo,
-            "--add-label",
-            label,
-        )
+        await self._add_label(task_id, label)
 
     async def remove_label(self, task_id: str, label: str) -> None:
         await self._gh(
@@ -230,7 +208,7 @@ class GitHubAdapter(TaskAdapter):
             raise RuntimeError(f"Failed to post PR review on #{pr_number}: {result.stderr[:300]}")
 
     async def edit_body(self, task_id: str, body: str) -> None:
-        await self._gh(
+        result = await self._gh(
             "issue",
             "edit",
             task_id,
@@ -239,6 +217,8 @@ class GitHubAdapter(TaskAdapter):
             "--body",
             body,
         )
+        if not result.success:
+            raise RuntimeError(f"Failed to edit body of issue #{task_id}: {result.stderr[:200]}")
 
     async def get_state(self, task_id: str) -> TaskState:
         result = await self._gh(
@@ -356,6 +336,52 @@ class GitHubAdapter(TaskAdapter):
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
         # GitHub uses labels for state, not workflow transitions.
         return []
+
+    async def _add_label(self, task_id: str, label: str) -> None:
+        """Add a label to an issue, creating the label on the repo if it doesn't exist."""
+        result = await self._gh(
+            "issue",
+            "edit",
+            task_id,
+            "--repo",
+            self.repo,
+            "--add-label",
+            label,
+        )
+        if result.success:
+            return
+
+        # Match label-specific "not found" errors (e.g., "label 'X' not found").
+        # Avoid matching issue-not-found or repo-not-found errors.
+        stderr_lower = result.stderr.lower()
+        if "label" in stderr_lower and "not found" in stderr_lower:
+            log.info("label.auto_create", label=label, repo=self.repo)
+            create = await self._gh(
+                "label",
+                "create",
+                label,
+                "--repo",
+                self.repo,
+                "--description",
+                "",
+                "--color",
+                "ededed",
+            )
+            if not create.success:
+                raise RuntimeError(f"Failed to create label '{label}': {create.stderr[:200]}")
+            result = await self._gh(
+                "issue",
+                "edit",
+                task_id,
+                "--repo",
+                self.repo,
+                "--add-label",
+                label,
+            )
+            if result.success:
+                return
+
+        raise RuntimeError(f"Failed to add label '{label}' to issue #{task_id}: {result.stderr[:200]}")
 
     async def _clear_state_labels(self, task_id: str) -> None:
         """Remove all agent state labels from an issue."""
