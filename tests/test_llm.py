@@ -1322,10 +1322,20 @@ class TestComplexityScorer:
         result_without = assess_complexity("fix typo", "")
         assert result_with_zero == result_without
 
-    def test_conflicting_signals_keyword_wins(self) -> None:
+    def test_conflicting_signals_keyword_wins_over_length(self) -> None:
         long_desc = "x " * 3000
         result = assess_complexity("fix typo", long_desc)
         assert result == ComplexityTier.TRIVIAL
+
+    def test_low_keyword_vs_high_multi_signals(self) -> None:
+        """Multiple strong signals (label + file count) override a misleading keyword."""
+        result = assess_complexity(
+            "Rename config",
+            "Update 50 modules across the codebase",
+            labels=["complex"],
+            file_count_estimate=50,
+        )
+        assert result in (ComplexityTier.COMPLEX, ComplexityTier.EPIC)
 
     def test_description_length_as_signal(self) -> None:
         short = assess_complexity("do task", "short")

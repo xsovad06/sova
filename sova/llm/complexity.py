@@ -75,6 +75,11 @@ _LABEL_TIERS: dict[str, ComplexityTier] = {
     "epic": ComplexityTier.EPIC,
 }
 
+# Pre-normalized keys for O(1) lookup without per-call string allocation
+_LABEL_NORMALIZED: dict[str, ComplexityTier] = {
+    k.strip().lower().replace(":", ""): v for k, v in _LABEL_TIERS.items()
+}
+
 # ---------------------------------------------------------------------------
 # Description length thresholds (character count)
 # ---------------------------------------------------------------------------
@@ -119,7 +124,7 @@ def _score_labels(labels: list[str]) -> ComplexityTier | None:
     best: ComplexityTier | None = None
     for label in labels:
         normalized = label.strip().lower().replace(":", "")
-        tier = _LABEL_TIERS.get(normalized)
+        tier = _LABEL_NORMALIZED.get(normalized)
         if tier is not None and (best is None or _tier_index(tier) > _tier_index(best)):
             best = tier
     return best
@@ -152,8 +157,10 @@ def assess_complexity(
 
     Uses a weighted voting system across four signals: keyword matches in the
     combined title+description, label-based hints, description length, and
-    estimated file count. Keyword matches carry the highest weight to ensure
-    strong signal words (e.g., "typo", "refactor") dominate over length.
+    estimated file count. Labels carry the highest weight (4.0), followed by
+    file count (3.0), keywords (2.0), and description length (1.0). This
+    ensures multiple strong signals (labels + file count) can override a
+    single misleading keyword.
 
     Returns ``ComplexityTier.MODERATE`` when no signals are available.
     """
@@ -166,12 +173,12 @@ def assess_complexity(
 
     keyword_tier = _score_keywords(combined_text)
     if keyword_tier is not None:
-        votes.append((_tier_index(keyword_tier), 5.0))
+        votes.append((_tier_index(keyword_tier), 2.0))
 
     if labels:
         label_tier = _score_labels(labels)
         if label_tier is not None:
-            votes.append((_tier_index(label_tier), 3.0))
+            votes.append((_tier_index(label_tier), 4.0))
 
     # Length is a weak signal -- skip when description is empty or when a
     # keyword match already provides a strong directional signal (keywords
@@ -182,7 +189,7 @@ def assess_complexity(
 
     if file_count_estimate is not None and file_count_estimate > 0:
         file_tier = _score_file_count(file_count_estimate)
-        votes.append((_tier_index(file_tier), 2.0))
+        votes.append((_tier_index(file_tier), 3.0))
 
     if not votes:
         return ComplexityTier.MODERATE

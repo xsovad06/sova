@@ -7369,8 +7369,8 @@ class TestWebSocketAgentStatus:
         # After disconnect, connection count should be back to baseline
         assert len(_ws_manager.active_connections) == before
 
-    def test_websocket_multiple_clients(self) -> None:
-        """Multiple clients can connect and each receives updates."""
+    def test_websocket_sequential_clients(self) -> None:
+        """Sequential clients can each connect and receive updates."""
         from starlette.testclient import TestClient
 
         from sova.dashboard.app import create_app
