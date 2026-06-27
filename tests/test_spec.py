@@ -523,8 +523,7 @@ class TestSpecService:
         specs_dir.mkdir(parents=True)
         spec = specs_dir / "42-test.md"
         spec.write_text(
-            "# Spec\n\n**Status**: draft\n\n"
-            "## Open Questions\n\n- Should we use X or Y?\n- What about Z?\n"
+            "# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Should we use X or Y?\n- What about Z?\n"
         )
 
         write_answers("42", {"0": "Use X", "1": "Z is fine"}, project_dir=tmp_path)
@@ -651,11 +650,10 @@ class TestSpecRouter:
 
     async def test_spec_all_route_not_captured_as_param(self, tmp_path: Path, _spec_dir: Path) -> None:
         """Verify /spec/all is routed to list_all, not get_spec(issue_number='all')."""
+        from fastapi import FastAPI
         from httpx import ASGITransport, AsyncClient
 
         from sova.dashboard.routers.spec import router as spec_router
-
-        from fastapi import FastAPI
 
         app = FastAPI()
         app.include_router(spec_router, prefix="/api")
