@@ -1217,6 +1217,7 @@ class TestSpecAnchoredReview:
             from decimal import Decimal as Dec
 
             from sova.llm.models import LLMResult
+
             return LLMResult(
                 text='{"findings": [], "summary": "ok"}',
                 cost_usd=Dec("0.01"),
@@ -1228,9 +1229,7 @@ class TestSpecAnchoredReview:
             patch.object(role, "_load_spec_sections", return_value=spec),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
         ):
-            asyncio.get_event_loop().run_until_complete(
-                role._run_review(ctx, task, large_diff, ["a.py"])
-            )
+            asyncio.get_event_loop().run_until_complete(role._run_review(ctx, task, large_diff, ["a.py"]))
 
         assert len(captured_prompts) == 2
         # First chunk has full spec content
