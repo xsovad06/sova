@@ -7376,13 +7376,16 @@ class TestWebSocketAgentStatus:
         from sova.dashboard.app import create_app
 
         app = create_app(multi_project=False)
-        client = TestClient(app)
-        with client.websocket_connect("/api/ws/agents/status") as ws1:
-            with client.websocket_connect("/api/ws/agents/status") as ws2:
-                d1 = ws1.receive_json()
-                d2 = ws2.receive_json()
-                assert d1["type"] == "status_update"
-                assert d2["type"] == "status_update"
+        # Use separate TestClient instances to avoid threading deadlock
+        # when nesting websocket_connect context managers on the same client.
+        client1 = TestClient(app)
+        client2 = TestClient(app)
+        with client1.websocket_connect("/api/ws/agents/status") as ws1:
+            d1 = ws1.receive_json()
+            assert d1["type"] == "status_update"
+        with client2.websocket_connect("/api/ws/agents/status") as ws2:
+            d2 = ws2.receive_json()
+            assert d2["type"] == "status_update"
 
     def test_websocket_error_handling(self) -> None:
         """When get_all_agent_statuses raises, endpoint sends empty runs and does not crash."""
