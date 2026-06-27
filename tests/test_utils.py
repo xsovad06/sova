@@ -59,6 +59,92 @@ def test_decimal_to_json_zero() -> None:
 
 
 # ---------------------------------------------------------------------------
+# markdown utilities
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSection:
+    def test_basic_extraction(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "## Intro\nHello\n\n## Body\nContent here.\n\n## End\nBye."
+        assert extract_section(text, "Body") == "Content here."
+
+    def test_last_section(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "## Intro\nHello\n\n## End\nBye."
+        assert extract_section(text, "End") == "Bye."
+
+    def test_missing_section(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = "## Intro\nHello."
+        assert extract_section(text, "Missing") == ""
+
+    def test_ignores_headings_inside_code_fence(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = (
+            "## Solution\n"
+            "Do this.\n\n"
+            "```python\n"
+            "## This is a comment\n"
+            "x = 1\n"
+            "```\n\n"
+            "More solution text.\n\n"
+            "## Next Section\n"
+            "Other stuff.\n"
+        )
+        result = extract_section(text, "Solution")
+        # The fenced "## This is a comment" should NOT split the section
+        assert "More solution text." in result
+        assert "x = 1" in result
+
+    def test_code_fence_with_language_tag(self) -> None:
+        from sova.utils.markdown import extract_section
+
+        text = (
+            "## Details\n"
+            "Some details.\n\n"
+            "```bash\n"
+            "## heading inside bash\n"
+            "echo hello\n"
+            "```\n\n"
+            "After fence.\n\n"
+            "## Other\nEnd.\n"
+        )
+        result = extract_section(text, "Details")
+        assert "After fence." in result
+        assert "echo hello" in result
+
+
+class TestStripFencedBlocks:
+    def test_replaces_fence_content(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        text = "before\n```\n## Heading\ncode\n```\nafter"
+        result = _strip_fenced_blocks(text)
+        assert "## Heading" not in result
+        assert "before" in result
+        assert "after" in result
+
+    def test_preserves_byte_offsets(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        text = "a\n```\nb\nc\nd\n```\ne"
+        result = _strip_fenced_blocks(text)
+        assert len(result) == len(text)
+        assert result.count("\n") == text.count("\n")
+
+    def test_no_fences(self) -> None:
+        from sova.utils.markdown import _strip_fenced_blocks
+
+        text = "just plain text\nwith lines"
+        assert _strip_fenced_blocks(text) == text
+
+
+# ---------------------------------------------------------------------------
 # resolve_gh_env tests
 # ---------------------------------------------------------------------------
 
