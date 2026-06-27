@@ -76,9 +76,7 @@ _LABEL_TIERS: dict[str, ComplexityTier] = {
 }
 
 # Pre-normalized keys for O(1) lookup without per-call string allocation
-_LABEL_NORMALIZED: dict[str, ComplexityTier] = {
-    k.strip().lower().replace(":", ""): v for k, v in _LABEL_TIERS.items()
-}
+_LABEL_NORMALIZED: dict[str, ComplexityTier] = {k.strip().lower().replace(":", ""): v for k, v in _LABEL_TIERS.items()}
 
 # ---------------------------------------------------------------------------
 # Description length thresholds (character count)
