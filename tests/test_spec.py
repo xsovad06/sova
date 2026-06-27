@@ -649,6 +649,29 @@ class TestSpecRouter:
         assert len(result["specs"]) == 2
         assert result["specs"][0]["status"] == "draft"
 
+    async def test_spec_all_route_not_captured_as_param(self, tmp_path: Path, _spec_dir: Path) -> None:
+        """Verify /spec/all is routed to list_all, not get_spec(issue_number='all')."""
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.routers.spec import router as spec_router
+
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(spec_router, prefix="/api")
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            with patch(
+                "sova.dashboard.services.spec_service.list_all_specs",
+                return_value=[{"issue_number": "42", "status": "draft"}],
+            ):
+                resp = await client.get("/api/spec/all")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "specs" in data
+        assert isinstance(data["specs"], list)
+
     async def test_approve_clears_handoff_after_spawn(self, tmp_path: Path, _spec_dir: Path) -> None:
         """Handoff is only cleared AFTER start_agent succeeds."""
         spec = _spec_dir / "42-test.md"

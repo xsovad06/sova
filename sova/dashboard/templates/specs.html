@@ -27,9 +27,9 @@
 var specsData = [];
 
 var statusConfig = {
-  draft:    { label: 'Draft',    badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30', icon: 'Needs review' },
-  approved: { label: 'Approved', badge: 'bg-accent-green/20 text-accent-green',   border: 'border-accent-green/30',  icon: '' },
-  rejected: { label: 'Rejected', badge: 'bg-accent-red/20 text-accent-red',       border: 'border-accent-red/30',    icon: '' },
+  draft:    { label: 'Draft',    badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
+  approved: { label: 'Approved', badge: 'bg-accent-green/20 text-accent-green',   border: 'border-accent-green/30' },
+  rejected: { label: 'Rejected', badge: 'bg-accent-red/20 text-accent-red',       border: 'border-accent-red/30' },
 };
 
 var complexityConfig = {
@@ -144,6 +144,9 @@ function filterSpecs() {
 async function loadSpecs() {
   try {
     var data = await fetchAPI(apiUrl('/spec/all'));
+    if (!data || !Array.isArray(data.specs)) {
+      throw new Error('Invalid API response: expected {specs: array}');
+    }
     specsData = data.specs;
     filterSpecs();
   } catch (e) {

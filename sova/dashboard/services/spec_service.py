@@ -192,6 +192,9 @@ _STATUS_SORT_ORDER = {"draft": 0, "approved": 1, "rejected": 2}
 def list_all_specs(project_dir: Path | None = None) -> list[dict]:
     """List all specs (draft, approved, rejected) sorted by status then created date descending."""
     results = _iter_all_specs(project_dir)
+    # Two-pass sort: first by created desc, then by status asc.
+    # Python's sort is stable (guaranteed by language spec), so the created
+    # ordering is preserved within each status group.
     results.sort(key=lambda s: s.get("created") or "", reverse=True)
     results.sort(key=lambda s: _STATUS_SORT_ORDER.get(s["status"], 99))
     return results
