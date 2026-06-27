@@ -284,12 +284,12 @@ Two-column grid with summary cards:
 - **Left card**: critical path summary (phases, key milestones, recently completed)
 - **Right card**: execution strategy (agent strategy, issue counts by category)
 
-### Maintenance Comment Header
+### Maintenance Guide Block
 
-Include this comment block at the top of the generated HTML:
+Include the maintenance guide as a non-rendering `<script>` block (NOT an HTML comment -- `--` inside HTML comments breaks parsing). Place it just before the closing mermaid init `<script>`:
 
 ```html
-<!--
+<script type="text/x-maintenance" id="maintenance-guide">
   ============================================================================
   {PROJECT} ROADMAP -- Maintenance Guide
   ============================================================================
@@ -312,7 +312,7 @@ Include this comment block at the top of the generated HTML:
      - Sequential groups: connect with arrows (-->)
      - Independent groups: chain with invisible links (~~~)
      - Never leave a subgraph unconnected -- it floats horizontally
-     - Parent subgraphs use `direction TB` for internal vertical flow
+     - Parent subgraphs use direction TB for internal vertical flow
      - Max 3-4 child subgraphs side-by-side within a parent
 
   STYLE REFERENCE
@@ -324,8 +324,10 @@ Include this comment block at the top of the generated HTML:
 
   Use /update-roadmap to sync with current GitHub Issue states.
   ============================================================================
--->
+</script>
 ```
+
+IMPORTANT: Never use HTML comments (`<!-- -->`) for blocks containing `--`, `-->`, `~~~`, or other sequences that break HTML comment parsing. Use `<script type="text/x-maintenance">` instead -- browsers ignore unknown script types completely.
 
 ## Phase 5: Verify and Report
 
