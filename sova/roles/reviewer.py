@@ -147,6 +147,26 @@ Return ONLY a JSON object (no markdown fences, no extra text):
 }}"""
 
 
+_MAX_COMPACT_SPEC_CHARS = 300
+
+
+def _compact_spec_ref(spec_sections: dict[str, str] | None) -> dict[str, str] | None:
+    """Return a compact version of spec sections for follow-up chunks.
+
+    Avoids duplicating the full spec in every diff chunk prompt. Keeps section
+    headings with truncated content so the LLM knows which spec areas exist.
+    """
+    if not spec_sections:
+        return None
+    compact: dict[str, str] = {}
+    for heading, content in spec_sections.items():
+        if len(content) <= _MAX_COMPACT_SPEC_CHARS:
+            compact[heading] = content
+        else:
+            compact[heading] = content[:_MAX_COMPACT_SPEC_CHARS] + "... (see full spec in chunk 1)"
+    return compact
+
+
 def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
     """Parse LLM response into findings. Returns (findings, summary)."""
     text = text.strip()
@@ -537,8 +557,10 @@ class ReviewerRole(AgentRole):
 
         for i, chunk in enumerate(chunks):
             try:
+                # Send full spec only for first chunk; subsequent chunks get a compact reference
+                chunk_spec = spec_sections if i == 0 else _compact_spec_ref(spec_sections)
                 llm_result = await invoke(
-                    _build_review_prompt(task, chunk, files, spec_sections=spec_sections),
+                    _build_review_prompt(task, chunk, files, spec_sections=chunk_spec),
                     model="sonnet",
                     cwd=ctx.working_dir,
                 )
@@ -563,7 +585,9 @@ class ReviewerRole(AgentRole):
         if not issue or not str(issue).isdigit():
             return None
         try:
-            path = find_spec_file(str(issue), ctx.project_dir)
+            # Prefer working_dir (worktree) so specs on the PR branch are found
+            spec_dir = ctx.working_dir or ctx.project_dir
+            path = find_spec_file(str(issue), spec_dir)
             if path is None:
                 log.debug("reviewer.no_spec", issue=issue)
                 return None

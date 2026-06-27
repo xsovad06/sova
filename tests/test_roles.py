@@ -1130,6 +1130,114 @@ class TestSpecAnchoredReview:
         result = role._load_spec_sections(ctx)
         assert result is None
 
+    def test_load_spec_sections_uses_working_dir(self, tmp_path: Path) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        # Create a spec in the working_dir
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec_file = specs_dir / "42-test.md"
+        spec_file.write_text("## Solution\nDo X.\n\n## Edge Cases\nHandle Y.\n")
+
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            pr_number=99,
+            worktree_dir=tmp_path,
+            project_dir=Path("/nonexistent"),
+        )
+        role = ReviewerRole()
+        result = role._load_spec_sections(ctx)
+        assert result is not None
+        assert "Solution" in result
+        assert "Do X." in result["Solution"]
+
+    def test_load_spec_sections_exception_returns_none(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(
+            role="reviewer",
+            state=TaskState.IN_REVIEW,
+            pr_number=99,
+            worktree_dir=tmp_path,
+        )
+        role = ReviewerRole()
+        with patch("sova.roles.reviewer.find_spec_file", side_effect=OSError("disk error")):
+            result = role._load_spec_sections(ctx)
+        assert result is None
+
+    def test_compact_spec_ref_none(self) -> None:
+        from sova.roles.reviewer import _compact_spec_ref
+
+        assert _compact_spec_ref(None) is None
+        assert _compact_spec_ref({}) is None
+
+    def test_compact_spec_ref_short_content(self) -> None:
+        from sova.roles.reviewer import _compact_spec_ref
+
+        sections = {"Solution": "Short text.", "Edge Cases": "Also short."}
+        result = _compact_spec_ref(sections)
+        assert result == sections
+
+    def test_compact_spec_ref_truncates_long_content(self) -> None:
+        from sova.roles.reviewer import _compact_spec_ref
+
+        long_content = "A" * 500
+        sections = {"Solution": long_content, "Edge Cases": "Short."}
+        result = _compact_spec_ref(sections)
+        assert result is not None
+        assert len(result["Solution"]) < len(long_content)
+        assert result["Solution"].endswith("... (see full spec in chunk 1)")
+        assert result["Edge Cases"] == "Short."
+
+    def test_run_review_uses_compact_spec_for_subsequent_chunks(self) -> None:
+        """Verify that multi-chunk reviews send full spec only for chunk 1."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import DIFF_CHUNK_SIZE, ReviewerRole
+
+        role = ReviewerRole()
+        task = Task(id="1", title="Test", body="desc", state=TaskState.IN_REVIEW)
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+
+        spec = {"Solution": "X" * 500, "Edge Cases": "Short."}
+        # Build a diff with 2 file boundaries so _chunk_diff splits it
+        chunk1 = "diff --git a/a.py b/a.py\n" + "+" * DIFF_CHUNK_SIZE
+        chunk2 = "\ndiff --git a/b.py b/b.py\n" + "+" * 100
+        large_diff = chunk1 + chunk2
+
+        captured_prompts: list[str] = []
+
+        async def _capture_invoke(prompt: str, **kwargs):
+            captured_prompts.append(prompt)
+            from decimal import Decimal as Dec
+
+            from sova.llm.models import LLMResult
+            return LLMResult(
+                text='{"findings": [], "summary": "ok"}',
+                cost_usd=Dec("0.01"),
+            )
+
+        import asyncio
+
+        with (
+            patch.object(role, "_load_spec_sections", return_value=spec),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
+        ):
+            asyncio.get_event_loop().run_until_complete(
+                role._run_review(ctx, task, large_diff, ["a.py"])
+            )
+
+        assert len(captured_prompts) == 2
+        # First chunk has full spec content
+        assert "X" * 500 in captured_prompts[0]
+        # Second chunk has truncated spec
+        assert "... (see full spec in chunk 1)" in captured_prompts[1]
+
 
 # ---------------------------------------------------------------------------
 # Role dispatcher
