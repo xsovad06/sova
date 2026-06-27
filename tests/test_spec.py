@@ -251,6 +251,7 @@ class TestSpecStep:
             result = await step.execute(ctx)
 
         assert result.success
+        assert result.awaiting_approval
         assert "awaiting approval" in result.summary
 
     async def test_execute_handoff_on_complexity(self, tmp_path: Path) -> None:
@@ -274,7 +275,87 @@ class TestSpecStep:
             result = await step.execute(ctx)
 
         assert result.success
+        assert result.awaiting_approval
         assert "awaiting approval" in result.summary
+
+    async def test_spec_step_pauses_pipeline_for_manual_approval(self, tmp_path: Path) -> None:
+        """Integration: SpecStep returns awaiting_approval=True for complex specs,
+        causing WorkflowEngine to set TaskRun status to 'awaiting_approval'."""
+        from sova.core.steps.base import GateCheckResult as GCR
+        from sova.core.steps.base import StepResult as SR
+        from sova.core.workflow import WorkflowEngine
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.llm.models import LLMResult
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text(
+            "# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n"
+            "## Solution\n\nDo stuff\n"
+        )
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+        )
+
+        # A dummy step that should NOT run if pipeline pauses
+        class NeverReachedStep:
+            name = "should_not_run"
+            max_retries = 0
+
+            async def can_skip(self, ctx_inner):
+                return False
+
+            async def execute(self, ctx_inner):
+                raise AssertionError("Pipeline should have paused before reaching this step")
+
+            async def validate_output(self, ctx_inner):
+                return GCR(passed=True)
+
+        spec_step = SpecStep()
+        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
+
+        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+            engine = WorkflowEngine(steps=[spec_step, NeverReachedStep()], ctx=ctx)
+            result = await engine.run()
+
+        from sova.core.state import TaskStatus
+
+        assert result.final_status == TaskStatus.AWAITING_APPROVAL
+        assert not result.success
+
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.status == "awaiting_approval"
+            assert task_run.current_step == "spec"
+
+    async def test_auto_approved_spec_does_not_pause(self, tmp_path: Path) -> None:
+        """Auto-approved specs should NOT set awaiting_approval."""
+        from sova.llm.models import LLMResult
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+        )
+        step = SpecStep()
+
+        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
+        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert not result.awaiting_approval
 
     async def test_execute_runtime_error(self) -> None:
         ctx = _make_ctx()

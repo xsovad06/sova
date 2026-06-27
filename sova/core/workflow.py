@@ -209,7 +209,16 @@ class WorkflowEngine:
         )
 
     async def _handle_step_approval(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
-        """Handle a step requesting human approval: pause pipeline, notify."""
+        """Handle a step requesting human approval: pause pipeline, notify.
+
+        Two notification patterns exist for steps that pause for approval:
+        (A) Step calls write_step_handoff(..., awaiting_approval=True) and handles its own
+            handoff file + notification. Return StepResult with awaiting_approval=True but
+            no handoff_actions -- the engine only sets DB status and sends its own notification.
+        (B) Step returns StepResult(awaiting_approval=True, handoff_actions=[...]) and lets
+            the engine write the handoff file via _write_approval_handoff below.
+        SpecStep uses pattern (A); generic approval steps use pattern (B).
+        """
         result.final_status = TaskStatus.AWAITING_APPROVAL
         await self._write_output(f"AWAITING APPROVAL: {record.result.summary}")
         await self._update_step_execution_status(record.step_exec_id, TaskStatus.AWAITING_APPROVAL.value)

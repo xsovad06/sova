@@ -110,7 +110,9 @@ class SpecStep(BaseStep):
         has_questions = _text_has_open_questions(text)
         spec_complexity = _extract_complexity(text)
 
-        # Auto-approve simple specs without open questions
+        # Auto-approve simple specs without open questions.
+        # Auto-approved specs chain directly to developer via handoff with auto_execute=True,
+        # exiting the researcher pipeline early (skip-to-role pattern).
         if ctx.config.spec.auto_approve_simple and not has_questions:
             if _complexity_rank(spec_complexity) <= _complexity_rank("simple"):
                 # Mark as approved in the spec file
@@ -226,6 +228,7 @@ class SpecStep(BaseStep):
             notification_subtitle=f"Researcher finished #{ctx.issue_number}",
             result_summary=f"Spec awaiting approval ({reason})",
             cost_usd=cost_usd,
+            awaiting_approval=True,
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

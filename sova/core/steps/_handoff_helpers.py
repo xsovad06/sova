@@ -34,6 +34,7 @@ async def write_step_handoff(
     needs_human: bool = False,
     human_message: str | None = None,
     cost_usd: Decimal = Decimal("0"),
+    awaiting_approval: bool = False,
 ) -> StepResult:
     """Write both DB and file handoffs, send notification, return StepResult."""
     agent_handoff = AgentHandoff(
@@ -82,4 +83,5 @@ async def write_step_handoff(
         success=True,
         summary=result_summary,
         cost_usd=cost_usd,
+        awaiting_approval=awaiting_approval,
     )
