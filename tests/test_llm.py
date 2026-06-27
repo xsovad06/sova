@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sova.llm.complexity import ComplexityTier, assess_complexity
 from sova.llm.models import LLMResult, StreamEvent
 
 # ---------------------------------------------------------------------------
@@ -1267,3 +1268,87 @@ class TestLiteLLMProvider:
 
         assert available is True
         assert "1.0.0" in detail
+
+
+# ---------------------------------------------------------------------------
+# Complexity scorer
+# ---------------------------------------------------------------------------
+
+
+class TestComplexityScorer:
+    """Tests for sova.llm.complexity module."""
+
+    def test_trivial_keywords(self) -> None:
+        assert assess_complexity("fix typo in README", "") == ComplexityTier.TRIVIAL
+        assert assess_complexity("rename variable foo", "") == ComplexityTier.TRIVIAL
+        assert assess_complexity("bump version to 1.2.3", "") == ComplexityTier.TRIVIAL
+
+    def test_simple_keywords(self) -> None:
+        assert assess_complexity("add test for utils", "") == ComplexityTier.SIMPLE
+        assert assess_complexity("minor fix in parser", "") == ComplexityTier.SIMPLE
+
+    def test_moderate_keywords(self) -> None:
+        assert assess_complexity("new endpoint for user search", "") == ComplexityTier.MODERATE
+
+    def test_complex_keywords(self) -> None:
+        assert assess_complexity("refactor auth module", "") == ComplexityTier.COMPLEX
+        assert assess_complexity("migrate database schema", "") == ComplexityTier.COMPLEX
+        assert assess_complexity("new module for notifications", "") == ComplexityTier.COMPLEX
+
+    def test_epic_keywords(self) -> None:
+        assert assess_complexity("cross-cutting concern overhaul", "") == ComplexityTier.EPIC
+        assert assess_complexity("full rewrite of the pipeline", "") == ComplexityTier.EPIC
+
+    def test_empty_input_defaults_to_moderate(self) -> None:
+        assert assess_complexity("", "") == ComplexityTier.MODERATE
+
+    def test_label_based_routing(self) -> None:
+        result = assess_complexity("do something", "", labels=["good first issue"])
+        assert result == ComplexityTier.TRIVIAL
+
+    def test_label_easy(self) -> None:
+        result = assess_complexity("do something", "", labels=["easy"])
+        assert result == ComplexityTier.SIMPLE
+
+    def test_file_count_influence(self) -> None:
+        result = assess_complexity("fix a thing", "short desc", file_count_estimate=1)
+        assert result in (ComplexityTier.TRIVIAL, ComplexityTier.SIMPLE)
+
+        result = assess_complexity("fix a thing", "short desc", file_count_estimate=20)
+        assert result in (ComplexityTier.COMPLEX, ComplexityTier.EPIC)
+
+    def test_file_count_zero_treated_as_no_signal(self) -> None:
+        result_with_zero = assess_complexity("fix typo", "", file_count_estimate=0)
+        result_without = assess_complexity("fix typo", "")
+        assert result_with_zero == result_without
+
+    def test_conflicting_signals_keyword_wins(self) -> None:
+        long_desc = "x " * 3000
+        result = assess_complexity("fix typo", long_desc)
+        assert result in (ComplexityTier.TRIVIAL, ComplexityTier.SIMPLE)
+
+    def test_description_length_as_signal(self) -> None:
+        short = assess_complexity("do task", "short")
+        long_ = assess_complexity("do task", "a " * 2500)
+        tiers = list(ComplexityTier)
+        assert tiers.index(short) <= tiers.index(long_)
+
+    def test_enum_values_match_task_assessment(self) -> None:
+        expected = {"trivial", "simple", "moderate", "complex", "epic"}
+        actual = {t.value for t in ComplexityTier}
+        assert actual == expected
+
+    def test_multiple_signals_combined(self) -> None:
+        result = assess_complexity(
+            "refactor the auth system",
+            "This is a large refactor affecting many files",
+            labels=["complex"],
+            file_count_estimate=10,
+        )
+        assert result == ComplexityTier.COMPLEX
+
+    def test_none_labels_accepted(self) -> None:
+        assess_complexity("title", "desc", labels=None)
+
+    def test_none_file_count_accepted(self) -> None:
+        assess_complexity("title", "desc", file_count_estimate=None)
