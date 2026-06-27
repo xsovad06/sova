@@ -11,17 +11,20 @@ from sova.llm.client import (
     resolve_model,
     set_provider,
 )
+from sova.llm.complexity import ComplexityTier, assess_complexity
 from sova.llm.cost import record_cost
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, create_provider
 
 __all__ = [
+    "ComplexityTier",
     "LLMProvider",
     "LLMResult",
     "PromptInjectionError",
     "ScanResult",
     "StreamEvent",
+    "assess_complexity",
     "create_provider",
     "get_provider",
     "invoke",
