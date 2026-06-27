@@ -7,6 +7,7 @@ from pathlib import Path
 
 from sova.config.context import get_project_dir
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section as _extract_section
 
 log = get_logger(component="dashboard.service.spec")
 
@@ -75,16 +76,7 @@ def _parse_spec(text: str, path: Path, issue_number: str) -> dict:
     return result
 
 
-def _extract_section(text: str, heading: str) -> str:
-    """Extract the content of a markdown section (between ## heading and next ## or EOF)."""
-    pattern = rf"^## {re.escape(heading)}\s*$"
-    match = re.search(pattern, text, re.MULTILINE)
-    if not match:
-        return ""
-    start = match.end()
-    next_heading = re.search(r"^## ", text[start:], re.MULTILINE)
-    section = text[start : start + next_heading.start()] if next_heading else text[start:]
-    return section.strip()
+# _extract_section is imported from sova.utils.markdown above
 
 
 def _extract_open_questions(text: str) -> list[dict]:
