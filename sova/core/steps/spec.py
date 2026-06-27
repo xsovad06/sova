@@ -128,10 +128,33 @@ class SpecStep(BaseStep):
                         summary="Failed to update spec file",
                         error=str(exc),
                     )
-                return StepResult(
-                    success=True,
-                    summary=f"Spec auto-approved (complexity: {spec_complexity}, no open questions)",
-                    cost_usd=result.cost_usd,
+                log.info(
+                    "step.spec.auto_approved",
+                    issue=ctx.issue_number,
+                    complexity=spec_complexity,
+                )
+                return await write_step_handoff(
+                    ctx,
+                    role="researcher",
+                    phase="spec",
+                    summary=f"Spec auto-approved for #{ctx.issue_number} (complexity: {spec_complexity})",
+                    agent_summary="Spec auto-approved, spawning developer",
+                    next_action="develop",
+                    actions=[
+                        HandoffAction(
+                            id="develop",
+                            label="Develop",
+                            description=f"Start development for #{ctx.issue_number}",
+                            style="approve",
+                            mode="agent",
+                            command="",
+                            args={"issue": ctx.issue_number, "role": "developer"},
+                            auto_execute=True,
+                        ),
+                    ],
+                    notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
+                    notification_subtitle=f"Researcher finished #{ctx.issue_number}",
+                    result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
                 )
 
         # Needs human review -- write handoff and pause pipeline
