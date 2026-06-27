@@ -11,8 +11,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sova.core.context import ExecutionContext
+
+if TYPE_CHECKING:
+    from sova.ipc.handoff import HandoffAction
 
 
 @dataclass
@@ -23,6 +27,8 @@ class StepResult:
     summary: str
     error: str | None = None
     cost_usd: Decimal = Decimal("0")
+    awaiting_approval: bool = False
+    handoff_actions: list[HandoffAction] | None = None
 
 
 @dataclass

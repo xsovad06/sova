@@ -13,6 +13,7 @@ Behavior depends on complexity threshold and open questions:
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 
 from sova.core.context import ExecutionContext
 from sova.core.steps._handoff_helpers import write_step_handoff
@@ -155,16 +156,19 @@ class SpecStep(BaseStep):
                     notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
                     notification_subtitle=f"Researcher finished #{ctx.issue_number}",
                     result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
+                    cost_usd=result.cost_usd,
                 )
 
         # Needs human review -- write handoff and pause pipeline
-        return await self._write_approval_handoff(ctx, spec_complexity, has_questions)
+        return await self._write_approval_handoff(ctx, spec_complexity, has_questions, cost_usd=result.cost_usd)
 
     async def _write_approval_handoff(
         self,
         ctx: ExecutionContext,
         complexity: str,
         has_questions: bool,
+        *,
+        cost_usd: Decimal = Decimal("0"),
     ) -> StepResult:
         """Write a handoff requesting spec approval from the dashboard."""
         reason = "open questions" if has_questions else f"complexity: {complexity}"
@@ -221,6 +225,7 @@ class SpecStep(BaseStep):
             notification_message=f"Spec for #{ctx.issue_number} ready for review ({reason})",
             notification_subtitle=f"Researcher finished #{ctx.issue_number}",
             result_summary=f"Spec awaiting approval ({reason})",
+            cost_usd=cost_usd,
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:

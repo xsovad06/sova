@@ -76,7 +76,7 @@ async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
         log.warning("task_run.orphan_cleanup_failed", run_id=run_id, exc_info=True)
 
 
-_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused"})
+_TERMINAL_STATUSES = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})
 
 
 def _read_file_handoff(project_dir: Path, issue: str = "") -> dict | None:
