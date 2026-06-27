@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.dashboard.services.spec_service import find_spec_file
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines
@@ -23,10 +24,23 @@ from sova.ipc.handoff import AgentHandoff, DashboardHandoff, HandoffAction, writ
 from sova.llm.client import invoke
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section as _extract_section
 
 log = get_logger(component="role.reviewer")
 
 DIFF_CHUNK_SIZE = 100_000  # ~100KB per chunk
+
+_SPEC_SECTIONS = ("Solution", "Edge Cases", "Design Decisions", "Scope Boundaries")
+
+
+def _extract_spec_sections(raw_content: str) -> dict[str, str]:
+    """Extract review-relevant sections from a spec's raw markdown content."""
+    sections: dict[str, str] = {}
+    for heading in _SPEC_SECTIONS:
+        content = _extract_section(raw_content, heading)
+        if content:
+            sections[heading] = content
+    return sections
 
 
 @dataclass
@@ -54,9 +68,32 @@ class ReviewResult:
         return list(self.findings)
 
 
-def _build_review_prompt(task: Task, diff: str, files: list[str]) -> str:
+def _build_review_prompt(
+    task: Task,
+    diff: str,
+    files: list[str],
+    spec_sections: dict[str, str] | None = None,
+) -> str:
     """Build the LLM prompt for code review."""
     file_list = "\n".join(f"- {f}" for f in files)
+
+    has_spec = bool(spec_sections)
+
+    spec_block = ""
+    if has_spec:
+        parts = [f"### {heading}\n{content}" for heading, content in spec_sections.items()]
+        spec_block = "\n\n## Spec Context\n" + "\n\n".join(parts)
+
+    spec_checklist = (
+        "\n9. **Spec alignment** (5-8): implementation deviates from spec intent, "
+        "scope creep, missing edge cases from spec, design decisions not followed"
+        if has_spec
+        else ""
+    )
+    categories = "bug|security|error-handling|testing|api|performance|design|docs"
+    if has_spec:
+        categories += "|spec_alignment"
+
     return f"""You are a senior software engineer performing a thorough code review. \
 Your job is to find real issues -- do NOT rubber-stamp the PR. \
 Assume the code has bugs until proven otherwise.
@@ -64,6 +101,7 @@ Assume the code has bugs until proven otherwise.
 ## PR Context
 **Issue**: {task.title}
 **Description**: {task.body}
+{spec_block}
 
 ## Changed Files
 {file_list}
@@ -83,7 +121,7 @@ Examine every changed line against each criterion. Score each finding 1-10 (10 =
 5. **API contracts** (4-7): wrong parameter types, missing required args, incorrect return types
 6. **Performance** (3-6): N+1 queries, unbounded loops, unnecessary allocations, import-time side effects
 7. **Design** (3-5): hardcoded values that should be configurable, module-level state, tight coupling
-8. **Docs** (2-3): stale comments, misleading docstrings
+8. **Docs** (2-3): stale comments, misleading docstrings{spec_checklist}
 
 ## Critical Rules
 - You MUST find at least one issue. No PR is perfect. If you think the code is clean, look harder.
@@ -100,7 +138,7 @@ Return ONLY a JSON object (no markdown fences, no extra text):
       "file": "path/to/file.py",
       "line": 42,
       "severity": 7,
-      "category": "bug|security|error-handling|testing|api|performance|design|docs",
+      "category": "{categories}",
       "description": "Concise description of the issue",
       "suggestion": "Specific fix recommendation"
     }}
@@ -494,10 +532,13 @@ class ReviewerRole(AgentRole):
         chunks = _chunk_diff(diff)
         result = ReviewResult()
 
+        # Load spec for intent-anchored review
+        spec_sections = self._load_spec_sections(ctx)
+
         for i, chunk in enumerate(chunks):
             try:
                 llm_result = await invoke(
-                    _build_review_prompt(task, chunk, files),
+                    _build_review_prompt(task, chunk, files, spec_sections=spec_sections),
                     model="sonnet",
                     cwd=ctx.working_dir,
                 )
@@ -515,6 +556,25 @@ class ReviewerRole(AgentRole):
                     result.summary = "LLM review unavailable -- manual review recommended"
 
         return result
+
+    def _load_spec_sections(self, ctx: ExecutionContext) -> dict[str, str] | None:
+        """Load spec sections for intent-anchored review. Returns None if no spec exists."""
+        issue = ctx.issue_number
+        if not issue or not str(issue).isdigit():
+            return None
+        try:
+            path = find_spec_file(str(issue), ctx.project_dir)
+            if path is None:
+                log.debug("reviewer.no_spec", issue=issue)
+                return None
+            raw = path.read_text()
+            sections = _extract_spec_sections(raw)
+            if sections:
+                log.info("reviewer.spec_loaded", issue=issue, sections=list(sections.keys()))
+            return sections or None
+        except Exception:
+            log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
+            return None
 
     async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Write both DB-backed and file-based handoffs."""

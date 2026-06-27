@@ -21,6 +21,7 @@ from sova.dashboard.services.spec_service import find_spec_file
 from sova.ipc.handoff import HandoffAction
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
+from sova.utils.markdown import extract_section as _extract_section
 
 log = get_logger(component="step.spec")
 
@@ -41,17 +42,7 @@ def _extract_complexity(text: str) -> str:
     return match.group(1).lower() if match else "moderate"
 
 
-def _extract_section(text: str, heading: str) -> str:
-    """Extract the content of a markdown section (between ## heading and next ## or EOF)."""
-    pattern = rf"^## {re.escape(heading)}\s*$"
-    match = re.search(pattern, text, re.MULTILINE)
-    if not match:
-        return ""
-    start = match.end()
-    # Find the next ## heading or end of text
-    next_heading = re.search(r"^## ", text[start:], re.MULTILINE)
-    section = text[start : start + next_heading.start()] if next_heading else text[start:]
-    return section.strip()
+# _extract_section is imported from sova.utils.markdown above
 
 
 def _text_has_open_questions(text: str) -> bool:

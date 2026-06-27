@@ -920,6 +920,216 @@ class TestReviewerRole:
 
         assert not result.success
 
+    async def test_execute_includes_spec_in_review(self) -> None:
+        """When a spec file exists, review prompt includes spec context."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+
+        findings = [
+            {
+                "file": "x.py",
+                "line": 10,
+                "severity": 6,
+                "category": "spec_alignment",
+                "description": "Implementation deviates from spec",
+                "suggestion": "Follow the spec",
+            }
+        ]
+        llm_resp = json.dumps({"findings": findings, "summary": "Spec deviation found"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        spec_path = ctx.project_dir / ".claude" / "specs"
+        spec_path.mkdir(parents=True, exist_ok=True)
+        spec_file = spec_path / "42-test.md"
+        spec_file.write_text(
+            "# Spec: Test\n\n## Solution\nDo X and Y.\n\n## Edge Cases\nHandle Z.\n\n## Other\nIgnored."
+        )
+
+        captured_prompt = None
+
+        async def _capture_invoke(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return llm_result
+
+        try:
+            with (
+                patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+                patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+                patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+                patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
+                patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+                patch("sova.roles.reviewer.write_handoff_file"),
+            ):
+                role = ReviewerRole()
+                result = await role.execute(ctx)
+        finally:
+            spec_file.unlink(missing_ok=True)
+            spec_path.rmdir()
+
+        assert result.success
+        assert captured_prompt is not None
+        assert "Spec Context" in captured_prompt
+        assert "Do X and Y." in captured_prompt
+        assert "Handle Z." in captured_prompt
+        assert "Spec alignment" in captured_prompt
+        assert "spec_alignment" in captured_prompt
+
+    async def test_execute_without_spec_is_backward_compatible(self) -> None:
+        """When no spec file exists, review works normally without spec context."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        captured_prompt = None
+
+        async def _capture_invoke(prompt, **kwargs):
+            nonlocal captured_prompt
+            captured_prompt = prompt
+            return llm_result
+
+        with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            role = ReviewerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert captured_prompt is not None
+        assert "Spec Context" not in captured_prompt
+        assert "Spec alignment" not in captured_prompt
+
+
+# ---------------------------------------------------------------------------
+# Spec-anchored review helpers
+# ---------------------------------------------------------------------------
+
+
+class TestSpecAnchoredReview:
+    def test_extract_spec_sections_complete(self) -> None:
+        from sova.roles.reviewer import _extract_spec_sections
+
+        raw = (
+            "# Spec: Test\n\n"
+            "## Solution\nDo A and B.\n\n"
+            "## Edge Cases\nHandle C.\n\n"
+            "## Design Decisions\nUse pattern D.\n\n"
+            "## Scope Boundaries\nExcludes E.\n\n"
+            "## Other\nIgnored.\n"
+        )
+        sections = _extract_spec_sections(raw)
+        assert "Solution" in sections
+        assert "Do A and B." in sections["Solution"]
+        assert "Edge Cases" in sections
+        assert "Handle C." in sections["Edge Cases"]
+        assert "Design Decisions" in sections
+        assert "Use pattern D." in sections["Design Decisions"]
+        assert "Scope Boundaries" in sections
+        assert "Excludes E." in sections["Scope Boundaries"]
+        assert "Other" not in sections
+
+    def test_extract_spec_sections_partial(self) -> None:
+        from sova.roles.reviewer import _extract_spec_sections
+
+        raw = "# Spec\n\n## Solution\nDo X.\n\n## Implementation\nStep 1.\n"
+        sections = _extract_spec_sections(raw)
+        assert "Solution" in sections
+        assert len(sections) == 1
+
+    def test_extract_spec_sections_empty(self) -> None:
+        from sova.roles.reviewer import _extract_spec_sections
+
+        sections = _extract_spec_sections("# Spec\n\nJust some text.")
+        assert sections == {}
+
+    def test_build_review_prompt_with_spec(self) -> None:
+        from sova.roles.reviewer import _build_review_prompt
+
+        task = Task(id="1", title="Test", body="desc", state=TaskState.BACKLOG)
+        spec_sections = {"Solution": "Do X.", "Edge Cases": "Handle Y."}
+        prompt = _build_review_prompt(task, "diff", ["a.py"], spec_sections=spec_sections)
+
+        assert "## Spec Context" in prompt
+        assert "### Solution" in prompt
+        assert "Do X." in prompt
+        assert "### Edge Cases" in prompt
+        assert "Handle Y." in prompt
+        assert "9. **Spec alignment**" in prompt
+        assert "spec_alignment" in prompt
+
+    def test_build_review_prompt_without_spec(self) -> None:
+        from sova.roles.reviewer import _build_review_prompt
+
+        task = Task(id="1", title="Test", body="desc", state=TaskState.BACKLOG)
+        prompt = _build_review_prompt(task, "diff", ["a.py"])
+
+        assert "Spec Context" not in prompt
+        assert "spec_alignment" not in prompt
+        assert "Spec alignment" not in prompt
+        # 8 categories present, no 9th
+        assert "8. **Docs**" in prompt
+
+    def test_spec_alignment_finding_parses(self) -> None:
+        import json
+
+        from sova.roles.reviewer import _parse_findings
+
+        text = json.dumps(
+            {
+                "findings": [
+                    {
+                        "file": "x.py",
+                        "line": 10,
+                        "severity": 6,
+                        "category": "spec_alignment",
+                        "description": "Deviates from spec",
+                        "suggestion": "Follow spec",
+                    }
+                ],
+                "summary": "Spec deviation",
+            }
+        )
+        findings, summary = _parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].category == "spec_alignment"
+        assert findings[0].severity == 6
+
+    def test_load_spec_sections_no_spec(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=99)
+        role = ReviewerRole()
+        result = role._load_spec_sections(ctx)
+        assert result is None
+
+    def test_load_spec_sections_non_numeric_issue(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=99, issue_number="pr-42")
+        role = ReviewerRole()
+        result = role._load_spec_sections(ctx)
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Role dispatcher
