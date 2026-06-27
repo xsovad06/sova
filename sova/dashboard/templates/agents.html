@@ -178,10 +178,11 @@ var _roleLabels = {
 function stateTag(state, stateLabel, stateColor) {
   var label = stateLabel || state;
   var cls = stateColor || 'bg-gray-600/30 text-gray-400';
-  return '<span class="px-2 py-0.5 rounded-full text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
+  return '<span class="px-2 py-0.5 rounded-full text-xs whitespace-nowrap ' + cls + '">' + escapeHtml(label) + '</span>';
 }
 
 var _TIER2_PAGE_SIZE = 15;
+var _MIN_BEFORE_COLLAPSE = 8;
 var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
 var _cardMenuOpen = false;
 var _workItems = [];
@@ -308,14 +309,39 @@ function renderTaskCard(item) {
   var pDot = p ? '<span class="w-1.5 h-1.5 rounded-full shrink-0 ' + (pDots[p] || 'bg-gray-600') + '"></span>' : '';
 
   var handoffActions = item.handoff_actions || [];
-  var isMultiAction = (item.state === 'handoff_pending' || item.state === 'spec_review') && handoffActions.length > 1;
+  var isSpecReview = item.state === 'spec_review';
+  var isMultiAction = (item.state === 'handoff_pending') && handoffActions.length > 1;
+
+  var specPrimaryBtns = '';
+  var specMenuActions = [];
+  if (isSpecReview) {
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    var specUrl = prefix + '/spec/' + (item.issue_number || '');
+    var viewBtn = '<a href="' + specUrl + '" onclick="event.stopPropagation()" ' +
+      'class="text-xs px-3 py-1 rounded transition-colors whitespace-nowrap bg-accent/20 text-accent hover:bg-accent/30">View Spec</a>';
+    var approveBtn = '';
+    var rejectBtn = '';
+    handoffActions.forEach(function(ha) {
+      var aid = ha.id || ha.action || '';
+      if (aid === 'approve-spec') {
+        approveBtn = _renderHandoffBtn(ha, issueKey);
+      } else if (aid === 'reject-spec') {
+        rejectBtn = _renderHandoffBtn(ha, issueKey);
+      } else {
+        specMenuActions.push(ha);
+      }
+    });
+    specPrimaryBtns = viewBtn + approveBtn + rejectBtn;
+  }
 
   var actionBtn;
   if (isRunning && item.running_agent) {
     actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
       '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>' +
       escapeHtml(item.running_agent.role_label || 'Running') + '</span>';
-  } else if ((item.state === 'handoff_pending' || item.state === 'spec_review') && handoffActions.length === 1) {
+  } else if (isSpecReview) {
+    actionBtn = specPrimaryBtns;
+  } else if (item.state === 'handoff_pending' && handoffActions.length === 1) {
     actionBtn = _renderHandoffBtn(handoffActions[0], issueKey);
   } else if (isMultiAction) {
     actionBtn = '';
@@ -355,10 +381,10 @@ function renderTaskCard(item) {
     issueRef +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(item.title) + '</span>' +
     failedDot +
-    '<div class="flex items-center gap-2 shrink-0" style="width:340px">' +
+    '<div class="flex items-center gap-2 shrink-0" style="width:' + (isSpecReview ? '460' : '340') + 'px">' +
       '<div class="w-20 flex justify-end">' + prBadge + '</div>' +
-      '<div class="w-32 flex justify-end">' + stateTag(item.state, item.state_label, item.state_color) + '</div>' +
-      '<div class="flex-1 flex justify-end">' + actionBtn + '</div>' +
+      '<div class="flex justify-end">' + stateTag(item.state, item.state_label, item.state_color) + '</div>' +
+      '<div class="flex-1 flex justify-end gap-1.5">' + actionBtn + '</div>' +
     '</div>' +
     '<button onclick="toggleCardMenu(event, \'' + escapeJsStr(menuIssue) + '\')" ' +
       'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0 w-4" ' +
@@ -368,12 +394,18 @@ function renderTaskCard(item) {
     '<div id="card-menu-' + menuIssue + '" class="hidden absolute right-4 top-8 z-50 bg-surface border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]">' +
       (isRunning
         ? '<button onclick="stopAgent(' + (item.running_agent ? item.running_agent.run_id : 0) + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-red hover:bg-surface-hover transition-colors">Stop Agent</button>'
-        : (item.issue_number
-          ? '<button onclick="quickStart(\'' + escapeJsStr(item.issue_number) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
-            '<button onclick="quickStartRole(\'' + escapeJsStr(item.issue_number) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
-            '<button onclick="quickStartRole(\'' + escapeJsStr(item.issue_number) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>'
-          : '')) +
-      ((item.secondary_actions || []).length && !isRunning
+        : (isSpecReview && specMenuActions.length
+          ? specMenuActions.map(function(ha) {
+              return '<button onclick="executeHandoffAction(\'' + escapeJsStr(ha.id || ha.action || ha.label) + '\', \'' + escapeJsStr(issueKey) + '\')" ' +
+                'class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">' +
+                escapeHtml(ha.label) + '</button>';
+            }).join('')
+          : (item.issue_number
+            ? '<button onclick="quickStart(\'' + escapeJsStr(item.issue_number) + '\', true)" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start with --force</button>' +
+              '<button onclick="quickStartRole(\'' + escapeJsStr(item.issue_number) + '\', \'reviewer\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Reviewer</button>' +
+              '<button onclick="quickStartRole(\'' + escapeJsStr(item.issue_number) + '\', \'triage\')" class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">Start as Triage</button>'
+            : ''))) +
+      ((item.secondary_actions || []).length && !isRunning && !isSpecReview
         ? (function() {
             var sep = item.issue_number ? '<hr class="border-gray-700/50 my-1">' : '';
             return sep + (item.secondary_actions || []).map(function(sa) {
@@ -393,7 +425,11 @@ function renderTaskCard(item) {
   '</div>';
 
   var expandedRow = '';
-  if (isMultiAction) {
+  if (isSpecReview && item.handoff_summary) {
+    expandedRow = '<div class="flex items-center gap-3 px-4 pb-2.5 pl-12">' +
+      '<span class="text-xs text-gray-500 truncate flex-1">' + escapeHtml(item.handoff_summary) + '</span>' +
+    '</div>';
+  } else if (isMultiAction) {
     var haButtons = handoffActions.map(function(ha) {
       return _renderHandoffBtn(ha, issueKey);
     }).join(' ');
@@ -457,6 +493,7 @@ function renderTaskCards() {
       return _highPriStates[t.state] || _highPriLabels[_extractPriority(t.labels)];
     });
     if (tier1.length === 0 && sorted.length > 0) tier1 = sorted.slice(0, 3);
+    if (sorted.length <= _MIN_BEFORE_COLLAPSE) tier1 = sorted;
 
     var visible;
     var hiddenCount;
