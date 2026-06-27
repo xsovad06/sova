@@ -282,7 +282,6 @@ class TestSpecStep:
         """Integration: SpecStep returns awaiting_approval=True for complex specs,
         causing WorkflowEngine to set TaskRun status to 'awaiting_approval'."""
         from sova.core.steps.base import GateCheckResult as GCR
-        from sova.core.steps.base import StepResult as SR
         from sova.core.workflow import WorkflowEngine
         from sova.db.models import TaskRun
         from sova.db.session import get_session
@@ -291,10 +290,7 @@ class TestSpecStep:
         specs_dir = tmp_path / ".claude" / "specs"
         specs_dir.mkdir(parents=True)
         spec = specs_dir / "42-test.md"
-        spec.write_text(
-            "# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n"
-            "## Solution\n\nDo stuff\n"
-        )
+        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n")
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
         ctx = _make_ctx(
