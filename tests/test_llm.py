@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sova.llm.complexity import ComplexityTier, assess_complexity
+from sova.llm import ComplexityTier, assess_complexity
 from sova.llm.models import LLMResult, StreamEvent
 
 # ---------------------------------------------------------------------------
@@ -1312,10 +1312,10 @@ class TestComplexityScorer:
 
     def test_file_count_influence(self) -> None:
         result = assess_complexity("fix a thing", "short desc", file_count_estimate=1)
-        assert result in (ComplexityTier.TRIVIAL, ComplexityTier.SIMPLE)
+        assert result == ComplexityTier.TRIVIAL
 
         result = assess_complexity("fix a thing", "short desc", file_count_estimate=20)
-        assert result in (ComplexityTier.COMPLEX, ComplexityTier.EPIC)
+        assert result == ComplexityTier.COMPLEX
 
     def test_file_count_zero_treated_as_no_signal(self) -> None:
         result_with_zero = assess_complexity("fix typo", "", file_count_estimate=0)
@@ -1325,7 +1325,7 @@ class TestComplexityScorer:
     def test_conflicting_signals_keyword_wins(self) -> None:
         long_desc = "x " * 3000
         result = assess_complexity("fix typo", long_desc)
-        assert result in (ComplexityTier.TRIVIAL, ComplexityTier.SIMPLE)
+        assert result == ComplexityTier.TRIVIAL
 
     def test_description_length_as_signal(self) -> None:
         short = assess_complexity("do task", "short")
