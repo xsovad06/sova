@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import StepResult
 from sova.ipc.handoff import (
@@ -31,6 +33,7 @@ async def write_step_handoff(
     agent_summary: str | None = None,
     needs_human: bool = False,
     human_message: str | None = None,
+    cost_usd: Decimal = Decimal("0"),
 ) -> StepResult:
     """Write both DB and file handoffs, send notification, return StepResult."""
     agent_handoff = AgentHandoff(
@@ -75,4 +78,8 @@ async def write_step_handoff(
         group=ctx.notification_group,
     )
 
-    return StepResult(success=True, summary=result_summary)
+    return StepResult(
+        success=True,
+        summary=result_summary,
+        cost_usd=cost_usd,
+    )

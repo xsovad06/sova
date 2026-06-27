@@ -74,6 +74,7 @@ class TestTaskStatus:
             "CI_MONITORING",
             "AUTOMATED_REVIEW",
             "ADDRESSING_REVIEW",
+            "AWAITING_APPROVAL",
             "DONE",
             "PAUSED",
             "FAILED",
@@ -122,6 +123,25 @@ class TestTaskStatus:
         valid = get_valid_transitions(TaskStatus.PAUSED)
         assert TaskStatus.PENDING in valid
         assert TaskStatus.DEVELOPING in valid
+
+    def test_awaiting_approval_can_resume(self) -> None:
+        valid = get_valid_transitions(TaskStatus.AWAITING_APPROVAL)
+        assert TaskStatus.PENDING in valid
+        assert TaskStatus.DEVELOPING in valid
+        assert TaskStatus.DONE not in valid
+
+    def test_awaiting_approval_reachable_from_non_terminal(self) -> None:
+        valid = get_valid_transitions(TaskStatus.DEVELOPING)
+        assert TaskStatus.AWAITING_APPROVAL in valid
+
+    def test_awaiting_approval_not_reachable_from_terminal(self) -> None:
+        valid = get_valid_transitions(TaskStatus.DONE)
+        assert TaskStatus.AWAITING_APPROVAL not in valid
+
+    def test_awaiting_approval_in_task_run_terminal(self) -> None:
+        from sova.core.state import TASK_RUN_TERMINAL
+
+        assert "awaiting_approval" in TASK_RUN_TERMINAL
 
     def test_happy_path_sequence(self) -> None:
         """The happy path through the pipeline is valid."""
@@ -546,6 +566,86 @@ class TestWorkflowEngine:
 
         assert result.success
         assert result.steps_completed == 1
+
+    async def test_awaiting_approval_pauses_pipeline(self) -> None:
+        """A step returning awaiting_approval=True pauses the pipeline."""
+        ctx = _make_ctx()
+
+        class ApprovalStep(BaseStep):
+            name = "needs_approval"
+
+            async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Needs human approval", awaiting_approval=True)
+
+            async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step1 = ApprovalStep()
+        step2 = DummyStep(should_pass=True, gate_pass=True, name="after_approval")
+        engine = WorkflowEngine(steps=[step1, step2], ctx=ctx)
+
+        result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.AWAITING_APPROVAL
+        assert result.steps_completed == 1
+        # Second step should NOT have run
+        assert len(result.step_records) == 1
+        assert result.step_records[0].step_name == "needs_approval"
+
+    async def test_awaiting_approval_default_false_no_pause(self) -> None:
+        """Steps returning default awaiting_approval=False do not pause."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.final_status == TaskStatus.DONE
+
+    async def test_awaiting_approval_with_handoff_actions(self) -> None:
+        """A step returning handoff_actions writes a handoff file."""
+        from sova.ipc.handoff import HandoffAction
+
+        ctx = _make_ctx()
+        actions = [
+            HandoffAction(
+                id="approve_spec",
+                label="Approve",
+                description="Approve the spec",
+                style="approve",
+                auto_execute=False,
+            ),
+        ]
+
+        class ApprovalWithActionsStep(BaseStep):
+            name = "spec"
+
+            async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
+                return StepResult(
+                    success=True,
+                    summary="Spec ready for approval",
+                    awaiting_approval=True,
+                    handoff_actions=actions,
+                )
+
+            async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = ApprovalWithActionsStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        with patch("sova.ipc.handoff.write_handoff_file") as mock_write:
+            result = await engine.run()
+
+        assert not result.success
+        assert result.final_status == TaskStatus.AWAITING_APPROVAL
+        mock_write.assert_called_once()
+        written_handoff = mock_write.call_args[0][1]
+        assert written_handoff.status == "awaiting_action"
+        assert len(written_handoff.next_actions) == 1
+        assert written_handoff.next_actions[0].id == "approve_spec"
 
 
 # ---------------------------------------------------------------------------
@@ -1742,6 +1842,72 @@ class TestContextPersistence:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.pr_number == 42
+
+    async def test_awaiting_approval_sets_task_run_status(self) -> None:
+        """TaskRun status is set to awaiting_approval when a step pauses."""
+        ctx = _make_ctx(
+            branch_name="feat/spec-approval",
+            worktree_dir=Path("/tmp/wt/approval"),
+        )
+
+        class ApprovalStep(BaseStep):
+            name = "spec"
+
+            async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Spec ready", awaiting_approval=True)
+
+            async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = ApprovalStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.final_status == TaskStatus.AWAITING_APPROVAL
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            assert task_run.status == "awaiting_approval"
+            assert task_run.current_step == "spec"
+            assert task_run.ended_at is not None
+            assert task_run.branch_name == "feat/spec-approval"
+            assert task_run.worktree_path == "/tmp/wt/approval"
+
+    async def test_awaiting_approval_step_execution_status(self) -> None:
+        """StepExecution is marked 'awaiting_approval' (not 'done') so resume re-executes it."""
+        ctx = _make_ctx()
+
+        class ApprovalStep(BaseStep):
+            name = "needs_approval"
+
+            async def execute(self, ctx_inner: ExecutionContext) -> StepResult:
+                return StepResult(success=True, summary="Awaiting", awaiting_approval=True)
+
+            async def validate_output(self, ctx_inner: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        step = ApprovalStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        session = await get_session()
+        async with session.begin():
+            rows = (
+                (await session.execute(select(StepExecution).where(StepExecution.task_run_id == result.task_run_id)))
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+            assert rows[0].step_name == "needs_approval"
+            assert rows[0].status == "awaiting_approval"
+
+    async def test_awaiting_approval_step_not_in_completed_on_resume(self) -> None:
+        """The paused step's 'awaiting_approval' status is NOT in STEP_DONE_STATUSES, so resume re-executes it."""
+        from sova.core.state import STEP_DONE_STATUSES
+
+        assert "awaiting_approval" not in STEP_DONE_STATUSES
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ class TaskStatus(StrEnum):
     CI_MONITORING = "ci_monitoring"
     AUTOMATED_REVIEW = "automated_review"
     ADDRESSING_REVIEW = "addressing_review"
+    AWAITING_APPROVAL = "awaiting_approval"
     DONE = "done"
     PAUSED = "paused"
     FAILED = "failed"
@@ -36,8 +37,10 @@ class TaskStatus(StrEnum):
 # Terminal states -- no outgoing transitions
 _TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})
 
-# Non-terminal states that PAUSED can resume to
-_RESUMABLE = frozenset(s for s in TaskStatus if s not in _TERMINAL and s != TaskStatus.PAUSED)
+# Non-terminal states that PAUSED/AWAITING_APPROVAL can resume to
+_RESUMABLE = frozenset(
+    s for s in TaskStatus if s not in _TERMINAL and s not in (TaskStatus.PAUSED, TaskStatus.AWAITING_APPROVAL)
+)
 
 # Explicit forward transitions (happy path + branching)
 _TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
@@ -55,6 +58,7 @@ _TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.CI_MONITORING: frozenset({TaskStatus.AUTOMATED_REVIEW}),
     TaskStatus.AUTOMATED_REVIEW: frozenset({TaskStatus.ADDRESSING_REVIEW, TaskStatus.DONE}),
     TaskStatus.ADDRESSING_REVIEW: frozenset({TaskStatus.DONE}),
+    TaskStatus.AWAITING_APPROVAL: _RESUMABLE,
     TaskStatus.PAUSED: _RESUMABLE,
     TaskStatus.DONE: frozenset(),
     TaskStatus.FAILED: frozenset(),
@@ -68,9 +72,9 @@ def get_valid_transitions(status: TaskStatus) -> frozenset[TaskStatus]:
     Every non-terminal state can also transition to PAUSED or FAILED.
     """
     explicit = _TRANSITIONS.get(status, frozenset())
-    if status in _TERMINAL or status == TaskStatus.PAUSED:
+    if status in _TERMINAL or status in (TaskStatus.PAUSED, TaskStatus.AWAITING_APPROVAL):
         return explicit
-    return explicit | frozenset({TaskStatus.PAUSED, TaskStatus.FAILED})
+    return explicit | frozenset({TaskStatus.PAUSED, TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED})
 
 
 def validate_transition(current: TaskStatus, target: TaskStatus) -> None:
@@ -128,7 +132,7 @@ class PhaseStatus(StrEnum):
 PHASE_STATUS_TERMINAL = frozenset({PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.SKIPPED})
 
 # Terminal statuses for TaskRun records (shared across services)
-TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})
+TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "awaiting_approval"})
 
 # Step statuses that mean "completed successfully".
 # Legacy runs used "passed"; current WorkflowEngine uses "done".

@@ -60,6 +60,7 @@ class StepRecord:
     gate: GateCheckResult | None = None
     duration_ms: int = 0
     retries: int = 0
+    step_exec_id: int | None = None
 
 
 @dataclass
@@ -152,52 +153,85 @@ class WorkflowEngine:
             await self._write_output(record.result.summary)
 
         if record.status == "failed":
-            result.steps_failed += 1
-            result.error = record.result.error if record.result else "Unknown error"
-
-            if record.gate and not record.gate.passed:
-                result.final_status = TaskStatus.PAUSED
-                result.error = record.gate.reason
-                failure_type = "gate_check"
-            else:
-                result.final_status = TaskStatus.FAILED
-                failure_type = "exception"
-
-            await self._record_failure(step.name, failure_type, result.error or "Unknown error")
-            await self._update_task_run_status(result.final_status, error=result.error)
-            await self._sync_task_run_context()
-
-            await self._write_output(f"FAILED: {result.error}")
-            await self._close_output()
-
-            role_label = self._ctx.role.capitalize()
-            project_name = self._ctx.project_dir.name
-            label = self._ctx.display_label
-            notify(
-                self._ctx.config.notification,
-                "SOVA",
-                f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
-                subtitle=f"{role_label} failed {label}",
-                group=self._ctx.notification_group,
-            )
-
-            log.error(
-                "workflow.step.failed",
-                step=step.name,
-                error=result.error,
-                status=result.final_status,
-            )
+            await self._handle_step_failure(step, record, result)
             return False
 
         result.steps_completed += 1
         result.total_cost_usd += record.result.cost_usd if record.result else Decimal("0")
         await self._sync_task_run_context()
 
+        if record.result and record.result.awaiting_approval:
+            await self._handle_step_approval(step, record, result)
+            return False
+
         step_status = _STEP_STATUS_MAP.get(step.name)
         if step_status:
             result.final_status = step_status
 
         return True
+
+    async def _handle_step_failure(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
+        """Handle a failed step: record failure, notify, close output."""
+        result.steps_failed += 1
+        result.error = record.result.error if record.result else "Unknown error"
+
+        if record.gate and not record.gate.passed:
+            result.final_status = TaskStatus.PAUSED
+            result.error = record.gate.reason
+            failure_type = "gate_check"
+        else:
+            result.final_status = TaskStatus.FAILED
+            failure_type = "exception"
+
+        await self._record_failure(step.name, failure_type, result.error or "Unknown error")
+        await self._update_task_run_status(result.final_status, error=result.error)
+        await self._sync_task_run_context()
+
+        await self._write_output(f"FAILED: {result.error}")
+        await self._close_output()
+
+        role_label = self._ctx.role.capitalize()
+        project_name = self._ctx.project_dir.name
+        label = self._ctx.display_label
+        notify(
+            self._ctx.config.notification,
+            "SOVA",
+            f"{project_name} | Step '{step.name}' failed: {result.error or 'Unknown error'}",
+            subtitle=f"{role_label} failed {label}",
+            group=self._ctx.notification_group,
+        )
+
+        log.error(
+            "workflow.step.failed",
+            step=step.name,
+            error=result.error,
+            status=result.final_status,
+        )
+
+    async def _handle_step_approval(self, step: BaseStep, record: StepRecord, result: WorkflowResult) -> None:
+        """Handle a step requesting human approval: pause pipeline, notify."""
+        result.final_status = TaskStatus.AWAITING_APPROVAL
+        await self._write_output(f"AWAITING APPROVAL: {record.result.summary}")
+        await self._update_step_execution_status(record.step_exec_id, TaskStatus.AWAITING_APPROVAL.value)
+        await self._update_task_run_status(TaskStatus.AWAITING_APPROVAL)
+
+        if record.result.handoff_actions:
+            self._write_approval_handoff(step.name, record.result)
+
+        await self._close_output()
+
+        role_label = self._ctx.role.capitalize()
+        project_name = self._ctx.project_dir.name
+        label = self._ctx.display_label
+        notify(
+            self._ctx.config.notification,
+            "SOVA",
+            f"{project_name} | Step '{step.name}' awaiting approval",
+            subtitle=f"{role_label} paused {label}",
+            group=self._ctx.notification_group,
+        )
+
+        log.info("workflow.step.awaiting_approval", step=step.name)
 
     async def _finalize(self, result: WorkflowResult) -> None:
         """Write final state after all steps complete successfully."""
@@ -232,6 +266,7 @@ class WorkflowEngine:
 
             try:
                 step_exec_id = await self._create_step_execution(step.name, retry_count=attempts)
+                record.step_exec_id = step_exec_id
             except Exception as exc:
                 log.warning("workflow.step_exec.create_failed", step=step.name, error=str(exc), exc_info=True)
                 step_result = StepResult(
@@ -348,7 +383,7 @@ class WorkflowEngine:
                 task_run.total_cost_usd = self._ctx.cost_usd
                 if error:
                     task_run.error_message = error
-                if status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PAUSED):
+                if status in (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.PAUSED, TaskStatus.AWAITING_APPROVAL):
                     task_run.ended_at = datetime.now(timezone.utc)
 
     async def _sync_task_run_context(self) -> None:
@@ -374,6 +409,43 @@ class WorkflowEngine:
                     task_run.worktree_path = str(self._ctx.worktree_dir)
                 if not task_run.ended_at:
                     task_run.ended_at = datetime.now(timezone.utc)
+
+    async def _update_step_execution_status(self, step_exec_id: int | None, status: str) -> None:
+        """Update a StepExecution's status by ID."""
+        if step_exec_id is None:
+            return
+        try:
+            async with await get_session() as session, session.begin():
+                step_exec = await session.get(StepExecution, step_exec_id)
+                if step_exec:
+                    step_exec.status = status
+        except Exception as exc:
+            log.warning(
+                "workflow.step_exec.status_update_failed", step_exec_id=step_exec_id, error=str(exc), exc_info=True
+            )
+
+    def _write_approval_handoff(self, step_name: str, result: StepResult) -> None:
+        """Write a DashboardHandoff with approval actions from a paused step."""
+        try:
+            from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+
+            dashboard_handoff = DashboardHandoff(
+                source=self._ctx.role,
+                status="awaiting_action",
+                issue=self._ctx.issue_number or "",
+                pr_number=self._ctx.pr_number,
+                branch=self._ctx.branch_name,
+                summary=f"Step '{step_name}' awaiting approval: {result.summary}",
+                details={
+                    "step": step_name,
+                    "cost_usd": str(self._ctx.cost_usd),
+                    "task_run_id": self._task_run_id,
+                },
+                next_actions=result.handoff_actions or [],
+            )
+            write_handoff_file(self._ctx.project_dir, dashboard_handoff)
+        except Exception:
+            log.warning("workflow.approval_handoff.write_failed", step=step_name, exc_info=True)
 
     async def _create_step_execution(self, step_name: str, retry_count: int = 0) -> int:
         """Create a StepExecution record and return its ID."""

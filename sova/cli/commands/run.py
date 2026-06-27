@@ -134,7 +134,7 @@ async def _load_checkpoint(run_id: int, issue: str) -> dict:
             if issue and task_run.issue_number and task_run.issue_number != issue.lstrip("#").strip():
                 return {"error": f"Run #{run_id} is for issue #{task_run.issue_number}, not #{issue}"}
 
-            resumable = {"paused", "failed", "interrupted", "done"}
+            resumable = {"paused", "failed", "interrupted", "done", "awaiting_approval"}
             if task_run.status not in resumable:
                 return {"error": f"Run #{run_id} has status '{task_run.status}' (must be {', '.join(resumable)})"}
 
