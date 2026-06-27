@@ -198,6 +198,9 @@ class TestSpecStep:
         spec = specs_dir / "42-test.md"
         spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
 
+        # Need agent-control dir for handoff writing
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
@@ -211,6 +214,17 @@ class TestSpecStep:
         assert result.success
         assert "auto-approved" in result.summary
         assert spec.read_text().count("**Status**: approved") == 1
+
+        # Verify handoff file was written with auto_execute=True develop action
+        import json
+
+        handoff_files = list((tmp_path / ".claude" / "agent-control").glob("handoff*.json"))
+        assert handoff_files, "Expected handoff file to be written for auto-approve"
+        handoff = json.loads(handoff_files[0].read_text())
+        actions = handoff.get("next_actions", [])
+        develop_action = next((a for a in actions if a["id"] == "develop"), None)
+        assert develop_action is not None, "Expected 'develop' action in handoff"
+        assert develop_action["auto_execute"] is True, "develop action must have auto_execute=True"
 
     async def test_execute_handoff_on_open_questions(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
