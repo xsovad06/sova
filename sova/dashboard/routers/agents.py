@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, field_validator
 
 from sova.dashboard.services import control_service
@@ -193,6 +193,17 @@ async def start_agent(req: StartAgentRequest):
 async def stop_agent(run_id: int):
     """Stop a specific running agent."""
     return await control_service.stop_agent(run_id=run_id)
+
+
+@router.post("/agents/{run_id}/resume-from-approval")
+async def resume_from_approval(run_id: int):
+    """Resume a paused pipeline run after human approval."""
+    result = await control_service.resume_from_approval(run_id)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail=result["detail"])
+    if result.get("error") == "conflict":
+        raise HTTPException(status_code=409, detail=result["detail"])
+    return result
 
 
 @router.get("/agents/issue/{issue_number}/pr-status")

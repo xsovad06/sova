@@ -291,6 +291,8 @@ function _renderActionBtn(action, issueKey) {
     if (args.issue) cmdArgs.push('issue: \'' + escapeJsStr(String(args.issue)) + '\'');
     if (args.pr) cmdArgs.push('pr: ' + Number(args.pr));
     onclick = "runCommand('" + escapeJsStr(args.command || '') + "', {" + cmdArgs.join(', ') + "})";
+  } else if (action.handler === 'resume_from_approval') {
+    onclick = "resumeFromApproval(" + Number(args.run_id) + ")";
   } else if (action.handler === 'handoff_execute') {
     onclick = "executeHandoffAction('" + escapeJsStr(action.id) + "', '" + escapeJsStr(issueKey) + "')";
   } else {
@@ -1054,6 +1056,22 @@ async function executeHandoffAction(actionId, issue) {
   } catch (e) {
     showToast('Failed to execute action: ' + e.message, 'error');
     loadAgents();
+  }
+}
+
+async function resumeFromApproval(runId) {
+  try {
+    var res = await fetch(apiUrl('/agents/' + runId + '/resume-from-approval'), { method: 'POST' });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to resume'), 'error');
+      return;
+    }
+    var result = await res.json();
+    if (result.run_id) viewLogs(result.run_id);
+    loadAgents();
+    loadTaskCards();
+  } catch (e) {
+    showToast('Failed to resume: ' + e.message, 'error');
   }
 }
 
