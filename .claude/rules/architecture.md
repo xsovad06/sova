@@ -19,7 +19,7 @@ SOVA has four main components:
   - **Address-review pipeline** (9 steps): rebase -> address_review -> commit -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
 - `core/dag.py` -- DAGExecutor: runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection
-- `roles/` -- AgentRole ABC with 5 implementations: triage, researcher, developer, reviewer, custom
+- `roles/` -- AgentRole ABC with 6 implementations: triage, researcher, developer, reviewer, custom, planner
 - `roles/custom.py` -- CustomRole: executes user-defined DAG workflows via DAGExecutor
 - `roles/dispatcher.py` -- routes tasks to appropriate roles based on state; `get_role_async()` falls back to DB lookup for custom roles
 - **Role chaining**: Developer -> Reviewer -> Developer handoff chain runs autonomously by default. `HandoffAction.auto_execute` triggers auto-spawn of the next agent when the current one exits. Developer writes handoff to Reviewer, Reviewer writes handoff back to Developer if findings exist, or to user if clean (manual "Integrate PR" button). Both auto-spawn directions are configurable in `sova.toml`: `pipeline.auto_handoff` (Developer->Reviewer, default true) and `pipeline.auto_address_review` (Reviewer->Developer, default true). When disabled, handoff files are still written with `auto_execute=False` so the dashboard shows manual action buttons instead. Issue stays `IN_REVIEW` until human merges via `/integrate-pr` or `/approve-merge`.

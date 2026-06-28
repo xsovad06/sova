@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -1307,7 +1309,7 @@ class TestRoleDispatcher:
 
         roles = list_roles()
         names = {r.name for r in roles}
-        assert names == {"triage", "researcher", "developer", "reviewer"}
+        assert names == {"triage", "researcher", "developer", "reviewer", "planner"}
 
     async def test_dispatch_auto_selects_role(self) -> None:
         from sova.roles.dispatcher import dispatch
@@ -2623,3 +2625,180 @@ class TestDispatcherAsyncFallback:
         with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
             with pytest.raises(RuntimeError, match="DB down"):
                 await get_role_async("some-custom-role")
+
+
+# ---------------------------------------------------------------------------
+# Planner role
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerRole:
+    def test_metadata(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        assert role.name == "planner"
+        assert role.allowed_input_states == frozenset()
+        assert role.output_state is None
+
+    def test_validate_preconditions_always_true(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        task = Task(id="1", title="Test", state=TaskState.BACKLOG)
+        assert role.validate_preconditions(task)
+        task2 = Task(id="2", title="Test", state=TaskState.DONE)
+        assert role.validate_preconditions(task2)
+
+    async def test_assess_task(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        task = Task(id="1", title="Test", state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+        assert assessment.suitability == "ready"
+        assert assessment.suggested_role == "planner"
+
+    async def test_execute_happy_path(self) -> None:
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        llm_response = json.dumps(
+            [
+                {
+                    "title": "feat(cli): add health check command",
+                    "description": "Add a health check subcommand.",
+                    "priority": "medium",
+                    "complexity": "simple",
+                    "component": "cli",
+                    "rationale": "Useful for monitoring.",
+                    "dependencies": [],
+                },
+                {
+                    "title": "fix(dashboard): improve error display",
+                    "description": "Show better error messages.",
+                    "priority": "high",
+                    "complexity": "trivial",
+                    "component": "dashboard",
+                    "rationale": "User feedback.",
+                    "dependencies": ["#100"],
+                },
+            ]
+        )
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = [
+            Task(id="10", title="Existing issue", state=TaskState.BACKLOG),
+        ]
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text=llm_response, model="test", cost_usd=Decimal("0.01"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "2 tasks" in result.summary
+        assert len(result.findings) == 2
+        assert "feat(cli): add health check command" in result.findings[0]
+
+    async def test_execute_empty_response(self) -> None:
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "No tasks proposed" in result.summary
+        assert result.findings == []
+
+    async def test_execute_llm_failure(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        with patch("sova.llm.client.invoke", new=AsyncMock(side_effect=RuntimeError("LLM down"))):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "LLM" in result.error
+
+    async def test_execute_parse_failure(self) -> None:
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text="not valid json at all", model="test", cost_usd=Decimal("0.005"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "parse" in result.summary.lower()
+
+    def test_dispatcher_get_role_planner(self) -> None:
+        from sova.roles.dispatcher import get_role
+
+        role = get_role("planner")
+        assert role.name == "planner"
+
+    def test_dispatcher_builtin_names_includes_planner(self) -> None:
+        from sova.roles.dispatcher import BUILTIN_ROLE_NAMES
+
+        assert "planner" in BUILTIN_ROLE_NAMES
+
+    async def test_dispatch_issueless_with_planner(self) -> None:
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.dispatcher import dispatch
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text="[]", model="test", cost_usd=Decimal("0.005"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+            role, result = await dispatch(ctx, role_name="planner")
+
+        assert role.name == "planner"
+        assert result.success
+
+    def test_planned_task_model(self) -> None:
+        from sova.roles.planner import PlannedTask
+
+        task = PlannedTask(
+            title="feat(cli): new command",
+            description="Add a new CLI command",
+            priority="medium",
+            complexity="simple",
+            component="cli",
+            rationale="Needed for workflow",
+        )
+        assert task.title == "feat(cli): new command"
+        assert task.dependencies == []
+
+        dumped = task.model_dump()
+        assert dumped["priority"] == "medium"
+        assert dumped["complexity"] == "simple"

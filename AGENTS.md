@@ -32,7 +32,7 @@ sova/
       app.py                       # Main app, subcommand registration
       commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server, mcp)
     core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
-    roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, dispatcher)
+    roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)
     llm/                           # Claude CLI wrapper, cost tracking
     git/                           # Git operations (branch, pr, rebase), worktree management
