@@ -8264,6 +8264,139 @@ class TestResumeFromApproval:
         assert resp.status_code == 409
 
 
+    async def test_resume_spawn_failure_reverts_status(self) -> None:
+        """When start_agent fails, the TaskRun status reverts to awaiting_approval."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="54",
+                    role="developer",
+                    status="awaiting_approval",
+                    pr_number=11,
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.start_agent",
+            new_callable=AsyncMock,
+            return_value={"error": "Maximum concurrent agents reached (1)", "running": 1},
+        ):
+            result = await resume_from_approval(run_id)
+
+        assert "error" in result
+        # Verify status was reverted so the approval button reappears
+        async with await get_session() as session:
+            async with session.begin():
+                reverted = await session.get(TaskRun, run_id)
+        assert reverted.status == "awaiting_approval"
+
+    async def test_resume_spawn_failure_preserves_handoff(self) -> None:
+        """When start_agent fails, the handoff file is NOT cleared."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="55",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle.start_agent",
+                new_callable=AsyncMock,
+                return_value={"error": "spawn failed"},
+            ),
+            patch(
+                "sova.dashboard.services.handoff_service.clear_handoff",
+            ) as mock_clear,
+        ):
+            result = await resume_from_approval(run_id)
+
+        assert "error" in result
+        mock_clear.assert_not_called()
+
+    async def test_resume_endpoint_500_on_spawn_error(self) -> None:
+        """The router returns 500 for generic spawn errors (not 404/409)."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.app import create_app
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="56",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.start_agent",
+            new_callable=AsyncMock,
+            return_value={"error": "spawn_failed", "detail": "Agent process died"},
+        ):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post(f"/api/agents/{run_id}/resume-from-approval")
+
+        assert resp.status_code == 500
+        assert "Agent process died" in resp.json()["detail"]
+
+    async def test_resume_idempotent_double_call(self) -> None:
+        """Two concurrent resume calls -- second one gets conflict due to CAS."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="57",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        call_count = 0
+
+        async def mock_start(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return {"status": "started", "pid": 999, "run_id": run_id + call_count}
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.start_agent",
+            new_callable=AsyncMock,
+            side_effect=mock_start,
+        ):
+            result1 = await resume_from_approval(run_id)
+            result2 = await resume_from_approval(run_id)
+
+        # First call succeeds
+        assert "error" not in result1
+        # Second call gets conflict (status already changed by CAS)
+        assert result2["error"] == "conflict"
+
+
 class TestWorkItemAwaitingApprovalFallback:
     """Tests for awaiting_approval fallback in _build_task_item."""
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from enum import StrEnum
 from pathlib import Path
 
+from sova.core.state import TaskStatus
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.work_item")
@@ -101,7 +102,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
 }
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
-_AWAITING_APPROVAL = "awaiting_approval"
+_AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
 _ROLE_LABELS: dict[str, str] = {
     "developer": "Developing",

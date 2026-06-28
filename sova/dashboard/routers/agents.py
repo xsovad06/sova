@@ -195,14 +195,23 @@ async def stop_agent(run_id: int):
     return await control_service.stop_agent(run_id=run_id)
 
 
-@router.post("/agents/{run_id}/resume-from-approval")
-async def resume_from_approval(run_id: int):
+@router.post(
+    "/agents/{run_id}/resume-from-approval",
+    responses={
+        404: {"description": "TaskRun not found"},
+        409: {"description": "TaskRun not in awaiting_approval state"},
+        500: {"description": "Agent spawn or internal error"},
+    },
+)
+async def resume_from_approval(run_id: int) -> dict:
     """Resume a paused pipeline run after human approval."""
     result = await control_service.resume_from_approval(run_id)
     if result.get("error") == "not_found":
         raise HTTPException(status_code=404, detail=result["detail"])
     if result.get("error") == "conflict":
         raise HTTPException(status_code=409, detail=result["detail"])
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
     return result
 
 
