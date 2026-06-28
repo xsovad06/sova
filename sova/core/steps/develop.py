@@ -29,11 +29,11 @@ async def _append_implementation_notes(ctx: ExecutionContext) -> None:
             read_spec_sections,
         )
 
-        original_plan = read_spec_sections(ctx.issue_number, ctx.working_dir, SPEC_PLAN_SECTIONS)
+        original_plan = read_spec_sections(ctx.issue_number, ctx.project_dir, SPEC_PLAN_SECTIONS)
         if not original_plan:
             return
 
-        diff_task = run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        diff_task = run("git", "diff", "--stat", ctx.base_branch, cwd=ctx.working_dir)
         log_task = run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         diff_result, log_result = await asyncio.gather(diff_task, log_task)
 
@@ -63,7 +63,7 @@ Return ONLY the section content (no heading, no markdown fences). Keep it under 
         llm_result = await invoke(prompt, model="haiku", cwd=ctx.working_dir, timeout=60)
         ctx.add_cost(llm_result.cost_usd)
 
-        append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.working_dir)
+        append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.project_dir)
     except Exception:
         log.warning("step.develop.implementation_notes_failed", exc_info=True)
 

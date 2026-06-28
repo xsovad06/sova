@@ -111,7 +111,7 @@ def _load_spec_for_context(ctx: ExecutionContext) -> str:
     try:
         from sova.core.steps._spec_helpers import REVIEW_CONTEXT_SECTIONS, read_spec_sections
 
-        return read_spec_sections(ctx.issue_number, ctx.working_dir, REVIEW_CONTEXT_SECTIONS)
+        return read_spec_sections(ctx.issue_number, ctx.project_dir, REVIEW_CONTEXT_SECTIONS)
     except Exception:
         log.debug("address_review.spec_context_failed", exc_info=True)
         return ""

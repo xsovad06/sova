@@ -58,6 +58,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Non-issue PR commands must use PR-scoped pseudo-issue, not command name** -- `_resolve_command_context()` fell back to `issue = command` (e.g., `"address-pr"`) for PRs without linked issues. Two concurrent address-pr commands on different PRs shared the same pseudo-issue, triggering conflict detection. Fix: `issue = f"pr-{pr_number}" if pr_number else command`. The `"pr-N"` format is not all-digits so `_resolve_issue_worktree()` correctly skips numeric path and falls through to branch lookup. File: `sova/dashboard/services/agent_lifecycle.py:_resolve_command_context()`. [confirmed: 1]
 - **Index functions must validate issue keys are numeric before using as lookup keys** -- `_index_running_agents()` and `_index_handoffs()` treated any non-empty `issue` string as a valid key, including command-name fallbacks like `"address-pr"`. This caused standalone PR agents to be indexed under `"address-pr"` instead of `"pr:243"`, so the work item row couldn't find its running agent and showed no live status badge. Fix: guard with `issue.isdigit()` before using as key, and always index under `pr:<number>` when `pr_number` is present (not as else-branch). File: `sova/dashboard/services/work_item_service.py`. PR #249. [confirmed: 0]
 
+## Spec Provenance
+
+- **Spec lookup must use `ctx.project_dir`, not `ctx.working_dir`** -- specs live in the main project `.claude/specs/`, not in worktrees. Steps running in worktrees (DevelopStep, AddressReviewStep, ExtractMemoryStep) must use `ctx.project_dir` or the fallback `ctx.working_dir or ctx.project_dir`. ReviewerRole already uses the fallback pattern. [confirmed: 1]
+- **`git diff --stat HEAD` misses committed changes** -- captures only uncommitted working tree changes. Use `git diff --stat {base_branch}..HEAD` to capture all changes since branching, including commits. Critical for LLM context in implementation summaries. [confirmed: 1]
+
 ## Persona / Detection
 
 
