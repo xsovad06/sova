@@ -103,8 +103,8 @@ class TestScanProjectStep:
         assert "v1.0" in ctx.plan_result.scan.milestone_summary
 
     @pytest.mark.asyncio
-    async def test_scan_handles_adapter_failure(self, tmp_path: Path) -> None:
-        """ScanProjectStep succeeds even when adapter.list_tasks() raises."""
+    async def test_scan_fails_on_adapter_error(self, tmp_path: Path) -> None:
+        """ScanProjectStep fails when adapter.list_tasks() raises."""
         adapter = AsyncMock()
         adapter.list_tasks.side_effect = RuntimeError("API down")
         ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
@@ -114,8 +114,8 @@ class TestScanProjectStep:
             mock_run.return_value = MagicMock(success=True, stdout="")
             result = await step.execute(ctx)
 
-        assert result.success
-        assert ctx.plan_result.scan.open_issues == []
+        assert not result.success
+        assert "API down" in result.error
 
     @pytest.mark.asyncio
     async def test_scan_gate_check(self, tmp_path: Path) -> None:
@@ -290,6 +290,19 @@ class TestGenerateTasksStep:
         assert not result.success
         assert "budget" in result.summary.lower()
 
+    @pytest.mark.asyncio
+    async def test_generate_llm_exception_includes_traceback(self) -> None:
+        """GenerateTasksStep logs exc_info on LLM failure and returns failure."""
+        ctx = _make_ctx()
+        ctx.plan_result = PlanResult(scan=ProjectScanResult(raw_summary="test"))
+
+        step = GenerateTasksStep()
+        with patch("sova.llm.client.invoke", new_callable=AsyncMock, side_effect=RuntimeError("provider down")):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "provider down" in result.error
+
 
 class TestExtractJson:
     def test_plain_json(self) -> None:
@@ -335,6 +348,48 @@ class TestParseTasks:
         result = _parse_tasks("[]")
         assert result is not None
         assert len(result) == 0
+
+    def test_skips_missing_title(self) -> None:
+        import json
+
+        data = json.dumps([{"body": "has body", "labels": [], "priority": "low", "complexity": "small"}])
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 0
+
+    def test_skips_blank_title(self) -> None:
+        import json
+
+        data = json.dumps(
+            [{"title": "  ", "body": "has body", "labels": [], "priority": "low", "complexity": "small"}]
+        )
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 0
+
+    def test_skips_blank_body(self) -> None:
+        import json
+
+        data = json.dumps(
+            [{"title": "valid title", "body": "", "labels": [], "priority": "low", "complexity": "small"}]
+        )
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 0
+
+    def test_mixed_valid_and_invalid(self) -> None:
+        import json
+
+        data = json.dumps(
+            [
+                {"title": "", "body": "body", "labels": []},
+                {"title": "good", "body": "good body", "labels": [], "priority": "high", "complexity": "small"},
+            ]
+        )
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "good"
 
 
 # ---------------------------------------------------------------------------
@@ -557,3 +612,100 @@ class TestPlannerPipeline:
 
         names = get_planner_step_names()
         assert names == ["scan_project", "generate_tasks", "validate_tasks", "extract_memory"]
+
+
+# ---------------------------------------------------------------------------
+# _validate_task helper
+# ---------------------------------------------------------------------------
+
+
+class TestValidateTaskHelper:
+    def test_valid_task_returns_none(self) -> None:
+        from sova.core.steps.validate_tasks import _validate_task
+
+        task = _make_valid_task()
+        assert _validate_task(task, [], []) is None
+
+    def test_rejects_vague_title(self) -> None:
+        from sova.core.steps.validate_tasks import _validate_task
+
+        task = _make_valid_task("Improve everything")
+        reason = _validate_task(task, [], [])
+        assert reason is not None
+        assert "vague" in reason.lower()
+
+    def test_rejects_missing_acceptance_criteria(self) -> None:
+        from sova.core.steps.validate_tasks import _validate_task
+
+        task = _make_valid_task()
+        task.body = "This task involves a significant refactor of the data pipeline to improve throughput and reduce latency."
+        reason = _validate_task(task, [], [])
+        assert reason is not None
+        assert "acceptance criteria" in reason.lower()
+
+    def test_rejects_duplicate_of_open_issue(self) -> None:
+        from sova.core.steps.validate_tasks import _validate_task
+
+        task = _make_valid_task("fix(auth): fix login bug in module")
+        issues = [{"number": "10", "title": "fix login bug in authentication module"}]
+        reason = _validate_task(task, issues, [])
+        assert reason is not None
+        assert "duplicate" in reason.lower()
+
+    def test_rejects_self_duplicate(self) -> None:
+        from sova.core.steps.validate_tasks import _validate_task
+
+        task = _make_valid_task("feat(core): add validation layer for inputs")
+        accepted = ["feat(core): add validation layer for all inputs"]
+        reason = _validate_task(task, [], accepted)
+        assert reason is not None
+        assert "self-duplicate" in reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# _detect_pipeline helper
+# ---------------------------------------------------------------------------
+
+
+class TestDetectPipeline:
+    def test_planner_by_role(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline(None, "planner", None)
+        assert variant == "planner"
+
+    def test_planner_by_step(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline("scan_project", None, None)
+        assert variant == "planner"
+
+    def test_researcher_by_role(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline(None, "researcher", None)
+        assert variant == "researcher"
+
+    def test_researcher_by_step(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline("research", None, None)
+        assert variant == "researcher"
+
+    def test_address_review_by_sentinel_and_pr(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline(None, "developer", 42)
+        assert variant == "address_review"
+
+    def test_address_review_by_step(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline("rebase", None, None)
+        assert variant == "address_review"
+
+    def test_developer_default(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _detect_pipeline
+
+        pipeline, variant = _detect_pipeline("develop", "developer", None)
+        assert variant == "developer"
