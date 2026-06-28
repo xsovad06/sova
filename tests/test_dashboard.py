@@ -2724,9 +2724,7 @@ class TestAgentsAPI:
             json={"issue": ""},
         )
 
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "error" in data
+        assert resp.status_code == 400
 
     async def test_start_agent_rejects_non_numeric_issue(self, client: AsyncClient) -> None:
         resp = await client.post(
@@ -8228,9 +8226,7 @@ class TestResumeFromApproval:
             result = await resume_from_approval(run_id)
 
         assert "error" not in result
-        mock_clear.assert_called_once()
-        call_kwargs = mock_clear.call_args
-        assert call_kwargs.kwargs.get("issue") == "52" or (call_kwargs.args and "52" in str(call_kwargs.args))
+        mock_clear.assert_called_once_with(issue="52")
 
     async def test_resume_endpoint_404(self) -> None:
         """The router endpoint returns 404 for missing run."""
@@ -8395,6 +8391,105 @@ class TestResumeFromApproval:
         assert "error" not in result1
         # Second call gets conflict (status already changed by CAS)
         assert result2["error"] == "conflict"
+
+    async def test_resume_start_agent_error_budget_exceeded(self) -> None:
+        """When start_agent returns a budget/concurrent error, resume propagates it."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="60",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.start_agent",
+            new_callable=AsyncMock,
+            return_value={"error": "budget_exceeded", "detail": "Run budget exceeded"},
+        ):
+            result = await resume_from_approval(run_id)
+
+        assert result["error"] == "budget_exceeded"
+        # Status should be reverted
+        async with await get_session() as session:
+            async with session.begin():
+                reverted = await session.get(TaskRun, run_id)
+        assert reverted.status == "awaiting_approval"
+
+    async def test_resume_issueless_run(self) -> None:
+        """Resuming a run with no issue_number still works (skips handoff clear)."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle.start_agent",
+                new_callable=AsyncMock,
+                return_value={"status": "started", "pid": 222, "run_id": run_id + 1},
+            ),
+            patch(
+                "sova.dashboard.services.handoff_service.clear_handoff",
+            ) as mock_clear,
+        ):
+            result = await resume_from_approval(run_id)
+
+        assert "error" not in result
+        assert result["run_id"] == run_id + 1
+        # clear_handoff should NOT be called when issue is empty
+        mock_clear.assert_not_called()
+
+    async def test_resume_clear_handoff_exception(self) -> None:
+        """When clear_handoff raises, resume still succeeds (non-fatal)."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="61",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle.start_agent",
+                new_callable=AsyncMock,
+                return_value={"status": "started", "pid": 333, "run_id": run_id + 1},
+            ),
+            patch(
+                "sova.dashboard.services.handoff_service.clear_handoff",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            result = await resume_from_approval(run_id)
+
+        # Should succeed despite clear_handoff failure
+        assert "error" not in result
+        assert result["run_id"] == run_id + 1
 
 
 class TestWorkItemAwaitingApprovalFallback:

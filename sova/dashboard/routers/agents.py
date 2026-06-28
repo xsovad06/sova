@@ -179,14 +179,17 @@ async def get_agent_output(run_id: int, since: int = 0):
 async def start_agent(req: StartAgentRequest):
     """Start a new agent process."""
     if not req.issue and not req.role:
-        return {"error": "Either issue or role is required for starting an agent"}
-    return await control_service.start_agent(
+        raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
+    result = await control_service.start_agent(
         req.issue,
         role=req.role,
         force=req.force,
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
     )
+    if "error" in result:
+        raise HTTPException(status_code=409, detail=result.get("detail", result["error"]))
+    return result
 
 
 @router.post("/agents/{run_id}/stop")
