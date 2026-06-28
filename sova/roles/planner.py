@@ -178,7 +178,7 @@ class PlannerRole(AgentRole):
                 log.warning("planner.parse_not_list")
                 return None
             return [PlannedTask.model_validate(item) for item in data]
-        except (json.JSONDecodeError, ValueError, KeyError) as exc:
+        except (ValueError, KeyError) as exc:
             log.warning("planner.parse_failed", error=str(exc), exc_info=True)
             return None
 
