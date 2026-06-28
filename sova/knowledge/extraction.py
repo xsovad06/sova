@@ -54,6 +54,7 @@ async def extract_memories(
     files_changed: list[str],
     step_summaries: list[str],
     review_findings: list[dict] | None = None,
+    spec_content: str | None = None,
     cwd: Path | str,
 ) -> ExtractionResult:
     """Extract reusable learnings from a completed agent run.
@@ -70,6 +71,7 @@ async def extract_memories(
             files_changed=files_changed,
             step_summaries=step_summaries,
             review_findings=review_findings,
+            spec_content=spec_content,
         )
 
         llm_result = await invoke(prompt, model="haiku", cwd=cwd, timeout=60)
@@ -112,10 +114,15 @@ def _build_extraction_prompt(
     files_changed: list[str],
     step_summaries: list[str],
     review_findings: list[dict] | None = None,
+    spec_content: str | None = None,
 ) -> str:
     """Build the LLM prompt for knowledge extraction."""
     files_section = "\n".join(f"- {f}" for f in files_changed[:30]) if files_changed else "- (none)"
     steps_section = "\n".join(f"- {s}" for s in step_summaries) if step_summaries else "- (none)"
+
+    spec_section = ""
+    if spec_content:
+        spec_section = f"\n\n## Spec Decision Chain\n{spec_content}"
 
     findings_section = ""
     if review_findings:
@@ -136,7 +143,7 @@ Analyze the following completed agent run and extract 0-5 reusable learnings.
 - Files changed:
 {files_section}
 - Pipeline steps:
-{steps_section}{findings_section}
+{steps_section}{spec_section}{findings_section}
 
 ## Categories
 - learning: Framework, ORM, library, or domain patterns discovered during development

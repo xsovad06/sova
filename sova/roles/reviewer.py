@@ -30,7 +30,15 @@ log = get_logger(component="role.reviewer")
 
 DIFF_CHUNK_SIZE = 100_000  # ~100KB per chunk
 
-_SPEC_SECTIONS = ("Solution", "Edge Cases", "Design Decisions", "Scope Boundaries")
+_SPEC_SECTIONS = (
+    "Solution",
+    "Edge Cases",
+    "Design Decisions",
+    "Scope Boundaries",
+    "Implementation Notes",
+    "Review Rationale",
+    "Address Review Notes",
+)
 
 
 def _extract_spec_sections(raw_content: str) -> dict[str, str]:
@@ -449,6 +457,9 @@ class ReviewerRole(AgentRole):
         # Run LLM review (chunked if needed)
         review = await self._run_review(ctx, task, diff, files)
 
+        # Append review rationale to spec (non-fatal provenance threading)
+        self._append_review_rationale(ctx, review)
+
         # Post review with inline comments on specific lines
         await self._post_review(ctx, review, diff)
 
@@ -599,6 +610,27 @@ class ReviewerRole(AgentRole):
         except Exception:
             log.warning("reviewer.spec_load_failed", issue=issue, exc_info=True)
             return None
+
+    def _append_review_rationale(self, ctx: ExecutionContext, review: ReviewResult) -> None:
+        """Append review rationale to spec for findings with severity >= 5."""
+        try:
+            from sova.core.steps._spec_helpers import SECTION_REVIEW_RATIONALE, append_spec_section
+
+            significant = [f for f in review.findings if f.severity >= 5]
+            if not significant:
+                return
+
+            lines: list[str] = []
+            for f in sorted(significant, key=lambda x: x.severity, reverse=True):
+                loc = f"{f.file}:{f.line}" if f.line else f.file
+                lines.append(f"- [{f.severity}/10] [{f.category}] `{loc}`: {f.description}")
+                if f.suggestion:
+                    lines.append(f"  Fix: {f.suggestion}")
+
+            project_dir = ctx.working_dir or ctx.project_dir
+            append_spec_section(ctx.issue_number, SECTION_REVIEW_RATIONALE, "\n".join(lines), project_dir)
+        except Exception:
+            log.warning("reviewer.review_rationale_failed", exc_info=True)
 
     async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Write both DB-backed and file-based handoffs."""

@@ -106,15 +106,38 @@ async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], 
         return [], []
 
 
-def _format_findings_prompt(findings: list[dict]) -> str:
+def _load_spec_for_context(ctx: ExecutionContext) -> str:
+    """Load spec decision context for the address-review prompt."""
+    try:
+        from sova.core.steps._spec_helpers import REVIEW_CONTEXT_SECTIONS, read_spec_sections
+
+        return read_spec_sections(ctx.issue_number, ctx.working_dir, REVIEW_CONTEXT_SECTIONS)
+    except Exception:
+        log.debug("address_review.spec_context_failed", exc_info=True)
+        return ""
+
+
+def _format_findings_prompt(findings: list[dict], *, spec_context: str = "") -> str:
     """Format findings into a prompt for the LLM to address."""
-    lines = [
-        "Address ALL of the following code review findings. For each finding:",
-        "- DEFAULT: Fix the issue in the code.",
-        "- EXCEPTION: If a finding is a false positive, not applicable in context,",
-        "  or requires a human decision, state the reason instead of fixing.",
-        "  Do NOT skip findings without justification.\n",
-    ]
+    lines = []
+    if spec_context:
+        lines.extend(
+            [
+                "## Decision Context (from spec)",
+                "Use this context to understand WHY previous agents made specific choices.",
+                spec_context,
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "Address ALL of the following code review findings. For each finding:",
+            "- DEFAULT: Fix the issue in the code.",
+            "- EXCEPTION: If a finding is a false positive, not applicable in context,",
+            "  or requires a human decision, state the reason instead of fixing.",
+            "  Do NOT skip findings without justification.\n",
+        ]
+    )
     for i, f in enumerate(findings, 1):
         loc = f.get("file", "unknown")
         if f.get("line"):
@@ -162,7 +185,8 @@ class AddressReviewStep(BaseStep):
 
         log.info("step.address_review.findings_loaded", count=len(findings))
 
-        prompt = _format_findings_prompt(findings)
+        spec_context = _load_spec_for_context(ctx)
+        prompt = _format_findings_prompt(findings, spec_context=spec_context)
         try:
             result = await invoke_command(
                 prompt,
