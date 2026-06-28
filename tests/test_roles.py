@@ -2802,3 +2802,151 @@ class TestPlannerRole:
         dumped = task.model_dump()
         assert dumped["priority"] == "medium"
         assert dumped["complexity"] == "simple"
+
+    def test_parse_response_strips_markdown_fencing(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        fenced = '```json\n[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]\n```'
+        result = role._parse_response(fenced)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "t"
+
+    def test_parse_response_strips_markdown_fencing_no_closing(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        fenced = '```json\n[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        result = role._parse_response(fenced)
+        assert result is not None
+        assert len(result) == 1
+
+    def test_parse_response_returns_none_for_non_list(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        result = role._parse_response('{"key": "value"}')
+        assert result is None
+
+    def test_parse_response_returns_none_for_validation_error(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        # Missing required fields triggers ValueError from Pydantic
+        result = role._parse_response('[{"title": "t"}]')
+        assert result is None
+
+    async def test_gather_open_issues_exception_returns_empty(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.side_effect = RuntimeError("API down")
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        role = PlannerRole()
+        result = await role._gather_open_issues(ctx)
+        assert result == []
+
+    def test_read_vision_returns_content(self, tmp_path: Path) -> None:
+        from sova.roles.planner import PlannerRole
+
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "VISION.md").write_text("# Vision\nGoals here.")
+        ctx = _make_ctx(role="planner", issue_number="")
+        ctx.project_dir = tmp_path
+
+        role = PlannerRole()
+        result = role._read_vision(ctx)
+        assert "Vision" in result
+
+    def test_read_vision_returns_empty_on_oserror(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.planner import PlannerRole
+
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "VISION.md").write_text("content")
+        ctx = _make_ctx(role="planner", issue_number="")
+        ctx.project_dir = tmp_path
+
+        role = PlannerRole()
+        with patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
+            result = role._read_vision(ctx)
+        assert result == ""
+
+    def test_read_vision_returns_empty_when_missing(self, tmp_path: Path) -> None:
+        from sova.roles.planner import PlannerRole
+
+        ctx = _make_ctx(role="planner", issue_number="")
+        ctx.project_dir = tmp_path
+
+        role = PlannerRole()
+        result = role._read_vision(ctx)
+        assert result == ""
+
+    async def test_write_handoff_file_exception_non_fatal(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.planner import PlannerRole, PlannedTask
+
+        role = PlannerRole()
+        ctx = _make_ctx(role="planner", issue_number="")
+        tasks = [
+            PlannedTask(
+                title="t", description="d", priority="low",
+                complexity="trivial", component="c", rationale="r",
+            ),
+        ]
+        with patch("sova.roles.planner.write_handoff_file", side_effect=OSError("disk full")):
+            # Should not raise
+            await role._write_handoff(ctx, tasks)
+
+    async def test_write_handoff_db_path(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.planner import PlannerRole, PlannedTask
+
+        role = PlannerRole()
+        ctx = _make_ctx(role="planner", issue_number="")
+        ctx.task_run_id = 99
+        tasks = [
+            PlannedTask(
+                title="t", description="d", priority="low",
+                complexity="trivial", component="c", rationale="r",
+            ),
+        ]
+        mock_write_file = AsyncMock()
+        mock_write_handoff = AsyncMock()
+        with (
+            patch("sova.roles.planner.write_handoff_file", mock_write_file),
+            patch("sova.roles.planner.write_handoff", mock_write_handoff),
+        ):
+            await role._write_handoff(ctx, tasks)
+
+        mock_write_handoff.assert_called_once()
+        call_args = mock_write_handoff.call_args
+        assert call_args[0][0] == 99
+
+    async def test_write_handoff_db_exception_non_fatal(self) -> None:
+        from unittest.mock import patch
+
+        from sova.roles.planner import PlannerRole, PlannedTask
+
+        role = PlannerRole()
+        ctx = _make_ctx(role="planner", issue_number="")
+        ctx.task_run_id = 99
+        tasks = [
+            PlannedTask(
+                title="t", description="d", priority="low",
+                complexity="trivial", component="c", rationale="r",
+            ),
+        ]
+        with (
+            patch("sova.roles.planner.write_handoff_file"),
+            patch("sova.roles.planner.write_handoff", new=AsyncMock(side_effect=RuntimeError("DB down"))),
+        ):
+            # Should not raise
+            await role._write_handoff(ctx, tasks)
