@@ -898,6 +898,24 @@ _RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
 _PLANNER_ONLY = frozenset({"scan_project", "generate_tasks", "validate_tasks"})
 
 
+def _detect_pipeline(
+    current_step: str | None, role: str | None, pr_number: int | None
+) -> tuple[list[str], str]:
+    """Return (pipeline_steps, variant_name) for the given run context."""
+    if role == "planner" or (current_step is not None and current_step in _PLANNER_ONLY):
+        return PLANNER_PIPELINE, "planner"
+    if role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY):
+        return RESEARCHER_PIPELINE, "researcher"
+
+    is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
+        current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
+    )
+    if is_address_review:
+        return ADDRESS_REVIEW_PIPELINE, "address_review"
+
+    return DEVELOPER_PIPELINE, "developer"
+
+
 def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
     """Compute step index from current_step name.
 
@@ -916,37 +934,16 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
             "pipeline_variant": "command",
         }
 
-    is_planner = role == "planner" or (current_step is not None and current_step in _PLANNER_ONLY)
-    is_researcher = role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY)
-    is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
-        current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
-    )
-
-    if is_planner:
-        pipeline = PLANNER_PIPELINE
-        variant = "planner"
-    elif is_researcher:
-        pipeline = RESEARCHER_PIPELINE
-        variant = "researcher"
-    elif is_address_review:
-        pipeline = ADDRESS_REVIEW_PIPELINE
-        variant = "address_review"
-    else:
-        pipeline = DEVELOPER_PIPELINE
-        variant = "developer"
+    pipeline, variant = _detect_pipeline(current_step, role, pr_number)
 
     if current_step is None or current_step == "agent":
-        return {
-            "step_index": 0,
-            "total_steps": len(pipeline),
-            "steps": pipeline,
-            "pipeline_variant": variant,
-        }
-
-    try:
-        idx = pipeline.index(current_step)
-    except ValueError:
         idx = 0
+    else:
+        try:
+            idx = pipeline.index(current_step)
+        except ValueError:
+            idx = 0
+
     return {
         "step_index": idx,
         "total_steps": len(pipeline),
