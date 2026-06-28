@@ -13,12 +13,15 @@ from sova.utils.shell import run
 log = get_logger(component="step.commit")
 
 _AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-")
+_SPEC_PREFIX = ".claude/specs/"
 
 _CONVENTIONAL_COMMIT_RE = re.compile(r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*")
 
 
 def _is_agent_artifact(path: str) -> bool:
     """Check if a path is an agent/tool artifact that shouldn't be committed."""
+    if path.startswith(_SPEC_PREFIX):
+        return False  # Specs are provenance records, commit them
     return any(path.startswith(p) for p in _AGENT_ARTIFACT_PREFIXES)
 
 

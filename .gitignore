@@ -37,7 +37,6 @@ htmlcov/
 .claude/agent-memory/
 .claude/agent-control/
 .claude/agent-output/
-.claude/specs/
 .claude/sova.db
 .claude/worktrees/
 .claude/assets/

@@ -224,7 +224,7 @@ If the user declines, skip this step -- the spec file in `.claude/specs/` is the
 ## Rules
 
 - This command plans only -- do NOT write any implementation code
-- Do NOT commit the spec file (specs are working documents, not tracked artifacts)
+- Spec files are committed to git as provenance records (they accumulate design decisions across the pipeline)
 - NEVER use emojis in any output
 - Omit spec sections that don't apply (e.g., no "Data Model" for a pure UI change)
 - Ground every recommendation in actual code found during Step 3
