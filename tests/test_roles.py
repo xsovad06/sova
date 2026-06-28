@@ -2833,7 +2833,7 @@ class TestPlannerRole:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        # Missing required fields triggers ValueError from Pydantic
+        # Missing required fields triggers ValidationError from Pydantic
         result = role._parse_response('[{"title": "t"}]')
         assert result is None
 
@@ -2950,3 +2950,52 @@ class TestPlannerRole:
         ):
             # Should not raise
             await role._write_handoff(ctx, tasks)
+
+    async def test_execute_happy_path_writes_handoff_with_issue(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.ipc.handoff import DashboardHandoff
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        llm_response = json.dumps(
+            [
+                {
+                    "title": "feat(cli): add health check command",
+                    "description": "Add a health check subcommand.",
+                    "priority": "medium",
+                    "complexity": "simple",
+                    "component": "cli",
+                    "rationale": "Useful for monitoring.",
+                    "dependencies": [],
+                },
+            ]
+        )
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text=llm_response, model="test", cost_usd=Decimal("0.01"))
+        mock_write_file = MagicMock()
+        with (
+            patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)),
+            patch("sova.roles.planner.write_handoff_file", mock_write_file),
+        ):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        mock_write_file.assert_called_once()
+        handoff_arg = mock_write_file.call_args[0][1]
+        assert isinstance(handoff_arg, DashboardHandoff)
+        assert handoff_arg.issue == "planner"
+        assert "planned_tasks" in handoff_arg.details
+
+    def test_parse_response_handles_valid_json_invalid_schema(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        # Valid JSON but invalid schema -- "priority" has an invalid value
+        result = role._parse_response(json.dumps([{"title": "test", "priority": "invalid"}]))
+        assert result is None
