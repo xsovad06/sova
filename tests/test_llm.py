@@ -422,13 +422,34 @@ class TestRouteModel:
         assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
         assert route_model(ComplexityTier.EPIC, llm_config=llm_cfg) == "opus"
 
-    def test_invalid_keys_ignored(self) -> None:
+    def test_invalid_keys_accepted_and_ignored(self) -> None:
         from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
 
-        cfg = LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
-        # Unknown keys are silently filtered out; valid keys are preserved
-        assert "nonexistent" not in cfg.routing
-        assert cfg.routing["trivial"] == "opus"
+        llm_cfg = LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
+        # Unknown keys are accepted in config but ignored during lookup
+        assert "nonexistent" in llm_cfg.routing
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "opus"
+        # Unrecognized key has no effect on any tier
+        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == "sonnet"
+
+    def test_empty_string_override_falls_back(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"trivial": ""})
+        # Empty string is a valid override value (not None), returned as-is
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ""
+
+    def test_unknown_complexity_tier_falls_back_to_sonnet(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.llm.routing import route_model
+
+        # Simulate a future ComplexityTier member not in _DEFAULT_ROUTING
+        fake_tier = MagicMock()
+        fake_tier.value = "hypothetical"
+        assert route_model(fake_tier) == "sonnet"
 
     def test_none_llm_config_uses_defaults(self) -> None:
         from sova.llm.routing import route_model

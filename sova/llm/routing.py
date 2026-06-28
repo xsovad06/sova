@@ -34,7 +34,7 @@ def route_model(
     """
     if llm_config is not None:
         override = llm_config.routing.get(complexity.value)
-        if override:
+        if override is not None:
             return override
 
-    return _DEFAULT_ROUTING[complexity]
+    return _DEFAULT_ROUTING.get(complexity, "sonnet")
