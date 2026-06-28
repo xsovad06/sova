@@ -8259,7 +8259,6 @@ class TestResumeFromApproval:
             resp = await client.post(f"/api/agents/{run_id}/resume-from-approval")
         assert resp.status_code == 409
 
-
     async def test_resume_spawn_failure_reverts_status(self) -> None:
         """When start_agent fails, the TaskRun status reverts to awaiting_approval."""
         from unittest.mock import AsyncMock, patch
