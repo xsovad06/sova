@@ -2807,7 +2807,10 @@ class TestPlannerRole:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        fenced = '```json\n[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]\n```'
+        json_body = (
+            '[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        )
+        fenced = f"```json\n{json_body}\n```"
         result = role._parse_response(fenced)
         assert result is not None
         assert len(result) == 1
@@ -2817,7 +2820,10 @@ class TestPlannerRole:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        fenced = '```json\n[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        json_body = (
+            '[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        )
+        fenced = f"```json\n{json_body}"
         result = role._parse_response(fenced)
         assert result is not None
         assert len(result) == 1
@@ -2890,14 +2896,18 @@ class TestPlannerRole:
     async def test_write_handoff_file_exception_non_fatal(self) -> None:
         from unittest.mock import patch
 
-        from sova.roles.planner import PlannerRole, PlannedTask
+        from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
         ctx = _make_ctx(role="planner", issue_number="")
         tasks = [
             PlannedTask(
-                title="t", description="d", priority="low",
-                complexity="trivial", component="c", rationale="r",
+                title="t",
+                description="d",
+                priority="low",
+                complexity="trivial",
+                component="c",
+                rationale="r",
             ),
         ]
         with patch("sova.roles.planner.write_handoff_file", side_effect=OSError("disk full")):
@@ -2907,15 +2917,19 @@ class TestPlannerRole:
     async def test_write_handoff_db_path(self) -> None:
         from unittest.mock import patch
 
-        from sova.roles.planner import PlannerRole, PlannedTask
+        from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
         ctx = _make_ctx(role="planner", issue_number="")
         ctx.task_run_id = 99
         tasks = [
             PlannedTask(
-                title="t", description="d", priority="low",
-                complexity="trivial", component="c", rationale="r",
+                title="t",
+                description="d",
+                priority="low",
+                complexity="trivial",
+                component="c",
+                rationale="r",
             ),
         ]
         mock_write_file = AsyncMock()
@@ -2933,15 +2947,19 @@ class TestPlannerRole:
     async def test_write_handoff_db_exception_non_fatal(self) -> None:
         from unittest.mock import patch
 
-        from sova.roles.planner import PlannerRole, PlannedTask
+        from sova.roles.planner import PlannedTask, PlannerRole
 
         role = PlannerRole()
         ctx = _make_ctx(role="planner", issue_number="")
         ctx.task_run_id = 99
         tasks = [
             PlannedTask(
-                title="t", description="d", priority="low",
-                complexity="trivial", component="c", rationale="r",
+                title="t",
+                description="d",
+                priority="low",
+                complexity="trivial",
+                component="c",
+                rationale="r",
             ),
         ]
         with (
