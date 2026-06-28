@@ -14,7 +14,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sova.core.steps import get_address_review_step_names, get_developer_step_names, get_researcher_step_names
+from sova.core.steps import (
+    get_address_review_step_names,
+    get_developer_step_names,
+    get_planner_step_names,
+    get_researcher_step_names,
+)
 from sova.dashboard.services.agent_db import (
     _create_task_run,
     _fetch_run_states,
@@ -41,6 +46,7 @@ log = get_logger(component="dashboard.control")
 DEVELOPER_PIPELINE = get_developer_step_names()
 ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
 RESEARCHER_PIPELINE = get_researcher_step_names()
+PLANNER_PIPELINE = get_planner_step_names()
 
 _CLAUDE_DIR = ".claude"
 
@@ -889,6 +895,7 @@ async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
 _ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
 _STANDALONE_ROLES = frozenset({"reviewer"})
 _RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
+_PLANNER_ONLY = frozenset({"scan_project", "generate_tasks", "validate_tasks"})
 
 
 def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
@@ -909,12 +916,16 @@ def get_step_progress(current_step: str | None, *, role: str | None = None, pr_n
             "pipeline_variant": "command",
         }
 
+    is_planner = role == "planner" or (current_step is not None and current_step in _PLANNER_ONLY)
     is_researcher = role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY)
     is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
         current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
     )
 
-    if is_researcher:
+    if is_planner:
+        pipeline = PLANNER_PIPELINE
+        variant = "planner"
+    elif is_researcher:
         pipeline = RESEARCHER_PIPELINE
         variant = "researcher"
     elif is_address_review:
