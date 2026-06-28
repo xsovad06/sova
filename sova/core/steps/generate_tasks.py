@@ -64,10 +64,18 @@ def _parse_tasks(text: str) -> list[PlannedTask] | None:
         for item in data:
             if not isinstance(item, dict):
                 continue
+            title = item.get("title", "")
+            body = item.get("body", "")
+            if not title or not title.strip():
+                log.warning("generate.skip_item", reason="missing or blank title")
+                continue
+            if not body or not body.strip():
+                log.warning("generate.skip_item", reason="missing or blank body")
+                continue
             tasks.append(
                 PlannedTask(
-                    title=item.get("title", ""),
-                    body=item.get("body", ""),
+                    title=title,
+                    body=body,
                     labels=item.get("labels", []),
                     priority=item.get("priority", "medium"),
                     complexity=item.get("complexity", "medium"),
@@ -105,7 +113,7 @@ class GenerateTasksStep(BaseStep):
             )
             ctx.add_cost(result.cost_usd)
         except Exception as exc:
-            log.error("generate.llm_failed", error=str(exc))
+            log.error("generate.llm_failed", error=str(exc), exc_info=True)
             return StepResult(success=False, summary="Task generation failed", error=str(exc))
 
         tasks = _parse_tasks(result.text)

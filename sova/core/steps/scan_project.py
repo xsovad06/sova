@@ -96,7 +96,10 @@ class ScanProjectStep(BaseStep):
         ctx.plan_result = PlanResult()
 
         # Parallel I/O: fetch issues and recent commits concurrently
+        issue_fetch_error: str | None = None
+
         async def _fetch_issues() -> list[dict]:
+            nonlocal issue_fetch_error
             try:
                 tasks = await ctx.adapter.list_tasks()
                 return [
@@ -110,7 +113,8 @@ class ScanProjectStep(BaseStep):
                     for t in tasks
                 ]
             except Exception as exc:
-                log.warning("scan.list_tasks_failed", error=str(exc))
+                log.warning("scan.list_tasks_failed", error=str(exc), exc_info=True)
+                issue_fetch_error = str(exc)
                 return []
 
         async def _fetch_commits() -> list[str]:
@@ -120,6 +124,13 @@ class ScanProjectStep(BaseStep):
             return []
 
         open_issues, recent_commits = await asyncio.gather(_fetch_issues(), _fetch_commits())
+
+        if issue_fetch_error is not None:
+            return StepResult(
+                success=False,
+                summary=f"Failed to fetch open issues: {issue_fetch_error}",
+                error=f"Adapter error: {issue_fetch_error}",
+            )
 
         # Project structure + tech stack (single directory scan)
         tech_stack, project_structure = _scan_project_root(ctx.project_dir)
