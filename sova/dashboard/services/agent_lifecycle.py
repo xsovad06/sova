@@ -691,6 +691,70 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         await _process_auto_handoff(agent)
 
 
+# -- Approval resume ----------------------------------------------------------
+
+
+async def resume_from_approval(run_id: int) -> dict:
+    """Resume a paused pipeline run after human approval.
+
+    Validates that the TaskRun exists and has status ``awaiting_approval``,
+    then spawns a new agent with ``resume_run_id`` pointing to the paused run.
+    Clears the handoff file on success to prevent stale UI buttons.
+
+    Returns a dict with the new ``run_id``, ``resumed_from``, ``issue``, and ``role``.
+    Raises appropriate errors (via returned dict) for 404 and 409 cases.
+    """
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    async with await get_session() as session:
+        async with session.begin():
+            task_run = await session.get(TaskRun, run_id)
+
+    if task_run is None:
+        return {"error": "not_found", "detail": f"TaskRun #{run_id} not found"}
+
+    from sova.core.state import TaskStatus
+
+    if task_run.status != TaskStatus.AWAITING_APPROVAL:
+        return {
+            "error": "conflict",
+            "detail": f"Run #{run_id} has status '{task_run.status}', expected 'awaiting_approval'",
+        }
+
+    issue = task_run.issue_number or ""
+    role = task_run.role or "developer"
+    pr_number = task_run.pr_number
+
+    # Spawn first, clear state second (cookbook: approval-then-spawn ordering)
+    result = await start_agent(
+        issue,
+        role=role,
+        resume_run_id=run_id,
+        pr_number=pr_number,
+        force=True,
+    )
+
+    if "error" in result:
+        return result
+
+    # Clear handoff file on successful spawn
+    if issue:
+        try:
+            from sova.dashboard.services import handoff_service
+
+            handoff_service.clear_handoff(issue=issue)
+        except Exception:
+            log.debug("resume_from_approval.clear_handoff_failed", issue=issue, exc_info=True)
+
+    return {
+        "run_id": result["run_id"],
+        "resumed_from": run_id,
+        "issue": issue,
+        "role": role,
+    }
+
+
 # -- PR to issue resolution ---------------------------------------------------
 
 

@@ -101,6 +101,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
 }
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
+_AWAITING_APPROVAL = "awaiting_approval"
 
 _ROLE_LABELS: dict[str, str] = {
     "developer": "Developing",
@@ -276,7 +277,22 @@ def _build_task_item(
         handoff=handoff,
         running_agent=running,
     )
-    primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
+
+    # Synthesize a resume action for awaiting_approval runs without handoff
+    last_run = task.get("last_run")
+    last_run_status = last_run.get("status") if last_run else None
+    if not handoff and not running and last_run and last_run_status == _AWAITING_APPROVAL:
+        state = WorkItemState.SPEC_REVIEW
+        primary = _build_action(
+            "resume-approval",
+            "Approve & Resume",
+            "success",
+            "resume_from_approval",
+            {"run_id": last_run["id"]},
+        )
+        secondary = []
+    else:
+        primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
 
     return _build_item(
         issue_number=issue_num,

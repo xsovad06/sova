@@ -8126,3 +8126,187 @@ class TestReadStderrFlushTrigger:
         mock_writer.write_line.assert_called_once()
         mock_writer.flush.assert_awaited_once()
         assert any("stderr" in line for line in agent.output_lines)
+
+
+# ---------------------------------------------------------------------------
+# Resume from approval -- POST /api/agents/{run_id}/resume-from-approval
+# ---------------------------------------------------------------------------
+
+
+class TestResumeFromApproval:
+    """Tests for the approval resume endpoint and service function."""
+
+    async def test_resume_success(self) -> None:
+        """Successful resume spawns a new agent with resume_run_id."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        # Seed a TaskRun with awaiting_approval status
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="50",
+                    role="developer",
+                    status="awaiting_approval",
+                    pr_number=10,
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.start_agent",
+            new_callable=AsyncMock,
+            return_value={"status": "started", "pid": 999, "run_id": run_id + 1},
+        ) as mock_start:
+            result = await resume_from_approval(run_id)
+
+        assert result["run_id"] == run_id + 1
+        assert result["resumed_from"] == run_id
+        assert result["issue"] == "50"
+        assert result["role"] == "developer"
+        mock_start.assert_awaited_once()
+        call_kwargs = mock_start.call_args
+        assert call_kwargs.kwargs["resume_run_id"] == run_id
+        assert call_kwargs.kwargs["pr_number"] == 10
+        assert call_kwargs.kwargs["force"] is True
+
+    async def test_resume_not_found(self) -> None:
+        """Resuming a non-existent run returns not_found error."""
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        result = await resume_from_approval(999999)
+        assert result["error"] == "not_found"
+
+    async def test_resume_wrong_status(self) -> None:
+        """Resuming a run with wrong status returns conflict error."""
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="51",
+                    role="developer",
+                    status="done",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        result = await resume_from_approval(run_id)
+        assert result["error"] == "conflict"
+        assert "done" in result["detail"]
+
+    async def test_resume_clears_handoff(self) -> None:
+        """Successful resume clears the handoff file for the issue."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import resume_from_approval
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="52",
+                    role="developer",
+                    status="awaiting_approval",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle.start_agent",
+                new_callable=AsyncMock,
+                return_value={"status": "started", "pid": 111, "run_id": run_id + 1},
+            ),
+            patch(
+                "sova.dashboard.services.handoff_service.clear_handoff",
+            ) as mock_clear,
+        ):
+            result = await resume_from_approval(run_id)
+
+        assert "error" not in result
+        mock_clear.assert_called_once()
+        call_kwargs = mock_clear.call_args
+        assert call_kwargs.kwargs.get("issue") == "52" or (call_kwargs.args and "52" in str(call_kwargs.args))
+
+    async def test_resume_endpoint_404(self) -> None:
+        """The router endpoint returns 404 for missing run."""
+        from sova.dashboard.app import create_app
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/api/agents/999999/resume-from-approval")
+        assert resp.status_code == 404
+
+    async def test_resume_endpoint_409(self) -> None:
+        """The router endpoint returns 409 for wrong status."""
+        from sova.dashboard.app import create_app
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="53",
+                    role="developer",
+                    status="done",
+                )
+                session.add(run)
+            await session.commit()
+            run_id = run.id
+
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(f"/api/agents/{run_id}/resume-from-approval")
+        assert resp.status_code == 409
+
+
+class TestWorkItemAwaitingApprovalFallback:
+    """Tests for awaiting_approval fallback in _build_task_item."""
+
+    def test_build_task_item_awaiting_approval_no_handoff(self) -> None:
+        """When last run is awaiting_approval with no handoff, state is SPEC_REVIEW with resume action."""
+        from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
+
+        task = {
+            "issue": 99,
+            "state": "in_progress",
+            "title": "Test task",
+            "url": "",
+            "last_run": {"id": 1, "status": "awaiting_approval"},
+        }
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert item["state"] == WorkItemState.SPEC_REVIEW
+        assert item["primary_action"]["handler"] == "resume_from_approval"
+
+    def test_build_task_item_awaiting_approval_with_handoff(self) -> None:
+        """When handoff is present, handoff takes priority over last_run_status."""
+        from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
+
+        task = {
+            "issue": 99,
+            "state": "in_progress",
+            "title": "Test task",
+            "url": "",
+            "last_run": {"id": 1, "status": "awaiting_approval"},
+        }
+        handoff = {"status": "awaiting_action", "next_actions": [{"id": "approve-spec"}]}
+        item = _build_task_item(task, pr_data=None, running=None, handoff=handoff)
+        assert item["state"] == WorkItemState.SPEC_REVIEW
+
+    def test_build_task_item_no_awaiting_approval(self) -> None:
+        """Without awaiting_approval, normal state computation proceeds."""
+        from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
+
+        task = {
+            "issue": 99,
+            "state": "in_progress",
+            "title": "Test task",
+            "url": "",
+            "last_run": {"id": 1, "status": "done"},
+        }
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert item["state"] == WorkItemState.IN_PROGRESS
