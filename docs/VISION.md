@@ -26,7 +26,7 @@ A unified repository that ships:
 sova/
   sova/                            # Python package (15 modules)
     cli/                           # Typer CLI (22 subcommands)
-    core/                          # Workflow engine, 22 step implementations, state machine
+    core/                          # Workflow engine, 26 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer)
     adapters/                      # Task source plugins (GitHub implemented; JIRA, Linear planned)
     dashboard/                     # FastAPI web UI (16 routers, 22 services, 23 templates)

@@ -15,6 +15,7 @@ from sova.core.steps.create_worktree import WorktreeStep
 from sova.core.steps.develop import DevelopStep
 from sova.core.steps.extract_memory import ExtractMemoryStep
 from sova.core.steps.fetch_task import FetchTaskStep
+from sova.core.steps.generate_tasks import GenerateTasksStep
 from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.handoff_to_user import HandoffToUserStep
 from sova.core.steps.monitor_ci import MonitorCIStep
@@ -22,11 +23,13 @@ from sova.core.steps.push import PushStep
 from sova.core.steps.rebase import RebaseStep
 from sova.core.steps.research import ResearchStep
 from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+from sova.core.steps.scan_project import ScanProjectStep
 from sova.core.steps.self_review import SelfReviewStep
 from sova.core.steps.simplify import SimplifyStep
 from sova.core.steps.spec import SpecStep
 from sova.core.steps.sync import SyncStep
 from sova.core.steps.validate import ValidateStep
+from sova.core.steps.validate_tasks import ValidateTasksStep
 from sova.core.steps.wait_for_external_reviews import WaitForExternalReviewsStep
 
 
@@ -101,3 +104,18 @@ def get_developer_step_names() -> list[str]:
 def get_address_review_step_names() -> list[str]:
     """Return the ordered step name list for the address-review pipeline."""
     return [s.name for s in get_address_review_steps()]
+
+
+def get_planner_steps() -> list[BaseStep]:
+    """Return the ordered step list for the Planner pipeline."""
+    return [
+        ScanProjectStep(),
+        GenerateTasksStep(),
+        ValidateTasksStep(),
+        ExtractMemoryStep(),
+    ]
+
+
+def get_planner_step_names() -> list[str]:
+    """Return the ordered step name list for the Planner pipeline."""
+    return [s.name for s in get_planner_steps()]
