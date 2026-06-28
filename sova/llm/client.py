@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 from sova.config.models import LLMConfig, RolesConfig
 from sova.llm.complexity import ComplexityTier
 from sova.llm.models import LLMResult, StreamEvent
-from sova.llm.routing import route_model
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -126,6 +125,8 @@ def resolve_model(
             return value
 
     if complexity is not None:
+        from sova.llm.routing import route_model
+
         return route_model(complexity, llm_config=llm_config)
 
     return None
