@@ -16,6 +16,7 @@ from sova.llm.cost import record_cost
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, create_provider
+from sova.llm.routing import route_model
 
 __all__ = [
     "ComplexityTier",
@@ -33,6 +34,7 @@ __all__ = [
     "record_cost",
     "reset_provider",
     "resolve_model",
+    "route_model",
     "scan_prompt",
     "set_provider",
 ]

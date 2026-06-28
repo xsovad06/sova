@@ -119,6 +119,13 @@ _REGISTRY: list[SettingMeta] = [
         "Base URL for LiteLLM proxy mode (leave empty for direct API calls)",
         "llm",
     ),
+    SettingMeta(
+        "llm.routing",
+        "Model routing",
+        "Per-complexity-tier model overrides (keys: trivial/simple/moderate/complex/epic, values: haiku/sonnet/opus)",
+        "llm",
+        "object",
+    ),
     # -- Agent --
     SettingMeta(
         "agent.runtime",
