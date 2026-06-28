@@ -336,6 +336,72 @@ async def test_extract_memory_step_passes_spec(tmp_path: Path) -> None:
     assert "Decision A" in call_kwargs["spec_content"]
 
 
+async def test_extract_memory_step_spec_read_exception(tmp_path: Path) -> None:
+    """Covers _read_spec_for_extraction except branch (returns None on error)."""
+    from sova.core.steps.extract_memory import ExtractMemoryStep
+    from sova.knowledge.extraction import ExtractionResult
+
+    step = ExtractMemoryStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = ExtractionResult(memories_stored=0, cost_usd=Decimal("0.005"))
+
+    with (
+        patch(
+            "sova.core.steps._spec_helpers.read_spec_sections",
+            side_effect=OSError("disk error"),
+        ),
+        patch(
+            "sova.knowledge.extraction.extract_memories",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_extract,
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    assert mock_extract.call_args.kwargs["spec_content"] is None
+
+
+async def test_extract_memory_step_execute_exception(tmp_path: Path) -> None:
+    """Covers the outer except in ExtractMemoryStep.execute."""
+    from sova.core.steps.extract_memory import ExtractMemoryStep
+
+    step = ExtractMemoryStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    with patch(
+        "sova.knowledge.extraction.extract_memories",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("extraction boom"),
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    assert "non-fatal" in result.summary
+
+
+async def test_extract_memory_step_error_in_result(tmp_path: Path) -> None:
+    """Covers the result.error summary branch in ExtractMemoryStep.execute."""
+    from sova.core.steps.extract_memory import ExtractMemoryStep
+    from sova.knowledge.extraction import ExtractionResult
+
+    step = ExtractMemoryStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = ExtractionResult(memories_stored=0, cost_usd=Decimal("0.005"), error="parse failed")
+
+    with patch(
+        "sova.knowledge.extraction.extract_memories",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    assert "parse failed" in result.summary
+
+
 async def test_extract_memory_step_no_spec(tmp_path: Path) -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
     from sova.knowledge.extraction import ExtractionResult
@@ -352,6 +418,373 @@ async def test_extract_memory_step_no_spec(tmp_path: Path) -> None:
     assert result.success is True
     call_kwargs = mock_extract.call_args.kwargs
     assert call_kwargs["spec_content"] is None
+
+
+# ---------------------------------------------------------------------------
+# _spec_helpers: _replace_section edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_replace_section_heading_not_found(tmp_path: Path) -> None:
+    """Covers _replace_section returning unchanged text when heading not found."""
+    from sova.core.steps._spec_helpers import _replace_section
+
+    text = "# Spec\n\n## Solution\nPlan.\n"
+    result = _replace_section(text, "Nonexistent Heading", "New content")
+    assert result == text
+
+
+def test_replace_section_last_section(tmp_path: Path) -> None:
+    """Covers _replace_section when the target is the last section (no next heading)."""
+    from sova.core.steps._spec_helpers import _replace_section
+
+    text = "# Spec\n\n## Solution\nPlan.\n\n## Design Decisions\nOld decisions.\n"
+    result = _replace_section(text, "Design Decisions", "New decisions.")
+    assert "New decisions." in result
+    assert "Old decisions." not in result
+    assert "## Solution" in result
+
+
+# ---------------------------------------------------------------------------
+# AddressReviewStep: _load_spec_for_context
+# ---------------------------------------------------------------------------
+
+
+def test_load_spec_for_context_returns_sections(tmp_path: Path) -> None:
+    from sova.core.steps.address_review import _load_spec_for_context
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Design Decisions\nChose REST.\n\n## Implementation Notes\nUsed factory.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    result = _load_spec_for_context(ctx)
+
+    assert "Chose REST" in result
+    assert "Used factory" in result
+
+
+def test_load_spec_for_context_no_spec(tmp_path: Path) -> None:
+    from sova.core.steps.address_review import _load_spec_for_context
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    result = _load_spec_for_context(ctx)
+    assert result == ""
+
+
+def test_load_spec_for_context_exception_returns_empty() -> None:
+    from sova.core.steps.address_review import _load_spec_for_context
+
+    ctx = _make_ctx()
+    with patch(
+        "sova.core.steps._spec_helpers.read_spec_sections",
+        side_effect=OSError("disk error"),
+    ):
+        result = _load_spec_for_context(ctx)
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# DevelopStep: _append_implementation_notes git failure paths
+# ---------------------------------------------------------------------------
+
+
+async def test_develop_notes_git_diff_fails(tmp_path: Path) -> None:
+    """Covers the diff_result.success=False path in _append_implementation_notes."""
+    from sova.core.steps.develop import _append_implementation_notes
+    from sova.llm.models import LLMResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock(
+        return_value=LLMResult(
+            text="- Used fallback data",
+            model="haiku",
+            cost_usd=Decimal("0.005"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+    )
+    # diff fails, log succeeds
+    diff_fail = MagicMock(success=False, stdout="")
+    log_ok = MagicMock(success=True, stdout="abc123 feat: something")
+    mock_run = AsyncMock(side_effect=[diff_fail, log_ok])
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    # Verify prompt contained fallback text
+    prompt_arg = mock_invoke.call_args[0][0]
+    assert "(unavailable)" in prompt_arg
+
+    content = spec_file.read_text()
+    assert "## Implementation Notes" in content
+
+
+async def test_develop_notes_git_log_fails(tmp_path: Path) -> None:
+    """Covers the log_result.success=False path in _append_implementation_notes."""
+    from sova.core.steps.develop import _append_implementation_notes
+    from sova.llm.models import LLMResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n\n## Design Decisions\nDecisions.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke = AsyncMock(
+        return_value=LLMResult(
+            text="- Used fallback data",
+            model="haiku",
+            cost_usd=Decimal("0.005"),
+            input_tokens=100,
+            output_tokens=50,
+        )
+    )
+    # diff succeeds, log fails
+    diff_ok = MagicMock(success=True, stdout="file.py | 10 ++--")
+    log_fail = MagicMock(success=False, stdout="")
+    mock_run = AsyncMock(side_effect=[diff_ok, log_fail])
+
+    with patch("sova.core.steps.develop.invoke", mock_invoke), patch("sova.core.steps.develop.run", mock_run):
+        await _append_implementation_notes(ctx)
+
+    prompt_arg = mock_invoke.call_args[0][0]
+    assert "(no commits)" in prompt_arg
+
+
+# ---------------------------------------------------------------------------
+# DevelopStep.execute and validate_output
+# ---------------------------------------------------------------------------
+
+
+async def test_develop_step_execute_success(tmp_path: Path) -> None:
+    """Covers DevelopStep.execute happy path including _append_implementation_notes call."""
+    from sova.core.steps.develop import DevelopStep
+    from sova.llm.models import LLMResult
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = LLMResult(
+        text="done",
+        model="sonnet",
+        cost_usd=Decimal("0.10"),
+        input_tokens=500,
+        output_tokens=200,
+        session_id="sess-1",
+    )
+    mock_invoke_cmd = AsyncMock(return_value=mock_result)
+    mock_append = AsyncMock()
+
+    with (
+        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop._append_implementation_notes", mock_append),
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    assert "Development completed" in result.summary
+    mock_append.assert_awaited_once_with(ctx)
+
+
+async def test_develop_step_execute_runtime_error(tmp_path: Path) -> None:
+    """Covers DevelopStep.execute RuntimeError path."""
+    from sova.core.steps.develop import DevelopStep
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_invoke_cmd = AsyncMock(side_effect=RuntimeError("Claude CLI failed"))
+
+    with patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd):
+        result = await step.execute(ctx)
+
+    assert result.success is False
+    assert "Development failed" in result.summary
+
+
+async def test_develop_step_validate_output_has_changes(tmp_path: Path) -> None:
+    """Covers validate_output when there are uncommitted changes."""
+    from sova.core.steps.develop import DevelopStep
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_run = AsyncMock(
+        side_effect=[
+            MagicMock(success=True, stdout="file.py | 10 ++--"),  # diff
+            MagicMock(success=True, stdout=""),  # staged
+            MagicMock(success=True, stdout=""),  # log
+        ]
+    )
+    with patch("sova.core.steps.develop.run", mock_run):
+        result = await step.validate_output(ctx)
+
+    assert result.passed is True
+
+
+async def test_develop_step_validate_output_has_commits(tmp_path: Path) -> None:
+    """Covers validate_output when there are commits ahead of base."""
+    from sova.core.steps.develop import DevelopStep
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_run = AsyncMock(
+        side_effect=[
+            MagicMock(success=True, stdout=""),  # diff
+            MagicMock(success=True, stdout=""),  # staged
+            MagicMock(success=True, stdout="abc123 feat: something"),  # log
+        ]
+    )
+    with patch("sova.core.steps.develop.run", mock_run):
+        result = await step.validate_output(ctx)
+
+    assert result.passed is True
+
+
+async def test_develop_step_validate_output_no_changes(tmp_path: Path) -> None:
+    """Covers validate_output when there are no changes at all."""
+    from sova.core.steps.develop import DevelopStep
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_run = AsyncMock(
+        side_effect=[
+            MagicMock(success=True, stdout=""),  # diff
+            MagicMock(success=True, stdout=""),  # staged
+            MagicMock(success=True, stdout=""),  # log
+        ]
+    )
+    with patch("sova.core.steps.develop.run", mock_run):
+        result = await step.validate_output(ctx)
+
+    assert result.passed is False
+    assert "no code changes" in result.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# ReviewerRole: _append_review_rationale edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_rationale_with_suggestion(tmp_path: Path) -> None:
+    """Covers the f.suggestion branch in _append_review_rationale."""
+    from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n")
+
+    reviewer = ReviewerRole()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    review = ReviewResult(
+        findings=[
+            ReviewFinding(
+                file="api.py",
+                severity=8,
+                category="security",
+                description="SQL injection risk",
+                line=42,
+                suggestion="Use parameterized queries",
+            ),
+        ],
+        summary="Security issue",
+    )
+
+    reviewer._append_review_rationale(ctx, review)
+
+    content = spec_file.read_text()
+    assert "SQL injection risk" in content
+    assert "Use parameterized queries" in content
+
+
+def test_reviewer_rationale_no_line_number(tmp_path: Path) -> None:
+    """Covers the loc branch when finding has no line number."""
+    from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Solution\nPlan.\n")
+
+    reviewer = ReviewerRole()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    review = ReviewResult(
+        findings=[
+            ReviewFinding(
+                file="config.py",
+                severity=6,
+                category="design",
+                description="Missing validation",
+                line=None,
+            ),
+        ],
+        summary="Design issue",
+    )
+
+    reviewer._append_review_rationale(ctx, review)
+
+    content = spec_file.read_text()
+    assert "`config.py`" in content
+    assert "Missing validation" in content
+
+
+def test_reviewer_rationale_exception_nonfatal(tmp_path: Path) -> None:
+    """Covers the except branch in _append_review_rationale."""
+    from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+    reviewer = ReviewerRole()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    review = ReviewResult(
+        findings=[
+            ReviewFinding(file="x.py", severity=9, category="bug", description="Critical", line=1),
+        ],
+        summary="Critical issue",
+    )
+
+    with patch(
+        "sova.core.steps._spec_helpers.append_spec_section",
+        side_effect=OSError("disk full"),
+    ):
+        # Should not raise
+        reviewer._append_review_rationale(ctx, review)
+
+
+# ---------------------------------------------------------------------------
+# extraction.py: _build_extraction_prompt with review_findings
+# ---------------------------------------------------------------------------
+
+
+def test_extraction_prompt_includes_review_findings() -> None:
+    from sova.knowledge.extraction import _build_extraction_prompt
+
+    prompt = _build_extraction_prompt(
+        role="reviewer",
+        task_title="Review PR #5",
+        files_changed=["api.py"],
+        step_summaries=["review: completed"],
+        review_findings=[
+            {"file": "api.py", "line": 10, "severity": 7, "category": "bug", "description": "Missing null check"},
+        ],
+    )
+
+    assert "Review Findings" in prompt
+    assert "Missing null check" in prompt
+    assert "api.py:10" in prompt
 
 
 # ---------------------------------------------------------------------------
