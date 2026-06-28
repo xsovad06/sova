@@ -102,13 +102,17 @@ def _build_review_prompt(
     if has_spec:
         categories += "|spec_alignment"
 
+    # When spec sections exist, the spec already encodes the issue's intent in a
+    # structured form.  Omit the verbose issue body to save tokens -- the title
+    # is enough for identification.
+    description_block = f"\n**Description**: {task.body}" if not has_spec and task.body else ""
+
     return f"""You are a senior software engineer performing a thorough code review. \
 Your job is to find real issues -- do NOT rubber-stamp the PR. \
 Assume the code has bugs until proven otherwise.
 
 ## PR Context
-**Issue**: {task.title}
-**Description**: {task.body}
+**Issue**: {task.title}{description_block}
 {spec_block}
 
 ## Changed Files
@@ -563,8 +567,18 @@ class ReviewerRole(AgentRole):
         chunks = _chunk_diff(diff)
         result = ReviewResult()
 
-        # Load spec for intent-anchored review
+        # Load spec for intent-anchored review (spec-mediated context compression)
         spec_sections = self._load_spec_sections(ctx)
+
+        if spec_sections:
+            spec_chars = sum(len(v) for v in spec_sections.values())
+            body_chars = len(task.body) if task.body else 0
+            log.info(
+                "reviewer.spec_compression",
+                spec_chars=spec_chars,
+                body_chars_omitted=body_chars,
+                sections=list(spec_sections.keys()),
+            )
 
         for i, chunk in enumerate(chunks):
             try:

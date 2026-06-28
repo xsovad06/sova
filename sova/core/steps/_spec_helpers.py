@@ -13,15 +13,32 @@ log = get_logger(component="step.spec_helpers")
 
 # Section heading constants -- single source of truth for spec provenance threading
 SECTION_SOLUTION = "Solution"
+SECTION_EDGE_CASES = "Edge Cases"
 SECTION_DESIGN_DECISIONS = "Design Decisions"
+SECTION_SCOPE_BOUNDARIES = "Scope Boundaries"
 SECTION_IMPLEMENTATION_NOTES = "Implementation Notes"
 SECTION_REVIEW_RATIONALE = "Review Rationale"
 SECTION_ADDRESS_REVIEW_NOTES = "Address Review Notes"
 
 # Common heading tuples used by pipeline steps
 SPEC_PLAN_SECTIONS = (SECTION_SOLUTION, SECTION_DESIGN_DECISIONS)
+DEVELOP_SECTIONS = (SECTION_SOLUTION, SECTION_EDGE_CASES, SECTION_DESIGN_DECISIONS, SECTION_SCOPE_BOUNDARIES)
 REVIEW_CONTEXT_SECTIONS = (SECTION_DESIGN_DECISIONS, SECTION_IMPLEMENTATION_NOTES, SECTION_REVIEW_RATIONALE)
 MEMORY_EXTRACTION_SECTIONS = (*REVIEW_CONTEXT_SECTIONS, SECTION_ADDRESS_REVIEW_NOTES)
+
+
+def extract_sections_from_text(text: str, headings: tuple[str, ...]) -> str:
+    """Extract and concatenate sections from pre-loaded spec text.
+
+    Like ``read_spec_sections`` but operates on an already-loaded string,
+    avoiding a redundant file read when the caller has the text in hand.
+    """
+    parts: list[str] = []
+    for heading in headings:
+        content = extract_section(text, heading)
+        if content:
+            parts.append(f"## {heading}\n{content}")
+    return "\n\n".join(parts)
 
 
 def append_spec_section(

@@ -186,6 +186,12 @@ class AddressReviewStep(BaseStep):
         log.info("step.address_review.findings_loaded", count=len(findings))
 
         spec_context = _load_spec_for_context(ctx)
+        if spec_context:
+            log.info(
+                "step.address_review.spec_compression",
+                spec_context_chars=len(spec_context),
+                findings_count=len(findings),
+            )
         prompt = _format_findings_prompt(findings, spec_context=spec_context)
         try:
             result = await invoke_command(

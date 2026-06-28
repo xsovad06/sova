@@ -890,6 +890,243 @@ def test_extraction_prompt_includes_review_findings() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #247: Spec-mediated context compression
+# ---------------------------------------------------------------------------
+
+
+# -- ReviewerRole: omit issue body when spec sections exist --
+
+
+def test_review_prompt_omits_body_when_spec_exists() -> None:
+    from sova.adapters.base import Task
+    from sova.roles.reviewer import _build_review_prompt
+
+    task = Task(
+        id="42",
+        title="Add caching layer",
+        body="This is a long verbose issue body with user stories and discussion threads...",
+        state="in_review",
+        labels=[],
+        url="",
+    )
+    spec_sections = {"Solution": "Add Redis caching", "Edge Cases": "Handle TTL expiry"}
+
+    prompt = _build_review_prompt(task, "diff content", ["file.py"], spec_sections=spec_sections)
+
+    # Spec context should be present
+    assert "Add Redis caching" in prompt
+    assert "Handle TTL expiry" in prompt
+    # Issue body should NOT be present (compressed away by spec)
+    assert "long verbose issue body" not in prompt
+    # Title should still be present for identification
+    assert "Add caching layer" in prompt
+
+
+def test_review_prompt_includes_body_when_no_spec() -> None:
+    from sova.adapters.base import Task
+    from sova.roles.reviewer import _build_review_prompt
+
+    task = Task(
+        id="42",
+        title="Add caching layer",
+        body="This is the issue body that should be included.",
+        state="in_review",
+        labels=[],
+        url="",
+    )
+
+    prompt = _build_review_prompt(task, "diff content", ["file.py"], spec_sections=None)
+
+    # Without spec, the issue body should be included
+    assert "issue body that should be included" in prompt
+    assert "Add caching layer" in prompt
+
+
+def test_review_prompt_includes_body_when_spec_empty() -> None:
+    from sova.adapters.base import Task
+    from sova.roles.reviewer import _build_review_prompt
+
+    task = Task(
+        id="42",
+        title="Feature",
+        body="Body text here.",
+        state="in_review",
+        labels=[],
+        url="",
+    )
+
+    # Empty dict should fall back to including body
+    prompt = _build_review_prompt(task, "diff", ["f.py"], spec_sections={})
+    assert "Body text here." in prompt
+
+
+# -- DevelopStep: _load_spec_for_develop --
+
+
+def test_load_spec_for_develop_approved(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text(
+        "# Spec: Feature\n**Status**: approved\n\n"
+        "## Solution\nUse approach B.\n\n"
+        "## Edge Cases\nHandle nulls.\n\n"
+        "## Design Decisions\nChose REST.\n"
+    )
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    result = _load_spec_for_develop(ctx)
+
+    assert "Use approach B" in result
+    assert "Handle nulls" in result
+    assert "Chose REST" in result
+
+
+def test_load_spec_for_develop_draft_skipped(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec: Feature\n**Status**: draft\n\n## Solution\nDraft plan.\n")
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    result = _load_spec_for_develop(ctx)
+
+    assert result == ""
+
+
+def test_load_spec_for_develop_no_spec(tmp_path: Path) -> None:
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+    result = _load_spec_for_develop(ctx)
+
+    assert result == ""
+
+
+def test_load_spec_for_develop_exception_returns_empty() -> None:
+    from sova.core.steps.develop import _load_spec_for_develop
+
+    ctx = _make_ctx()
+    with patch("sova.dashboard.services.spec_service.read_spec", side_effect=OSError("disk error")):
+        result = _load_spec_for_develop(ctx)
+    assert result == ""
+
+
+# -- DevelopStep: execute passes spec context as args --
+
+
+async def test_develop_step_passes_spec_in_args(tmp_path: Path) -> None:
+    from sova.core.steps.develop import DevelopStep
+    from sova.llm.models import LLMResult
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text(
+        "# Spec: Feature\n**Status**: approved\n\n## Solution\nImplement caching.\n\n## Edge Cases\nHandle TTL.\n"
+    )
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = LLMResult(
+        text="done",
+        model="sonnet",
+        cost_usd=Decimal("0.10"),
+        input_tokens=500,
+        output_tokens=200,
+        session_id="sess-1",
+    )
+    mock_invoke_cmd = AsyncMock(return_value=mock_result)
+    mock_append = AsyncMock()
+
+    with (
+        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop._append_implementation_notes", mock_append),
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    # Verify spec content was passed in args
+    call_args = mock_invoke_cmd.call_args
+    args_value = call_args.kwargs["args"]
+    assert "Implement caching" in args_value
+    assert "Spec Context" in args_value
+
+
+async def test_develop_step_no_spec_passes_issue_number_only(tmp_path: Path) -> None:
+    from sova.core.steps.develop import DevelopStep
+    from sova.llm.models import LLMResult
+
+    step = DevelopStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = LLMResult(
+        text="done",
+        model="sonnet",
+        cost_usd=Decimal("0.10"),
+        input_tokens=500,
+        output_tokens=200,
+        session_id="sess-1",
+    )
+    mock_invoke_cmd = AsyncMock(return_value=mock_result)
+    mock_append = AsyncMock()
+
+    with (
+        patch("sova.core.steps.develop.invoke_command", mock_invoke_cmd),
+        patch("sova.core.steps.develop._append_implementation_notes", mock_append),
+    ):
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    # Without spec, args should just be the issue number
+    call_args = mock_invoke_cmd.call_args
+    args_value = call_args.kwargs["args"]
+    assert args_value == "42"
+
+
+# -- AddressReviewStep: spec compression logging --
+
+
+async def test_address_review_logs_spec_compression(tmp_path: Path) -> None:
+    from sova.core.steps.address_review import AddressReviewStep
+
+    specs_dir = tmp_path / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Design Decisions\nChose REST.\n\n## Implementation Notes\nUsed factory.\n")
+
+    step = AddressReviewStep()
+    ctx = _make_ctx(project_dir=tmp_path, working_dir=tmp_path)
+
+    mock_result = MagicMock()
+    mock_result.cost_usd = Decimal("0.10")
+
+    with (
+        patch("sova.core.steps.address_review.run", new_callable=AsyncMock) as mock_run,
+        patch("sova.core.steps.address_review.invoke_command", new_callable=AsyncMock, return_value=mock_result),
+        patch(
+            "sova.core.steps.address_review._load_coderabbit_findings",
+            new_callable=AsyncMock,
+            return_value=([], []),
+        ),
+        patch(
+            "sova.core.steps.address_review._load_review_findings",
+            return_value=[{"file": "a.py", "severity": 5, "category": "bug", "description": "Issue"}],
+        ),
+    ):
+        mock_run.return_value = MagicMock(success=True, stdout="abc123")
+        result = await step.execute(ctx)
+
+    assert result.success is True
+    assert "Addressed 1 review finding" in result.summary
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
