@@ -339,6 +339,15 @@ class TestResolveModel:
         assert resolve_model("developer", roles, complexity=ComplexityTier.TRIVIAL) == "haiku"
         assert resolve_model("developer", roles, complexity=ComplexityTier.COMPLEX) == "opus"
 
+    def test_mapped_role_falls_back_to_complexity_when_model_unset(self) -> None:
+        """A mapped role (researcher) with no explicit model unset falls back to complexity routing."""
+        from sova.config.models import RolesConfig
+        from sova.llm.client import resolve_model
+
+        roles = RolesConfig(researcher_model="")
+        result = resolve_model("researcher", roles, complexity=ComplexityTier.TRIVIAL)
+        assert result == "haiku"
+
     def test_role_model_takes_priority_over_complexity(self) -> None:
         from sova.config.models import RolesConfig
         from sova.llm.client import resolve_model
@@ -413,13 +422,13 @@ class TestRouteModel:
         assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
         assert route_model(ComplexityTier.EPIC, llm_config=llm_cfg) == "opus"
 
-    def test_invalid_keys_rejected(self) -> None:
-        from pydantic import ValidationError
-
+    def test_invalid_keys_ignored(self) -> None:
         from sova.config.models import LLMConfig
 
-        with pytest.raises(ValidationError, match="nonexistent"):
-            LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
+        cfg = LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
+        # Unknown keys are silently filtered out; valid keys are preserved
+        assert "nonexistent" not in cfg.routing
+        assert cfg.routing["trivial"] == "opus"
 
     def test_none_llm_config_uses_defaults(self) -> None:
         from sova.llm.routing import route_model
