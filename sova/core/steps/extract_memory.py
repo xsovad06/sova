@@ -55,7 +55,7 @@ class ExtractMemoryStep(BaseStep):
         try:
             from sova.core.steps._spec_helpers import MEMORY_EXTRACTION_SECTIONS, read_spec_sections
 
-            content = read_spec_sections(ctx.issue_number, ctx.working_dir, MEMORY_EXTRACTION_SECTIONS)
+            content = read_spec_sections(ctx.issue_number, ctx.project_dir, MEMORY_EXTRACTION_SECTIONS)
             return content or None
         except Exception:
             log.debug("step.extract_memory.spec_read_failed", exc_info=True)

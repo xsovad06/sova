@@ -445,6 +445,108 @@ def test_replace_section_last_section(tmp_path: Path) -> None:
     assert "## Solution" in result
 
 
+def test_replace_section_with_code_blocks(tmp_path: Path) -> None:
+    """Verify _replace_section handles fenced code blocks containing ## headings."""
+    from sova.core.steps._spec_helpers import _replace_section
+
+    text = (
+        "# Spec\n\n"
+        "## Solution\n"
+        "Use the pattern:\n"
+        "```python\n"
+        "## This looks like a heading but is inside a code block\n"
+        "class Foo:\n"
+        "    pass\n"
+        "```\n\n"
+        "## Design Decisions\n"
+        "Old decisions.\n\n"
+        "## Review Rationale\n"
+        "Rationale here.\n"
+    )
+    result = _replace_section(text, "Design Decisions", "New decisions.")
+    assert "New decisions." in result
+    assert "Old decisions." not in result
+    # Code block in Solution section must be preserved intact
+    assert "## This looks like a heading but is inside a code block" in result
+    assert "class Foo:" in result
+    # Adjacent sections preserved
+    assert "## Solution" in result
+    assert "## Review Rationale" in result
+    assert "Rationale here." in result
+
+
+# ---------------------------------------------------------------------------
+# Spec lookup uses project_dir, not working_dir (worktree isolation)
+# ---------------------------------------------------------------------------
+
+
+def test_develop_reads_spec_from_project_dir(tmp_path: Path) -> None:
+    """DevelopStep._append_implementation_notes reads specs from project_dir, not working_dir."""
+    from sova.core.steps._spec_helpers import read_spec_sections
+
+    project_dir = tmp_path / "project"
+    worktree_dir = tmp_path / "worktree"
+    project_dir.mkdir()
+    worktree_dir.mkdir()
+
+    specs_dir = project_dir / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Solution\nThe plan.\n\n## Design Decisions\nDecision X.\n")
+
+    # Spec should be found via project_dir, not worktree_dir
+    result = read_spec_sections("42", project_dir, ("Solution", "Design Decisions"))
+    assert "The plan." in result
+    assert "Decision X." in result
+
+    # worktree_dir has no specs -- should return empty
+    result = read_spec_sections("42", worktree_dir, ("Solution",))
+    assert result == ""
+
+
+def test_address_review_spec_uses_project_dir(tmp_path: Path) -> None:
+    """_load_spec_for_context uses project_dir for spec lookup, not working_dir."""
+    from sova.core.steps.address_review import _load_spec_for_context
+
+    project_dir = tmp_path / "project"
+    worktree_dir = tmp_path / "worktree"
+    project_dir.mkdir()
+    worktree_dir.mkdir()
+
+    specs_dir = project_dir / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Design Decisions\nDecision Y.\n")
+
+    ctx = _make_ctx(project_dir=project_dir, working_dir=worktree_dir)
+    result = _load_spec_for_context(ctx)
+
+    # Spec found via project_dir even though working_dir (worktree) has none
+    assert "Decision Y." in result
+
+
+def test_extract_memory_spec_uses_project_dir(tmp_path: Path) -> None:
+    """ExtractMemoryStep._read_spec_for_extraction uses project_dir for spec lookup."""
+    from sova.core.steps.extract_memory import ExtractMemoryStep
+
+    project_dir = tmp_path / "project"
+    worktree_dir = tmp_path / "worktree"
+    project_dir.mkdir()
+    worktree_dir.mkdir()
+
+    specs_dir = project_dir / ".claude" / "specs"
+    specs_dir.mkdir(parents=True)
+    spec_file = specs_dir / "42-feature.md"
+    spec_file.write_text("# Spec\n\n## Design Decisions\nDecision Z.\n")
+
+    step = ExtractMemoryStep()
+    ctx = _make_ctx(project_dir=project_dir, working_dir=worktree_dir)
+    result = step._read_spec_for_extraction(ctx)
+
+    assert result is not None
+    assert "Decision Z." in result
+
+
 # ---------------------------------------------------------------------------
 # AddressReviewStep: _load_spec_for_context
 # ---------------------------------------------------------------------------
