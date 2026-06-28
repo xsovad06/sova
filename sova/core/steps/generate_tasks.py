@@ -7,7 +7,6 @@ JSON output into a list of PlannedTask objects.
 from __future__ import annotations
 
 import json
-import re
 
 from sova.core.context import ExecutionContext
 from sova.core.planning import PlannedTask
@@ -45,11 +44,17 @@ Respond with a JSON array of task objects. No markdown fencing or extra text.
 def _extract_json(text: str) -> str:
     """Extract JSON from LLM response, stripping markdown fences if present."""
     cleaned = text.strip()
-    # Strip markdown code fences
-    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", cleaned, re.DOTALL)
-    if fence_match:
-        return fence_match.group(1).strip()
-    return cleaned
+    # Strip markdown code fences using string ops (avoids ReDoS-prone regex)
+    fence_start = cleaned.find("```")
+    if fence_start == -1:
+        return cleaned
+    fence_end = cleaned.find("\n", fence_start)
+    if fence_end == -1:
+        return cleaned
+    closing = cleaned.find("```", fence_end)
+    if closing == -1:
+        return cleaned
+    return cleaned[fence_end + 1 : closing].strip()
 
 
 def _parse_tasks(text: str) -> list[PlannedTask] | None:
