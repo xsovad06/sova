@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
@@ -79,7 +79,7 @@ class PlannerRole(AgentRole):
     name = "planner"
     description = "Analyze project and propose new tasks"
     allowed_input_states: frozenset[TaskState] = frozenset()
-    output_state: TaskState | None = None  # type: ignore[assignment]
+    output_state: TaskState | None = None
 
     def validate_preconditions(self, task: Task, force: bool = False) -> bool:
         return True
@@ -101,7 +101,8 @@ class PlannerRole(AgentRole):
         vision = self._read_vision(ctx)
 
         # Build prompt
-        issue_lines = "\n".join(f"- #{t.id}: {t.title} [{t.state}]" for t in open_issues) or "(no open issues)"
+        valid_issues = [t for t in open_issues if hasattr(t, "id") and hasattr(t, "title") and hasattr(t, "state")]
+        issue_lines = "\n".join(f"- #{t.id}: {t.title} [{t.state}]" for t in valid_issues) or "(no open issues)"
 
         prompt = _PLANNING_PROMPT.format(
             repo=ctx.config.github_repo or ctx.project_dir.name,
@@ -178,7 +179,7 @@ class PlannerRole(AgentRole):
                 log.warning("planner.parse_not_list")
                 return None
             return [PlannedTask.model_validate(item) for item in data]
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, ValidationError) as exc:
             log.warning("planner.parse_failed", error=str(exc), exc_info=True)
             return None
 
@@ -186,9 +187,13 @@ class PlannerRole(AgentRole):
         task_dicts = [t.model_dump() for t in tasks]
 
         # File-based handoff for dashboard
+        # Planners are issueless; use "planner" as the issue identifier
+        # so the file is named handoff-planner.json (not the shared legacy
+        # handoff.json), preserving per-issue isolation for parallel agents.
         dashboard_handoff = DashboardHandoff(
             source="planner",
             status="completed",
+            issue=ctx.issue_number or "planner",
             summary=f"Proposed {len(tasks)} tasks",
             details={"planned_tasks": task_dicts},
             next_actions=[],
