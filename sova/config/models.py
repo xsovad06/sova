@@ -80,10 +80,14 @@ class LLMConfig(BaseSettings):
     def _validate_routing_keys(cls, v: dict[str, str]) -> dict[str, str]:
         invalid = set(v.keys()) - _VALID_ROUTING_TIERS
         if invalid:
-            raise ValueError(
-                f"Invalid routing keys: {', '.join(sorted(invalid))}. "
-                f"Valid keys: {', '.join(sorted(_VALID_ROUTING_TIERS))}"
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Ignoring unknown routing keys: %s (valid: %s)",
+                ", ".join(sorted(invalid)),
+                ", ".join(sorted(_VALID_ROUTING_TIERS)),
             )
+            return {k: v_ for k, v_ in v.items() if k in _VALID_ROUTING_TIERS}
         return v
 
     @model_validator(mode="after")
