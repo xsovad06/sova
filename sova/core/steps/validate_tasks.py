@@ -14,6 +14,7 @@ from sova.utils.logging import get_logger
 log = get_logger(component="step.validate_tasks")
 
 _MIN_VALID_TASKS = 3
+_LOG_REJECTED = "validate.rejected"
 
 _VAGUE_PREFIXES = (
     "improve ",
@@ -73,6 +74,26 @@ def _check_duplicate_against_issues(
     return None
 
 
+def _validate_task(
+    task: PlannedTask, open_issues: list[dict], accepted_titles: list[str]
+) -> str | None:
+    """Run all checks on a single task. Return rejection reason or None if valid."""
+    for check in (_check_specificity, _check_testability):
+        reason = check(task)
+        if reason:
+            return reason
+
+    reason = _check_duplicate_against_issues(task, open_issues)
+    if reason:
+        return reason
+
+    for accepted in accepted_titles:
+        if _word_overlap(task.title, accepted) > 0.6:
+            return f"Self-duplicate: '{task.title}' overlaps with '{accepted}'"
+
+    return None
+
+
 class ValidateTasksStep(BaseStep):
     name = "validate_tasks"
 
@@ -87,42 +108,14 @@ class ValidateTasksStep(BaseStep):
 
         valid: list[PlannedTask] = []
         rejected: list[str] = []
-
-        # Track accepted titles for self-deduplication
         accepted_titles: list[str] = []
 
         for task in proposed:
-            # Specificity
-            reason = _check_specificity(task)
+            reason = _validate_task(task, open_issues, accepted_titles)
             if reason:
                 rejected.append(reason)
-                log.debug("validate.rejected", reason=reason)
+                log.debug(_LOG_REJECTED, reason=reason)
                 continue
-
-            # Testability
-            reason = _check_testability(task)
-            if reason:
-                rejected.append(reason)
-                log.debug("validate.rejected", reason=reason)
-                continue
-
-            # Duplicate against open issues
-            reason = _check_duplicate_against_issues(task, open_issues)
-            if reason:
-                rejected.append(reason)
-                log.debug("validate.rejected", reason=reason)
-                continue
-
-            # Self-deduplication
-            is_self_dup = False
-            for accepted in accepted_titles:
-                if _word_overlap(task.title, accepted) > 0.6:
-                    rejected.append(f"Self-duplicate: '{task.title}' overlaps with '{accepted}'")
-                    is_self_dup = True
-                    break
-            if is_self_dup:
-                continue
-
             valid.append(task)
             accepted_titles.append(task.title)
 
