@@ -17,6 +17,32 @@ from sova.utils.shell import run
 log = get_logger(component="step.develop")
 
 
+def _load_spec_for_develop(ctx: ExecutionContext) -> str:
+    """Load approved spec sections as compressed context for the develop step.
+
+    Returns the spec content string, or empty string if no approved spec exists.
+    """
+    try:
+        from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, extract_sections_from_text
+        from sova.dashboard.services.spec_service import read_spec
+
+        spec_data = read_spec(ctx.issue_number, ctx.project_dir)
+        if spec_data is None or spec_data.get("status") != "approved":
+            return ""
+
+        content = extract_sections_from_text(spec_data["raw_content"], DEVELOP_SECTIONS)
+        if content:
+            log.info(
+                "step.develop.spec_compression",
+                issue=ctx.issue_number,
+                spec_chars=len(content),
+            )
+        return content
+    except Exception:
+        log.debug("step.develop.spec_load_failed", exc_info=True)
+        return ""
+
+
 async def _append_implementation_notes(ctx: ExecutionContext) -> None:
     """Summarize implementation deviations and append to spec (non-fatal)."""
     try:
@@ -75,10 +101,21 @@ class DevelopStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.develop", issue=ctx.issue_number, cwd=str(ctx.working_dir))
 
+        args = ctx.issue_number
+        spec_context = _load_spec_for_develop(ctx)
+        if spec_context:
+            # Pass spec as inline context so the /develop agent uses it directly
+            # instead of re-fetching the verbose issue body from GitHub.
+            args = (
+                f"{ctx.issue_number}\n\n"
+                "## Spec Context (use as primary task context -- do NOT re-fetch the issue body)\n\n"
+                f"{spec_context}"
+            )
+
         try:
             result = await invoke_command(
                 "/develop",
-                args=ctx.issue_number,
+                args=args,
                 model=ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,

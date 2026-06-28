@@ -37,7 +37,7 @@ You are an expert in the project's tech stack (see CLAUDE.md and AGENTS.md for c
 
 ### Step 1: Understand the Context
 
-1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `$ARGUMENTS` if it's a number). If a spec exists with `Status: approved`, read it and follow its implementation plan as the primary guide for this task. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration.
+1. Check for an approved spec: look for `.claude/specs/{issue-number}-*.md` (where issue-number matches `$ARGUMENTS` if it's a number). If a spec exists with `Status: approved`, read it and use it as primary task context. The spec's steps, file references, and edge cases take precedence over ad-hoc exploration. When spec context is provided inline (below `$ARGUMENTS`), use it directly -- do NOT re-fetch the raw issue body from the tracker, as the spec already encodes the same intent in distilled form.
 2. Read the project's CLAUDE.md and AGENTS.md for conventions
 3. Read agent memory files if they exist:
    - `.claude/agent-memory/MEMORY.md`

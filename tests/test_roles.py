@@ -1777,6 +1777,77 @@ class TestTriageSkipPatterns:
 
 
 # ---------------------------------------------------------------------------
+# TriageRole -- assess_task_with_llm
+# ---------------------------------------------------------------------------
+
+
+class TestTriageAssessWithLLM:
+    """Tests for assess_task_with_llm (covers the simplified resolve_model call)."""
+
+    async def test_successful_llm_assessment(self) -> None:
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = MagicMock(
+            id="42", title="Add caching", body="Implement Redis caching layer.", labels=["feature"], state="backlog"
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+
+        llm_response = json.dumps(
+            {
+                "suitability": "ready",
+                "confidence": 0.9,
+                "reasoning": "Well-specified task.",
+                "missing_context": [],
+                "estimated_complexity": "moderate",
+                "suggested_role": "developer",
+            }
+        )
+        mock_invoke = AsyncMock(return_value=LLMResult(text=llm_response, model="haiku", cost_usd=Decimal("0.01")))
+
+        with patch("sova.llm.client.invoke", mock_invoke):
+            assessment = await role.assess_task_with_llm(task, ctx)
+
+        assert assessment.suitability == "ready"
+        assert assessment.confidence == 0.9
+
+    async def test_llm_failure_falls_back_to_heuristic(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = MagicMock(id="42", title="Fix bug", body="Description of the bug.", labels=[], state="backlog")
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+
+        mock_invoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        with patch("sova.llm.client.invoke", mock_invoke):
+            assessment = await role.assess_task_with_llm(task, ctx)
+
+        # Falls back to heuristic (body exists but short, no criteria)
+        assert assessment.suitability in ("ready", "needs_spec")
+
+    async def test_empty_body_skips_llm(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = MagicMock(id="42", title="No body", body="", labels=[], state="backlog")
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+
+        assessment = await role.assess_task_with_llm(task, ctx)
+
+        assert assessment.suitability == "needs_spec"
+
+
+# ---------------------------------------------------------------------------
 # ReviewerRole -- LLM-based review
 # ---------------------------------------------------------------------------
 
