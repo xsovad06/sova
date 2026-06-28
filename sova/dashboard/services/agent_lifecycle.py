@@ -898,9 +898,7 @@ _RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
 _PLANNER_ONLY = frozenset({"scan_project", "generate_tasks", "validate_tasks"})
 
 
-def _detect_pipeline(
-    current_step: str | None, role: str | None, pr_number: int | None
-) -> tuple[list[str], str]:
+def _detect_pipeline(current_step: str | None, role: str | None, pr_number: int | None) -> tuple[list[str], str]:
     """Return (pipeline_steps, variant_name) for the given run context."""
     if role == "planner" or (current_step is not None and current_step in _PLANNER_ONLY):
         return PLANNER_PIPELINE, "planner"

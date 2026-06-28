@@ -74,9 +74,7 @@ def _check_duplicate_against_issues(
     return None
 
 
-def _validate_task(
-    task: PlannedTask, open_issues: list[dict], accepted_titles: list[str]
-) -> str | None:
+def _validate_task(task: PlannedTask, open_issues: list[dict], accepted_titles: list[str]) -> str | None:
     """Run all checks on a single task. Return rejection reason or None if valid."""
     for check in (_check_specificity, _check_testability):
         reason = check(task)

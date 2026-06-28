@@ -360,9 +360,7 @@ class TestParseTasks:
     def test_skips_blank_title(self) -> None:
         import json
 
-        data = json.dumps(
-            [{"title": "  ", "body": "has body", "labels": [], "priority": "low", "complexity": "small"}]
-        )
+        data = json.dumps([{"title": "  ", "body": "has body", "labels": [], "priority": "low", "complexity": "small"}])
         result = _parse_tasks(data)
         assert result is not None
         assert len(result) == 0
@@ -638,7 +636,9 @@ class TestValidateTaskHelper:
         from sova.core.steps.validate_tasks import _validate_task
 
         task = _make_valid_task()
-        task.body = "This task involves a significant refactor of the data pipeline to improve throughput and reduce latency."
+        task.body = (
+            "This task involves a significant refactor of the data pipeline to improve throughput and reduce latency."
+        )
         reason = _validate_task(task, [], [])
         assert reason is not None
         assert "acceptance criteria" in reason.lower()
