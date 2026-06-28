@@ -61,6 +61,9 @@ class TaskSourceConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
 
 
+_VALID_ROUTING_TIERS = frozenset({"trivial", "simple", "moderate", "complex", "epic"})
+
+
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
@@ -68,8 +71,20 @@ class LLMConfig(BaseSettings):
     model: str = ""
     fallback_model: str = ""
     api_base: str = ""
+    routing: dict[str, str] = Field(default_factory=dict)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
+
+    @field_validator("routing")
+    @classmethod
+    def _validate_routing_keys(cls, v: dict[str, str]) -> dict[str, str]:
+        invalid = set(v.keys()) - _VALID_ROUTING_TIERS
+        if invalid:
+            raise ValueError(
+                f"Invalid routing keys: {', '.join(sorted(invalid))}. "
+                f"Valid keys: {', '.join(sorted(_VALID_ROUTING_TIERS))}"
+            )
+        return v
 
     @model_validator(mode="after")
     def _default_model_for_litellm(self) -> LLMConfig:

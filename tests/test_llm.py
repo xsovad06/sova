@@ -331,6 +331,101 @@ class TestResolveModel:
         roles = RolesConfig()
         assert resolve_model("unknown_role", roles) is None
 
+    def test_complexity_fallback_when_no_role_model(self) -> None:
+        from sova.config.models import RolesConfig
+        from sova.llm.client import resolve_model
+
+        roles = RolesConfig()
+        assert resolve_model("developer", roles, complexity=ComplexityTier.TRIVIAL) == "haiku"
+        assert resolve_model("developer", roles, complexity=ComplexityTier.COMPLEX) == "opus"
+
+    def test_role_model_takes_priority_over_complexity(self) -> None:
+        from sova.config.models import RolesConfig
+        from sova.llm.client import resolve_model
+
+        roles = RolesConfig(researcher_model="sonnet")
+        result = resolve_model("researcher", roles, complexity=ComplexityTier.EPIC)
+        assert result == "sonnet"
+
+    def test_complexity_with_llm_config_override(self) -> None:
+        from sova.config.models import LLMConfig, RolesConfig
+        from sova.llm.client import resolve_model
+
+        llm_cfg = LLMConfig(routing={"moderate": "opus"})
+        roles = RolesConfig()
+        result = resolve_model("developer", roles, complexity=ComplexityTier.MODERATE, llm_config=llm_cfg)
+        assert result == "opus"
+
+    def test_no_complexity_returns_none(self) -> None:
+        from sova.config.models import RolesConfig
+        from sova.llm.client import resolve_model
+
+        roles = RolesConfig()
+        assert resolve_model("developer", roles) is None
+
+
+# ---------------------------------------------------------------------------
+# route_model()
+# ---------------------------------------------------------------------------
+
+
+class TestRouteModel:
+    def test_default_routing_all_tiers(self) -> None:
+        from sova.llm.routing import route_model
+
+        assert route_model(ComplexityTier.TRIVIAL) == "haiku"
+        assert route_model(ComplexityTier.SIMPLE) == "sonnet"
+        assert route_model(ComplexityTier.MODERATE) == "sonnet"
+        assert route_model(ComplexityTier.COMPLEX) == "opus"
+        assert route_model(ComplexityTier.EPIC) == "opus"
+
+    def test_partial_config_override(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"moderate": "opus"})
+        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == "opus"
+        # Unspecified tiers use defaults
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
+        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == "sonnet"
+
+    def test_full_config_override(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(
+            routing={
+                "trivial": "sonnet",
+                "simple": "sonnet",
+                "moderate": "opus",
+                "complex": "opus",
+                "epic": "opus",
+            }
+        )
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "sonnet"
+        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == "opus"
+
+    def test_empty_config_uses_defaults(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={})
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
+        assert route_model(ComplexityTier.EPIC, llm_config=llm_cfg) == "opus"
+
+    def test_invalid_keys_rejected(self) -> None:
+        from pydantic import ValidationError
+
+        from sova.config.models import LLMConfig
+
+        with pytest.raises(ValidationError, match="nonexistent"):
+            LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
+
+    def test_none_llm_config_uses_defaults(self) -> None:
+        from sova.llm.routing import route_model
+
+        assert route_model(ComplexityTier.COMPLEX, llm_config=None) == "opus"
+
 
 # ---------------------------------------------------------------------------
 # Provider: _parse_result()

@@ -12,8 +12,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.config.models import RolesConfig
+from sova.config.models import LLMConfig, RolesConfig
+from sova.llm.complexity import ComplexityTier
 from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.routing import route_model
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -91,23 +93,39 @@ async def invoke_streaming(
         yield event
 
 
-def resolve_model(role: str, roles_config: RolesConfig) -> str | None:
+_ROLE_MODEL_FIELDS: dict[str, str] = {
+    "researcher": "researcher_model",
+    "triage": "triage_model",
+}
+
+
+def resolve_model(
+    role: str,
+    roles_config: RolesConfig,
+    *,
+    complexity: ComplexityTier | None = None,
+    llm_config: LLMConfig | None = None,
+) -> str | None:
     """Resolve the model for a given agent role.
+
+    Priority: role-specific config > complexity-based routing > None.
 
     Args:
         role: Agent role name (e.g., "researcher", "triage", "developer").
         roles_config: The roles configuration section.
+        complexity: Task complexity tier for model routing fallback.
+        llm_config: LLM configuration with optional routing overrides.
 
     Returns:
-        Model alias string, or None if no role-specific model is configured.
+        Model alias string, or None if no model is resolved.
     """
-    role_model_fields = {
-        "researcher": "researcher_model",
-        "triage": "triage_model",
-    }
-
-    field_name = role_model_fields.get(role)
+    field_name = _ROLE_MODEL_FIELDS.get(role)
     if field_name:
-        return getattr(roles_config, field_name, None)
+        value = getattr(roles_config, field_name, None)
+        if value:
+            return value
+
+    if complexity is not None:
+        return route_model(complexity, llm_config=llm_config)
 
     return None
