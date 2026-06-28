@@ -251,6 +251,7 @@ async def start_agent(
     slug: str | None = None,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
+    _skip_handoff_clear: bool = False,
 ) -> dict:
     """Start an agent process for the given issue."""
     from sova.dashboard.services.agent_output import _read_output, _read_stderr
@@ -288,15 +289,16 @@ async def start_agent(
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
-        try:
-            from sova.dashboard.services import handoff_service
+        if not _skip_handoff_clear:
+            try:
+                from sova.dashboard.services import handoff_service
 
-            if issue:
-                handoff_service.clear_handoff(cwd, issue=issue)
-            else:
-                handoff_service.clear_handoff(cwd, issue=role or "run")
-        except Exception:
-            log.debug("agent.clear_handoff_failed", issue=issue or role, exc_info=True)
+                if issue:
+                    handoff_service.clear_handoff(cwd, issue=issue)
+                else:
+                    handoff_service.clear_handoff(cwd, issue=role or "run")
+            except Exception:
+                log.debug("agent.clear_handoff_failed", issue=issue or role, exc_info=True)
 
         cmd_parts = ["sova", "run"]
         if issue:
@@ -704,6 +706,9 @@ async def resume_from_approval(run_id: int) -> dict:
     Returns a dict with the new ``run_id``, ``resumed_from``, ``issue``, and ``role``.
     Raises appropriate errors (via returned dict) for 404 and 409 cases.
     """
+    from sqlalchemy import update
+
+    from sova.core.state import TaskStatus
     from sova.db.models import TaskRun
     from sova.db.session import get_session
 
@@ -714,28 +719,50 @@ async def resume_from_approval(run_id: int) -> dict:
     if task_run is None:
         return {"error": "not_found", "detail": f"TaskRun #{run_id} not found"}
 
-    from sova.core.state import TaskStatus
-
     if task_run.status != TaskStatus.AWAITING_APPROVAL:
         return {
             "error": "conflict",
             "detail": f"Run #{run_id} has status '{task_run.status}', expected 'awaiting_approval'",
         }
 
+    # Atomic CAS: claim the run so a concurrent request sees "pending" and fails
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(
+                update(TaskRun)
+                .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.AWAITING_APPROVAL)
+                .values(status=TaskStatus.PENDING)
+            )
+            if result.rowcount == 0:
+                return {
+                    "error": "conflict",
+                    "detail": f"Run #{run_id} was already claimed by another request",
+                }
+
     issue = task_run.issue_number or ""
     role = task_run.role or "developer"
     pr_number = task_run.pr_number
 
-    # Spawn first, clear state second (cookbook: approval-then-spawn ordering)
+    # Spawn first, clear state second -- _skip_handoff_clear prevents start_agent
+    # from clearing the approval handoff before spawn succeeds
     result = await start_agent(
         issue,
         role=role,
         resume_run_id=run_id,
         pr_number=pr_number,
         force=True,
+        _skip_handoff_clear=True,
     )
 
     if "error" in result:
+        # Revert the CAS so the approval button reappears on failure
+        async with await get_session() as session:
+            async with session.begin():
+                await session.execute(
+                    update(TaskRun)
+                    .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.PENDING)
+                    .values(status=TaskStatus.AWAITING_APPROVAL)
+                )
         return result
 
     # Clear handoff file on successful spawn
