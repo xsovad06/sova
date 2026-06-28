@@ -1067,6 +1067,10 @@ async function resumeFromApproval(runId) {
       return;
     }
     var result = await res.json();
+    if (result.error) {
+      showToast(result.detail || 'Failed to resume', 'error');
+      return;
+    }
     if (result.run_id) viewLogs(result.run_id);
     loadAgents();
     loadTaskCards();
