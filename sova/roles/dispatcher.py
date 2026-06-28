@@ -12,6 +12,7 @@ from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
 from sova.roles.base import AgentRole, RoleResult
 from sova.roles.developer import DeveloperRole
+from sova.roles.planner import PlannerRole
 from sova.roles.researcher import ResearcherRole
 from sova.roles.reviewer import ReviewerRole
 from sova.roles.triage import TriageRole
@@ -25,6 +26,7 @@ _ROLES: dict[str, type[AgentRole]] = {
     "researcher": ResearcherRole,
     "developer": DeveloperRole,
     "reviewer": ReviewerRole,
+    "planner": PlannerRole,
 }
 
 BUILTIN_ROLE_NAMES: frozenset[str] = frozenset(_ROLES.keys())
