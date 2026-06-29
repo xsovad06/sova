@@ -145,6 +145,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 (All promoted to Tier 1: dispose engine after Alembic migrations; self-heal corrupted `alembic_version`.)
 
+- **Migration file names starting with digits break `pkgutil.resolve_name`** -- Python 3.12.13+ and 3.14 route `unittest.mock.patch()` string targets through `pkgutil.resolve_name()`, which rejects module name components starting with digits (e.g., `011_add_model_selection_reason`). Use `patch.object()` with pre-imported module references instead of string-based `patch()`. For importing such modules at runtime, use `importlib.util.spec_from_file_location()` which bypasses name validation. PR #267 CI failure. [confirmed: 1]
+
 - **NOT NULL columns need `server_default` in Alembic migrations** -- SQLAlchemy's `default=0` is Python-side only; `ALTER TABLE ADD COLUMN ... NOT NULL` without `server_default` fails on tables with existing rows. Always pair `nullable=False` with `server_default=text("0")` (or appropriate value) in migration files. PR #201 review + CodeRabbit. [confirmed: 0]
 - **`init_db()` must register engine in `_engines` dict** -- `get_session(project_dir=...)` resolves the DB URL via `_get_database_url()` then looks it up in `_engines`. If `init_db()` only stores in global `_session_factory` but not `_engines`, `get_session(project_dir=...)` creates a second engine for the same URL -- silently splitting data across two in-memory DBs in tests. Fix: `_engines[url] = (_engine, _session_factory)` in `init_db()`. File: `sova/db/session.py`. PR #243. [confirmed: 1]
 
