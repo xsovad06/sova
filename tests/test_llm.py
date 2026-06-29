@@ -313,8 +313,8 @@ class TestResolveModel:
         from sova.llm.client import resolve_model
 
         roles = RolesConfig(researcher_model="opus", triage_model="haiku")
-        assert resolve_model("researcher", roles) == "opus"
-        assert resolve_model("triage", roles) == "haiku"
+        assert resolve_model("researcher", roles) == ("opus", "role:researcher->opus")
+        assert resolve_model("triage", roles) == ("haiku", "role:triage->haiku")
 
     def test_resolve_developer_uses_default(self) -> None:
         from sova.config.models import RolesConfig
@@ -336,8 +336,10 @@ class TestResolveModel:
         from sova.llm.client import resolve_model
 
         roles = RolesConfig()
-        assert resolve_model("developer", roles, complexity=ComplexityTier.TRIVIAL) == "haiku"
-        assert resolve_model("developer", roles, complexity=ComplexityTier.COMPLEX) == "opus"
+        result_trivial = resolve_model("developer", roles, complexity=ComplexityTier.TRIVIAL)
+        assert result_trivial == ("haiku", "complexity:trivial->haiku")
+        result_complex = resolve_model("developer", roles, complexity=ComplexityTier.COMPLEX)
+        assert result_complex == ("opus", "complexity:complex->opus")
 
     def test_mapped_role_falls_back_to_complexity_when_model_unset(self) -> None:
         """A mapped role (researcher) with no explicit model unset falls back to complexity routing."""
@@ -346,7 +348,7 @@ class TestResolveModel:
 
         roles = RolesConfig(researcher_model="")
         result = resolve_model("researcher", roles, complexity=ComplexityTier.TRIVIAL)
-        assert result == "haiku"
+        assert result == ("haiku", "complexity:trivial->haiku")
 
     def test_role_model_takes_priority_over_complexity(self) -> None:
         from sova.config.models import RolesConfig
@@ -354,7 +356,7 @@ class TestResolveModel:
 
         roles = RolesConfig(researcher_model="sonnet")
         result = resolve_model("researcher", roles, complexity=ComplexityTier.EPIC)
-        assert result == "sonnet"
+        assert result == ("sonnet", "role:researcher->sonnet")
 
     def test_complexity_with_llm_config_override(self) -> None:
         from sova.config.models import LLMConfig, RolesConfig
@@ -363,7 +365,7 @@ class TestResolveModel:
         llm_cfg = LLMConfig(routing={"moderate": "opus"})
         roles = RolesConfig()
         result = resolve_model("developer", roles, complexity=ComplexityTier.MODERATE, llm_config=llm_cfg)
-        assert result == "opus"
+        assert result == ("opus", "config:override->opus")
 
     def test_no_complexity_returns_none(self) -> None:
         from sova.config.models import RolesConfig
@@ -382,21 +384,21 @@ class TestRouteModel:
     def test_default_routing_all_tiers(self) -> None:
         from sova.llm.routing import route_model
 
-        assert route_model(ComplexityTier.TRIVIAL) == "haiku"
-        assert route_model(ComplexityTier.SIMPLE) == "sonnet"
-        assert route_model(ComplexityTier.MODERATE) == "sonnet"
-        assert route_model(ComplexityTier.COMPLEX) == "opus"
-        assert route_model(ComplexityTier.EPIC) == "opus"
+        assert route_model(ComplexityTier.TRIVIAL) == ("haiku", "complexity:trivial->haiku")
+        assert route_model(ComplexityTier.SIMPLE) == ("sonnet", "complexity:simple->sonnet")
+        assert route_model(ComplexityTier.MODERATE) == ("sonnet", "complexity:moderate->sonnet")
+        assert route_model(ComplexityTier.COMPLEX) == ("opus", "complexity:complex->opus")
+        assert route_model(ComplexityTier.EPIC) == ("opus", "complexity:epic->opus")
 
     def test_partial_config_override(self) -> None:
         from sova.config.models import LLMConfig
         from sova.llm.routing import route_model
 
         llm_cfg = LLMConfig(routing={"moderate": "opus"})
-        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == "opus"
+        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == ("opus", "config:override->opus")
         # Unspecified tiers use defaults
-        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
-        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == "sonnet"
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ("haiku", "complexity:trivial->haiku")
+        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == ("sonnet", "complexity:simple->sonnet")
 
     def test_full_config_override(self) -> None:
         from sova.config.models import LLMConfig
@@ -411,16 +413,16 @@ class TestRouteModel:
                 "epic": "opus",
             }
         )
-        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "sonnet"
-        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == "opus"
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ("sonnet", "config:override->sonnet")
+        assert route_model(ComplexityTier.MODERATE, llm_config=llm_cfg) == ("opus", "config:override->opus")
 
     def test_empty_config_uses_defaults(self) -> None:
         from sova.config.models import LLMConfig
         from sova.llm.routing import route_model
 
         llm_cfg = LLMConfig(routing={})
-        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "haiku"
-        assert route_model(ComplexityTier.EPIC, llm_config=llm_cfg) == "opus"
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ("haiku", "complexity:trivial->haiku")
+        assert route_model(ComplexityTier.EPIC, llm_config=llm_cfg) == ("opus", "complexity:epic->opus")
 
     def test_invalid_keys_accepted_and_ignored(self) -> None:
         from sova.config.models import LLMConfig
@@ -429,9 +431,9 @@ class TestRouteModel:
         llm_cfg = LLMConfig(routing={"nonexistent": "haiku", "trivial": "opus"})
         # Unknown keys are accepted in config but ignored during lookup
         assert "nonexistent" in llm_cfg.routing
-        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == "opus"
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ("opus", "config:override->opus")
         # Unrecognized key has no effect on any tier
-        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == "sonnet"
+        assert route_model(ComplexityTier.SIMPLE, llm_config=llm_cfg) == ("sonnet", "complexity:simple->sonnet")
 
     def test_empty_string_override_falls_back(self) -> None:
         from sova.config.models import LLMConfig
@@ -439,7 +441,7 @@ class TestRouteModel:
 
         llm_cfg = LLMConfig(routing={"trivial": ""})
         # Empty string is a valid override value (not None), returned as-is
-        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ""
+        assert route_model(ComplexityTier.TRIVIAL, llm_config=llm_cfg) == ("", "config:override->")
 
     def test_unknown_complexity_tier_falls_back_to_sonnet(self) -> None:
         from unittest.mock import MagicMock
@@ -449,12 +451,12 @@ class TestRouteModel:
         # Simulate a future ComplexityTier member not in _DEFAULT_ROUTING
         fake_tier = MagicMock()
         fake_tier.value = "hypothetical"
-        assert route_model(fake_tier) == "sonnet"
+        assert route_model(fake_tier) == ("sonnet", "complexity:hypothetical->sonnet")
 
     def test_none_llm_config_uses_defaults(self) -> None:
         from sova.llm.routing import route_model
 
-        assert route_model(ComplexityTier.COMPLEX, llm_config=None) == "opus"
+        assert route_model(ComplexityTier.COMPLEX, llm_config=None) == ("opus", "complexity:complex->opus")
 
 
 # ---------------------------------------------------------------------------
@@ -577,6 +579,31 @@ class TestRecordCost:
 
         assert record.task_run_id is None
         assert record.phase == "triage"
+
+    async def test_record_cost_with_model_selection_reason(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(text="output", model="haiku", cost_usd=Decimal("0.005"))
+
+        record = await record_cost(
+            result=result,
+            phase="triage",
+            issue="55",
+            model_selection_reason="role:triage->haiku",
+        )
+
+        assert record.model_selection_reason == "role:triage->haiku"
+
+    async def test_record_cost_reason_defaults_to_none(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(text="output", model="opus", cost_usd=Decimal("0.50"))
+
+        record = await record_cost(result=result, phase="develop", issue="56")
+
+        assert record.model_selection_reason is None
 
 
 # ---------------------------------------------------------------------------

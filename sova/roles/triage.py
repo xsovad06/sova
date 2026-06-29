@@ -130,7 +130,8 @@ class TriageRole(AgentRole):
         try:
             from sova.llm.client import invoke, resolve_model
 
-            model = resolve_model("triage", ctx.config.roles, llm_config=ctx.config.llm)
+            resolved = resolve_model("triage", ctx.config.roles, llm_config=ctx.config.llm)
+            model = resolved[0] if resolved else None
             prompt = _ASSESSMENT_PROMPT.format(
                 issue_id=task.id,
                 title=task.title,

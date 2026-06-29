@@ -60,3 +60,13 @@ async def costs_by_model():
     except Exception:
         log.warning("costs.by_model.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch costs by model")
+
+
+@router.get("/costs/by-routing", responses={500: {"description": "Failed to fetch costs by routing"}})
+async def costs_by_routing():
+    try:
+        async with await get_session() as session:
+            return await cost_service.get_by_routing(session)
+    except Exception:
+        log.warning("costs.by_routing.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch costs by routing")

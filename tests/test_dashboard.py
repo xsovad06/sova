@@ -447,6 +447,20 @@ class TestCostsAPI:
         assert isinstance(data, list)
         assert any(m["model"] == "opus" for m in data)
 
+    async def test_costs_by_routing_empty(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/costs/by-routing")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+
+    async def test_costs_by_routing_with_data(self, client: AsyncClient, seed_data) -> None:
+        resp = await client.get("/api/costs/by-routing")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        # All seed records have no model_selection_reason, so grouped as "untracked"
+        assert any(r["reason"] == "untracked" for r in data)
+
 
 # ---------------------------------------------------------------------------
 # Control API

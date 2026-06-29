@@ -26,15 +26,16 @@ def route_model(
     complexity: ComplexityTier,
     *,
     llm_config: LLMConfig | None = None,
-) -> str:
+) -> tuple[str, str]:
     """Select model alias based on task complexity.
 
     Checks llm_config.routing overrides first, falls back to _DEFAULT_ROUTING.
-    Returns a model alias string (e.g., "haiku", "sonnet", "opus").
+    Returns (model_alias, reason) tuple.
     """
     if llm_config is not None:
         override = llm_config.routing.get(complexity.value)
         if override is not None:
-            return override
+            return override, f"config:override->{override}"
 
-    return _DEFAULT_ROUTING.get(complexity, "sonnet")
+    model = _DEFAULT_ROUTING.get(complexity, "sonnet")
+    return model, f"complexity:{complexity.value}->{model}"
