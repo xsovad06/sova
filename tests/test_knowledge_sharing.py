@@ -792,8 +792,9 @@ def test_compute_content_hash_unicode() -> None:
     """compute_content_hash() handles unicode consistently."""
     from sova.knowledge.sharing import compute_content_hash
 
-    h1 = compute_content_hash("Prevence chyb v kodu")
-    h2 = compute_content_hash("Prevence chyb v kodu")
+    sample = "Prevence chyb v k\u00f3du"  # non-ASCII: o-acute
+    h1 = compute_content_hash(sample)
+    h2 = compute_content_hash(sample)
     assert h1 == h2
     assert len(h1) == 16
 
@@ -878,6 +879,10 @@ More content.
     # so "Code Example" section is truncated. We get at least the second entry.
     titles = [e.title for e in entries]
     assert "Second Entry" in titles
+    # Pin exact count: the --- inside the code block creates an extra split,
+    # so "Code Example" is present but truncated. Both entries are parsed.
+    assert len(entries) == 2
+    assert "Code Example" in titles
 
 
 def test_parse_shared_file_non_numeric_memory_id(tmp_path: Path) -> None:
@@ -997,9 +1002,11 @@ def test_render_shared_file_auto_computes_hash() -> None:
 def test_render_shared_file_defaults_repo_and_date() -> None:
     """render_shared_file() uses 'unknown' repo and today's date when missing."""
     from datetime import date
+    from unittest.mock import patch
 
     from sova.knowledge.sharing import SharedEntry, render_shared_file
 
+    frozen_date = date(2026, 1, 15)
     entries = [
         SharedEntry(
             memory_id=1,
@@ -1011,9 +1018,12 @@ def test_render_shared_file_defaults_repo_and_date() -> None:
             content_hash="abcdef1234567890",
         ),
     ]
-    result = render_shared_file(entries)
+    with patch("sova.knowledge.sharing.date") as mock_date:
+        mock_date.today.return_value = frozen_date
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        result = render_shared_file(entries)
     assert "repo:unknown" in result
-    assert f"date:{date.today().isoformat()}" in result
+    assert "date:2026-01-15" in result
 
 
 # ---------------------------------------------------------------------------

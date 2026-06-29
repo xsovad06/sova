@@ -547,8 +547,11 @@ class TestWatchLoopEdgeCases:
         adapter = _mock_adapter(tasks=tasks)
         loop = WatchLoop(config=_make_config(), adapter=adapter)
 
-        actionable = await loop.scan()
-        # IN_PROGRESS (priority 1) before BACKLOG (priority 3)
+        # Patch _STATE_PRIORITY to exclude BACKLOG, forcing the .get(state, 99) fallback
+        patched_priority = {TaskState.RESEARCHED: 0, TaskState.IN_PROGRESS: 1, TaskState.TRIAGED: 2}
+        with patch("sova.scheduler.watch._STATE_PRIORITY", patched_priority):
+            actionable = await loop.scan()
+        # IN_PROGRESS (priority 1) before BACKLOG (fallback 99)
         assert actionable[0].id == "2"
         assert actionable[1].id == "1"
 
@@ -816,13 +819,15 @@ class TestReadPidFile:
             result = read_pid_file(config)
 
         assert result is None
+        assert not pid_file.exists(), "stale PID file should be removed"
 
-    def test_read_pid_file_no_config_uses_default(self) -> None:
+    def test_read_pid_file_no_config_uses_default(self, tmp_path: Path) -> None:
         from sova.scheduler.server import read_pid_file
 
-        result = read_pid_file(None)
-        # Default path likely doesn't exist or PID is stale -- either way returns None or valid PID
-        assert result is None or isinstance(result, int)
+        with patch("sova.scheduler.server._DEFAULT_PID_DIR", tmp_path):
+            result = read_pid_file(None)
+        # tmp_path has no PID file, so result is None
+        assert result is None
 
     def test_read_pid_file_whitespace_around_pid(self, tmp_path: Path) -> None:
         from sova.scheduler.server import read_pid_file
