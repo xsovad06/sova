@@ -4232,6 +4232,14 @@ class TestSetupAPI:
         assert resp.status_code == 400
         assert "Failed to load project config" in resp.json()["detail"]
 
+    async def test_create_milestones_returns_404_for_missing_dir(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/setup/milestones/create",
+            json={"project_path": "/nonexistent/path/that/does/not/exist"},
+        )
+        assert resp.status_code == 404
+        assert "Directory not found" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Work Service -- direct service tests
