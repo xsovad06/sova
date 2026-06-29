@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-06-26
+> **Last updated**: 2026-06-28
 
 ## What This Becomes
 
@@ -299,6 +299,7 @@ Target: October 2026.
 | -- | Additional adapters | Linear, Odoo task source adapters |
 | -- | Additional personas | Go, React, Rust framework guidance |
 | -- | Intelligent model routing | dynamically select Opus/Sonnet/Haiku based on task complexity |
+| #254-259 | Resource monitoring | per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor |
 
 ## Design Principles
 

@@ -201,7 +201,7 @@ def _get_actions(
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
         S.PR_READY_TO_MERGE: (
             cmd("integrate", "Integrate", "success", "integrate-pr"),
-            [review],
+            [review, address],
         ),
         S.MERGED: (cmd("after_merge", "Post-Merge", "purple", "after-merge"), []),
     }
