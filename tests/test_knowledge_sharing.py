@@ -805,8 +805,11 @@ def test_compute_content_hash_empty_string() -> None:
 
     result = compute_content_hash("")
     assert len(result) == 16
-    # Empty and whitespace-only should hash the same (both strip to "")
+    # compute_content_hash() calls content.strip() before hashing,
+    # so empty and whitespace-only inputs produce the same hash.
     assert result == compute_content_hash("   ")
+    # Confirm stripping is the reason: non-whitespace content differs
+    assert result != compute_content_hash("x")
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +886,10 @@ More content.
     # so "Code Example" is present but truncated. Both entries are parsed.
     assert len(entries) == 2
     assert "Code Example" in titles
+    # Verify the limitation: Code Example's content is truncated at the ---,
+    # so the yaml block after the --- is lost.
+    code_entry = next(e for e in entries if e.title == "Code Example")
+    assert "another: value" not in code_entry.content
 
 
 def test_parse_shared_file_non_numeric_memory_id(tmp_path: Path) -> None:
