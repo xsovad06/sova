@@ -359,12 +359,16 @@ def setup(
 
 async def _detect_github_repo(project_dir: Path) -> str:
     """Detect the GitHub owner/repo from git remote origin."""
-    result = await run("git", "remote", "get-url", "origin", cwd=project_dir)
+    try:
+        result = await run("git", "remote", "get-url", "origin", cwd=project_dir)
+    except OSError:
+        return ""
     if not result.success:
         return ""
     origin = result.stdout.strip()
-    # Handles SSH aliases like github.com-personal
-    m = re.search(r"github\.com[^:/]*[:/](.+?)(?:\.git)?$", origin)
+    # Handles SSH aliases like github.com-personal.
+    # Anchored to match only github.com hosts (not e.g. notgithub.com).
+    m = re.search(r"(?:^|@|//)github\.com[^:/]*[:/](.+?)(?:\.git)?$", origin)
     return m.group(1) if m else ""
 
 
@@ -373,7 +377,10 @@ async def _detect_github_user(repo: str) -> str:
     if not repo or "/" not in repo:
         return ""
     candidate = repo.split("/")[0]
-    check = await run("gh", "auth", "token", "--user", candidate)
+    try:
+        check = await run("gh", "auth", "token", "--user", candidate)
+    except OSError:
+        return ""
     if check.success and check.stdout.strip():
         return candidate
     return ""
@@ -429,6 +436,8 @@ async def _offer_starter_milestones(project_dir: Path) -> None:
         return
 
     if not cfg.task_source.type:
+        return
+    if cfg.task_source.type == "github" and not cfg.github_repo:
         return
 
     try:

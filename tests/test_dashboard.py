@@ -6110,7 +6110,7 @@ class TestCreateStarterMilestones:
         mock_adapter.list_milestones.return_value = []
         call_count = 0
 
-        async def side_effect(title: str, **kwargs: object) -> object:
+        async def side_effect(title: str, **_kwargs: object) -> object:
             nonlocal call_count
             call_count += 1
             if call_count == 2:

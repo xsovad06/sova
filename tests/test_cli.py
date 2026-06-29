@@ -1065,40 +1065,40 @@ class TestHardenHelpers:
 
 
 class TestDetectGithubRepo:
-    async def test_returns_repo_from_ssh_url(self) -> None:
+    async def test_returns_repo_from_ssh_url(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
         mock_result = MagicMock(success=True, stdout="git@github.com:owner/repo.git\n")
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+            assert await _detect_github_repo(tmp_path) == "owner/repo"
 
-    async def test_returns_repo_from_https_url(self) -> None:
+    async def test_returns_repo_from_https_url(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
         mock_result = MagicMock(success=True, stdout="https://github.com/owner/repo.git\n")
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+            assert await _detect_github_repo(tmp_path) == "owner/repo"
 
-    async def test_returns_empty_when_git_fails(self) -> None:
+    async def test_returns_empty_when_git_fails(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
         mock_result = MagicMock(success=False, stdout="")
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(Path("/tmp")) == ""
+            assert await _detect_github_repo(tmp_path) == ""
 
-    async def test_returns_empty_when_not_github(self) -> None:
+    async def test_returns_empty_when_not_github(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
         mock_result = MagicMock(success=True, stdout="git@gitlab.com:owner/repo.git\n")
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(Path("/tmp")) == ""
+            assert await _detect_github_repo(tmp_path) == ""
 
-    async def test_handles_ssh_alias(self) -> None:
+    async def test_handles_ssh_alias(self, tmp_path: Path) -> None:
         from sova.cli.commands.project import _detect_github_repo
 
         mock_result = MagicMock(success=True, stdout="git@github.com-personal:owner/repo.git\n")
         with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
-            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+            assert await _detect_github_repo(tmp_path) == "owner/repo"
 
 
 class TestDetectGithubUser:

@@ -205,6 +205,7 @@ async def sync_commands() -> dict[str, object]:
 
 class CreateMilestonesRequest(BaseModel):
     project_path: str
+    titles: list[str] | None = None
 
 
 @router.post("/setup/milestones/create", responses={404: {"description": "Project directory not found"}})
@@ -214,7 +215,7 @@ async def create_milestones(req: CreateMilestonesRequest):
     if not project.is_dir():
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
-    return await setup_service.create_starter_milestones(project)
+    return await setup_service.create_starter_milestones(project, titles=req.titles)
 
 
 @router.post("/setup/jira/test")
