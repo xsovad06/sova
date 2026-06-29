@@ -1816,6 +1816,47 @@ class TestTriageAssessWithLLM:
         assert assessment.suitability == "ready"
         assert assessment.confidence == 0.9
 
+    async def test_successful_llm_assessment_records_cost_with_reason(self) -> None:
+        """assess_task_with_llm passes model_selection_reason to record_cost."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = MagicMock(
+            id="42", title="Add caching", body="Implement Redis caching layer.", labels=["feature"], state="backlog"
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG)
+
+        llm_response = json.dumps(
+            {
+                "suitability": "ready",
+                "confidence": 0.9,
+                "reasoning": "Well-specified task.",
+                "missing_context": [],
+                "estimated_complexity": "moderate",
+                "suggested_role": "developer",
+            }
+        )
+        mock_invoke = AsyncMock(return_value=LLMResult(text=llm_response, model="haiku", cost_usd=Decimal("0.01")))
+        mock_record_cost = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.roles.triage.record_cost", mock_record_cost),
+        ):
+            assessment = await role.assess_task_with_llm(task, ctx)
+
+        assert assessment.suitability == "ready"
+        mock_record_cost.assert_awaited_once()
+        call_kwargs = mock_record_cost.call_args
+        assert call_kwargs.kwargs["phase"] == "triage"
+        assert call_kwargs.kwargs["issue"] == "42"
+        assert call_kwargs.kwargs["model_selection_reason"] == "role:triage->haiku"
+
     async def test_llm_failure_falls_back_to_heuristic(self) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
 

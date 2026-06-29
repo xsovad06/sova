@@ -154,6 +154,85 @@ async def test_cost_record_with_model_selection_reason() -> None:
         assert cost.model_selection_reason == "role:triage->haiku"
 
 
+def _import_migration_011():
+    """Import migration 011 via importlib (module name starts with a digit)."""
+    import importlib
+
+    return importlib.import_module("sova.db.migrations.versions.011_add_model_selection_reason")
+
+
+_MIG_011_MODULE = "sova.db.migrations.versions.011_add_model_selection_reason"
+
+
+async def test_migration_011_column_exists_helper() -> None:
+    """Migration 011 _column_exists correctly detects model_selection_reason column."""
+    mod = _import_migration_011()
+
+    from unittest.mock import MagicMock, patch
+
+    from alembic import op
+
+    mock_conn = MagicMock()
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "model"},
+        {"name": "model_selection_reason"},
+    ]
+
+    with patch.object(op, "get_bind", return_value=mock_conn), patch("sqlalchemy.inspect", return_value=mock_inspector):
+        assert mod._column_exists("cost_records", "model_selection_reason") is True
+        assert mod._column_exists("cost_records", "nonexistent") is False
+
+
+async def test_migration_011_upgrade_skip_when_exists() -> None:
+    """Migration 011 upgrade is idempotent -- skips if column already exists."""
+    from unittest.mock import patch
+
+    mod = _import_migration_011()
+
+    with (
+        patch(f"{_MIG_011_MODULE}._column_exists", return_value=True) as mock_exists,
+        patch(f"{_MIG_011_MODULE}.op") as mock_op,
+    ):
+        mod.upgrade()
+        mock_exists.assert_called_once_with("cost_records", "model_selection_reason")
+        mock_op.add_column.assert_not_called()
+
+
+async def test_migration_011_upgrade_adds_column() -> None:
+    """Migration 011 upgrade adds column when it doesn't exist."""
+    from unittest.mock import patch
+
+    mod = _import_migration_011()
+
+    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=False), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+        mod.upgrade()
+        mock_op.add_column.assert_called_once()
+
+
+async def test_migration_011_downgrade_drops_column() -> None:
+    """Migration 011 downgrade drops column when it exists."""
+    from unittest.mock import patch
+
+    mod = _import_migration_011()
+
+    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=True), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_called_once_with("cost_records", "model_selection_reason")
+
+
+async def test_migration_011_downgrade_skip_when_missing() -> None:
+    """Migration 011 downgrade is idempotent -- skips if column doesn't exist."""
+    from unittest.mock import patch
+
+    mod = _import_migration_011()
+
+    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=False), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_not_called()
+
+
 async def test_create_memory() -> None:
     """Create a memory entry."""
     async with await get_session() as session:

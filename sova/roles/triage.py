@@ -129,9 +129,11 @@ class TriageRole(AgentRole):
 
         try:
             from sova.llm.client import invoke, resolve_model
+            from sova.llm.cost import record_cost
 
             resolved = resolve_model("triage", ctx.config.roles, llm_config=ctx.config.llm)
             model = resolved[0] if resolved else None
+            model_reason = resolved[1] if resolved else None
             prompt = _ASSESSMENT_PROMPT.format(
                 issue_id=task.id,
                 title=task.title,
@@ -148,6 +150,13 @@ class TriageRole(AgentRole):
             )
 
             ctx.add_cost(result.cost_usd)
+            await record_cost(
+                result,
+                phase="triage",
+                issue=str(task.id),
+                task_run_id=ctx.task_run_id,
+                model_selection_reason=model_reason,
+            )
             assessment = self._parse_llm_assessment(result.text)
             if assessment:
                 return assessment

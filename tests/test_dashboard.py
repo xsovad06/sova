@@ -461,6 +461,44 @@ class TestCostsAPI:
         # All seed records have no model_selection_reason, so grouped as "untracked"
         assert any(r["reason"] == "untracked" for r in data)
 
+    async def test_costs_by_routing_with_reasons(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Routing breakdown distinguishes tracked reasons from untracked."""
+        session.add_all(
+            [
+                CostRecord(
+                    phase="triage",
+                    issue="80",
+                    model="haiku",
+                    cost_usd=Decimal("0.01"),
+                    model_selection_reason="role:triage->haiku",
+                ),
+                CostRecord(
+                    phase="develop",
+                    issue="81",
+                    model="opus",
+                    cost_usd=Decimal("0.50"),
+                    model_selection_reason="complexity:complex->opus",
+                ),
+                CostRecord(
+                    phase="review",
+                    issue="82",
+                    model="sonnet",
+                    cost_usd=Decimal("0.10"),
+                    model_selection_reason="",
+                ),
+            ]
+        )
+        await session.commit()
+
+        resp = await client.get("/api/costs/by-routing")
+        assert resp.status_code == 200
+        data = resp.json()
+        reasons = {r["reason"] for r in data}
+        assert "role:triage->haiku" in reasons
+        assert "complexity:complex->opus" in reasons
+        # Empty string reason is grouped as "untracked"
+        assert "untracked" in reasons
+
 
 # ---------------------------------------------------------------------------
 # Control API
