@@ -240,16 +240,18 @@ class TestGetActions:
         primary, secondary = _get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number="42", pr_number=123)
         assert primary["id"] == "integrate"
         assert primary["handler_args"]["command"] == "integrate-pr"
-        assert len(secondary) == 1
+        assert len(secondary) == 2
         assert secondary[0]["id"] == "review_pr"
+        assert secondary[1]["id"] == "address_pr"
 
     def test_pr_ready_to_merge_standalone_has_integrate(self) -> None:
         primary, secondary = _get_actions(WorkItemState.PR_READY_TO_MERGE, issue_number=None, pr_number=123)
         assert primary["id"] == "integrate"
         assert primary["handler_args"]["command"] == "integrate-pr"
         assert primary["handler_args"]["pr"] == 123
-        assert len(secondary) == 1
+        assert len(secondary) == 2
         assert secondary[0]["id"] == "review_pr"
+        assert secondary[1]["id"] == "address_pr"
 
     def test_pr_ci_running_has_review(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_CI_RUNNING, issue_number=None, pr_number=99)
