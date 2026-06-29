@@ -2506,6 +2506,109 @@ class TestReviewerParsing:
         findings, summary = _parse_findings(text)
         assert len(findings) == 1
 
+    def test_parse_findings_preamble_json_before_real_review(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            'Here\'s an example: {"bad": true} and the real review: '
+            '{"findings": [{"file": "a.py", "severity": 5, "category": "bug", "description": "X"}], "summary": "S"}'
+        )
+        findings, summary = _parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].file == "a.py"
+        assert summary == "S"
+
+    def test_parse_findings_multiple_json_no_findings_key(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = 'Some text {"data": 1} more text {"other": 2}'
+        findings, summary = _parse_findings(text)
+        assert findings == []
+
+    def test_parse_findings_severity_string_word(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            '{"findings": [{"file": "a.py", "severity": "HIGH",'
+            ' "category": "bug", "description": "D"}], "summary": "S"}'
+        )
+        findings, _ = _parse_findings(text)
+        assert len(findings) == 1
+        assert findings[0].severity == 5
+
+    def test_parse_findings_severity_float(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            '{"findings": [{"file": "a.py", "severity": 7.5, "category": "bug", "description": "D"}], "summary": "S"}'
+        )
+        findings, _ = _parse_findings(text)
+        assert findings[0].severity == 7
+
+    def test_parse_findings_severity_none(self) -> None:
+        from sova.roles.reviewer import _parse_findings
+
+        text = (
+            '{"findings": [{"file": "a.py", "severity": null, "category": "bug", "description": "D"}], "summary": "S"}'
+        )
+        findings, _ = _parse_findings(text)
+        assert findings[0].severity == 5
+
+    def test_safe_severity_int(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity(7) == 7
+
+    def test_safe_severity_float(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity(7.5) == 7
+
+    def test_safe_severity_numeric_string(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity("3") == 3
+
+    def test_safe_severity_word_string(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity("HIGH") == 5
+        assert _safe_severity("critical") == 5
+
+    def test_safe_severity_none(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity(None) == 5
+
+    def test_safe_severity_missing_defaults(self) -> None:
+        from sova.roles.reviewer import _safe_severity
+
+        assert _safe_severity(None, default=3) == 3
+
+    def test_extract_json_with_findings(self) -> None:
+        from sova.roles.reviewer import _extract_json
+
+        text = '{"bad": true} and {"findings": [{"file": "a.py"}], "summary": "S"}'
+        result = _extract_json(text)
+        assert result is not None
+        assert "findings" in result
+
+    def test_extract_json_no_findings_fallback(self) -> None:
+        from sova.roles.reviewer import _extract_json
+
+        result = _extract_json('prefix {"data": 1} suffix')
+        assert result == {"data": 1}
+
+    def test_extract_json_no_braces(self) -> None:
+        from sova.roles.reviewer import _extract_json
+
+        assert _extract_json("no json here") is None
+
+    def test_extract_json_invalid_only(self) -> None:
+        from sova.roles.reviewer import _extract_json
+
+        assert _extract_json("{invalid json}") is None
+
     def test_chunk_diff_small(self) -> None:
         from sova.roles.reviewer import _chunk_diff
 
