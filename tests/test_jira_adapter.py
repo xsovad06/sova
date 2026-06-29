@@ -869,6 +869,15 @@ class TestSetMilestone:
             await adapter.set_milestone("42", "Nonexistent")
 
     @respx.mock
+    async def test_set_milestone_list_versions_failure(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(500, text="Internal server error"),
+        )
+        with pytest.raises(RuntimeError, match="Failed to list versions"):
+            await adapter.set_milestone("42", "Phase 1: Now")
+
+    @respx.mock
     async def test_set_milestone_update_failure_raises(self) -> None:
         adapter = _adapter()
         respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(

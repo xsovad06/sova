@@ -6096,6 +6096,10 @@ class TestCreateStarterMilestones:
         assert result["status"] == "ok"
         assert "Phase 1: Now" in result["skipped"]
         assert len(result["created"]) == 3  # Phase 2, 3, 4
+        # Verify descriptions are passed to create_milestone
+        for call in mock_adapter.create_milestone.call_args_list:
+            assert "description" in call.kwargs
+            assert call.kwargs["description"]  # non-empty
 
     async def test_handles_partial_failure(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, patch
