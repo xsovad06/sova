@@ -6062,6 +6062,98 @@ class TestJiraSSRFPrevention:
 
 
 # ---------------------------------------------------------------------------
+# create_starter_milestones
+# ---------------------------------------------------------------------------
+
+
+class TestCreateStarterMilestones:
+    async def test_creates_milestones_skips_existing(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.adapters.base import Milestone
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_milestones.return_value = [
+            Milestone(title="Phase 1: Now", state="open"),
+        ]
+        mock_adapter.create_milestone.return_value = Milestone(title="Phase 2: Next", state="open")
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "ok"
+        assert "Phase 1: Now" in result["skipped"]
+        assert len(result["created"]) == 3  # Phase 2, 3, 4
+
+    async def test_handles_partial_failure(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_milestones.return_value = []
+        call_count = 0
+
+        async def side_effect(title: str, **kwargs: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("API error")
+            from sova.adapters.base import Milestone
+
+            return Milestone(title=title, state="open")
+
+        mock_adapter.create_milestone.side_effect = side_effect
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "ok"
+        assert len(result["created"]) == 3
+        assert len(result["failed"]) == 1
+
+    async def test_returns_error_when_no_config(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=FileNotFoundError("sova.toml not found"),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "error"
+        assert "config" in result["detail"].lower()
+
+    async def test_permission_error_captured(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_milestones.return_value = []
+        mock_adapter.create_milestone.side_effect = PermissionError("Insufficient permissions")
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "ok"
+        assert len(result["failed"]) == 4
+        assert "permissions" in result["failed"][0]["error"].lower()
+
+
+# ---------------------------------------------------------------------------
 # Roles API
 # ---------------------------------------------------------------------------
 

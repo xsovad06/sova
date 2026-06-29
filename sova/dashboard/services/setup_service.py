@@ -459,6 +459,67 @@ async def discover_jira_statuses(
         return {"status": "error", "detail": str(e)}
 
 
+DEFAULT_PHASE_TITLES = [
+    "Phase 1: Now",
+    "Phase 2: Next",
+    "Phase 3: Later",
+    "Phase 4: Future",
+]
+
+
+async def create_starter_milestones(
+    project_dir: Path,
+    titles: list[str] | None = None,
+) -> dict:
+    """Create default phase milestones on the tracker, skipping existing ones.
+
+    Returns a dict with created, skipped, and failed lists.
+    """
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+
+    effective_titles = titles or list(DEFAULT_PHASE_TITLES)
+
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError) as e:
+        return {"status": "error", "detail": f"Failed to load config: {e}"}
+
+    try:
+        adapter = create_adapter(cfg)
+    except ValueError as e:
+        return {"status": "error", "detail": str(e)}
+
+    try:
+        existing = await adapter.list_milestones(state="all")
+    except Exception as e:
+        log.warning("create_starter_milestones.list_failed", exc_info=True)
+        return {"status": "error", "detail": f"Failed to list milestones: {e}"}
+
+    existing_titles = {m.title for m in existing}
+
+    created: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for title in effective_titles:
+        if title in existing_titles:
+            skipped.append(title)
+            continue
+        try:
+            await adapter.create_milestone(title=title)
+            created.append(title)
+        except Exception as e:
+            failed.append({"title": title, "error": str(e)})
+
+    return {
+        "status": "ok",
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 def _read_existing_toml(project: Path) -> dict:
     """Read existing sova.toml as a flat dict for prefilling the form."""
     toml_file = project / _SOVA_TOML

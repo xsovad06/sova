@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from sova.adapters.base import PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -336,6 +336,89 @@ class GitHubAdapter(TaskAdapter):
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
         # GitHub uses labels for state, not workflow transitions.
         return []
+
+    async def list_milestones(self, state: str = "open") -> list[Milestone]:
+        # GitHub API only supports state=open|closed, not "all".
+        # For "all", fetch both open and closed milestones.
+        if state == "all":
+            open_ms = await self._fetch_milestones("open")
+            closed_ms = await self._fetch_milestones("closed")
+            return open_ms + closed_ms
+        return await self._fetch_milestones(state)
+
+    async def _fetch_milestones(self, state: str) -> list[Milestone]:
+        result = await self._gh(
+            "api",
+            f"repos/{self.repo}/milestones",
+            "--method",
+            "GET",
+            "-f",
+            f"state={state}",
+            "-f",
+            "per_page=100",
+        )
+        if not result.success:
+            log.warning("list_milestones.failed", stderr=result.stderr[:200])
+            return []
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            log.warning("list_milestones.bad_json", stdout=result.stdout[:200])
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        return [
+            Milestone(
+                title=m.get("title", ""),
+                state=m.get("state", "open"),
+                description=m.get("description", "") or "",
+            )
+            for m in data
+            if isinstance(m, dict) and m.get("title")
+        ]
+
+    async def create_milestone(self, title: str, description: str = "") -> Milestone:
+        payload = json.dumps({"title": title, "description": description})
+        result = await self._gh(
+            "api",
+            f"repos/{self.repo}/milestones",
+            "--method",
+            "POST",
+            "--input",
+            "-",
+            stdin=payload,
+        )
+        if not result.success:
+            raise RuntimeError(f"Failed to create milestone '{title}': {result.stderr[:200]}")
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Failed to parse milestone creation response: {result.stdout[:200]}")
+
+        return Milestone(
+            title=data.get("title", title),
+            state=data.get("state", "open"),
+            description=data.get("description", "") or "",
+        )
+
+    async def set_milestone(self, task_id: str, milestone_title: str) -> None:
+        result = await self._gh(
+            "issue",
+            "edit",
+            task_id,
+            "--repo",
+            self.repo,
+            "--milestone",
+            milestone_title,
+        )
+        if not result.success:
+            raise RuntimeError(
+                f"Failed to set milestone '{milestone_title}' on issue #{task_id}: {result.stderr[:200]}"
+            )
 
     async def _add_label(self, task_id: str, label: str) -> None:
         """Add a label to an issue, creating the label on the repo if it doesn't exist."""

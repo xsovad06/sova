@@ -7,7 +7,7 @@ import re
 
 import httpx
 
-from sova.adapters.base import PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.logging import get_logger
 
 log = get_logger(component="adapter.jira")
@@ -295,6 +295,77 @@ class JiraAdapter(TaskAdapter):
         )
         if response.status_code not in (200, 201):
             log.warning("link_pr.failed", issue=issue_key, status=response.status_code)
+
+    async def list_milestones(self, state: str = "open") -> list[Milestone]:
+        response = await self._http.get(f"/project/{self.project_key}/versions")
+        if response.status_code != 200:
+            log.warning("list_milestones.failed", status=response.status_code, body=response.text[:200])
+            return []
+
+        milestones: list[Milestone] = []
+        for v in response.json():
+            released = v.get("released", False)
+            archived = v.get("archived", False)
+            version_state = "closed" if released or archived else "open"
+            if state != "all" and version_state != state:
+                continue
+            milestones.append(
+                Milestone(
+                    title=v.get("name", ""),
+                    state=version_state,
+                    description=v.get("description", "") or "",
+                )
+            )
+        return milestones
+
+    async def create_milestone(self, title: str, description: str = "") -> Milestone:
+        payload: dict = {
+            "name": title,
+            "project": self.project_key,
+        }
+        if description:
+            payload["description"] = description
+
+        response = await self._http.post(
+            "/version",
+            json=payload,
+        )
+        if response.status_code == 403:
+            raise PermissionError("Insufficient permissions to create versions. Requires project admin role.")
+        if response.status_code not in (200, 201):
+            raise RuntimeError(f"Failed to create version '{title}': {response.text[:200]}")
+
+        data = response.json()
+        return Milestone(
+            title=data.get("name", title),
+            state="open",
+            description=data.get("description", "") or "",
+        )
+
+    async def set_milestone(self, task_id: str, milestone_title: str) -> None:
+        issue_key = self._resolve_key(task_id)
+
+        resp = await self._http.get(f"/project/{self.project_key}/versions")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to list versions: {resp.text[:200]}")
+
+        version_id = None
+        for v in resp.json():
+            if v.get("name") == milestone_title:
+                version_id = v.get("id")
+                break
+
+        if version_id is None:
+            raise RuntimeError(f"Fix version '{milestone_title}' not found in project {self.project_key}")
+
+        update_resp = await self._http.put(
+            f"/issue/{issue_key}",
+            json={"update": {"fixVersions": [{"add": {"id": version_id}}]}},
+        )
+        if update_resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Failed to set milestone '{milestone_title}' on issue {issue_key}: {update_resp.text[:200]}"
+            )
 
     def _resolve_key(self, task_id: str) -> str:
         if "-" in task_id:

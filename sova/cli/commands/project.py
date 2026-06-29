@@ -405,6 +405,42 @@ async def _setup(*, path: Path | None) -> None:
     # Run install
     await _install(path=project_dir, no_dashboard=False, update=False)
 
+    # Offer to create starter phase milestones
+    if repo or github_user:
+        await _offer_starter_milestones(project_dir)
+
+
+async def _offer_starter_milestones(project_dir: Path) -> None:
+    """Offer to create default phase milestones on the tracker."""
+    from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
+
+    console.print("\n[bold]Phase Milestones[/bold]")
+    console.print("SOVA uses milestones to organize work into phases:")
+    for title in DEFAULT_PHASE_TITLES:
+        console.print(f"  - {title}")
+
+    create = typer.confirm("Create these milestones on the tracker?", default=True)
+    if not create:
+        console.print("[dim]Skipped milestone creation.[/dim]")
+        return
+
+    result = await create_starter_milestones(project_dir)
+    if result.get("status") == "error":
+        console.print(f"[red]Failed: {result.get('detail', 'Unknown error')}[/red]")
+        return
+
+    created = result.get("created", [])
+    skipped = result.get("skipped", [])
+    failed = result.get("failed", [])
+
+    if created:
+        console.print(f"[green]Created {len(created)} milestones: {', '.join(created)}[/green]")
+    if skipped:
+        console.print(f"[yellow]Skipped {len(skipped)} (already exist): {', '.join(skipped)}[/yellow]")
+    if failed:
+        for f in failed:
+            console.print(f"[red]Failed: {f['title']} -- {f['error']}[/red]")
+
 
 def _default_toml(repo: str = "", test_cmd: str = "make test", github_user: str = "") -> str:
     return f"""# SOVA configuration

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
 from sova.adapters.github import GitHubAdapter
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,24 @@ class TestTask:
 
 
 # ---------------------------------------------------------------------------
+# Milestone dataclass
+# ---------------------------------------------------------------------------
+
+
+class TestMilestone:
+    def test_create_milestone(self) -> None:
+        m = Milestone(title="Phase 1: Now", state="open", description="Current work")
+        assert m.title == "Phase 1: Now"
+        assert m.state == "open"
+        assert m.description == "Current work"
+
+    def test_milestone_defaults(self) -> None:
+        m = Milestone(title="Test")
+        assert m.state == "open"
+        assert m.description == ""
+
+
+# ---------------------------------------------------------------------------
 # TaskAdapter (abstract -- verify interface)
 # ---------------------------------------------------------------------------
 
@@ -113,6 +131,9 @@ class TestTaskAdapterInterface:
             "get_pr_reviews",
             "create_issue",
             "get_available_transitions",
+            "list_milestones",
+            "create_milestone",
+            "set_milestone",
         ]
 
         class IncompleteAdapter(TaskAdapter):
@@ -569,6 +590,100 @@ class TestGitHubAdapter:
         result = await self.adapter.get_available_transitions("42")
         assert result == []
         mock_run.assert_not_called()
+
+    # -- list_milestones --
+
+    async def test_list_milestones(self, mock_run: AsyncMock) -> None:
+        milestones_json = json.dumps(
+            [
+                {"title": "Phase 1: Now", "state": "open", "description": "Current work", "number": 1},
+                {"title": "Phase 2: Next", "state": "open", "description": "", "number": 2},
+            ]
+        )
+        mock_run.return_value = _shell_result(stdout=milestones_json)
+
+        from sova.adapters.base import Milestone
+
+        milestones = await self.adapter.list_milestones()
+
+        assert len(milestones) == 2
+        assert milestones[0] == Milestone(title="Phase 1: Now", state="open", description="Current work")
+        assert milestones[1].title == "Phase 2: Next"
+        assert milestones[1].description == ""
+
+    async def test_list_milestones_empty_on_failure(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Not found")
+
+        milestones = await self.adapter.list_milestones()
+        assert milestones == []
+
+    async def test_list_milestones_empty_on_bad_json(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="not json")
+
+        milestones = await self.adapter.list_milestones()
+        assert milestones == []
+
+    async def test_list_milestones_all_fetches_open_and_closed(self, mock_run: AsyncMock) -> None:
+        open_json = json.dumps([{"title": "Phase 1", "state": "open", "description": ""}])
+        closed_json = json.dumps([{"title": "Phase 0", "state": "closed", "description": ""}])
+        mock_run.side_effect = [
+            _shell_result(stdout=open_json),
+            _shell_result(stdout=closed_json),
+        ]
+
+        milestones = await self.adapter.list_milestones(state="all")
+
+        assert len(milestones) == 2
+        assert milestones[0].title == "Phase 1"
+        assert milestones[1].title == "Phase 0"
+        assert mock_run.call_count == 2
+        # First call should request state=open, second state=closed
+        first_args = mock_run.call_args_list[0][0]
+        second_args = mock_run.call_args_list[1][0]
+        assert "state=open" in " ".join(str(a) for a in first_args)
+        assert "state=closed" in " ".join(str(a) for a in second_args)
+
+    # -- create_milestone --
+
+    async def test_create_milestone(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(
+            stdout=json.dumps({"title": "Phase 1: Now", "state": "open", "description": "Current", "number": 1})
+        )
+
+        from sova.adapters.base import Milestone
+
+        milestone = await self.adapter.create_milestone("Phase 1: Now", "Current")
+
+        assert milestone == Milestone(title="Phase 1: Now", state="open", description="Current")
+        call_args = mock_run.call_args[0]
+        assert "repos/user/repo/milestones" in call_args
+        assert "--method" in call_args
+        assert "POST" in call_args
+
+    async def test_create_milestone_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="Validation Failed")
+
+        with pytest.raises(RuntimeError, match="Failed to create milestone"):
+            await self.adapter.create_milestone("Bad")
+
+    # -- set_milestone --
+
+    async def test_set_milestone(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result()
+
+        await self.adapter.set_milestone("42", "Phase 1: Now")
+
+        call_args = mock_run.call_args[0]
+        assert "issue" in call_args
+        assert "edit" in call_args
+        assert "--milestone" in call_args
+        assert "Phase 1: Now" in call_args
+
+    async def test_set_milestone_failure_raises(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="not found")
+
+        with pytest.raises(RuntimeError, match="Failed to set milestone"):
+            await self.adapter.set_milestone("42", "Nonexistent")
 
     # -- get_pr_reviews --
 
