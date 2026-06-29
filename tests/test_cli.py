@@ -1157,3 +1157,118 @@ class TestDetectTestCommand:
 
         (tmp_path / "go.mod").write_text("")
         assert _detect_test_command(tmp_path) == "go test ./..."
+
+
+class TestOfferStarterMilestones:
+    async def test_skips_when_no_task_source(self, tmp_path: Path) -> None:
+        """Returns early when task_source.type is empty."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = ""
+
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_skips_when_config_not_found(self, tmp_path: Path) -> None:
+        """Returns early when config cannot be loaded."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=FileNotFoundError("sova.toml not found"),
+        ):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_skips_when_adapter_creation_fails(self, tmp_path: Path) -> None:
+        """Returns early when create_adapter raises ValueError."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("bad config")),
+        ):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_skips_when_user_declines(self, tmp_path: Path) -> None:
+        """Does not create milestones when user declines."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_adapter = AsyncMock()
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("typer.confirm", return_value=False),
+        ):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_creates_milestones_on_confirm(self, tmp_path: Path) -> None:
+        """Creates milestones when user confirms."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_adapter = AsyncMock()
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("typer.confirm", return_value=True),
+            patch(
+                "sova.dashboard.services.setup_service.create_starter_milestones",
+                new_callable=AsyncMock,
+                return_value={"status": "ok", "created": ["Phase 1: Now"], "skipped": [], "failed": []},
+            ),
+        ):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_handles_create_error(self, tmp_path: Path) -> None:
+        """Prints error when milestone creation fails."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_adapter = AsyncMock()
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("typer.confirm", return_value=True),
+            patch(
+                "sova.dashboard.services.setup_service.create_starter_milestones",
+                new_callable=AsyncMock,
+                return_value={"status": "error", "detail": "API failure"},
+            ),
+        ):
+            await _offer_starter_milestones(tmp_path)
+
+    async def test_reports_skipped_and_failed(self, tmp_path: Path) -> None:
+        """Reports skipped and failed milestones."""
+        from sova.cli.commands.project import _offer_starter_milestones
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_adapter = AsyncMock()
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("typer.confirm", return_value=True),
+            patch(
+                "sova.dashboard.services.setup_service.create_starter_milestones",
+                new_callable=AsyncMock,
+                return_value={
+                    "status": "ok",
+                    "created": ["Phase 2: Next"],
+                    "skipped": ["Phase 1: Now"],
+                    "failed": [{"title": "Phase 3: Later", "error": "timeout"}],
+                },
+            ),
+        ):
+            await _offer_starter_milestones(tmp_path)
