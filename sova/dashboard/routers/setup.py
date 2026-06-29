@@ -207,7 +207,7 @@ class CreateMilestonesRequest(BaseModel):
     project_path: str
 
 
-@router.post("/setup/milestones/create")
+@router.post("/setup/milestones/create", responses={404: {"description": "Project directory not found"}})
 async def create_milestones(req: CreateMilestonesRequest):
     """Create default phase milestones on the tracker."""
     project = Path(req.project_path).expanduser().resolve()

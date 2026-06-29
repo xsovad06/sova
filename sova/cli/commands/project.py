@@ -354,6 +354,39 @@ def setup(
     asyncio.run(_setup(path=path))
 
 
+async def _detect_github_repo(project_dir: Path) -> str:
+    """Detect the GitHub owner/repo from git remote origin."""
+    result = await run("git", "remote", "get-url", "origin", cwd=project_dir)
+    if not result.success:
+        return ""
+    origin = result.stdout.strip()
+    # Handles SSH aliases like github.com-personal
+    m = re.search(r"github\.com[^:/]*[:/](.+?)(?:\.git)?$", origin)
+    return m.group(1) if m else ""
+
+
+async def _detect_github_user(repo: str) -> str:
+    """Detect the GitHub user from repo owner, verifying gh auth."""
+    if not repo or "/" not in repo:
+        return ""
+    candidate = repo.split("/")[0]
+    check = await run("gh", "auth", "token", "--user", candidate)
+    if check.success and check.stdout.strip():
+        return candidate
+    return ""
+
+
+def _detect_test_command(project_dir: Path) -> str:
+    """Detect the appropriate test command for the project."""
+    if (project_dir / "package.json").exists():
+        return "npm test"
+    if (project_dir / "Cargo.toml").exists():
+        return "cargo test"
+    if (project_dir / "go.mod").exists():
+        return "go test ./..."
+    return "make test"
+
+
 async def _setup(*, path: Path | None) -> None:
     project_dir = (path or Path.cwd()).resolve()
 
@@ -361,25 +394,8 @@ async def _setup(*, path: Path | None) -> None:
         console.print(f"[red]Directory not found: {project_dir}[/red]")
         raise typer.Exit(code=1)
 
-    # Detect GitHub repo
-    result = await run("git", "remote", "get-url", "origin", cwd=project_dir)
-    repo = ""
-    if result.success:
-        origin = result.stdout.strip()
-        # Extract owner/repo from git URL
-        # Handles SSH aliases like github.com-personal
-        m = re.search(r"github\.com[^:/]*[:/](.+?)(?:\.git)?$", origin)
-        if m:
-            repo = m.group(1)
-
-    # Detect github_user from repo owner
-    github_user = ""
-    if repo and "/" in repo:
-        candidate = repo.split("/")[0]
-        # Verify the user is authenticated in gh
-        check = await run("gh", "auth", "token", "--user", candidate)
-        if check.success and check.stdout.strip():
-            github_user = candidate
+    repo = await _detect_github_repo(project_dir)
+    github_user = await _detect_github_user(repo)
 
     console.print("[bold]SOVA Setup Wizard[/bold]\n")
     console.print(f"Project: {project_dir}")
@@ -388,14 +404,7 @@ async def _setup(*, path: Path | None) -> None:
     if github_user:
         console.print(f"Detected GitHub user: {github_user}")
 
-    # Detect test command
-    test_cmd = "make test"
-    if (project_dir / "package.json").exists():
-        test_cmd = "npm test"
-    elif (project_dir / "Cargo.toml").exists():
-        test_cmd = "cargo test"
-    elif (project_dir / "go.mod").exists():
-        test_cmd = "go test ./..."
+    test_cmd = _detect_test_command(project_dir)
 
     toml_file = project_dir / "sova.toml"
     toml_content = _default_toml(repo=repo, test_cmd=test_cmd, github_user=github_user)
