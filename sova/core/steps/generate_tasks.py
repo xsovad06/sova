@@ -50,7 +50,14 @@ def _extract_json(text: str) -> str:
         return cleaned
     fence_end = cleaned.find("\n", fence_start)
     if fence_end == -1:
-        return cleaned
+        # No newline after opening fence -- look for closing fence directly
+        closing = cleaned.find("```", fence_start + 3)
+        inner = cleaned[fence_start + 3 : closing] if closing != -1 else cleaned[fence_start + 3 :]
+        # Strip optional language tag (e.g. "json") before JSON content
+        for i, ch in enumerate(inner):
+            if ch in ("[", "{"):
+                return inner[i:].strip()
+        return inner.strip()
     closing = cleaned.find("```", fence_end)
     if closing == -1:
         return cleaned
@@ -77,11 +84,13 @@ def _parse_tasks(text: str) -> list[PlannedTask] | None:
             if not body or not body.strip():
                 log.warning("generate.skip_item", reason="missing or blank body")
                 continue
+            labels_raw = item.get("labels", [])
+            labels = labels_raw if isinstance(labels_raw, list) else []
             tasks.append(
                 PlannedTask(
                     title=title,
                     body=body,
-                    labels=item.get("labels", []),
+                    labels=labels,
                     priority=item.get("priority", "medium"),
                     complexity=item.get("complexity", "medium"),
                     rationale=item.get("rationale", ""),
