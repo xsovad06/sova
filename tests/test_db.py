@@ -155,10 +155,16 @@ async def test_cost_record_with_model_selection_reason() -> None:
 
 
 def _import_migration_011():
-    """Import migration 011 via importlib (module name starts with a digit)."""
-    import importlib
+    """Import migration 011 via spec_from_file_location (module name starts with a digit)."""
+    import importlib.util
+    from pathlib import Path
 
-    return importlib.import_module("sova.db.migrations.versions.011_add_model_selection_reason")
+    versions_dir = Path(__file__).resolve().parent.parent / "sova" / "db" / "migrations" / "versions"
+    migration_path = versions_dir / "011_add_model_selection_reason.py"
+    spec = importlib.util.spec_from_file_location("migration_011", migration_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 async def test_migration_011_column_exists_helper() -> None:
