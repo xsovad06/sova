@@ -92,6 +92,7 @@ class JiraAdapter(TaskAdapter):
             "Accept": "application/json",
         }
         self._client: httpx.AsyncClient | None = None
+        self._version_cache: dict[str, str] | None = None
 
     @property
     def _http(self) -> httpx.AsyncClient:
@@ -335,6 +336,8 @@ class JiraAdapter(TaskAdapter):
         if response.status_code not in (200, 201):
             raise RuntimeError(f"Failed to create version '{title}': {response.text[:200]}")
 
+        self._version_cache = None  # invalidate cache after creation
+
         data = response.json()
         return Milestone(
             title=data.get("name", title),
@@ -342,18 +345,23 @@ class JiraAdapter(TaskAdapter):
             description=data.get("description", "") or "",
         )
 
-    async def set_milestone(self, task_id: str, milestone_title: str) -> None:
-        issue_key = self._resolve_key(task_id)
+    async def _get_version_map(self) -> dict[str, str]:
+        """Return cached {name: id} map of project versions."""
+        if self._version_cache is not None:
+            return self._version_cache
 
         resp = await self._http.get(f"/project/{self.project_key}/versions")
         if resp.status_code != 200:
             raise RuntimeError(f"Failed to list versions: {resp.text[:200]}")
 
-        version_id = None
-        for v in resp.json():
-            if v.get("name") == milestone_title:
-                version_id = v.get("id")
-                break
+        self._version_cache = {v.get("name", ""): v.get("id", "") for v in resp.json()}
+        return self._version_cache
+
+    async def set_milestone(self, task_id: str, milestone_title: str) -> None:
+        issue_key = self._resolve_key(task_id)
+
+        version_map = await self._get_version_map()
+        version_id = version_map.get(milestone_title)
 
         if version_id is None:
             raise RuntimeError(f"Fix version '{milestone_title}' not found in project {self.project_key}")

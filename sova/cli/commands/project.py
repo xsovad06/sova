@@ -415,13 +415,28 @@ async def _setup(*, path: Path | None) -> None:
     await _install(path=project_dir, no_dashboard=False, update=False)
 
     # Offer to create starter phase milestones
-    if repo or github_user:
-        await _offer_starter_milestones(project_dir)
+    await _offer_starter_milestones(project_dir)
 
 
 async def _offer_starter_milestones(project_dir: Path) -> None:
     """Offer to create default phase milestones on the tracker."""
+    from sova.config.loader import load_config
     from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
+
+    try:
+        cfg = load_config(project_dir)
+    except (FileNotFoundError, ValueError, KeyError):
+        return
+
+    if not cfg.task_source.type:
+        return
+
+    try:
+        from sova.adapters import create_adapter
+
+        create_adapter(cfg)
+    except ValueError:
+        return
 
     console.print("\n[bold]Phase Milestones[/bold]")
     console.print("SOVA uses milestones to organize work into phases:")

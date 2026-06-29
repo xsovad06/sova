@@ -356,6 +356,7 @@ class GitHubAdapter(TaskAdapter):
             f"state={state}",
             "-f",
             "per_page=100",
+            "--paginate",
         )
         if not result.success:
             log.warning("list_milestones.failed", stderr=result.stderr[:200])

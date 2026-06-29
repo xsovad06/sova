@@ -466,6 +466,13 @@ DEFAULT_PHASE_TITLES = [
     "Phase 4: Future",
 ]
 
+DEFAULT_PHASE_DESCRIPTIONS = [
+    "Current sprint work",
+    "Backlog - next sprint",
+    "Future enhancements",
+    "Long-term vision",
+]
+
 
 async def create_starter_milestones(
     project_dir: Path,
@@ -502,12 +509,13 @@ async def create_starter_milestones(
     skipped: list[str] = []
     failed: list[dict[str, str]] = []
 
-    for title in effective_titles:
+    for i, title in enumerate(effective_titles):
         if title in existing_titles:
             skipped.append(title)
             continue
         try:
-            await adapter.create_milestone(title=title)
+            desc = DEFAULT_PHASE_DESCRIPTIONS[i] if i < len(DEFAULT_PHASE_DESCRIPTIONS) else ""
+            await adapter.create_milestone(title=title, description=desc)
             created.append(title)
         except Exception as e:
             failed.append({"title": title, "error": str(e)})
