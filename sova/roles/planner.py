@@ -199,7 +199,7 @@ class PlannerRole(AgentRole):
                     label="Create Issues",
                     description=f"Create {len(tasks)} proposed issues on the tracker",
                     style="approve",
-                    mode="claude-command",
+                    mode="dashboard-only",
                     command="",
                 )
             )
@@ -207,7 +207,7 @@ class PlannerRole(AgentRole):
         dashboard_handoff = DashboardHandoff(
             source="planner",
             status="awaiting_action" if tasks else "completed",
-            issue=ctx.issue_number or "planner",
+            issue="planner",
             summary=f"Proposed {len(tasks)} tasks",
             details={"planned_tasks": task_dicts},
             next_actions=next_actions,

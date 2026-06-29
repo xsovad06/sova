@@ -39,7 +39,7 @@ class HandoffAction(BaseModel):
     label: str
     description: str = ""
     style: Literal["approve", "neutral", "danger"] = "neutral"
-    mode: Literal["agent", "claude-command", "shell"] = "claude-command"
+    mode: Literal["agent", "claude-command", "shell", "dashboard-only"] = "claude-command"
     command: str = ""
     args: dict = Field(default_factory=dict)
     auto_execute: bool = False

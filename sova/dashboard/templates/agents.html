@@ -631,8 +631,11 @@ async function _doStartAgent(issue, role, force, prNumber) {
 async function startPlanner() {
   var btn = document.getElementById('run-planner-btn');
   if (btn) btn.disabled = true;
-  await _doStartAgent('', 'planner', false);
-  if (btn) btn.disabled = false;
+  try {
+    await _doStartAgent('', 'planner', false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function createPlannerIssues(tasks, issue) {
@@ -659,9 +662,11 @@ async function createPlannerIssues(tasks, issue) {
       showToast(errorCount + ' issues failed: ' + errTitles, 'error');
     }
 
-    // Clear cached handoff so next poll reflects updated state
-    _plannerHandoffCache = null;
-    if (issue) dismissHandoff(issue);
+    // Only clear cached handoff if all tasks succeeded
+    if (errorCount === 0) {
+      _plannerHandoffCache = null;
+      if (issue) dismissHandoff(issue);
+    }
     loadAgents();
     loadTaskCards();
   } catch (e) {
@@ -999,48 +1004,52 @@ async function enhancePlannerCards(completed) {
   }
 
   try {
-  var tasks = _plannerHandoffCache.details.planned_tasks;
-  var handoffIssue = _plannerHandoffCache.issue || 'planner';
+    var tasks = _plannerHandoffCache.details.planned_tasks;
+    var handoffIssue = _plannerHandoffCache.issue || 'planner';
 
-  plannerAgents.forEach(function(agent) {
-      var card = document.getElementById('planner-extra-' + agent.run_id);
-      if (!card) return;
+    // Only apply the handoff to the most recent planner run to avoid
+    // showing stale proposals on older cards.
+    var latestPlanner = plannerAgents[0];
+    plannerAgents.forEach(function(agent) {
+        var card = document.getElementById('planner-extra-' + agent.run_id);
+        if (!card) return;
+        if (agent.run_id !== latestPlanner.run_id) return;
 
-      if (tasks.length === 0) {
-        card.innerHTML = '<p class="text-xs text-gray-500 mt-2">No tasks proposed</p>';
-        return;
-      }
+        if (tasks.length === 0) {
+          card.innerHTML = '<p class="text-xs text-gray-500 mt-2">No tasks proposed</p>';
+          return;
+        }
 
-      var taskListHtml = tasks.map(function(t, i) {
-        var priorityColors = {
-          critical: 'text-accent-red', high: 'text-accent-yellow',
-          medium: 'text-accent', low: 'text-gray-400'
-        };
-        var pColor = priorityColors[t.priority] || 'text-gray-400';
-        return '<label class="flex items-start gap-2 py-1 text-xs cursor-pointer" onclick="event.stopPropagation()">' +
-          '<input type="checkbox" checked class="mt-0.5 planner-task-check" data-idx="' + i + '">' +
-          '<span class="flex-1"><span class="' + pColor + ' font-medium">[' + escapeHtml(t.priority) + ']</span> ' + escapeHtml(t.title) + '</span>' +
-        '</label>';
-      }).join('');
+        var taskListHtml = tasks.map(function(t, i) {
+          var priorityColors = {
+            critical: 'text-accent-red', high: 'text-accent-yellow',
+            medium: 'text-accent', low: 'text-gray-400'
+          };
+          var pColor = priorityColors[t.priority] || 'text-gray-400';
+          return '<label class="flex items-start gap-2 py-1 text-xs cursor-pointer" onclick="event.stopPropagation()">' +
+            '<input type="checkbox" checked class="mt-0.5 planner-task-check" data-idx="' + i + '">' +
+            '<span class="flex-1"><span class="' + pColor + ' font-medium">[' + escapeHtml(t.priority) + ']</span> ' + escapeHtml(t.title) + '</span>' +
+          '</label>';
+        }).join('');
 
-      var createBtnDisabled = _plannerHandoffCache.status !== 'awaiting_action' ? ' disabled' : '';
-      var createBtnClass = _plannerHandoffCache.status === 'awaiting_action'
-        ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border-accent-green/30'
-        : 'bg-gray-600/20 text-gray-500 border-gray-600/30 cursor-not-allowed';
+        var createBtnDisabled = _plannerHandoffCache.status !== 'awaiting_action' ? ' disabled' : '';
+        var createBtnClass = _plannerHandoffCache.status === 'awaiting_action'
+          ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border-accent-green/30'
+          : 'bg-gray-600/20 text-gray-500 border-gray-600/30 cursor-not-allowed';
 
-      card.innerHTML =
-        '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
-          '<p class="text-xs text-gray-400 mb-2">Proposed ' + tasks.length + ' tasks:</p>' +
-          '<div class="max-h-40 overflow-y-auto space-y-0.5 mb-2" id="planner-task-list-' + agent.run_id + '">' +
-            taskListHtml +
-          '</div>' +
-          '<button onclick="event.stopPropagation(); _submitPlannerIssues(' + agent.run_id + ', \'' + escapeJsStr(handoffIssue) + '\')"' + createBtnDisabled +
-            ' class="px-3 py-1.5 rounded text-xs border transition-colors ' + createBtnClass + '"' +
-            ' data-tooltip="Create selected issues on the tracker">' +
-            'Create Issues' +
-          '</button>' +
-        '</div>';
-    });
+        card.innerHTML =
+          '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
+            '<p class="text-xs text-gray-400 mb-2">Proposed ' + tasks.length + ' tasks:</p>' +
+            '<div class="max-h-40 overflow-y-auto space-y-0.5 mb-2" id="planner-task-list-' + agent.run_id + '">' +
+              taskListHtml +
+            '</div>' +
+            '<button onclick="event.stopPropagation(); _submitPlannerIssues(' + agent.run_id + ', \'' + escapeJsStr(handoffIssue) + '\')"' + createBtnDisabled +
+              ' class="px-3 py-1.5 rounded text-xs border transition-colors ' + createBtnClass + '"' +
+              ' data-tooltip="Create selected issues on the tracker">' +
+              'Create Issues' +
+            '</button>' +
+          '</div>';
+      });
   } catch (e) {
     // Handoff file may be cleared; silently ignore
   }

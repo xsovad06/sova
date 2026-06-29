@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from sova.dashboard.services import control_service
 from sova.db.session import get_session
@@ -119,7 +119,7 @@ class PlannedTaskRequest(BaseModel):
 
 
 class CreateIssuesRequest(BaseModel):
-    tasks: list[PlannedTaskRequest]
+    tasks: list[PlannedTaskRequest] = Field(max_length=50)
 
 
 @router.post("/agents/planner/create-issues")
@@ -136,16 +136,19 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     cfg = load_config(project_dir)
     adapter = create_adapter(cfg)
 
+    sem = asyncio.Semaphore(4)
+
     async def _create_one(task: PlannedTaskRequest) -> dict:
         try:
-            result = await adapter.create_issue(
-                title=task.title,
-                body=task.description,
-                labels=task.labels,
-            )
+            async with sem:
+                result = await adapter.create_issue(
+                    title=task.title,
+                    body=task.description,
+                    labels=task.labels,
+                )
             return {"ok": True, "number": result.id, "title": result.title}
         except Exception as exc:
-            log.warning("planner.create_issue_failed", title=task.title, error=str(exc))
+            log.warning("planner.create_issue_failed", title=task.title, error=str(exc), exc_info=True)
             return {"ok": False, "title": task.title, "error": str(exc)}
 
     results = await asyncio.gather(*[_create_one(t) for t in req.tasks])

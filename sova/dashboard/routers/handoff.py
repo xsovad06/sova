@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -24,7 +26,7 @@ class ClearHandoffRequest(BaseModel):
 
 
 @router.get("/handoff")
-async def get_handoff(issue: str | None = Query(default=None)) -> dict:
+async def get_handoff(issue: Annotated[str | None, Query()] = None) -> dict:
     """Get active handoff files, optionally filtered by issue."""
     all_handoffs = handoff_service.get_all_handoffs()
 
