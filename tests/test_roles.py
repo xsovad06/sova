@@ -725,7 +725,7 @@ class TestReviewerRole:
             result = await role.execute(ctx)
 
         assert not result.success
-        assert "no pr" in result.error.lower()
+        assert "no linked pr" in result.error.lower()
 
     async def test_execute_posts_inline_review_comments(self) -> None:
         import json

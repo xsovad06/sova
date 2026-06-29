@@ -190,6 +190,7 @@ def _safe_severity(value: object, default: int = 5) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        log.warning("safe_severity.non_numeric", value=value, default=default)
         return default
 
 
@@ -209,7 +210,7 @@ def _extract_json(text: str) -> dict | None:
         if idx < 0:
             break
         try:
-            obj, _ = decoder.raw_decode(text, idx)
+            obj, end_idx = decoder.raw_decode(text, idx)
         except json.JSONDecodeError:
             pos = idx + 1
             continue
@@ -218,7 +219,7 @@ def _extract_json(text: str) -> dict | None:
                 return obj
             if first_valid is None:
                 first_valid = obj
-        pos = idx + 1
+        pos = end_idx
 
     return first_valid
 
@@ -452,9 +453,8 @@ class ReviewerRole(AgentRole):
                 f"expected one of {', '.join(self.allowed_input_states)}",
             )
 
-        pr_result = await self._discover_pr(ctx)
-        if pr_result:
-            return pr_result
+        if error_msg := await self._discover_pr(ctx):
+            return RoleResult(success=False, summary=error_msg, error=error_msg)
 
         log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number, branch=ctx.branch_name)
 
@@ -498,10 +498,10 @@ class ReviewerRole(AgentRole):
             findings=[f.description for f in review.findings],
         )
 
-    async def _discover_pr(self, ctx: ExecutionContext) -> RoleResult | None:
+    async def _discover_pr(self, ctx: ExecutionContext) -> str | None:
         """Discover PR number and branch for the issue.
 
-        Returns a failed ``RoleResult`` if discovery fails, or ``None`` on
+        Returns an error message string if discovery fails, or ``None`` on
         success (PR number and branch populated on *ctx*).
         """
         if not ctx.pr_number:
@@ -518,11 +518,7 @@ class ReviewerRole(AgentRole):
                     ctx.branch_name = pr_info.branch
                 log.info("reviewer.pr_discovered", pr=pr_info.number, branch=ctx.branch_name)
             else:
-                return RoleResult(
-                    success=False,
-                    summary=f"Issue #{ctx.issue_number} has no linked PR",
-                    error="No PR found for this issue. Create a PR first.",
-                )
+                return f"Issue #{ctx.issue_number} has no linked PR"
 
         if ctx.pr_number and not ctx.branch_name:
             try:
