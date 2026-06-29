@@ -485,7 +485,7 @@ async def create_starter_milestones(
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
 
-    effective_titles = titles or list(DEFAULT_PHASE_TITLES)
+    effective_titles = list(DEFAULT_PHASE_TITLES) if titles is None else titles
 
     try:
         cfg = load_config(project_dir)

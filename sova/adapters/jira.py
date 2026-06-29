@@ -394,8 +394,8 @@ class JiraAdapter(TaskAdapter):
         priority_name = (fields.get("priority") or {}).get("name", "")
         created = fields.get("created", "")
 
-        milestone = fix_versions[0]["name"] if fix_versions else ""
-        fix_version_names = [fv["name"] for fv in fix_versions]
+        milestone = fix_versions[0].get("name", "") if fix_versions else ""
+        fix_version_names = [fv.get("name", "") for fv in fix_versions]
         number = key.split("-")[-1] if "-" in key else key
 
         # Story points: try standard field name, then common custom field
