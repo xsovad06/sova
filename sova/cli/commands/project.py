@@ -11,6 +11,9 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.adapters import create_adapter
+from sova.config.loader import load_config
+from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
 from sova.utils.shell import run
 
 console = Console(stderr=True)
@@ -420,9 +423,6 @@ async def _setup(*, path: Path | None) -> None:
 
 async def _offer_starter_milestones(project_dir: Path) -> None:
     """Offer to create default phase milestones on the tracker."""
-    from sova.config.loader import load_config
-    from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
-
     try:
         cfg = load_config(project_dir)
     except (FileNotFoundError, ValueError, KeyError):
@@ -432,8 +432,6 @@ async def _offer_starter_milestones(project_dir: Path) -> None:
         return
 
     try:
-        from sova.adapters import create_adapter
-
         create_adapter(cfg)
     except ValueError:
         return
