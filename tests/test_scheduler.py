@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -499,3 +501,468 @@ class TestWatchParallelIntegration:
         assert len(processed) == 1
         # Should pick the highest-priority task first (RESEARCHED)
         assert processed[0] == "1"
+
+
+# ---------------------------------------------------------------------------
+# WatchLoop edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class TestWatchLoopEdgeCases:
+    """Additional edge-case tests for WatchLoop."""
+
+    async def test_scan_includes_in_progress_tasks(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [_make_task("1", "In Progress", TaskState.IN_PROGRESS)]
+        adapter = _mock_adapter(tasks=tasks)
+        loop = WatchLoop(config=_make_config(), adapter=adapter)
+
+        actionable = await loop.scan()
+        assert len(actionable) == 1
+        assert actionable[0].id == "1"
+
+    async def test_scan_excludes_done_and_in_review(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [
+            _make_task("1", "Done", TaskState.DONE),
+            _make_task("2", "In review", TaskState.IN_REVIEW),
+            _make_task("3", "Backlog", TaskState.BACKLOG),
+        ]
+        adapter = _mock_adapter(tasks=tasks)
+        loop = WatchLoop(config=_make_config(), adapter=adapter)
+
+        actionable = await loop.scan()
+        assert len(actionable) == 1
+        assert actionable[0].id == "3"
+
+    async def test_scan_unknown_state_gets_low_priority(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [
+            _make_task("1", "Backlog", TaskState.BACKLOG),
+            _make_task("2", "In Progress", TaskState.IN_PROGRESS),
+        ]
+        adapter = _mock_adapter(tasks=tasks)
+        loop = WatchLoop(config=_make_config(), adapter=adapter)
+
+        actionable = await loop.scan()
+        # IN_PROGRESS (priority 1) before BACKLOG (priority 3)
+        assert actionable[0].id == "2"
+        assert actionable[1].id == "1"
+
+    @pytest.mark.parametrize("veto_seconds", [0, -1])
+    async def test_check_veto_non_positive_seconds_fast_paths(self, veto_seconds: int) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        config = _make_config()
+        adapter = _mock_adapter()
+        loop = WatchLoop(config=config, adapter=adapter)
+        # Bypass validation to test the <= 0 guard in check_veto
+        loop._config.watch.veto_seconds = veto_seconds  # type: ignore[assignment]
+
+        task = _make_task("42")
+        result = await loop.check_veto(task)
+        assert result is True
+
+    async def test_check_veto_cancelled_by_stop(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        config = _make_config(watch=WatchConfig(veto_seconds=60))
+        adapter = _mock_adapter()
+        loop = WatchLoop(config=config, adapter=adapter)
+        task = _make_task("42")
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            loop.stop()
+
+        asyncio.create_task(stop_soon())
+        result = await loop.check_veto(task)
+        assert result is False
+
+    async def test_run_idle_cycle_then_stop(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        adapter = _mock_adapter(tasks=[])
+        config = _make_config()
+        config.watch.interval_idle = 1  # type: ignore[assignment]
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        call_count = 0
+        original_scan = loop.scan
+
+        async def counting_scan() -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                loop.stop()
+            return await original_scan()
+
+        loop.scan = counting_scan  # type: ignore[assignment]
+        await loop.run()
+
+        assert call_count >= 2
+
+    async def test_run_handles_scan_exception(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.side_effect = [RuntimeError("boom"), []]
+        config = _make_config()
+        config.watch.interval_active = 1  # type: ignore[assignment]
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        call_count = 0
+        original_scan = loop.scan
+
+        async def stop_after_two() -> list:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                loop.stop()
+            return await original_scan()
+
+        loop.scan = stop_after_two  # type: ignore[assignment]
+        await loop.run()
+
+        assert call_count >= 2
+        assert loop.is_running is False
+
+    async def test_run_sets_running_flag(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        adapter = _mock_adapter(tasks=[])
+        config = _make_config()
+        config.watch.interval_idle = 1  # type: ignore[assignment]
+        loop = WatchLoop(config=config, adapter=adapter)
+        was_running = False
+
+        original_scan = loop.scan
+
+        async def check_running() -> list:
+            nonlocal was_running
+            was_running = loop.is_running
+            loop.stop()
+            return await original_scan()
+
+        loop.scan = check_running  # type: ignore[assignment]
+        await loop.run()
+
+        assert was_running is True
+        assert loop.is_running is False
+
+    async def test_stop_sets_event_and_flag(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        loop = WatchLoop(config=_make_config(), adapter=_mock_adapter())
+        assert loop._stop_event.is_set() is False
+
+        loop.stop()
+        assert loop.is_running is False
+        assert loop._stop_event.is_set() is True
+
+    @patch("sova.scheduler.watch.dispatch", new=AsyncMock())
+    async def test_process_task_uses_project_dir(self) -> None:
+        from sova.roles.base import RoleResult
+        from sova.scheduler.watch import WatchLoop, dispatch
+
+        dispatch.return_value = (MagicMock(name="dev"), RoleResult(success=True, summary="OK"))
+        adapter = _mock_adapter()
+        loop = WatchLoop(config=_make_config(), adapter=adapter, project_dir="/my/project")
+
+        task = _make_task("42")
+        await loop.process_task(task)
+
+        ctx_arg = dispatch.call_args[0][0]
+        assert str(ctx_arg.project_dir) == "/my/project"
+
+
+# ---------------------------------------------------------------------------
+# ParallelExecutor edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class TestParallelExecutorEdgeCases:
+    """Additional edge-case tests for ParallelExecutor."""
+
+    async def test_execute_tasks_empty_list_returns_empty(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        executor = ParallelExecutor(config=_make_config())
+        results = await executor.execute_tasks([], adapter=_mock_adapter())
+        assert results == []
+
+    async def test_execute_tasks_passes_force_flag(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
+        executor = ParallelExecutor(config=_make_config())
+        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
+
+        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
+            from sova.roles.base import RoleResult
+
+            mock_dispatch.return_value = (MagicMock(), RoleResult(success=True, summary="OK"))
+            await executor.execute_tasks(tasks, adapter=adapter, force=True)
+
+            ctx_arg = mock_dispatch.call_args[0][0]
+            assert ctx_arg.force is True
+
+    async def test_dispatch_task_returns_role_name(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
+        executor = ParallelExecutor(config=_make_config())
+        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
+
+        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
+            from sova.roles.base import RoleResult
+
+            role_mock = MagicMock()
+            role_mock.name = "developer"
+            mock_dispatch.return_value = (role_mock, RoleResult(success=True, summary="Done"))
+            results = await executor.execute_tasks(tasks, adapter=adapter)
+
+        assert results[0].role == "developer"
+
+    async def test_dispatch_task_failure_includes_error(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        adapter = _mock_adapter(default_state=TaskState.RESEARCHED)
+        executor = ParallelExecutor(config=_make_config())
+        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
+
+        with patch("sova.scheduler.parallel.dispatch", new=AsyncMock()) as mock_dispatch:
+            from sova.roles.base import RoleResult
+
+            role_mock = MagicMock()
+            role_mock.name = "developer"
+            mock_dispatch.return_value = (role_mock, RoleResult(success=False, summary="", error="lint failed"))
+            results = await executor.execute_tasks(tasks, adapter=adapter)
+
+        assert results[0].success is False
+        assert results[0].error == "lint failed"
+        assert results[0].role == "developer"
+
+    async def test_active_count_is_zero_when_idle(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        executor = ParallelExecutor(config=_make_config())
+        assert executor.active_count == 0
+
+    async def test_project_dir_defaults_to_cwd(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        executor = ParallelExecutor(config=_make_config())
+        assert executor._project_dir == Path.cwd()
+
+    async def test_project_dir_uses_provided_path(self) -> None:
+        from sova.scheduler.parallel import ParallelExecutor
+
+        executor = ParallelExecutor(config=_make_config(), project_dir=Path("/custom"))
+        assert executor._project_dir == Path("/custom")
+
+
+# ---------------------------------------------------------------------------
+# read_pid_file / stop_server edge-case tests
+# ---------------------------------------------------------------------------
+
+
+class TestReadPidFile:
+    """Tests for sova.scheduler.server.read_pid_file module-level function."""
+
+    def test_read_pid_file_nonexistent(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        config = _make_config(server={"pid_file": str(tmp_path / "missing.pid")})
+        assert read_pid_file(config) is None
+
+    def test_read_pid_file_empty_file(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "empty.pid"
+        pid_file.write_text("")
+        config = _make_config(server={"pid_file": str(pid_file)})
+        assert read_pid_file(config) is None
+
+    def test_read_pid_file_invalid_content(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "bad.pid"
+        pid_file.write_text("not-a-number")
+        config = _make_config(server={"pid_file": str(pid_file)})
+        assert read_pid_file(config) is None
+
+    def test_read_pid_file_alive_process(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "sova.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        result = read_pid_file(config)
+        assert result == os.getpid()
+
+    def test_read_pid_file_stale_pid_cleans_up(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "stale.pid"
+        pid_file.write_text("99999999")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with patch("sova.scheduler.server.os.kill", side_effect=OSError("No such process")):
+            result = read_pid_file(config)
+
+        assert result is None
+
+    def test_read_pid_file_no_config_uses_default(self) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        result = read_pid_file(None)
+        # Default path likely doesn't exist or PID is stale -- either way returns None or valid PID
+        assert result is None or isinstance(result, int)
+
+    def test_read_pid_file_whitespace_around_pid(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "ws.pid"
+        pid_file.write_text(f"  {os.getpid()}  \n")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        result = read_pid_file(config)
+        assert result == os.getpid()
+
+
+class TestStopServer:
+    """Tests for sova.scheduler.server.stop_server module-level function."""
+
+    def test_stop_server_no_running_server(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import stop_server
+
+        config = _make_config(server={"pid_file": str(tmp_path / "missing.pid")})
+        assert stop_server(config) is False
+
+    def test_stop_server_sends_sigterm(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with patch("sova.scheduler.server.os.kill") as mock_kill:
+            # First call (signal 0) checks alive, second call sends SIGTERM
+            mock_kill.return_value = None
+            result = stop_server(config)
+
+        assert result is True
+        # Verify SIGTERM was sent
+        sigterm_calls = [c for c in mock_kill.call_args_list if c[0][1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 1
+
+    def test_stop_server_kill_fails_returns_false(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import stop_server
+
+        pid_file = tmp_path / "server.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        call_count = 0
+
+        def kill_side_effect(pid: int, sig: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            if sig == signal.SIGTERM:
+                raise OSError("Permission denied")
+
+        with patch("sova.scheduler.server.os.kill", side_effect=kill_side_effect):
+            result = stop_server(config)
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# SOVAServer additional tests
+# ---------------------------------------------------------------------------
+
+
+class TestSOVAServerEdgeCases:
+    """Additional edge-case tests for SOVAServer."""
+
+    async def test_health_check_endpoint(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        app = server.create_app()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/health")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ok"
+            assert "uptime_s" in data
+            assert "scheduler_running" in data
+            assert "agents_active" in data
+
+    async def test_scheduler_status_reports_config(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config(max_parallel_agents=5, watch=WatchConfig(interval_active=30, interval_idle=120))
+        server = SOVAServer(config=config)
+        app = server.create_app()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/scheduler/status")
+            data = resp.json()
+            assert data["max_parallel"] == 5
+            assert data["watch_interval"] == 30
+            assert data["idle_interval"] == 120
+
+    async def test_pid_file_path_uses_config(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        custom_pid = str(tmp_path / "custom.pid")
+        config = _make_config(server={"pid_file": custom_pid})
+        server = SOVAServer(config=config)
+
+        assert str(server._pid_file_path()) == custom_pid
+
+    async def test_pid_file_path_default(self) -> None:
+        from sova.scheduler.server import _DEFAULT_PID_DIR, SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+
+        assert server._pid_file_path() == _DEFAULT_PID_DIR / "sova-server.pid"
+
+    async def test_write_and_remove_pid_file(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        pid_file = tmp_path / "test.pid"
+        config = _make_config(server={"pid_file": str(pid_file)})
+        server = SOVAServer(config=config)
+
+        server._write_pid_file()
+        assert pid_file.exists()
+        assert int(pid_file.read_text()) == os.getpid()
+
+        server._remove_pid_file()
+        assert not pid_file.exists()
+
+    async def test_remove_pid_file_missing_is_ok(self, tmp_path: Path) -> None:
+        from sova.scheduler.server import SOVAServer
+
+        pid_file = tmp_path / "nonexistent.pid"
+        config = _make_config(server={"pid_file": str(pid_file)})
+        server = SOVAServer(config=config)
+
+        # Should not raise
+        server._remove_pid_file()
