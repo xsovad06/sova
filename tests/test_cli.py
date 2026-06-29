@@ -1057,3 +1057,103 @@ class TestHardenHelpers:
         result = await _resolve_harden_tasks(adapter, None, all_open)
         ids = {t.id for t in result}
         assert ids == {"1", "2", "4"}
+
+
+# ---------------------------------------------------------------------------
+# _detect_github_repo / _detect_github_user / _detect_test_command
+# ---------------------------------------------------------------------------
+
+
+class TestDetectGithubRepo:
+    async def test_returns_repo_from_ssh_url(self) -> None:
+        from sova.cli.commands.project import _detect_github_repo
+
+        mock_result = MagicMock(success=True, stdout="git@github.com:owner/repo.git\n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+
+    async def test_returns_repo_from_https_url(self) -> None:
+        from sova.cli.commands.project import _detect_github_repo
+
+        mock_result = MagicMock(success=True, stdout="https://github.com/owner/repo.git\n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+
+    async def test_returns_empty_when_git_fails(self) -> None:
+        from sova.cli.commands.project import _detect_github_repo
+
+        mock_result = MagicMock(success=False, stdout="")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_repo(Path("/tmp")) == ""
+
+    async def test_returns_empty_when_not_github(self) -> None:
+        from sova.cli.commands.project import _detect_github_repo
+
+        mock_result = MagicMock(success=True, stdout="git@gitlab.com:owner/repo.git\n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_repo(Path("/tmp")) == ""
+
+    async def test_handles_ssh_alias(self) -> None:
+        from sova.cli.commands.project import _detect_github_repo
+
+        mock_result = MagicMock(success=True, stdout="git@github.com-personal:owner/repo.git\n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_repo(Path("/tmp")) == "owner/repo"
+
+
+class TestDetectGithubUser:
+    async def test_returns_user_when_authenticated(self) -> None:
+        from sova.cli.commands.project import _detect_github_user
+
+        mock_result = MagicMock(success=True, stdout="ghp_token123\n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_user("owner/repo") == "owner"
+
+    async def test_returns_empty_when_no_repo(self) -> None:
+        from sova.cli.commands.project import _detect_github_user
+
+        assert await _detect_github_user("") == ""
+
+    async def test_returns_empty_when_no_slash(self) -> None:
+        from sova.cli.commands.project import _detect_github_user
+
+        assert await _detect_github_user("justrepo") == ""
+
+    async def test_returns_empty_when_auth_fails(self) -> None:
+        from sova.cli.commands.project import _detect_github_user
+
+        mock_result = MagicMock(success=False, stdout="")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_user("owner/repo") == ""
+
+    async def test_returns_empty_when_token_empty(self) -> None:
+        from sova.cli.commands.project import _detect_github_user
+
+        mock_result = MagicMock(success=True, stdout="  \n")
+        with patch("sova.cli.commands.project.run", new_callable=AsyncMock, return_value=mock_result):
+            assert await _detect_github_user("owner/repo") == ""
+
+
+class TestDetectTestCommand:
+    def test_default_make_test(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _detect_test_command
+
+        assert _detect_test_command(tmp_path) == "make test"
+
+    def test_detects_npm(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _detect_test_command
+
+        (tmp_path / "package.json").write_text("{}")
+        assert _detect_test_command(tmp_path) == "npm test"
+
+    def test_detects_cargo(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _detect_test_command
+
+        (tmp_path / "Cargo.toml").write_text("")
+        assert _detect_test_command(tmp_path) == "cargo test"
+
+    def test_detects_go(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _detect_test_command
+
+        (tmp_path / "go.mod").write_text("")
+        assert _detect_test_command(tmp_path) == "go test ./..."
