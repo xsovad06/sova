@@ -179,6 +179,50 @@ def _compact_spec_ref(spec_sections: dict[str, str] | None) -> dict[str, str] | 
     return compact
 
 
+def _safe_severity(value: object, default: int = 5) -> int:
+    """Convert a severity value to int safely, returning *default* on failure.
+
+    Handles int, float, numeric strings, None, and non-numeric strings
+    (e.g. ``"HIGH"``) without raising.
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_json(text: str) -> dict | None:
+    """Extract the best JSON object from *text* using ``raw_decode``.
+
+    Scans left-to-right through ``{`` positions.  Returns the first valid
+    JSON object that contains a ``"findings"`` key, or the first valid parse
+    if none has ``"findings"``.  Returns ``None`` when no valid JSON is found.
+    """
+    decoder = json.JSONDecoder()
+    first_valid: dict | None = None
+
+    pos = 0
+    while True:
+        idx = text.find("{", pos)
+        if idx < 0:
+            break
+        try:
+            obj, _ = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            pos = idx + 1
+            continue
+        if isinstance(obj, dict):
+            if "findings" in obj:
+                return obj
+            if first_valid is None:
+                first_valid = obj
+        pos = idx + 1
+
+    return first_valid
+
+
 def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
     """Parse LLM response into findings. Returns (findings, summary)."""
     text = text.strip()
@@ -191,16 +235,9 @@ def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start >= 0 and end > start:
-            try:
-                data = json.loads(text[start:end])
-            except json.JSONDecodeError:
-                log.warning("parse_findings.failed", text_preview=text[:200], exc_info=True)
-                return [], "Failed to parse review response"
-        else:
-            log.warning("parse_findings.failed", text_preview=text[:200], exc_info=True)
+        data = _extract_json(text)
+        if data is None:
+            log.warning("parse_findings.failed", text_preview=text[:200])
             return [], "Failed to parse review response"
 
     findings = []
@@ -208,7 +245,7 @@ def _parse_findings(text: str) -> tuple[list[ReviewFinding], str]:
         findings.append(
             ReviewFinding(
                 file=item.get("file", "unknown"),
-                severity=int(item.get("severity", 5)),
+                severity=_safe_severity(item.get("severity", 5)),
                 category=item.get("category", "other"),
                 description=item.get("description", ""),
                 suggestion=item.get("suggestion", ""),
@@ -415,6 +452,58 @@ class ReviewerRole(AgentRole):
                 f"expected one of {', '.join(self.allowed_input_states)}",
             )
 
+        pr_result = await self._discover_pr(ctx)
+        if pr_result:
+            return pr_result
+
+        log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number, branch=ctx.branch_name)
+
+        # Fetch PR diff and file list
+        try:
+            diff = await get_pr_diff(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+            files = await get_pr_files(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
+        except Exception as exc:
+            return RoleResult(
+                success=False,
+                summary=f"Failed to fetch PR #{ctx.pr_number} diff",
+                error=str(exc),
+            )
+
+        # Run LLM review (chunked if needed)
+        review = await self._run_review(ctx, task, diff, files)
+
+        # Append review rationale to spec (non-fatal provenance threading)
+        self._append_review_rationale(ctx, review)
+
+        # Post review with inline comments on specific lines
+        await self._post_review(ctx, review, diff)
+
+        # Write handoff
+        await self._write_handoff(ctx, review)
+
+        # Extract learnings from this review
+        await self._extract_review_memories(ctx, task, review)
+
+        total_count = len(review.findings)
+        log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
+
+        # IN_REVIEW is correct for all outcomes: architecture doc says "Issue
+        # state ownership is human -- agents never auto-move issues to DONE.
+        # Issues stay IN_REVIEW until the human merges." Even a clean review
+        # (0 findings) requires human approval before integration.
+        return RoleResult(
+            success=True,
+            summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings",
+            output_state=TaskState.IN_REVIEW,
+            findings=[f.description for f in review.findings],
+        )
+
+    async def _discover_pr(self, ctx: ExecutionContext) -> RoleResult | None:
+        """Discover PR number and branch for the issue.
+
+        Returns a failed ``RoleResult`` if discovery fails, or ``None`` on
+        success (PR number and branch populated on *ctx*).
+        """
         if not ctx.pr_number:
             log.info("reviewer.discovering_pr", issue=ctx.issue_number)
             pr_info = await find_pr_for_issue(
@@ -445,32 +534,10 @@ class ReviewerRole(AgentRole):
             except Exception:
                 log.warning("reviewer.branch_discovery_failed", exc_info=True)
 
-        log.info("reviewer.start", issue=ctx.issue_number, pr=ctx.pr_number, branch=ctx.branch_name)
+        return None  # success -- ctx is populated
 
-        # Fetch PR diff and file list
-        try:
-            diff = await get_pr_diff(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
-            files = await get_pr_files(ctx.pr_number, repo=ctx.repo, github_user=ctx.config.github_user)
-        except Exception as exc:
-            return RoleResult(
-                success=False,
-                summary=f"Failed to fetch PR #{ctx.pr_number} diff",
-                error=str(exc),
-            )
-
-        # Run LLM review (chunked if needed)
-        review = await self._run_review(ctx, task, diff, files)
-
-        # Append review rationale to spec (non-fatal provenance threading)
-        self._append_review_rationale(ctx, review)
-
-        # Post review with inline comments on specific lines
-        await self._post_review(ctx, review, diff)
-
-        # Write handoff
-        await self._write_handoff(ctx, review)
-
-        # Extract learnings from this review
+    async def _extract_review_memories(self, ctx: ExecutionContext, task: Task, review: ReviewResult) -> None:
+        """Extract learnings from this review into memory (non-fatal)."""
         try:
             from sova.knowledge.extraction import extract_memories
 
@@ -496,20 +563,6 @@ class ReviewerRole(AgentRole):
             )
         except Exception:
             log.warning("reviewer.extract_memory_failed", exc_info=True)
-
-        total_count = len(review.findings)
-        log.info("reviewer.done", issue=ctx.issue_number, findings=total_count)
-
-        # IN_REVIEW is correct for all outcomes: architecture doc says "Issue
-        # state ownership is human -- agents never auto-move issues to DONE.
-        # Issues stay IN_REVIEW until the human merges." Even a clean review
-        # (0 findings) requires human approval before integration.
-        return RoleResult(
-            success=True,
-            summary=f"Reviewed PR #{ctx.pr_number}: {total_count} findings",
-            output_state=TaskState.IN_REVIEW,
-            findings=[f.description for f in review.findings],
-        )
 
     async def _clear_current_step(self, ctx: ExecutionContext) -> None:
         """Clear the current_step sentinel on the TaskRun.
