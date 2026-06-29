@@ -161,9 +161,6 @@ def _import_migration_011():
     return importlib.import_module("sova.db.migrations.versions.011_add_model_selection_reason")
 
 
-_MIG_011_MODULE = "sova.db.migrations.versions.011_add_model_selection_reason"
-
-
 async def test_migration_011_column_exists_helper() -> None:
     """Migration 011 _column_exists correctly detects model_selection_reason column."""
     mod = _import_migration_011()
@@ -192,8 +189,8 @@ async def test_migration_011_upgrade_skip_when_exists() -> None:
     mod = _import_migration_011()
 
     with (
-        patch(f"{_MIG_011_MODULE}._column_exists", return_value=True) as mock_exists,
-        patch(f"{_MIG_011_MODULE}.op") as mock_op,
+        patch.object(mod, "_column_exists", return_value=True) as mock_exists,
+        patch.object(mod, "op") as mock_op,
     ):
         mod.upgrade()
         mock_exists.assert_called_once_with("cost_records", "model_selection_reason")
@@ -206,7 +203,7 @@ async def test_migration_011_upgrade_adds_column() -> None:
 
     mod = _import_migration_011()
 
-    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=False), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+    with patch.object(mod, "_column_exists", return_value=False), patch.object(mod, "op") as mock_op:
         mod.upgrade()
         mock_op.add_column.assert_called_once()
 
@@ -217,7 +214,7 @@ async def test_migration_011_downgrade_drops_column() -> None:
 
     mod = _import_migration_011()
 
-    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=True), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+    with patch.object(mod, "_column_exists", return_value=True), patch.object(mod, "op") as mock_op:
         mod.downgrade()
         mock_op.drop_column.assert_called_once_with("cost_records", "model_selection_reason")
 
@@ -228,7 +225,7 @@ async def test_migration_011_downgrade_skip_when_missing() -> None:
 
     mod = _import_migration_011()
 
-    with patch(f"{_MIG_011_MODULE}._column_exists", return_value=False), patch(f"{_MIG_011_MODULE}.op") as mock_op:
+    with patch.object(mod, "_column_exists", return_value=False), patch.object(mod, "op") as mock_op:
         mod.downgrade()
         mock_op.drop_column.assert_not_called()
 
