@@ -112,6 +112,49 @@ class RunCommandRequest(BaseModel):
     args: dict | None = None
 
 
+class PlannedTaskRequest(BaseModel):
+    title: str
+    description: str = ""
+    labels: list[str] | None = None
+
+
+class CreateIssuesRequest(BaseModel):
+    tasks: list[PlannedTaskRequest]
+
+
+@router.post("/agents/planner/create-issues")
+async def create_planner_issues(req: CreateIssuesRequest) -> dict:
+    """Create GitHub issues from planner-proposed tasks."""
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.dashboard.project_context import get_project_dir
+
+    if not req.tasks:
+        return {"created": [], "errors": []}
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    adapter = create_adapter(cfg)
+
+    async def _create_one(task: PlannedTaskRequest) -> dict:
+        try:
+            result = await adapter.create_issue(
+                title=task.title,
+                body=task.description,
+                labels=task.labels,
+            )
+            return {"ok": True, "number": result.id, "title": result.title}
+        except Exception as exc:
+            log.warning("planner.create_issue_failed", title=task.title, error=str(exc))
+            return {"ok": False, "title": task.title, "error": str(exc)}
+
+    results = await asyncio.gather(*[_create_one(t) for t in req.tasks])
+    created = [{"number": r["number"], "title": r["title"]} for r in results if r["ok"]]
+    errors = [{"title": r["title"], "error": r["error"]} for r in results if not r["ok"]]
+
+    return {"created": created, "errors": errors}
+
+
 @router.get("/agents/work-items")
 async def get_work_items() -> dict:
     """Get unified work items with computed state and actions."""

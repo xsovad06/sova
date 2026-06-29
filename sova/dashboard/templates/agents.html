@@ -1,7 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Agents - SOVA{% endblock %}
 {% block content %}
-<h2 class="text-2xl font-semibold mb-4">Agents</h2>
+<div class="flex items-center justify-between mb-4">
+  <h2 class="text-2xl font-semibold">Agents</h2>
+  <button onclick="startPlanner()" id="run-planner-btn"
+    class="px-3 py-1.5 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors"
+    data-tooltip="Analyze project and propose new tasks">
+    Run Planner
+  </button>
+</div>
 
 <!-- Task Browser -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
@@ -173,6 +180,7 @@ var _roleLabels = {
   'developer': 'Developing',
   'triage': 'Triaging',
   'researcher': 'Researching',
+  'planner': 'Planning',
 };
 
 function stateTag(state, stateLabel, stateColor) {
@@ -610,13 +618,55 @@ async function _doStartAgent(issue, role, force, prNumber) {
       var result = await res.json();
       if (result.error) { showToast(result.error, 'error'); return; }
       if (result.run_id) viewLogs(result.run_id);
-      showToast('Agent started for #' + issue, 'success');
+      var agentLabel = issue ? '#' + issue : (role || 'agent');
+      showToast('Agent started: ' + agentLabel, 'success');
     }
   } catch (e) {
     showToast('Failed to start agent: ' + e.message, 'error');
   }
   loadAgents();
   loadTaskCards();
+}
+
+async function startPlanner() {
+  var btn = document.getElementById('run-planner-btn');
+  if (btn) btn.disabled = true;
+  await _doStartAgent('', 'planner', false);
+  if (btn) btn.disabled = false;
+}
+
+async function createPlannerIssues(tasks, issue) {
+  try {
+    var res = await fetch(apiUrl('/agents/planner/create-issues'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks: tasks }),
+    });
+    if (!res.ok) {
+      showToast(await getErrorDetail(res, 'Failed to create issues'), 'error');
+      return;
+    }
+    var data = await res.json();
+    var createdCount = data.created ? data.created.length : 0;
+    var errorCount = data.errors ? data.errors.length : 0;
+
+    if (createdCount > 0) {
+      var nums = data.created.map(function(c) { return '#' + c.number; }).join(', ');
+      showToast('Created ' + createdCount + ' issues: ' + nums, 'success');
+    }
+    if (errorCount > 0) {
+      var errTitles = data.errors.map(function(e) { return e.title; }).join(', ');
+      showToast(errorCount + ' issues failed: ' + errTitles, 'error');
+    }
+
+    // Clear cached handoff so next poll reflects updated state
+    _plannerHandoffCache = null;
+    if (issue) dismissHandoff(issue);
+    loadAgents();
+    loadTaskCards();
+  } catch (e) {
+    showToast('Failed to create issues: ' + e.message, 'error');
+  }
 }
 
 // -- PR status panel --
@@ -847,6 +897,7 @@ async function loadAgents() {
     });
 
     grid.innerHTML = cards.join('');
+    enhancePlannerCards(data.completed);
   } catch (e) {
     console.error('Failed to load agents:', e);
   }
@@ -860,11 +911,12 @@ function renderAgentCard(agent) {
   var detailUrl = prefix + '/work/' + agent.run_id;
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
+  var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role, agent.pipeline_variant));
 
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
     '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
       '<div class="flex items-center gap-2">' +
-        '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
+        '<span class="text-sm font-medium">' + issueLabel + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role, agent.pipeline_variant)) + '</span>' +
         (agent.source === 'external' ? '<span class="px-1.5 py-0.5 rounded text-xs font-medium bg-gray-700 text-gray-300">CLI</span>' : '') +
         prBadge +
@@ -897,14 +949,20 @@ function renderCompletedCard(agent) {
   var detailUrl = prefix + '/work/' + agent.run_id;
 
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
+  var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role));
 
   var rerunBtn = '<button onclick="event.stopPropagation(); rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>';
 
-  return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all cursor-pointer hover:opacity-90" onclick="window.location=\'' + detailUrl + '\'">' +
-    '<div class="flex items-center justify-between">' +
+  var isPlanner = agent.role === 'planner';
+  var plannerExtra = isPlanner ? '<div id="planner-extra-' + agent.run_id + '"></div>' : '';
+  var cardClick = isPlanner ? '' : ' cursor-pointer hover:opacity-90" onclick="window.location=\'' + detailUrl + '\'';
+  var headerClick = isPlanner ? ' cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'' : '';
+
+  return '<div class="bg-surface-card rounded-lg border ' + borderColor + ' p-4 opacity-75 transition-all' + cardClick + '">' +
+    '<div class="flex items-center justify-between' + headerClick + '">' +
       '<div class="flex items-center gap-2">' +
-        '<span class="text-sm font-medium">' + issueLink(agent.issue) + '</span>' +
+        '<span class="text-sm font-medium">' + issueLabel + '</span>' +
         '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(agent.role)) + '</span>' +
         renderStatusBadge(agent.status) +
         prBadge +
@@ -915,7 +973,111 @@ function renderCompletedCard(agent) {
         '<span class="text-gray-500">' + agoText + '</span>' +
       '</div>' +
     '</div>' +
+    plannerExtra +
   '</div>';
+}
+
+// -- Planner card enhancement --
+
+var _plannerHandoffCache = null;
+
+async function enhancePlannerCards(completed) {
+  var plannerAgents = (completed || []).filter(function(a) { return a.role === 'planner'; });
+  if (plannerAgents.length === 0) return;
+
+  // Fetch handoff only once; reuse cache for subsequent polls
+  if (!_plannerHandoffCache) {
+    try {
+      var res = await fetch(apiUrl('/handoff?issue=planner'));
+      if (!res.ok) return;
+      var data = await res.json();
+      if (!data.handoff || !data.handoff.details || !data.handoff.details.planned_tasks) return;
+      _plannerHandoffCache = data.handoff;
+    } catch (e) {
+      return;
+    }
+  }
+
+  try {
+  var tasks = _plannerHandoffCache.details.planned_tasks;
+  var handoffIssue = _plannerHandoffCache.issue || 'planner';
+
+  plannerAgents.forEach(function(agent) {
+      var card = document.getElementById('planner-extra-' + agent.run_id);
+      if (!card) return;
+
+      if (tasks.length === 0) {
+        card.innerHTML = '<p class="text-xs text-gray-500 mt-2">No tasks proposed</p>';
+        return;
+      }
+
+      var taskListHtml = tasks.map(function(t, i) {
+        var priorityColors = {
+          critical: 'text-accent-red', high: 'text-accent-yellow',
+          medium: 'text-accent', low: 'text-gray-400'
+        };
+        var pColor = priorityColors[t.priority] || 'text-gray-400';
+        return '<label class="flex items-start gap-2 py-1 text-xs cursor-pointer" onclick="event.stopPropagation()">' +
+          '<input type="checkbox" checked class="mt-0.5 planner-task-check" data-idx="' + i + '">' +
+          '<span class="flex-1"><span class="' + pColor + ' font-medium">[' + escapeHtml(t.priority) + ']</span> ' + escapeHtml(t.title) + '</span>' +
+        '</label>';
+      }).join('');
+
+      var createBtnDisabled = _plannerHandoffCache.status !== 'awaiting_action' ? ' disabled' : '';
+      var createBtnClass = _plannerHandoffCache.status === 'awaiting_action'
+        ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border-accent-green/30'
+        : 'bg-gray-600/20 text-gray-500 border-gray-600/30 cursor-not-allowed';
+
+      card.innerHTML =
+        '<div class="mt-3 border-t border-gray-700/30 pt-3">' +
+          '<p class="text-xs text-gray-400 mb-2">Proposed ' + tasks.length + ' tasks:</p>' +
+          '<div class="max-h-40 overflow-y-auto space-y-0.5 mb-2" id="planner-task-list-' + agent.run_id + '">' +
+            taskListHtml +
+          '</div>' +
+          '<button onclick="event.stopPropagation(); _submitPlannerIssues(' + agent.run_id + ', \'' + escapeJsStr(handoffIssue) + '\')"' + createBtnDisabled +
+            ' class="px-3 py-1.5 rounded text-xs border transition-colors ' + createBtnClass + '"' +
+            ' data-tooltip="Create selected issues on the tracker">' +
+            'Create Issues' +
+          '</button>' +
+        '</div>';
+    });
+  } catch (e) {
+    // Handoff file may be cleared; silently ignore
+  }
+}
+
+function _submitPlannerIssues(runId, handoffIssue) {
+  var container = document.getElementById('planner-task-list-' + runId);
+  if (!container) return;
+
+  // Use cached tasks from enhancePlannerCards -- no re-fetch needed
+  if (!_plannerHandoffCache || !_plannerHandoffCache.details || !_plannerHandoffCache.details.planned_tasks) {
+    showToast('Task data not available -- try refreshing', 'error');
+    return;
+  }
+  var allTasks = _plannerHandoffCache.details.planned_tasks;
+
+  var checks = container.querySelectorAll('.planner-task-check');
+  var selected = [];
+  checks.forEach(function(cb) {
+    if (cb.checked) {
+      var idx = parseInt(cb.getAttribute('data-idx'), 10);
+      if (allTasks[idx]) {
+        selected.push({
+          title: allTasks[idx].title,
+          description: allTasks[idx].description,
+          labels: allTasks[idx].component ? ['area:' + allTasks[idx].component] : null,
+        });
+      }
+    }
+  });
+
+  if (selected.length === 0) {
+    showToast('No tasks selected', 'warning');
+    return;
+  }
+
+  createPlannerIssues(selected, handoffIssue);
 }
 
 // -- Log Viewer --
@@ -933,8 +1095,9 @@ function updateLogTabs(agents) {
     var colors = roleColor(a.role);
     var isActive = activeLogRunId === a.run_id;
     var activeClass = isActive ? 'bg-surface text-white border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300';
+    var tabLabel = a.issue ? '#' + a.issue : formatRole(a.role, a.pipeline_variant);
     return '<button onclick="viewLogs(' + a.run_id + ')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
-      escapeHtml('#' + a.issue) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
+      escapeHtml(tabLabel) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
     '</button>';
   }).join('');
 }
