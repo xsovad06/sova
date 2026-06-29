@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.db.models import CostRecord, TaskRun
@@ -121,6 +121,37 @@ async def get_by_model(session: AsyncSession) -> list[dict]:
     return [
         {
             "model": row.model,
+            "cost_usd": round(float(row.cost), 4),
+            "count": row.count,
+            "tokens_in": row.tokens_in,
+            "tokens_out": row.tokens_out,
+        }
+        for row in result.all()
+    ]
+
+
+async def get_by_routing(session: AsyncSession) -> list[dict]:
+    """Cost breakdown by model selection reason."""
+    reason_col = case(
+        (CostRecord.model_selection_reason.is_(None), "untracked"),
+        (CostRecord.model_selection_reason == "", "untracked"),
+        else_=CostRecord.model_selection_reason,
+    ).label("reason")
+    stmt = (
+        select(
+            reason_col,
+            func.sum(CostRecord.cost_usd).label("cost"),
+            func.count(CostRecord.id).label("count"),
+            func.sum(CostRecord.input_tokens).label("tokens_in"),
+            func.sum(CostRecord.output_tokens).label("tokens_out"),
+        )
+        .group_by(reason_col)
+        .order_by(func.sum(CostRecord.cost_usd).desc())
+    )
+    result = await session.execute(stmt)
+    return [
+        {
+            "reason": row.reason,
             "cost_usd": round(float(row.cost), 4),
             "count": row.count,
             "tokens_in": row.tokens_in,

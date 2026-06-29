@@ -134,6 +134,24 @@ async def test_create_cost_record() -> None:
 
         assert cost.model == "claude-opus-4"
         assert cost.cost_usd == Decimal("0.35")
+        assert cost.model_selection_reason is None
+
+
+async def test_cost_record_with_model_selection_reason() -> None:
+    """CostRecord stores model_selection_reason when provided."""
+    async with await get_session() as session:
+        cost = CostRecord(
+            phase="triage",
+            issue="99",
+            model="haiku",
+            cost_usd=Decimal("0.01"),
+            model_selection_reason="role:triage->haiku",
+        )
+        session.add(cost)
+        await session.commit()
+        await session.refresh(cost)
+
+        assert cost.model_selection_reason == "role:triage->haiku"
 
 
 async def test_create_memory() -> None:

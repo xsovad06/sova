@@ -104,25 +104,19 @@ def resolve_model(
     *,
     complexity: ComplexityTier | None = None,
     llm_config: LLMConfig | None = None,
-) -> str | None:
+) -> tuple[str, str] | None:
     """Resolve the model for a given agent role.
 
     Priority: role-specific config > complexity-based routing > None.
 
-    Args:
-        role: Agent role name (e.g., "researcher", "triage", "developer").
-        roles_config: The roles configuration section.
-        complexity: Task complexity tier for model routing fallback.
-        llm_config: LLM configuration with optional routing overrides.
-
     Returns:
-        Model alias string, or None if no model is resolved.
+        (model_alias, reason) tuple, or None if no model is resolved.
     """
     field_name = _ROLE_MODEL_FIELDS.get(role)
     if field_name:
         value = getattr(roles_config, field_name, None)
         if value:
-            return value
+            return value, f"role:{role}->{value}"
 
     if complexity is not None:
         from sova.llm.routing import route_model

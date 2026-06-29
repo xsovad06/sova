@@ -15,6 +15,7 @@ async def record_cost(
     phase: str,
     issue: str = "",
     task_run_id: int | None = None,
+    model_selection_reason: str | None = None,
 ) -> CostRecord:
     """Persist an LLM invocation cost to the database.
 
@@ -23,6 +24,7 @@ async def record_cost(
         phase: Workflow phase (e.g., "develop", "review", "triage").
         issue: Issue number/identifier.
         task_run_id: Optional FK to the TaskRun this belongs to.
+        model_selection_reason: Why this model was selected (e.g., "role:triage->haiku").
 
     Returns:
         The created CostRecord.
@@ -37,6 +39,7 @@ async def record_cost(
         cache_tokens=result.cache_read_tokens + result.cache_creation_tokens,
         cost_usd=result.cost_usd,
         duration_ms=result.duration_ms,
+        model_selection_reason=model_selection_reason,
     )
 
     async with await get_session() as session:
