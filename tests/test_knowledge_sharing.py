@@ -1169,8 +1169,6 @@ async def test_export_memories_skips_unchanged(tmp_path: Path) -> None:
     # First export writes the file
     result1 = await export_memories(shared_dir, repo="test-repo")
     assert result1.exported == 1
-    filepath = shared_dir / "review-patterns.md"
-    mtime_after_first = filepath.stat().st_mtime
 
     # Second export with same data should skip (not changed)
     result2 = await export_memories(shared_dir, repo="test-repo")
