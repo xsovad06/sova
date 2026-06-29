@@ -14,7 +14,7 @@ SOVA has four main components:
 - `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/output.py` -- OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
-- `core/steps/` -- 27 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:
+- `core/steps/` -- 25 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (15 steps): sync -> assess -> create_worktree -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (9 steps): rebase -> address_review -> commit -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
@@ -31,7 +31,7 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
-- 20 pages: dashboard, agents, run_detail, lifecycle, costs, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks
+- 21 pages: dashboard, agents, run_detail, lifecycle, costs, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks, base
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
 - 17 API routers under `/api`: overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles, spec, prs
 - 25 services: run, cost, memory, control (facade), handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, output (re-export facade for core/output), role, spec, pr
