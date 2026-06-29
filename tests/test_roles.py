@@ -1841,14 +1841,17 @@ class TestTriageAssessWithLLM:
                 "suggested_role": "developer",
             }
         )
+        import sova.llm.client as _llm_client
+        import sova.llm.cost as _llm_cost
+
         mock_invoke = AsyncMock(return_value=LLMResult(text=llm_response, model="haiku", cost_usd=Decimal("0.01")))
         mock_record_cost = AsyncMock()
         mock_resolve = MagicMock(return_value=("haiku", "role:triage->haiku"))
 
         with (
-            patch("sova.llm.client.invoke", mock_invoke),
-            patch("sova.llm.client.resolve_model", mock_resolve),
-            patch("sova.llm.cost.record_cost", mock_record_cost),
+            patch.object(_llm_client, "invoke", mock_invoke),
+            patch.object(_llm_client, "resolve_model", mock_resolve),
+            patch.object(_llm_cost, "record_cost", mock_record_cost),
         ):
             assessment = await role.assess_task_with_llm(task, ctx)
 
