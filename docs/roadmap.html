@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-27</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-29</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -505,37 +505,37 @@ flowchart TD
     direction TB
     subgraph CHAIN_E["Chain E: Spec Pipeline"]
       direction TB
-      I161["#161 SpecStep for\nspec generation"]:::autonomous
-      I162["#162 Pause-for-approval\nin WorkflowEngine"]:::guided
-      I163["#163 Approval resume\nendpoint + UI"]:::guided
+      I161["#161 SpecStep for\nspec generation\n(DONE)"]:::done
+      I162["#162 Pause-for-approval\nin WorkflowEngine\n(DONE)"]:::done
+      I163["#163 Approval resume\nendpoint + UI\n(DONE)"]:::done
       I161 --> I162
       I162 --> I163
     end
     subgraph CHAIN_F["Chain F: Planner Role"]
       direction TB
-      I164["#164 PlannerRole\nclass"]:::autonomous
-      I165["#165 Planning pipeline\nsteps"]:::autonomous
+      I164["#164 PlannerRole\nclass\n(DONE)"]:::done
+      I165["#165 Planning pipeline\nsteps\n(DONE)"]:::done
       I166["#166 Start planner\nwithout issue"]:::guided
       I164 --> I165
       I165 --> I166
     end
     subgraph CHAIN_G["Chain G: Model Routing"]
       direction TB
-      I155["#155 Task complexity\nscorer"]:::autonomous
-      I156["#156 Complexity-to-model\nrouting rules"]:::autonomous
-      I157["#157 Record routing\nin CostRecord"]:::autonomous
+      I155["#155 Task complexity\nscorer\n(DONE)"]:::done
+      I156["#156 Complexity-to-model\nrouting rules\n(DONE)"]:::done
+      I157["#157 Record routing\nin CostRecord\n(DONE)"]:::done
       I155 --> I156
       I156 --> I157
     end
     subgraph CHAIN_J["Chain J: Spec-Driven Pipeline"]
       direction TB
-      I245["#245 Spec-anchored\nreview"]:::autonomous
-      I246["#246 Provenance\nthreading"]:::autonomous
-      I247["#247 Spec-mediated\ncontext compression"]:::autonomous
+      I245["#245 Spec-anchored\nreview\n(DONE)"]:::done
+      I246["#246 Provenance\nthreading\n(DONE)"]:::done
+      I247["#247 Spec-mediated\ncontext compression\n(DONE)"]:::done
       I245 --> I246
       I246 --> I247
     end
-    I188["#188 Phase milestone\ncreation in setup"]:::autonomous
+    I188["#188 Phase milestone\ncreation in setup\n(DONE)"]:::done
   end
 
   subgraph TIER4["TIER 4: LLM INFRA (Sep)"]
@@ -613,7 +613,7 @@ flowchart TD
       <div class="grid-label">Security Hardening</div>
       <pre class="mermaid">
 flowchart TD
-  I198["#198 Prompt injection\nguard (mid-pipeline)"]:::high
+  I198["#198 Prompt injection\nguard (mid-pipeline)\n(DONE)"]:::done
   I199["#199 LLM output\negress filter"]:::medium
   I198 --> I199
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
@@ -648,15 +648,15 @@ flowchart TD
   <!-- Standalone Items -->
   <h3 class="subsection-title">Bugs &amp; Standalone Features</h3>
   <div class="diagram-container">
-    <div class="task-row">
+    <div class="task-row done">
       <span class="task-number">#186</span>
       <span class="task-title">Fix spec approval modal stacking (Enter key + repeated clicks)</span>
-      <span class="task-badge badge-high">bug</span>
+      <span class="task-badge badge-done">done</span>
     </div>
-    <div class="task-row">
+    <div class="task-row done">
       <span class="task-number">#187</span>
       <span class="task-title">Add Specs listing page to sidebar</span>
-      <span class="task-badge badge-autonomous">agentic</span>
+      <span class="task-badge badge-done">done</span>
     </div>
     <div class="task-row">
       <span class="task-number">#121</span>
@@ -720,6 +720,45 @@ flowchart TD
     </div>
   </div>
 
+  <!-- Resource Monitoring -->
+  <h3 class="subsection-title">Resource Monitoring (Chain K)</h3>
+  <div class="diagram-container">
+    <div class="grid-label">Resource Monitoring</div>
+    <pre class="mermaid">
+flowchart TD
+  I254["#254 psutil + ResourceCollector\nservice"]:::autonomous
+  I255["#255 DB model + per-run\nresource persistence"]:::autonomous
+  I256["#256 Per-run resource\nmetrics in dashboard"]:::autonomous
+  I257["#257 Live system metrics\nfloating widget"]:::guided
+  I258["#258 Cross-project\nresource aggregation"]:::autonomous
+  I259["#259 Capacity advisor\n+ energy estimation"]:::autonomous
+  I254 --> I255
+  I255 --> I256
+  I254 --> I257
+  I255 --> I257
+  I257 --> I258
+  I255 --> I259
+  I258 --> I259
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+    </pre>
+  </div>
+
+  <!-- Standalone Features -->
+  <h3 class="subsection-title">Standalone Features</h3>
+  <div class="diagram-container">
+    <div class="task-row">
+      <span class="task-number">#250</span>
+      <span class="task-title">Activity feed: conversational notification panel with live system events</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+    </div>
+  </div>
+
   <!-- Deferred -->
   <h3 class="subsection-title">Deferred (post-v0.1.0)</h3>
   <div class="diagram-container">
@@ -775,7 +814,8 @@ flowchart TD
       <li>#157 (Model routing) and #117 (Ollama) feed into #119 (Cost-optimized routing, deferred)</li>
       <li>#245 (Spec-anchored review) + #246 (Provenance) synergize with #224-227 (Knowledge System) -- richer memory extraction from decision rationale</li>
       <li>#247 (Spec context compression) synergizes with #155-157 (Model Routing) -- reduced context enables cheaper model tiers</li>
-      <li>#245 (Spec-anchored review) extends #241 (Feed prior findings to reviewer) -- spec adds intent verification beyond deduplication</li>
+      <li>#245 (Spec-anchored review, done) extends #241 (Feed prior findings to reviewer) -- spec adds intent verification beyond deduplication</li>
+      <li>#254-259 (Resource Monitoring) -- independent of tiers; #257 (live widget) extends dashboard's existing WebSocket infrastructure (#154)</li>
     </ul>
   </div>
 </div>
@@ -886,78 +926,70 @@ flowchart TD
       <!-- Tier 3 -->
       <div class="timeline-label">Tier 3<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Aug-Sep</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#161</span>
           <span class="task-title">Create SpecStep for specification generation</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #161</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#162</span>
           <span class="task-title">Add pause-for-approval semantics to WorkflowEngine</span>
-          <span class="task-badge badge-guided">hybrid</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #162</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#163</span>
           <span class="task-title">Approval resume endpoint and UI button</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#164</span>
           <span class="task-title">Create PlannerRole class for issueless planning</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #164</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#165</span>
           <span class="task-title">Planning pipeline steps (scan, generate, validate)</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #165</div>
         <div class="task-row">
           <span class="task-number">#166</span>
           <span class="task-title">Start planner agent without issue number</span>
           <span class="task-badge badge-guided">human</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#155</span>
           <span class="task-title">Task complexity scorer module</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #155</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#156</span>
           <span class="task-title">Complexity-to-model routing rules</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #156</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#157</span>
           <span class="task-title">Record model routing decisions in CostRecord</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#245</span>
           <span class="task-title">Spec-anchored review: verify implementation against spec intent</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #245</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#246</span>
           <span class="task-title">Provenance threading: spec as living decision record across pipeline</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #245, #246</div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#247</span>
           <span class="task-title">Spec-mediated context compression for token efficiency</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#188</span>
           <span class="task-title">Phase milestone creation and issue organization in setup</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1002,16 +1034,15 @@ flowchart TD
       <!-- Bugs + Standalone -->
       <div class="timeline-label">Bugs<br><span style="font-weight:400;font-size:0.65rem;color:var(--amber)">Anytime</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#186</span>
           <span class="task-title">Fix spec approval modal stacking (Enter key + repeated clicks)</span>
-          <span class="task-badge badge-autonomous">agentic</span>
-          <span class="task-badge badge-high">bug</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#187</span>
           <span class="task-title">Add Specs listing page to sidebar</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1020,18 +1051,16 @@ flowchart TD
       <!-- Security Hardening -->
       <div class="timeline-label">Security<br><span style="font-weight:400;font-size:0.65rem;color:var(--red)">Anytime</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#198</span>
           <span class="task-title">Mid-pipeline prompt injection guard for LLM calls</span>
-          <span class="task-badge badge-autonomous">agentic</span>
-          <span class="task-badge badge-high">high</span>
+          <span class="task-badge badge-done">done</span>
         </div>
         <div class="task-row">
           <span class="task-number">#199</span>
           <span class="task-title">LLM output egress filter for external-facing actions</span>
           <span class="task-badge badge-autonomous">agentic</span>
         </div>
-        <div class="dep-arrow">#198 -> #199</div>
       </div>
 
       <div class="phase-divider"></div>
@@ -1182,6 +1211,60 @@ flowchart TD
 
       <div class="phase-divider"></div>
 
+      <!-- Resource Monitoring -->
+      <div class="timeline-label">Resources<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#254</span>
+          <span class="task-title">psutil integration and ResourceCollector service</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #254</div>
+        <div class="task-row">
+          <span class="task-number">#255</span>
+          <span class="task-title">DB model and per-run resource persistence</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #255</div>
+        <div class="task-row">
+          <span class="task-number">#256</span>
+          <span class="task-title">Per-run resource metrics in dashboard</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #254, #255</div>
+        <div class="task-row">
+          <span class="task-number">#257</span>
+          <span class="task-title">Live system metrics floating widget</span>
+          <span class="task-badge badge-guided">hybrid</span>
+        </div>
+        <div class="dep-arrow">depends on #254, #257</div>
+        <div class="task-row">
+          <span class="task-number">#258</span>
+          <span class="task-title">Cross-project resource aggregation</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+        <div class="dep-arrow">depends on #255, #258</div>
+        <div class="task-row">
+          <span class="task-number">#259</span>
+          <span class="task-title">Capacity advisor and energy estimation</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
+      <!-- Standalone Features -->
+      <div class="timeline-label">Features<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#250</span>
+          <span class="task-title">Activity feed: conversational notification panel with live system events</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
       <!-- Deferred -->
       <div class="timeline-label">Deferred<br><span style="font-weight:400;font-size:0.65rem;color:var(--text-muted)">Post v0.1.0</span></div>
       <div class="timeline-content">
@@ -1269,19 +1352,19 @@ gantt
     #148 Kanban drag-drop            :done, t148, 2026-06-25, 1d
 
   section Tier 3 Pipeline Extensions
-    #161 SpecStep                    :t161, 2026-08-04, 2d
-    #162 Pause-for-approval          :t162, after t161, 3d
-    #163 Approval resume UI          :t163, after t162, 2d
-    #164 PlannerRole class           :t164, 2026-08-04, 2d
-    #165 Planning pipeline steps     :t165, after t164, 2d
+    #161 SpecStep                    :done, t161, 2026-06-27, 1d
+    #162 Pause-for-approval          :done, t162, 2026-06-27, 1d
+    #163 Approval resume UI          :done, t163, 2026-06-28, 1d
+    #164 PlannerRole class           :done, t164, 2026-06-28, 1d
+    #165 Planning pipeline steps     :done, t165, 2026-06-29, 1d
     #166 Start planner UI            :t166, after t165, 2d
-    #155 Complexity scorer           :t155, 2026-08-04, 1d
-    #156 Model routing rules         :t156, after t155, 2d
-    #157 Routing in CostRecord       :t157, after t156, 1d
-    #245 Spec-anchored review        :t245, 2026-08-04, 2d
-    #246 Provenance threading        :t246, after t245, 4d
-    #247 Spec context compression    :t247, after t246, 3d
-    #188 Phase milestones in setup   :t188, 2026-08-11, 2d
+    #155 Complexity scorer           :done, t155, 2026-06-27, 1d
+    #156 Model routing rules         :done, t156, 2026-06-28, 1d
+    #157 Routing in CostRecord       :done, t157, 2026-06-29, 1d
+    #245 Spec-anchored review        :done, t245, 2026-06-27, 1d
+    #246 Provenance threading        :done, t246, 2026-06-28, 1d
+    #247 Spec context compression    :done, t247, 2026-06-28, 1d
+    #188 Phase milestones in setup   :done, t188, 2026-06-29, 1d
 
   section Tier 4 LLM Infra
     #117 Ollama local models         :t117, 2026-09-01, 5d
@@ -1295,8 +1378,16 @@ gantt
     #240 Health check + config       :t240, 2026-07-01, 1d
 
   section Security Hardening
-    #198 Prompt injection guard      :t198, 2026-07-14, 3d
+    #198 Prompt injection guard      :done, t198, 2026-06-27, 1d
     #199 LLM output egress filter    :t199, after t198, 2d
+
+  section Resource Monitoring
+    #254 psutil + ResourceCollector  :t254, 2026-07-14, 2d
+    #255 DB model + persistence      :t255, after t254, 2d
+    #256 Per-run dashboard metrics   :t256, after t255, 2d
+    #257 Live metrics widget         :t257, after t255, 2d
+    #258 Cross-project aggregation   :t258, after t257, 2d
+    #259 Capacity advisor + energy   :t259, after t258, 2d
 
   section Release Gate
     #6 Measure velocity              :t6, 2026-09-15, 14d
@@ -1321,19 +1412,21 @@ gantt
         <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
-        <li><strong>Recently completed</strong>: #151 (step detail panel), #148 (kanban drag-drop), #147 (kanban columns), #208 (worktree conflicts), #207 (CI timeout), #206 (SonarCloud gate), #150 (step pipeline bar), #146 (kanban board UI), #220 (Jira lifecycle), #219 (worktree isolation)</li>
+        <li><strong>Resource monitoring (Chain K)</strong>: psutil integration (#254), DB persistence (#255), dashboard metrics (#256), live widget (#257), cross-project (#258), capacity advisor (#259)</li>
+        <li><strong>Recently completed</strong>: #157 (routing in CostRecord), #188 (phase milestones), #165 (planning pipeline steps), #247 (spec context compression), #156 (model routing rules), #246 (provenance threading), #164 (PlannerRole), #163 (approval resume), #162 (pause-for-approval), #245 (spec-anchored review), #161 (SpecStep), #155 (complexity scorer)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
-        <li><strong>Security hardening</strong>: Prompt injection guard (#198, high) -> Egress filter (#199, medium) -- both agentic, independent of tiers</li>
-        <li><strong>Agentic (10 tier remaining):</strong> #155, #156, #157, #161, #164, #165, #198, #199, #245, #246, #247 -- API/service layers with clear acceptance criteria</li>
-        <li><strong>Human (5 issues):</strong> #163, #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
-        <li><strong>Hybrid (1 issue):</strong> #162 -- pause-for-approval needs both engine logic and UX decisions</li>
+        <li><strong>Security hardening</strong>: Prompt injection guard (#198, done) -> Egress filter (#199, medium) -- remaining: 1 agentic issue</li>
+        <li><strong>Agentic (6 tier remaining):</strong> #199, #254, #255, #256, #258, #259, #250 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Human (4 issues):</strong> #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
+        <li><strong>Hybrid (1 issue):</strong> #257 (live metrics widget) -- engine logic and UX decisions</li>
         <li><strong>Health audit (6 issues):</strong> #235-240 -- all agentic, well-scoped with clear file lists</li>
         <li><strong>Knowledge system (4 issues):</strong> #224-227 -- semantic search, graph, injection, lifecycle</li>
         <li><strong>Agent quality (5 issues):</strong> #232-234, #241, #205 -- dev loop, regression, review quality</li>
+        <li><strong>Resource monitoring (6 issues):</strong> #254-259 -- psutil, DB, dashboard, live widget, cross-project, capacity advisor</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
         <li><strong>Deferred (10 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
       </ul>

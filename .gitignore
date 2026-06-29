@@ -40,6 +40,7 @@ htmlcov/
 .claude/sova.db
 .claude/worktrees/
 .claude/assets/
+.claude/specs/
 .agent-summary.md
 
 # Environment secrets
