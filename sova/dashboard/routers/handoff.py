@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from sova.dashboard.services import control_service, handoff_service
@@ -24,9 +24,15 @@ class ClearHandoffRequest(BaseModel):
 
 
 @router.get("/handoff")
-async def get_handoff() -> dict:
-    """Get all active handoff files plus synthesized fallback."""
+async def get_handoff(issue: str | None = Query(default=None)) -> dict:
+    """Get active handoff files, optionally filtered by issue."""
     all_handoffs = handoff_service.get_all_handoffs()
+
+    if issue:
+        filtered = [h for h in all_handoffs if str(h.get("issue", "")) == issue]
+        if filtered:
+            return {"has_handoff": True, "handoff": filtered[0], "handoffs": filtered}
+        return {"has_handoff": False, "handoffs": []}
 
     if not all_handoffs:
         synthesized = await get_synthesized_handoff()

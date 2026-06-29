@@ -17,6 +17,7 @@ from sova.core.context import ExecutionContext
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
+    HandoffAction,
     write_handoff,
     write_handoff_file,
 )
@@ -190,13 +191,26 @@ class PlannerRole(AgentRole):
         # Planners are issueless; use "planner" as the issue identifier
         # so the file is named handoff-planner.json (not the shared legacy
         # handoff.json), preserving per-issue isolation for parallel agents.
+        next_actions: list[HandoffAction] = []
+        if tasks:
+            next_actions.append(
+                HandoffAction(
+                    id="create-issues",
+                    label="Create Issues",
+                    description=f"Create {len(tasks)} proposed issues on the tracker",
+                    style="approve",
+                    mode="claude-command",
+                    command="",
+                )
+            )
+
         dashboard_handoff = DashboardHandoff(
             source="planner",
-            status="completed",
+            status="awaiting_action" if tasks else "completed",
             issue=ctx.issue_number or "planner",
             summary=f"Proposed {len(tasks)} tasks",
             details={"planned_tasks": task_dicts},
-            next_actions=[],
+            next_actions=next_actions,
         )
         try:
             write_handoff_file(ctx.project_dir, dashboard_handoff)

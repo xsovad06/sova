@@ -815,18 +815,19 @@ initGlobalBatch();
    ============================================================ */
 
 function _roleHex(key) {
-  var map = { developer: 'accent', triage: 'yellow', researcher: 'purple', reviewer: 'green', auto: 'muted' };
+  var map = { developer: 'accent', triage: 'yellow', researcher: 'purple', planner: 'purple', reviewer: 'green', auto: 'muted' };
   return (window.SOVA_COLORS && window.SOVA_COLORS[map[key]]) || _ROLE_HEX_FALLBACK[key];
 }
 
 var _ROLE_HEX_FALLBACK = {
-  developer: '#89b4fa', triage: '#f9e2af', researcher: '#cba6f7', reviewer: '#a6e3a1', auto: '#585b70',
+  developer: '#89b4fa', triage: '#f9e2af', researcher: '#cba6f7', planner: '#cba6f7', reviewer: '#a6e3a1', auto: '#585b70',
 };
 
 var ROLE_COLORS = {
   developer:  { bg: 'bg-accent/20',        text: 'text-accent',        dot: 'bg-accent',        border: 'border-accent/40',        get hex() { return _roleHex('developer'); } },
   triage:     { bg: 'bg-accent-yellow/20',  text: 'text-accent-yellow', dot: 'bg-accent-yellow', border: 'border-accent-yellow/40', get hex() { return _roleHex('triage'); } },
   researcher: { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', get hex() { return _roleHex('researcher'); } },
+  planner:    { bg: 'bg-accent-purple/20',  text: 'text-accent-purple', dot: 'bg-accent-purple', border: 'border-accent-purple/40', get hex() { return _roleHex('planner'); } },
   reviewer:   { bg: 'bg-accent-green/20',   text: 'text-accent-green',  dot: 'bg-accent-green',  border: 'border-accent-green/40',  get hex() { return _roleHex('reviewer'); } },
   auto:       { bg: 'bg-gray-500/20',       text: 'text-gray-400',      dot: 'bg-gray-500',      border: 'border-gray-600',         get hex() { return _roleHex('auto'); } },
 };

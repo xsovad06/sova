@@ -8782,3 +8782,132 @@ class TestWorkItemAwaitingApprovalFallback:
         }
         item = _build_task_item(task, pr_data=None, running=None, handoff=None)
         assert item["state"] == WorkItemState.IN_PROGRESS
+
+
+# ---------------------------------------------------------------------------
+# Planner create-issues endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerCreateIssues:
+    async def test_create_issues_success(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.adapters.base import Task, TaskState
+
+        mock_adapter = AsyncMock()
+        mock_adapter.create_issue.return_value = Task(id="200", title="feat(cli): new cmd", state=TaskState.BACKLOG)
+
+        with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+            resp = await client.post(
+                "/api/agents/planner/create-issues",
+                json={
+                    "tasks": [
+                        {"title": "feat(cli): new cmd", "description": "A new command"},
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["created"]) == 1
+        assert data["created"][0]["number"] == "200"
+        assert data["errors"] == []
+
+    async def test_create_issues_empty_list(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/agents/planner/create-issues",
+            json={"tasks": []},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == []
+        assert data["errors"] == []
+
+    async def test_create_issues_partial_failure(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.adapters.base import Task, TaskState
+
+        mock_adapter = AsyncMock()
+        call_count = 0
+
+        async def _create_issue(title: str, body: str = "", labels=None, **_kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                raise RuntimeError("Rate limited")
+            return Task(id=str(100 + call_count), title=title, state=TaskState.BACKLOG)
+
+        mock_adapter.create_issue.side_effect = _create_issue
+
+        with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+            resp = await client.post(
+                "/api/agents/planner/create-issues",
+                json={
+                    "tasks": [
+                        {"title": "Task 1", "description": "Desc 1"},
+                        {"title": "Task 2", "description": "Desc 2"},
+                        {"title": "Task 3", "description": "Desc 3"},
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["created"]) == 2
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["title"] == "Task 2"
+
+
+class TestHandoffIssueFilter:
+    async def test_handoff_filter_by_issue(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        handoffs = [
+            {
+                "source": "planner",
+                "status": "awaiting_action",
+                "issue": "planner",
+                "summary": "Proposed 3 tasks",
+                "details": {"planned_tasks": []},
+                "next_actions": [],
+            },
+            {
+                "source": "developer",
+                "status": "awaiting_action",
+                "issue": "42",
+                "summary": "PR ready",
+                "next_actions": [],
+            },
+        ]
+
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=handoffs):
+            resp = await client.get("/api/handoff?issue=planner")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is True
+        assert len(data["handoffs"]) == 1
+        assert data["handoff"]["issue"] == "planner"
+
+    async def test_handoff_filter_no_match(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        handoffs = [
+            {
+                "source": "developer",
+                "status": "awaiting_action",
+                "issue": "42",
+                "summary": "PR ready",
+                "next_actions": [],
+            },
+        ]
+
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=handoffs):
+            resp = await client.get("/api/handoff?issue=planner")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["has_handoff"] is False
+        assert data["handoffs"] == []

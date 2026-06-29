@@ -3134,3 +3134,51 @@ class TestPlannerRole:
         # Valid JSON but invalid schema -- "priority" has an invalid value
         result = role._parse_response(json.dumps([{"title": "test", "priority": "invalid"}]))
         assert result is None
+
+    async def test_write_handoff_includes_create_issues_action(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.ipc.handoff import DashboardHandoff
+        from sova.roles.planner import PlannedTask, PlannerRole
+
+        role = PlannerRole()
+        ctx = _make_ctx(role="planner", issue_number="")
+        tasks = [
+            PlannedTask(
+                title="feat(cli): new cmd",
+                description="Desc",
+                priority="medium",
+                complexity="simple",
+                component="cli",
+                rationale="Needed",
+            ),
+        ]
+        mock_write_file = MagicMock()
+        with patch("sova.roles.planner.write_handoff_file", mock_write_file):
+            await role._write_handoff(ctx, tasks)
+
+        mock_write_file.assert_called_once()
+        handoff_arg = mock_write_file.call_args[0][1]
+        assert isinstance(handoff_arg, DashboardHandoff)
+        assert handoff_arg.status == "awaiting_action"
+        assert len(handoff_arg.next_actions) == 1
+        assert handoff_arg.next_actions[0].id == "create-issues"
+        assert handoff_arg.next_actions[0].style == "approve"
+
+    async def test_write_handoff_no_action_when_no_tasks(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.ipc.handoff import DashboardHandoff
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        ctx = _make_ctx(role="planner", issue_number="")
+        mock_write_file = MagicMock()
+        with patch("sova.roles.planner.write_handoff_file", mock_write_file):
+            await role._write_handoff(ctx, [])
+
+        mock_write_file.assert_called_once()
+        handoff_arg = mock_write_file.call_args[0][1]
+        assert isinstance(handoff_arg, DashboardHandoff)
+        assert handoff_arg.status == "completed"
+        assert handoff_arg.next_actions == []
