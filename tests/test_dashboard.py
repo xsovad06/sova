@@ -6179,9 +6179,7 @@ class TestReadExistingToml:
     def test_reads_flat_and_nested_keys(self, tmp_path: Path) -> None:
         from sova.dashboard.services.setup_service import _read_existing_toml
 
-        (tmp_path / "sova.toml").write_text(
-            'github_repo = "owner/repo"\n\n[task_source]\ntype = "github"\n'
-        )
+        (tmp_path / "sova.toml").write_text('github_repo = "owner/repo"\n\n[task_source]\ntype = "github"\n')
         result = _read_existing_toml(tmp_path)
         assert result["github_repo"] == "owner/repo"
         assert result["task_source.type"] == "github"

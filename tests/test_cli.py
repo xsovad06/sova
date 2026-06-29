@@ -1160,6 +1160,8 @@ class TestDetectTestCommand:
 
 
 class TestOfferStarterMilestones:
+    _MOD = "sova.cli.commands.project"
+
     async def test_skips_when_no_task_source(self, tmp_path: Path) -> None:
         """Returns early when task_source.type is empty."""
         from sova.cli.commands.project import _offer_starter_milestones
@@ -1167,7 +1169,7 @@ class TestOfferStarterMilestones:
         mock_cfg = MagicMock()
         mock_cfg.task_source.type = ""
 
-        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+        with patch(f"{self._MOD}.load_config", return_value=mock_cfg):
             await _offer_starter_milestones(tmp_path)
 
     async def test_skips_when_config_not_found(self, tmp_path: Path) -> None:
@@ -1175,7 +1177,7 @@ class TestOfferStarterMilestones:
         from sova.cli.commands.project import _offer_starter_milestones
 
         with patch(
-            "sova.config.loader.load_config",
+            f"{self._MOD}.load_config",
             side_effect=FileNotFoundError("sova.toml not found"),
         ):
             await _offer_starter_milestones(tmp_path)
@@ -1188,8 +1190,8 @@ class TestOfferStarterMilestones:
         mock_cfg.task_source.type = "github"
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.adapters.create_adapter", side_effect=ValueError("bad config")),
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter", side_effect=ValueError("bad config")),
         ):
             await _offer_starter_milestones(tmp_path)
 
@@ -1202,8 +1204,8 @@ class TestOfferStarterMilestones:
         mock_adapter = AsyncMock()
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter", return_value=mock_adapter),
             patch("typer.confirm", return_value=False),
         ):
             await _offer_starter_milestones(tmp_path)
@@ -1217,11 +1219,11 @@ class TestOfferStarterMilestones:
         mock_adapter = AsyncMock()
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter", return_value=mock_adapter),
             patch("typer.confirm", return_value=True),
             patch(
-                "sova.dashboard.services.setup_service.create_starter_milestones",
+                f"{self._MOD}.create_starter_milestones",
                 new_callable=AsyncMock,
                 return_value={"status": "ok", "created": ["Phase 1: Now"], "skipped": [], "failed": []},
             ),
@@ -1237,11 +1239,11 @@ class TestOfferStarterMilestones:
         mock_adapter = AsyncMock()
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter", return_value=mock_adapter),
             patch("typer.confirm", return_value=True),
             patch(
-                "sova.dashboard.services.setup_service.create_starter_milestones",
+                f"{self._MOD}.create_starter_milestones",
                 new_callable=AsyncMock,
                 return_value={"status": "error", "detail": "API failure"},
             ),
@@ -1257,11 +1259,11 @@ class TestOfferStarterMilestones:
         mock_adapter = AsyncMock()
 
         with (
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(f"{self._MOD}.load_config", return_value=mock_cfg),
+            patch(f"{self._MOD}.create_adapter", return_value=mock_adapter),
             patch("typer.confirm", return_value=True),
             patch(
-                "sova.dashboard.services.setup_service.create_starter_milestones",
+                f"{self._MOD}.create_starter_milestones",
                 new_callable=AsyncMock,
                 return_value={
                     "status": "ok",
@@ -1272,3 +1274,22 @@ class TestOfferStarterMilestones:
             ),
         ):
             await _offer_starter_milestones(tmp_path)
+
+
+class TestSetupFunction:
+    _MOD = "sova.cli.commands.project"
+
+    async def test_setup_calls_helpers_and_offer_milestones(self, tmp_path: Path) -> None:
+        """_setup calls detect helpers, writes toml, installs, and offers milestones."""
+        from sova.cli.commands.project import _setup
+
+        with (
+            patch(f"{self._MOD}._detect_github_repo", new_callable=AsyncMock, return_value="owner/repo"),
+            patch(f"{self._MOD}._detect_github_user", new_callable=AsyncMock, return_value="owner"),
+            patch(f"{self._MOD}._detect_test_command", return_value="make test"),
+            patch(f"{self._MOD}._install", new_callable=AsyncMock),
+            patch(f"{self._MOD}._offer_starter_milestones", new_callable=AsyncMock),
+        ):
+            await _setup(path=tmp_path)
+
+        assert (tmp_path / "sova.toml").exists()
