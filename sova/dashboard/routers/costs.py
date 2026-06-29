@@ -17,9 +17,9 @@ async def cost_summary():
     try:
         async with await get_session() as session:
             return await cost_service.get_summary(session)
-    except Exception as exc:
+    except Exception:
         log.warning("costs.summary.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch cost summary") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch cost summary")
 
 
 @router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
@@ -27,9 +27,9 @@ async def daily_costs(days: int = 14):
     try:
         async with await get_session() as session:
             return await cost_service.get_daily(session, min(days, 90))
-    except Exception as exc:
+    except Exception:
         log.warning("costs.daily.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch daily costs") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch daily costs")
 
 
 @router.get("/costs/by-issue", responses={500: {"description": "Failed to fetch costs by issue"}})
@@ -37,9 +37,9 @@ async def costs_by_issue():
     try:
         async with await get_session() as session:
             return await cost_service.get_by_issue(session)
-    except Exception as exc:
+    except Exception:
         log.warning("costs.by_issue.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by issue") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch costs by issue")
 
 
 @router.get("/costs/by-phase", responses={500: {"description": "Failed to fetch costs by phase"}})
@@ -47,9 +47,9 @@ async def costs_by_phase():
     try:
         async with await get_session() as session:
             return await cost_service.get_by_phase(session)
-    except Exception as exc:
+    except Exception:
         log.warning("costs.by_phase.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by phase") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch costs by phase")
 
 
 @router.get("/costs/by-model", responses={500: {"description": "Failed to fetch costs by model"}})
@@ -57,9 +57,9 @@ async def costs_by_model():
     try:
         async with await get_session() as session:
             return await cost_service.get_by_model(session)
-    except Exception as exc:
+    except Exception:
         log.warning("costs.by_model.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch costs by model") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch costs by model")
 
 
 @router.get("/costs/by-routing", responses={500: {"description": "Failed to fetch costs by routing"}})

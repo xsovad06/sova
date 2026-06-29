@@ -498,6 +498,9 @@ class TestCostsAPI:
         assert "complexity:complex->opus" in reasons
         # Empty string reason is grouped as "untracked"
         assert "untracked" in reasons
+        # Cost values must be JSON-serializable floats, not Decimal
+        for entry in data:
+            assert isinstance(entry["cost_usd"], (int, float))
 
 
 # ---------------------------------------------------------------------------
