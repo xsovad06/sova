@@ -2647,6 +2647,100 @@ class TestReviewerParsing:
         assert "BLOCK" in comment
 
 
+class TestReviewerExceptionPaths:
+    """Cover except-Exception branches in ReviewerRole methods."""
+
+    async def test_discover_pr_branch_exception_non_fatal(self) -> None:
+        """_discover_pr handles get_pr_branch failure gracefully (lines 534-535)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.branch_name = None  # trigger branch discovery path
+        role = ReviewerRole()
+
+        with patch(
+            "sova.roles.reviewer.get_pr_branch",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("API down"),
+        ):
+            result = await role._discover_pr(ctx)
+
+        # Should succeed (return None) but branch_name remains unset
+        assert result is None
+        assert ctx.branch_name is None
+
+    async def test_extract_review_memories_exception_non_fatal(self) -> None:
+        """_extract_review_memories handles extraction failure gracefully (lines 564-565)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewResult, ReviewerRole
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        review = ReviewResult(findings=[], summary="OK", total_cost=0)
+
+        with patch(
+            "sova.knowledge.extraction.extract_memories",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("extraction failed"),
+        ):
+            # Should not raise
+            await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
+
+    async def test_append_review_rationale_exception_non_fatal(self) -> None:
+        """_append_review_rationale handles spec write failure gracefully (lines 699-700)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewFinding, ReviewResult, ReviewerRole
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        finding = ReviewFinding(file="a.py", severity=8, category="bug", description="Bad")
+        review = ReviewResult(findings=[finding], summary="Issues found", total_cost=0)
+
+        with patch(
+            "sova.core.steps._spec_helpers.append_spec_section",
+            side_effect=OSError("write failed"),
+        ):
+            # Should not raise
+            role._append_review_rationale(ctx, review)
+
+    async def test_write_handoff_db_exception_non_fatal(self) -> None:
+        """_write_handoff handles DB write failure gracefully (lines 733-734)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewResult, ReviewerRole
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        ctx.task_run_id = 42
+        review = ReviewResult(findings=[], summary="OK", total_cost=0)
+
+        with (
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock, side_effect=RuntimeError("DB down")),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            # Should not raise
+            await role._write_handoff(ctx, review)
+
+    async def test_write_handoff_file_exception_non_fatal(self) -> None:
+        """_write_handoff handles file write failure gracefully (lines 783-784)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewResult, ReviewerRole
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        review = ReviewResult(findings=[], summary="OK", total_cost=0)
+
+        with patch("sova.roles.reviewer.write_handoff_file", side_effect=OSError("disk full")):
+            # Should not raise
+            await role._write_handoff(ctx, review)
+
+
 # ---------------------------------------------------------------------------
 # CustomRole
 # ---------------------------------------------------------------------------
