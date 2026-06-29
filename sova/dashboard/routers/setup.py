@@ -203,6 +203,20 @@ async def sync_commands() -> dict[str, object]:
     }
 
 
+class CreateMilestonesRequest(BaseModel):
+    project_path: str
+
+
+@router.post("/setup/milestones/create")
+async def create_milestones(req: CreateMilestonesRequest):
+    """Create default phase milestones on the tracker."""
+    project = Path(req.project_path).expanduser().resolve()
+    if not project.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
+
+    return await setup_service.create_starter_milestones(project)
+
+
 @router.post("/setup/jira/test")
 async def test_jira_connection(req: JiraTestRequest):
     """Test Jira connection credentials."""

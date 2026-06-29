@@ -61,6 +61,15 @@ class PRReview:
     is_bot: bool
 
 
+@dataclass
+class Milestone:
+    """A milestone (GitHub) or fix version (Jira) on the tracker."""
+
+    title: str
+    state: str = "open"  # open | closed
+    description: str = ""
+
+
 class TaskAdapter(ABC):
     """Abstract base for task source adapters.
 
@@ -160,3 +169,15 @@ class TaskAdapter(ABC):
         Returns a list of transition dicts, each with keys: id, name, to_status.
         For trackers without workflow transitions (e.g. GitHub), returns an empty list.
         """
+
+    @abstractmethod
+    async def list_milestones(self, state: str = "open") -> list[Milestone]:
+        """List milestones/fix versions on the tracker."""
+
+    @abstractmethod
+    async def create_milestone(self, title: str, description: str = "") -> Milestone:
+        """Create a milestone/fix version on the tracker."""
+
+    @abstractmethod
+    async def set_milestone(self, task_id: str, milestone_title: str) -> None:
+        """Assign a milestone/fix version to a task by title."""

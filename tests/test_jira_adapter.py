@@ -749,3 +749,133 @@ class TestStateLabelMappings:
     def test_reverse_mapping_consistent(self) -> None:
         for state, label in _STATE_LABELS.items():
             assert _LABEL_TO_STATE[label] == state
+
+
+# ---------------------------------------------------------------------------
+# Milestone methods
+# ---------------------------------------------------------------------------
+
+
+class TestListMilestones:
+    @respx.mock
+    async def test_list_milestones_open(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"name": "Phase 1: Now", "released": False, "archived": False, "description": "Current"},
+                    {"name": "Phase 2: Next", "released": False, "archived": False, "description": ""},
+                    {"name": "Old Release", "released": True, "archived": False, "description": "Done"},
+                ],
+            ),
+        )
+
+        from sova.adapters.base import Milestone
+
+        milestones = await adapter.list_milestones(state="open")
+        assert len(milestones) == 2
+        assert milestones[0] == Milestone(title="Phase 1: Now", state="open", description="Current")
+        assert milestones[1].title == "Phase 2: Next"
+
+    @respx.mock
+    async def test_list_milestones_all(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(
+                200,
+                json=[
+                    {"name": "Phase 1", "released": False, "archived": False},
+                    {"name": "Old", "released": True, "archived": False},
+                ],
+            ),
+        )
+        milestones = await adapter.list_milestones(state="all")
+        assert len(milestones) == 2
+
+    @respx.mock
+    async def test_list_milestones_api_error(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(500, text="Internal error"),
+        )
+        milestones = await adapter.list_milestones()
+        assert milestones == []
+
+
+class TestCreateMilestone:
+    @respx.mock
+    async def test_create_milestone_success(self) -> None:
+        adapter = _adapter()
+        route = respx.post("https://test.atlassian.net/rest/api/3/version").mock(
+            return_value=Response(201, json={"name": "Phase 1: Now", "id": "10001"}),
+        )
+
+        from sova.adapters.base import Milestone
+
+        milestone = await adapter.create_milestone("Phase 1: Now", "Current work")
+        assert milestone == Milestone(title="Phase 1: Now", state="open", description="")
+        assert route.called
+        body = json.loads(route.calls[0].request.content)
+        assert body["name"] == "Phase 1: Now"
+        assert body["project"] == "TEST"
+
+    @respx.mock
+    async def test_create_milestone_permission_error(self) -> None:
+        adapter = _adapter()
+        respx.post("https://test.atlassian.net/rest/api/3/version").mock(
+            return_value=Response(403, text="Forbidden"),
+        )
+        with pytest.raises(PermissionError, match="Insufficient permissions"):
+            await adapter.create_milestone("Phase 1: Now")
+
+    @respx.mock
+    async def test_create_milestone_other_error(self) -> None:
+        adapter = _adapter()
+        respx.post("https://test.atlassian.net/rest/api/3/version").mock(
+            return_value=Response(400, text="Bad request"),
+        )
+        with pytest.raises(RuntimeError, match="Failed to create version"):
+            await adapter.create_milestone("Bad")
+
+
+class TestSetMilestone:
+    _VERSION_JSON = [
+        {"name": "Phase 1: Now", "id": "10001", "released": False, "archived": False},
+    ]
+
+    @respx.mock
+    async def test_set_milestone_success(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(200, json=self._VERSION_JSON),
+        )
+        route = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-42").mock(
+            return_value=Response(204),
+        )
+
+        await adapter.set_milestone("42", "Phase 1: Now")
+        assert route.called
+        body = json.loads(route.calls[0].request.content)
+        assert body["update"]["fixVersions"] == [{"add": {"id": "10001"}}]
+
+    @respx.mock
+    async def test_set_milestone_not_found(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(200, json=[]),
+        )
+        with pytest.raises(RuntimeError, match="not found"):
+            await adapter.set_milestone("42", "Nonexistent")
+
+    @respx.mock
+    async def test_set_milestone_update_failure_raises(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/project/TEST/versions").mock(
+            return_value=Response(200, json=self._VERSION_JSON),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-42").mock(
+            return_value=Response(400, text="Bad request"),
+        )
+        with pytest.raises(RuntimeError, match="Failed to set milestone"):
+            await adapter.set_milestone("42", "Phase 1: Now")
