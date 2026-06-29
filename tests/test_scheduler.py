@@ -555,8 +555,8 @@ class TestWatchLoopEdgeCases:
         assert actionable[0].id == "2"
         assert actionable[1].id == "1"
 
-    @pytest.mark.parametrize("veto_seconds", [0, -1])
-    async def test_check_veto_non_positive_seconds_fast_paths(self, veto_seconds: int) -> None:
+    @pytest.mark.parametrize("veto_seconds", [0.0, -1.0])
+    async def test_check_veto_non_positive_seconds_fast_paths(self, veto_seconds: float) -> None:
         from sova.scheduler.watch import WatchLoop
 
         config = _make_config()
@@ -857,14 +857,15 @@ class TestStopServer:
         config = _make_config(server={"pid_file": str(pid_file)})
 
         with patch("sova.scheduler.server.os.kill") as mock_kill:
-            # First call (signal 0) checks alive, second call sends SIGTERM
+            # read_pid_file sends signal 0 to check alive, stop_server sends SIGTERM
             mock_kill.return_value = None
             result = stop_server(config)
 
         assert result is True
-        # Verify SIGTERM was sent
-        sigterm_calls = [c for c in mock_kill.call_args_list if c[0][1] == signal.SIGTERM]
-        assert len(sigterm_calls) == 1
+        # Verify signal 0 (liveness check) was sent first, then SIGTERM
+        assert len(mock_kill.call_args_list) == 2
+        assert mock_kill.call_args_list[0][0] == (os.getpid(), 0)
+        assert mock_kill.call_args_list[1][0] == (os.getpid(), signal.SIGTERM)
 
     def test_stop_server_kill_fails_returns_false(self, tmp_path: Path) -> None:
         from sova.scheduler.server import stop_server
@@ -1051,7 +1052,7 @@ class TestSOVAServerEdgeCases:
         config = _make_config(server={"pid_file": str(pid_file)})
 
         with (
-            patch("sova.scheduler.server.os.kill", side_effect=OSError("No such process")),
+            patch("sova.scheduler.server.os.kill", side_effect=ProcessLookupError(3, "No such process")),
             patch.object(Path, "unlink", side_effect=OSError("permission denied")),
         ):
             result = read_pid_file(config)
