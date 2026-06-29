@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,10 +32,10 @@ async def get_summary(session: AsyncSession) -> dict:
     )
 
     return {
-        "total_cost_usd": round(float(total), 4),
+        "total_cost_usd": round(Decimal(str(total)), 4),
         "total_invocations": count,
-        "today_cost_usd": round(float(today_total), 4),
-        "rolling_7d_usd": round(float(rolling_7d), 4),
+        "today_cost_usd": round(Decimal(str(today_total)), 4),
+        "rolling_7d_usd": round(Decimal(str(rolling_7d)), 4),
     }
 
 
@@ -53,7 +54,7 @@ async def get_daily(session: AsyncSession, days: int = 14) -> list[dict]:
         .order_by(day_col)
     )
     result = await session.execute(stmt)
-    return [{"date": str(row.day), "cost_usd": round(float(row.cost), 4)} for row in result.all()]
+    return [{"date": str(row.day), "cost_usd": round(Decimal(str(row.cost)), 4)} for row in result.all()]
 
 
 async def get_by_issue(session: AsyncSession) -> list[dict]:
@@ -73,7 +74,7 @@ async def get_by_issue(session: AsyncSession) -> list[dict]:
     return [
         {
             "issue": row.issue or "unknown",
-            "cost_usd": round(float(row.cost), 4),
+            "cost_usd": round(Decimal(str(row.cost)), 4),
             "invocations": row.invocations,
             "tokens_in": row.tokens_in,
             "tokens_out": row.tokens_out,
@@ -97,7 +98,7 @@ async def get_by_phase(session: AsyncSession) -> list[dict]:
     return [
         {
             "phase": row.phase,
-            "cost_usd": round(float(row.cost), 4),
+            "cost_usd": round(Decimal(str(row.cost)), 4),
             "count": row.count,
         }
         for row in result.all()
@@ -121,7 +122,7 @@ async def get_by_model(session: AsyncSession) -> list[dict]:
     return [
         {
             "model": row.model,
-            "cost_usd": round(float(row.cost), 4),
+            "cost_usd": round(Decimal(str(row.cost)), 4),
             "count": row.count,
             "tokens_in": row.tokens_in,
             "tokens_out": row.tokens_out,
@@ -152,7 +153,7 @@ async def get_by_routing(session: AsyncSession) -> list[dict]:
     return [
         {
             "reason": row.reason,
-            "cost_usd": round(float(row.cost), 4),
+            "cost_usd": round(Decimal(str(row.cost)), 4),
             "count": row.count,
             "tokens_in": row.tokens_in,
             "tokens_out": row.tokens_out,
