@@ -1107,3 +1107,64 @@ async def test_import_memories_multiple_files(tmp_path: Path) -> None:
     titles = {m.title for m in db_mems}
     assert "Review Entry" in titles
     assert "Mistake Entry" in titles
+
+
+# ---------------------------------------------------------------------------
+# Coverage: empty section skip in parse_shared_file
+# ---------------------------------------------------------------------------
+
+
+def test_parse_shared_file_empty_section_between_separators(tmp_path: Path) -> None:
+    """parse_shared_file() skips empty sections produced by consecutive ---."""
+    from sova.knowledge.sharing import parse_shared_file
+
+    content = """## First Entry
+
+Content here.
+
+---
+
+---
+
+## Second Entry
+
+More content.
+"""
+    filepath = tmp_path / "conventions.md"
+    filepath.write_text(content)
+
+    entries = parse_shared_file(filepath)
+    titles = [e.title for e in entries]
+    assert titles == ["First Entry", "Second Entry"]
+
+
+# ---------------------------------------------------------------------------
+# Coverage: export_memories no-change skip
+# ---------------------------------------------------------------------------
+
+
+async def test_export_memories_skips_unchanged(tmp_path: Path) -> None:
+    """export_memories() skips file write when all entries already exist."""
+    from sova.knowledge.memory import store
+    from sova.knowledge.sharing import export_memories
+
+    await store(
+        category="review_pattern",
+        title="Already Exported",
+        content="Pattern.\n\n[confirmed: 2]",
+        tags=[],
+        tier="project",
+        repo="test-repo",
+    )
+
+    shared_dir = tmp_path / "shared"
+
+    # First export writes the file
+    result1 = await export_memories(shared_dir, repo="test-repo")
+    assert result1.exported == 1
+    filepath = shared_dir / "review-patterns.md"
+    mtime_after_first = filepath.stat().st_mtime
+
+    # Second export with same data should skip (not changed)
+    result2 = await export_memories(shared_dir, repo="test-repo")
+    assert result2.exported == 0

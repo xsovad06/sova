@@ -971,3 +971,129 @@ class TestSOVAServerEdgeCases:
 
         # Should not raise
         server._remove_pid_file()
+
+    async def test_remove_pid_file_oserror_is_swallowed(self, tmp_path: Path) -> None:
+        """_remove_pid_file() logs but does not raise on OSError."""
+        from sova.scheduler.server import SOVAServer
+
+        pid_file = tmp_path / "locked.pid"
+        pid_file.write_text(str(os.getpid()))
+        config = _make_config(server={"pid_file": str(pid_file)})
+        server = SOVAServer(config=config)
+
+        with patch.object(Path, "unlink", side_effect=OSError("permission denied")):
+            server._remove_pid_file()  # should not raise
+
+    async def test_health_check_agents_active_exception(self) -> None:
+        """Health endpoint returns agents_active=0 when import fails."""
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        app = server.create_app()
+
+        with patch("sova.dashboard.services.control_service._projects", side_effect=RuntimeError):
+            async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/health")
+                data = resp.json()
+                assert data["agents_active"] == 0
+
+    async def test_start_scheduler_idempotent(self) -> None:
+        """_start_scheduler() does nothing if already running."""
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        server._running = True
+
+        # Should return immediately without creating a task
+        server._start_scheduler()
+        assert server._watch_task is None
+
+    async def test_stop_scheduler_with_task(self) -> None:
+        """_stop_scheduler() cancels the watch task."""
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+
+        # Create a mock task that simulates a running watch loop
+        async def fake_watch() -> None:
+            await asyncio.sleep(999)
+
+        server._watch_task = asyncio.create_task(fake_watch())
+        server._running = True
+
+        await server._stop_scheduler()
+        assert not server._running
+        assert server._watch_task.cancelled() or server._watch_task.done()
+
+    async def test_stop_scheduler_no_task(self) -> None:
+        """_stop_scheduler() is safe when no watch task exists."""
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        server._running = True
+
+        await server._stop_scheduler()
+        assert not server._running
+
+    async def test_read_pid_file_stale_unlink_failure(self, tmp_path: Path) -> None:
+        """read_pid_file() returns None even if stale PID file can't be removed."""
+        from sova.scheduler.server import read_pid_file
+
+        pid_file = tmp_path / "stale.pid"
+        pid_file.write_text("99999999")
+        config = _make_config(server={"pid_file": str(pid_file)})
+
+        with (
+            patch("sova.scheduler.server.os.kill", side_effect=OSError("No such process")),
+            patch.object(Path, "unlink", side_effect=OSError("permission denied")),
+        ):
+            result = read_pid_file(config)
+
+        assert result is None
+
+
+class TestParallelExecutorCoverage:
+    """Coverage tests for uncovered paths in ParallelExecutor."""
+
+    async def test_execute_tasks_with_exception(self) -> None:
+        """execute_tasks() converts exceptions to failed TaskResults."""
+        from sova.scheduler.parallel import ParallelExecutor
+
+        config = _make_config()
+        executor = ParallelExecutor(config=config)
+        adapter = _mock_adapter()
+
+        tasks = [_make_task("1"), _make_task("2")]
+
+        with patch.object(executor, "_dispatch_task", side_effect=RuntimeError("boom")):
+            results = await executor.execute_tasks(tasks, adapter=adapter)
+
+        assert len(results) == 2
+        assert all(not r.success for r in results)
+        assert all("boom" in r.error for r in results)
+
+    async def test_stop_cancels_active_tasks(self) -> None:
+        """stop() cancels all active asyncio tasks."""
+        from sova.scheduler.parallel import ParallelExecutor
+
+        config = _make_config()
+        executor = ParallelExecutor(config=config)
+
+        # Create a long-running fake task
+        async def slow_work() -> None:
+            await asyncio.sleep(999)
+
+        fake_task = asyncio.create_task(slow_work())
+        executor._active.add(fake_task)
+
+        await executor.stop()
+
+        assert fake_task.cancelled() or fake_task.done()
+        assert len(executor._active) == 0
