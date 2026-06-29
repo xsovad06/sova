@@ -2676,7 +2676,7 @@ class TestReviewerExceptionPaths:
         """_extract_review_memories handles extraction failure gracefully (lines 564-565)."""
         from unittest.mock import patch
 
-        from sova.roles.reviewer import ReviewResult, ReviewerRole
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
@@ -2694,7 +2694,7 @@ class TestReviewerExceptionPaths:
         """_append_review_rationale handles spec write failure gracefully (lines 699-700)."""
         from unittest.mock import patch
 
-        from sova.roles.reviewer import ReviewFinding, ReviewResult, ReviewerRole
+        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
 
         role = ReviewerRole()
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
@@ -2712,7 +2712,7 @@ class TestReviewerExceptionPaths:
         """_write_handoff handles DB write failure gracefully (lines 733-734)."""
         from unittest.mock import patch
 
-        from sova.roles.reviewer import ReviewResult, ReviewerRole
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
@@ -2730,7 +2730,7 @@ class TestReviewerExceptionPaths:
         """_write_handoff handles file write failure gracefully (lines 783-784)."""
         from unittest.mock import patch
 
-        from sova.roles.reviewer import ReviewResult, ReviewerRole
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
 
         role = ReviewerRole()
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
