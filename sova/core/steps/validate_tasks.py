@@ -38,8 +38,8 @@ def _word_overlap(a: str, b: str) -> float:
     if not words_a or not words_b:
         return 0.0
     intersection = words_a & words_b
-    smaller = min(len(words_a), len(words_b))
-    return len(intersection) / smaller if smaller > 0 else 0.0
+    union = words_a | words_b
+    return len(intersection) / len(union) if union else 0.0
 
 
 def _check_specificity(task: PlannedTask) -> str | None:
@@ -125,17 +125,6 @@ class ValidateTasksStep(BaseStep):
         rejected_count = len(rejected)
 
         log.info("validate.done", valid=valid_count, rejected=rejected_count, total=total)
-
-        if valid_count < _MIN_VALID_TASKS:
-            reasons_summary = "; ".join(rejected[:5])
-            return StepResult(
-                success=False,
-                summary=(
-                    f"Only {valid_count}/{total} tasks passed validation "
-                    f"(need {_MIN_VALID_TASKS}). Reasons: {reasons_summary}"
-                ),
-                error=f"Insufficient valid tasks: {valid_count} < {_MIN_VALID_TASKS}",
-            )
 
         return StepResult(
             success=True,

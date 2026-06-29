@@ -103,8 +103,8 @@ class TestScanProjectStep:
         assert "v1.0" in ctx.plan_result.scan.milestone_summary
 
     @pytest.mark.asyncio
-    async def test_scan_fails_on_adapter_error(self, tmp_path: Path) -> None:
-        """ScanProjectStep fails when adapter.list_tasks() raises."""
+    async def test_scan_continues_on_adapter_error(self, tmp_path: Path) -> None:
+        """ScanProjectStep succeeds with empty issues when adapter fails."""
         adapter = AsyncMock()
         adapter.list_tasks.side_effect = RuntimeError("API down")
         ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
@@ -114,8 +114,9 @@ class TestScanProjectStep:
             mock_run.return_value = MagicMock(success=True, stdout="")
             result = await step.execute(ctx)
 
-        assert not result.success
-        assert "API down" in result.error
+        assert result.success
+        assert ctx.plan_result.scan is not None
+        assert len(ctx.plan_result.scan.open_issues) == 0
 
     @pytest.mark.asyncio
     async def test_scan_gate_check(self, tmp_path: Path) -> None:
@@ -134,6 +135,20 @@ class TestScanProjectStep:
 
         gate = await step.validate_output(ctx)
         assert gate.passed
+
+    @pytest.mark.asyncio
+    async def test_scan_handles_git_exception(self, tmp_path: Path) -> None:
+        """ScanProjectStep succeeds even when git log raises an exception."""
+        ctx = _make_ctx(project_dir=tmp_path)
+        step = ScanProjectStep()
+
+        with patch("sova.core.steps.scan_project.run") as mock_run:
+            mock_run.side_effect = RuntimeError("git not found")
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.plan_result.scan is not None
+        assert len(ctx.plan_result.scan.recent_commits) == 0
 
     @pytest.mark.asyncio
     async def test_scan_raw_summary_contains_issues(self, tmp_path: Path) -> None:
@@ -317,6 +332,16 @@ class TestExtractJson:
         assert _extract_json(text) == '[{"a": 1}]'
 
 
+class TestExtractJsonEdgeCases:
+    def test_fenced_no_newlines(self) -> None:
+        text = '```[{"a": 1}]```'
+        assert _extract_json(text) == '[{"a": 1}]'
+
+    def test_fenced_no_closing_newline(self) -> None:
+        text = '```json[{"a": 1}]```'
+        assert _extract_json(text) == '[{"a": 1}]'
+
+
 class TestParseTasks:
     def test_valid_array(self) -> None:
         import json
@@ -374,6 +399,15 @@ class TestParseTasks:
         result = _parse_tasks(data)
         assert result is not None
         assert len(result) == 0
+
+    def test_labels_not_list(self) -> None:
+        import json
+
+        data = json.dumps([{"title": "t", "body": "b", "labels": "bug"}])
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].labels == []
 
     def test_mixed_valid_and_invalid(self) -> None:
         import json
@@ -515,8 +549,8 @@ class TestValidateTasksStep:
         assert any("self-duplicate" in r.lower() for r in ctx.plan_result.rejected_reasons)
 
     @pytest.mark.asyncio
-    async def test_validate_fails_below_threshold(self) -> None:
-        """ValidateTasksStep fails when fewer than 3 tasks pass."""
+    async def test_validate_succeeds_below_threshold_but_gate_fails(self) -> None:
+        """ValidateTasksStep execute() succeeds but gate check fails when < 3 tasks pass."""
         tasks = [
             _make_valid_task("Improve everything"),
             _make_valid_task("Update all the things"),
@@ -530,8 +564,9 @@ class TestValidateTasksStep:
         step = ValidateTasksStep()
         result = await step.execute(ctx)
 
-        assert not result.success
-        assert "insufficient" in result.error.lower()
+        assert result.success
+        gate = await step.validate_output(ctx)
+        assert not gate.passed
 
     @pytest.mark.asyncio
     async def test_validate_gate_check(self) -> None:

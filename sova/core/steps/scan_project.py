@@ -118,19 +118,19 @@ class ScanProjectStep(BaseStep):
                 return []
 
         async def _fetch_commits() -> list[str]:
-            result = await run("git", "log", "--oneline", "-20", cwd=ctx.project_dir)
-            if result.success:
-                return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
-            return []
+            try:
+                result = await run("git", "log", "--oneline", "-20", cwd=ctx.project_dir)
+                if result.success:
+                    return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+                return []
+            except Exception as exc:
+                log.warning("scan.git_failed", error=str(exc), exc_info=True)
+                return []
 
         open_issues, recent_commits = await asyncio.gather(_fetch_issues(), _fetch_commits())
 
         if issue_fetch_error is not None:
-            return StepResult(
-                success=False,
-                summary=f"Failed to fetch open issues: {issue_fetch_error}",
-                error=f"Adapter error: {issue_fetch_error}",
-            )
+            log.warning("scan.adapter_failed", error=issue_fetch_error)
 
         # Project structure + tech stack (single directory scan)
         tech_stack, project_structure = _scan_project_root(ctx.project_dir)
