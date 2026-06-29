@@ -6166,6 +6166,94 @@ class TestCreateStarterMilestones:
 
 
 # ---------------------------------------------------------------------------
+# _read_existing_toml
+# ---------------------------------------------------------------------------
+
+
+class TestReadExistingToml:
+    def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _read_existing_toml
+
+        assert _read_existing_toml(tmp_path) == {}
+
+    def test_reads_flat_and_nested_keys(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _read_existing_toml
+
+        (tmp_path / "sova.toml").write_text(
+            'github_repo = "owner/repo"\n\n[task_source]\ntype = "github"\n'
+        )
+        result = _read_existing_toml(tmp_path)
+        assert result["github_repo"] == "owner/repo"
+        assert result["task_source.type"] == "github"
+
+    def test_returns_empty_on_invalid_toml(self, tmp_path: Path) -> None:
+        from sova.dashboard.services.setup_service import _read_existing_toml
+
+        (tmp_path / "sova.toml").write_text("invalid toml {{{{")
+        assert _read_existing_toml(tmp_path) == {}
+
+
+# ---------------------------------------------------------------------------
+# create_starter_milestones -- adapter error paths
+# ---------------------------------------------------------------------------
+
+
+class TestCreateStarterMilestonesAdapterError:
+    async def test_returns_error_when_adapter_fails(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "error"
+
+    async def test_returns_error_when_list_milestones_fails(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.setup_service import create_starter_milestones
+
+        mock_adapter = AsyncMock()
+        mock_adapter.list_milestones.side_effect = RuntimeError("network error")
+
+        with (
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await create_starter_milestones(tmp_path)
+
+        assert result["status"] == "error"
+        assert "milestones" in result["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Milestones endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMilestonesEndpoint:
+    async def test_create_milestones_success(self, client) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.setup_service.create_starter_milestones",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "created": ["Phase 1: Now"], "skipped": [], "failed": []},
+        ):
+            resp = await client.post(
+                "/api/setup/milestones/create",
+                json={"project_path": "/tmp"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
 # Roles API
 # ---------------------------------------------------------------------------
 
