@@ -5469,6 +5469,150 @@ class TestAgentRecoveryDirect:
             updated = await session2.get(TaskRun, run_id)
             assert updated.status == "interrupted"
 
+    async def test_recover_stale_runs_handoff_check_exception(self) -> None:
+        """recover_stale_runs catches exceptions from handoff check gracefully."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="203",
+                role="developer",
+                status="running",
+                pid=999999,
+                started_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.handoff_service.get_handoff",
+            side_effect=RuntimeError("disk error"),
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_recover_stale_runs_merge_check_exception(self) -> None:
+        """recover_stale_runs catches exceptions from merge check gracefully."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="204",
+                role="integrate-pr",
+                status="running",
+                pid=999999,
+                pr_number=50,
+                started_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with patch(
+            "sova.dashboard.services.handoff_service.get_handoff",
+            return_value=None,
+        ), patch(
+            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+            side_effect=RuntimeError("gh failed"),
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_recover_stale_runs_outer_exception(self) -> None:
+        """recover_stale_runs returns empty list on outer exception."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        with patch(
+            "sova.db.session.get_session",
+            side_effect=RuntimeError("db init failed"),
+        ):
+            result = await recover_stale_runs()
+        assert result == []
+
+    async def test_get_interrupted_runs_exception(self) -> None:
+        """get_interrupted_runs returns empty list on DB error."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import get_interrupted_runs
+
+        with patch(
+            "sova.db.session.get_session",
+            side_effect=RuntimeError("db error"),
+        ):
+            result = await get_interrupted_runs()
+        assert result == []
+
+    async def test_dismiss_interrupted_runs_exception(self) -> None:
+        """dismiss_interrupted_runs returns 0 on DB error."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
+
+        with patch(
+            "sova.db.session.get_session",
+            side_effect=RuntimeError("db error"),
+        ):
+            result = await dismiss_interrupted_runs()
+        assert result == 0
+
+    async def test_sova_review_verdict_approve_no_findings_no_approve_action(self) -> None:
+        """Verdict defaults to approve when no findings and next_action is not 'approve'."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="207",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "some_other_action",
+                        "pending_findings": [],
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("207")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
+    async def test_sova_review_verdict_exception(self) -> None:
+        """get_sova_review_verdict returns no-review on DB error."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        with patch(
+            "sova.db.session.get_session",
+            side_effect=RuntimeError("db error"),
+        ):
+            result = await get_sova_review_verdict("999")
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+
 
 class TestReadFileHandoff:
     def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
@@ -7026,6 +7170,122 @@ class TestSummarizeCiChecks:
         ]
         assert _summarize_ci_checks(checks) == "pending"
 
+    def test_returns_passed_for_completed_non_failure_non_success(self) -> None:
+        """Completed checks with non-failure, non-success conclusion fall through to 'passed'."""
+        from sova.dashboard.services.agent_recovery import _summarize_ci_checks
+        from sova.git.operations import CheckConclusion, CheckStatus, CICheck
+
+        checks = [
+            CICheck(name="lint", status=CheckStatus.COMPLETED, conclusion=CheckConclusion.NEUTRAL, details_url=""),
+        ]
+        assert _summarize_ci_checks(checks) == "passed"
+
+
+# ---------------------------------------------------------------------------
+# _load_repo_config
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRepoConfig:
+    def test_load_repo_config_no_project_dir(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _load_repo_config
+
+        with patch("sova.dashboard.project_context.get_project_dir", return_value=None):
+            assert _load_repo_config() is None
+
+    def test_load_repo_config_exception(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _load_repo_config
+
+        with patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")), patch(
+            "sova.config.loader.load_config",
+            side_effect=RuntimeError("bad config"),
+        ):
+            assert _load_repo_config() is None
+
+    def test_load_repo_config_no_github_repo(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _load_repo_config
+
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = ""
+        with patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")), patch(
+            "sova.config.loader.load_config",
+            return_value=mock_cfg,
+        ):
+            assert _load_repo_config() is None
+
+
+# ---------------------------------------------------------------------------
+# get_pr_status_for_issue exception paths
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrStatusForIssue:
+    async def test_pr_status_fetch_exception(self) -> None:
+        """get_pr_status_for_issue returns error dict when get_pr_status raises."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
+
+        mock_pr = MagicMock(number=10)
+        with patch(
+            "sova.dashboard.services.agent_recovery._load_repo_config",
+            return_value=("owner/repo", "user"),
+        ), patch(
+            "sova.git.operations.find_pr_for_issue",
+            new_callable=AsyncMock,
+            return_value=mock_pr,
+        ), patch(
+            "sova.git.operations.get_pr_status",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("api error"),
+        ):
+            result = await get_pr_status_for_issue("42")
+        assert result["has_pr"] is True
+        assert result["pr_number"] == 10
+        assert "error" in result
+
+    async def test_ci_checks_fetch_exception(self) -> None:
+        """get_pr_status_for_issue handles CI check failures gracefully."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
+
+        mock_pr = MagicMock(number=10)
+        mock_status = MagicMock(
+            number=10, state="OPEN", review_decision=None,
+            mergeable=True, title="test", url="http://x",
+            is_approved=False, is_mergeable=True,
+        )
+        with patch(
+            "sova.dashboard.services.agent_recovery._load_repo_config",
+            return_value=("owner/repo", "user"),
+        ), patch(
+            "sova.git.operations.find_pr_for_issue",
+            new_callable=AsyncMock,
+            return_value=mock_pr,
+        ), patch(
+            "sova.git.operations.get_pr_status",
+            new_callable=AsyncMock,
+            return_value=mock_status,
+        ), patch(
+            "sova.git.operations.get_ci_checks",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("ci api error"),
+        ), patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+        ):
+            result = await get_pr_status_for_issue("42")
+        assert result["has_pr"] is True
+        assert result["ci_status"] == "unknown"
+
 
 # ---------------------------------------------------------------------------
 # _check_ttl_cache / _check_issue_cache
@@ -7075,6 +7335,65 @@ class TestTTLCache:
         assert pr == 42
         assert result is None
         agent_recovery._issue_pr_cache.clear()
+
+    def test_issue_cache_pr_none_value(self) -> None:
+        """When cached_pr is None (not sentinel), return miss."""
+        from sova.dashboard.services import agent_recovery
+
+        agent_recovery._issue_pr_cache["99"] = None
+        resolved, pr, result = agent_recovery._check_issue_cache("99")
+        assert not resolved
+        assert pr is None
+        assert result is None
+        agent_recovery._issue_pr_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# _prune_completed
+# ---------------------------------------------------------------------------
+
+
+class TestPruneCompleted:
+    def test_prune_completed_default_now(self) -> None:
+        """_prune_completed uses time.monotonic() when now=None."""
+        import time
+
+        from sova.dashboard.services.agent_pool import (
+            CompletedAgent,
+            ProjectAgents,
+            _prune_completed,
+        )
+
+        pa = ProjectAgents()
+        pa.recently_completed.append(
+            CompletedAgent(run_id=1, issue="1", role="dev", status="done", cost=0.5,
+                           completed_at=time.monotonic() - 9999),
+        )
+        _prune_completed(pa)
+        assert len(pa.recently_completed) == 0
+
+    def test_prune_completed_removes_expired(self) -> None:
+        """_prune_completed poplefts expired entries."""
+        from sova.dashboard.services.agent_pool import (
+            RECENTLY_COMPLETED_TTL,
+            CompletedAgent,
+            ProjectAgents,
+            _prune_completed,
+        )
+
+        now = 10000.0
+        pa = ProjectAgents()
+        pa.recently_completed.append(
+            CompletedAgent(run_id=1, issue="1", role="dev", status="done", cost=0.5,
+                           completed_at=now - RECENTLY_COMPLETED_TTL - 1),
+        )
+        pa.recently_completed.append(
+            CompletedAgent(run_id=2, issue="2", role="dev", status="done", cost=0.5,
+                           completed_at=now - 1),
+        )
+        _prune_completed(pa, now=now)
+        assert len(pa.recently_completed) == 1
+        assert pa.recently_completed[0].run_id == 2
 
 
 # ---------------------------------------------------------------------------
