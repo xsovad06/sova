@@ -41,65 +41,100 @@ Respond with a JSON array of task objects. No markdown fencing or extra text.
 """
 
 
-def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response, stripping markdown fences if present."""
+def extract_json(text: str) -> str:
+    """Extract JSON from LLM response, stripping markdown fences and prose."""
     cleaned = text.strip()
+    if not cleaned:
+        return ""
+
     # Strip markdown code fences using string ops (avoids ReDoS-prone regex)
     fence_start = cleaned.find("```")
-    if fence_start == -1:
-        return cleaned
-    fence_end = cleaned.find("\n", fence_start)
-    if fence_end == -1:
-        # No newline after opening fence -- look for closing fence directly
-        closing = cleaned.find("```", fence_start + 3)
-        inner = cleaned[fence_start + 3 : closing] if closing != -1 else cleaned[fence_start + 3 :]
-        # Strip optional language tag (e.g. "json") before JSON content
-        for i, ch in enumerate(inner):
-            if ch in ("[", "{"):
-                return inner[i:].strip()
-        return inner.strip()
-    closing = cleaned.find("```", fence_end)
-    if closing == -1:
-        return cleaned
-    return cleaned[fence_end + 1 : closing].strip()
+    if fence_start != -1:
+        fence_end = cleaned.find("\n", fence_start)
+        if fence_end == -1:
+            closing = cleaned.find("```", fence_start + 3)
+            inner = cleaned[fence_start + 3 : closing] if closing != -1 else cleaned[fence_start + 3 :]
+            for i, ch in enumerate(inner):
+                if ch in ("[", "{"):
+                    return inner[i:].strip()
+            return inner.strip()
+        closing = cleaned.find("```", fence_end)
+        if closing != -1:
+            return cleaned[fence_end + 1 : closing].strip()
+
+    # No fences -- find [ or { and use raw_decode to extract the complete
+    # JSON value. raw_decode correctly handles brackets inside quoted
+    # strings, unlike manual bracket-counting. Try each candidate position
+    # so that prose brackets (e.g. "[see docs]") are skipped.
+    decoder = json.JSONDecoder()
+    last_candidate = -1
+    for i, ch in enumerate(cleaned):
+        if ch in ("[", "{"):
+            try:
+                obj, _end = decoder.raw_decode(cleaned, i)
+                return json.dumps(obj)
+            except json.JSONDecodeError:
+                last_candidate = i
+                continue
+
+    # All raw_decode attempts failed; return from the last candidate as best-effort
+    if last_candidate >= 0:
+        return cleaned[last_candidate:]
+
+    return cleaned
 
 
 def _parse_tasks(text: str) -> list[PlannedTask] | None:
     """Parse LLM response text into a list of PlannedTask."""
+    raw = extract_json(text)
+    if not raw:
+        return []
+
     try:
-        raw = _extract_json(text)
         data = json.loads(raw)
-        if not isinstance(data, list):
-            log.warning("generate.parse_not_list")
-            return None
-        tasks = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            title = item.get("title", "")
-            body = item.get("body", "")
-            if not title or not title.strip():
-                log.warning("generate.skip_item", reason="missing or blank title")
-                continue
-            if not body or not body.strip():
-                log.warning("generate.skip_item", reason="missing or blank body")
-                continue
-            labels_raw = item.get("labels", [])
-            labels = labels_raw if isinstance(labels_raw, list) else []
-            tasks.append(
-                PlannedTask(
-                    title=title,
-                    body=body,
-                    labels=labels,
-                    priority=item.get("priority", "medium"),
-                    complexity=item.get("complexity", "medium"),
-                    rationale=item.get("rationale", ""),
-                )
-            )
-        return tasks
     except (ValueError, KeyError) as exc:
         log.warning("generate.parse_failed", error=str(exc), exc_info=True)
         return None
+
+    # Unwrap {"tasks": [...]} or similar single-key wrappers
+    if isinstance(data, dict):
+        for key in ("tasks", "proposed_tasks", "items", "results"):
+            if key in data and isinstance(data[key], list):
+                data = data[key]
+                break
+        else:
+            log.warning("generate.parse_not_list")
+            return None
+
+    if not isinstance(data, list):
+        log.warning("generate.parse_not_list")
+        return None
+
+    tasks = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title", "")
+        body = item.get("body") or item.get("description", "")
+        if not title or not title.strip():
+            log.warning("generate.skip_item", reason="missing or blank title")
+            continue
+        if not body or not body.strip():
+            log.warning("generate.skip_item", reason="missing or blank body")
+            continue
+        labels_raw = item.get("labels", [])
+        labels = labels_raw if isinstance(labels_raw, list) else []
+        tasks.append(
+            PlannedTask(
+                title=title,
+                body=body,
+                labels=labels,
+                priority=item.get("priority", "medium"),
+                complexity=item.get("complexity", "medium"),
+                rationale=item.get("rationale", ""),
+            )
+        )
+    return tasks
 
 
 class GenerateTasksStep(BaseStep):
