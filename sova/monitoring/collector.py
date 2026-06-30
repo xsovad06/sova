@@ -28,7 +28,7 @@ class ResourceCollector:
     Usage::
 
         collector = ResourceCollector(pid=agent_process.pid)
-        await collector.start()
+        collector.start()
         # ... agent runs ...
         summary = await collector.stop()
     """
@@ -40,7 +40,7 @@ class ResourceCollector:
         self._task: asyncio.Task[None] | None = None
         self._create_time: float | None = None
 
-    async def start(self) -> None:
+    def start(self) -> None:
         """Start the background sampling loop."""
         if self._task is not None and not self._task.done():
             return
@@ -52,7 +52,7 @@ class ResourceCollector:
             # meaningful value instead of 0.0 (psutil needs a prior
             # measurement as baseline).
             proc.cpu_percent()
-        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        except psutil.NoSuchProcess:
             log.warning("collector.start_failed", pid=self.pid, reason="process_not_found")
             return
 
@@ -65,7 +65,12 @@ class ResourceCollector:
             try:
                 await self._task
             except asyncio.CancelledError:
-                pass
+                # Expected: we just cancelled _task. Check if stop() itself
+                # was cancelled (the CancelledError would originate from the
+                # caller's scope rather than our cancel() call).
+                current = asyncio.current_task()
+                if current is not None and current.cancelled():
+                    raise
         self._task = None
         return self.get_summary()
 
@@ -84,7 +89,7 @@ class ResourceCollector:
 
                 sample = self._take_sample(proc)
                 self.samples.append(sample)
-            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            except psutil.NoSuchProcess:
                 log.info("collector.process_exited", pid=self.pid, samples=len(self.samples))
                 return
 
@@ -125,9 +130,9 @@ class ResourceCollector:
                             io_write += child_io.write_bytes
                     except (psutil.AccessDenied, NotImplementedError, AttributeError):
                         pass
-                except (psutil.NoSuchProcess, psutil.ZombieProcess, psutil.AccessDenied):
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        except psutil.NoSuchProcess:
             pass
 
         return ResourceSample(
