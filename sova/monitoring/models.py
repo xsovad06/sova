@@ -50,13 +50,14 @@ class ResourceSummary:
 
         cpu_values = [s.cpu_percent for s in samples]
 
-        # I/O counters are cumulative -- total = last - first
+        # Each sample's I/O values are per-interval deltas (computed per-PID
+        # in ResourceCollector). Total I/O during monitoring = sum of deltas.
         io_read: int | None = None
         io_write: int | None = None
-        if samples[0].io_read_bytes is not None and samples[-1].io_read_bytes is not None:
-            io_read = samples[-1].io_read_bytes - samples[0].io_read_bytes
-        if samples[0].io_write_bytes is not None and samples[-1].io_write_bytes is not None:
-            io_write = samples[-1].io_write_bytes - samples[0].io_write_bytes
+        io_samples = [s for s in samples if s.io_read_bytes is not None]
+        if io_samples:
+            io_read = sum(s.io_read_bytes for s in io_samples)  # type: ignore[arg-type]
+            io_write = sum(s.io_write_bytes for s in io_samples)  # type: ignore[arg-type]
 
         return cls(
             sample_count=len(samples),

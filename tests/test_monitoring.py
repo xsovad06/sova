@@ -54,6 +54,7 @@ class TestResourceSummary:
         assert s.avg_cpu_percent == 0.0
 
     def test_from_samples(self) -> None:
+        # I/O values are per-sample deltas; total = sum of all deltas
         samples = [
             ResourceSample(1.0, 10.0, 100, 200, 50, 60, 1),
             ResourceSample(2.0, 30.0, 300, 400, 150, 160, 2),
@@ -65,10 +66,10 @@ class TestResourceSummary:
         assert summary.peak_memory_vms_bytes == 400
         assert summary.avg_cpu_percent == pytest.approx(20.0)
         assert summary.peak_cpu_percent == 30.0
-        # I/O is cumulative: last - first = 100 - 50 = 50
-        assert summary.total_io_read_bytes == 50
-        # 110 - 60 = 50
-        assert summary.total_io_write_bytes == 50
+        # I/O deltas summed: 50 + 150 + 100 = 300
+        assert summary.total_io_read_bytes == 300
+        # 60 + 160 + 110 = 330
+        assert summary.total_io_write_bytes == 330
 
     def test_from_samples_with_none_io(self) -> None:
         samples = [
@@ -85,14 +86,31 @@ class TestResourceSummary:
         assert summary.peak_memory_rss_bytes == 0
 
     def test_from_samples_io_delta(self) -> None:
-        """I/O totals are computed as last - first (cumulative counters)."""
+        """I/O totals are the sum of per-sample deltas."""
         samples = [
             ResourceSample(1.0, 10.0, 100, 200, 1000, 2000, 0),
             ResourceSample(2.0, 20.0, 200, 300, 1500, 2800, 0),
         ]
         summary = ResourceSummary.from_samples(samples)
-        assert summary.total_io_read_bytes == 500
-        assert summary.total_io_write_bytes == 800
+        assert summary.total_io_read_bytes == 2500
+        assert summary.total_io_write_bytes == 4800
+
+    def test_from_samples_io_child_death_no_negative(self) -> None:
+        """When children die between samples, I/O deltas stay non-negative.
+
+        With per-PID delta tracking, a child dying removes its delta
+        contribution (becomes 0) rather than producing a negative total.
+        """
+        samples = [
+            # First sample: parent(100) + child(500) = delta 600
+            ResourceSample(1.0, 10.0, 1024, 2048, 600, 600, 1),
+            # Second sample: child died, only parent delta = 50
+            ResourceSample(2.0, 10.0, 512, 1024, 50, 50, 0),
+        ]
+        summary = ResourceSummary.from_samples(samples)
+        # Sum of deltas: 600 + 50 = 650 (not negative)
+        assert summary.total_io_read_bytes == 650
+        assert summary.total_io_write_bytes == 650
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +277,9 @@ class TestResourceCollector:
             # Parent (1024) + child (512)
             assert sample.memory_rss_bytes == 1536
             assert sample.num_children == 1
+            # First sample: I/O delta is 0 (no previous baseline to diff against)
+            assert sample.io_read_bytes == 0
+            assert sample.io_write_bytes == 0
 
     @pytest.mark.asyncio
     async def test_get_summary_while_running(self) -> None:
@@ -328,9 +349,9 @@ class TestResourceCollector:
         collector = ResourceCollector(pid=123)
         collector._create_time = 1000.0
         sample = collector._take_sample(mock_proc)
-        # Parent IO should still be counted; child IO skipped
-        assert sample.io_read_bytes == 500
-        assert sample.io_write_bytes == 600
+        # First sample: delta is 0 (no baseline), but I/O is not None
+        assert sample.io_read_bytes == 0
+        assert sample.io_write_bytes == 0
         assert sample.num_children == 1
         assert sample.memory_rss_bytes == 1024 + 512
 
@@ -346,6 +367,86 @@ class TestResourceCollector:
         assert sample.cpu_percent == 25.0
         assert sample.memory_rss_bytes == 1024
         assert sample.num_children == 0
+
+    def test_take_sample_io_delta_across_samples(self) -> None:
+        """Per-PID I/O delta tracking produces correct totals across samples."""
+        mock_proc = _make_mock_process(io_read=100, io_write=200)
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        # First sample: establishes baseline, delta = 0
+        s1 = collector._take_sample(mock_proc)
+        assert s1.io_read_bytes == 0
+        assert s1.io_write_bytes == 0
+
+        # Update I/O counters for second sample
+        io2 = MagicMock()
+        io2.read_bytes = 300
+        io2.write_bytes = 500
+        mock_proc.io_counters.return_value = io2
+
+        s2 = collector._take_sample(mock_proc)
+        assert s2.io_read_bytes == 200  # 300 - 100
+        assert s2.io_write_bytes == 300  # 500 - 200
+
+    def test_take_sample_child_dies_no_negative_io(self) -> None:
+        """When a child dies between samples, I/O delta is never negative."""
+        child_mem = MagicMock()
+        child_mem.rss = 512
+        child_mem.vms = 1024
+        child_io = MagicMock()
+        child_io.read_bytes = 500
+        child_io.write_bytes = 600
+
+        child = MagicMock()
+        child.pid = 456
+        child.cpu_percent.return_value = 10.0
+        child.memory_info.return_value = child_mem
+        child.io_counters.return_value = child_io
+
+        mock_proc = _make_mock_process(children=[child], io_read=100, io_write=200)
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        # First sample: baseline established for both PIDs
+        s1 = collector._take_sample(mock_proc)
+        assert s1.io_read_bytes == 0  # first sample, no delta
+
+        # Child dies, parent I/O increases
+        mock_proc.children.return_value = []
+        io2 = MagicMock()
+        io2.read_bytes = 150
+        io2.write_bytes = 250
+        mock_proc.io_counters.return_value = io2
+
+        s2 = collector._take_sample(mock_proc)
+        # Only parent delta: 150 - 100 = 50 (child's PID gone, no negative)
+        assert s2.io_read_bytes == 50
+        assert s2.io_write_bytes == 50
+
+    def test_take_sample_parent_io_denied_child_succeeds(self) -> None:
+        """When parent I/O is denied but child succeeds, child I/O is tracked."""
+        child_mem = MagicMock()
+        child_mem.rss = 512
+        child_mem.vms = 1024
+        child_io = MagicMock()
+        child_io.read_bytes = 100
+        child_io.write_bytes = 200
+
+        child = MagicMock()
+        child.pid = 456
+        child.cpu_percent.return_value = 5.0
+        child.memory_info.return_value = child_mem
+        child.io_counters.return_value = child_io
+
+        mock_proc = _make_mock_process(io_read=None, io_write=None, children=[child])
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        s1 = collector._take_sample(mock_proc)
+        # Child I/O is tracked even though parent I/O failed
+        assert s1.io_read_bytes is not None
+        assert s1.io_write_bytes is not None
 
     @pytest.mark.asyncio
     async def test_start_zombie_process(self) -> None:
