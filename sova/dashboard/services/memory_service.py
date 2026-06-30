@@ -61,6 +61,44 @@ async def list_memories(
     return entries, total
 
 
+async def semantic_list_memories(
+    *,
+    query: str,
+    category: str | None = None,
+    tier: str | None = None,
+    limit: int = 100,
+) -> tuple[list[dict], int]:
+    """List memory entries ranked by semantic similarity.
+
+    Returns (entries, total_count).
+    """
+    from sova.knowledge.memory import semantic_search
+
+    results = await semantic_search(
+        query=query,
+        category=category,
+        tier=tier,
+        limit=min(limit, 500),
+    )
+
+    entries = [
+        {
+            "id": m.id,
+            "category": m.category,
+            "title": m.title,
+            "content": m.content,
+            "tags": m.tags,
+            "repo": m.repo,
+            "tier": m.tier,
+            "similarity": round(score, 4),
+            "created_at": iso_utc(m.created_at),
+            "updated_at": iso_utc(m.updated_at),
+        }
+        for m, score in results
+    ]
+    return entries, len(entries)
+
+
 async def get_memory_count(session: AsyncSession) -> int:
     """Total number of active (non-superseded) memories."""
     return await session.scalar(select(func.count(Memory.id)).where(Memory.superseded_by.is_(None))) or 0

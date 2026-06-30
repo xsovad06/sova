@@ -5,7 +5,7 @@ tier promotion, supersession tracking, persona detection, and review patterns.
 """
 
 from sova.knowledge.extraction import extract_memories
-from sova.knowledge.memory import delete, get, promote, search, store, supersede, update
+from sova.knowledge.memory import delete, find_similar, get, promote, search, semantic_search, store, supersede, update
 from sova.knowledge.personas import detect_persona, load_persona
 from sova.knowledge.review_patterns import get_common_patterns, record_review_finding
 from sova.knowledge.sharing import export_memories, import_memories, parse_shared_file, render_shared_file
@@ -16,6 +16,7 @@ __all__ = [
     "detect_persona",
     "export_memories",
     "extract_memories",
+    "find_similar",
     "format_for_prompt",
     "get",
     "get_common_patterns",
@@ -28,6 +29,7 @@ __all__ = [
     "record_review_finding",
     "render_shared_file",
     "search",
+    "semantic_search",
     "store",
     "supersede",
     "update",

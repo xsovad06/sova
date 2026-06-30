@@ -22,16 +22,25 @@ async def list_memories(
     category: str | None = None,
     tier: str | None = None,
     limit: int = 100,
+    semantic: bool = False,
 ):
     try:
-        async with await get_session() as session:
-            memories, total = await memory_service.list_memories(
-                session,
+        if semantic and q:
+            memories, total = await memory_service.semantic_list_memories(
                 query=q,
                 category=category,
                 tier=tier,
                 limit=limit,
             )
+        else:
+            async with await get_session() as session:
+                memories, total = await memory_service.list_memories(
+                    session,
+                    query=q,
+                    category=category,
+                    tier=tier,
+                    limit=limit,
+                )
         return {"memories": memories, "total": total}
     except Exception:
         log.warning("memory.list.error", exc_info=True)

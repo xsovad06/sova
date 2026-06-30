@@ -154,6 +154,7 @@ class Memory(Base):
     repo: Mapped[str] = mapped_column(String(200), default="")
     issue_number: Mapped[str] = mapped_column(String(50), default="")
     tier: Mapped[str] = mapped_column(String(20), default="project")
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     superseded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("memories.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
