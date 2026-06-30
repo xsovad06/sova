@@ -5,7 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
@@ -187,6 +199,11 @@ class MemoryEdge(Base):
 
     __table_args__ = (
         UniqueConstraint("source_id", "target_id", "relation", name="uq_memory_edge"),
+        CheckConstraint(
+            "relation IN ('relates_to', 'refines', 'depends_on', 'supersedes', 'contradicts')",
+            name="ck_memory_edge_relation",
+        ),
+        CheckConstraint("weight >= 0.0 AND weight <= 1.0", name="ck_memory_edge_weight"),
         Index("ix_memory_edges_source", "source_id"),
         Index("ix_memory_edges_target", "target_id"),
     )
