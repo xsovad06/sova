@@ -582,3 +582,334 @@ async def test_load_context_empty_project(tmp_path: Path) -> None:
 
     result = await load_context(None, tmp_path, _Cfg())
     assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# graph.py -- edge CRUD
+# ---------------------------------------------------------------------------
+
+
+async def _create_two_memories() -> tuple:
+    """Helper: create two memories and return their IDs."""
+    from sova.knowledge.memory import store
+
+    m1 = await store(category="learning", title="Memory A", content="Content A", tags=["test"], embedding=None)
+    m2 = await store(category="learning", title="Memory B", content="Content B", tags=["test"], embedding=None)
+    return m1, m2
+
+
+async def test_create_edge() -> None:
+    """create_edge() creates a directed edge between two memories."""
+    from sova.knowledge.graph import create_edge
+
+    m1, m2 = await _create_two_memories()
+    edge = await create_edge(m1.id, m2.id, relation="relates_to")
+    assert edge is not None
+    assert edge.source_id == m1.id
+    assert edge.target_id == m2.id
+    assert edge.relation == "relates_to"
+
+
+async def test_create_edge_self_loop_rejected() -> None:
+    """create_edge() raises ValueError for self-edges."""
+    from sova.knowledge.graph import create_edge
+    from sova.knowledge.memory import store
+
+    m = await store(category="learning", title="Self", content="Self", tags=[], embedding=None)
+    with pytest.raises(ValueError, match="Self-edges"):
+        await create_edge(m.id, m.id)
+
+
+async def test_create_edge_invalid_relation() -> None:
+    """create_edge() raises ValueError for unknown relation types."""
+    from sova.knowledge.graph import create_edge
+
+    m1, m2 = await _create_two_memories()
+    with pytest.raises(ValueError, match="Invalid relation"):
+        await create_edge(m1.id, m2.id, relation="unknown_type")
+
+
+async def test_create_edge_duplicate_returns_none() -> None:
+    """create_edge() returns None for duplicate (source, target, relation)."""
+    from sova.knowledge.graph import create_edge
+
+    m1, m2 = await _create_two_memories()
+    first = await create_edge(m1.id, m2.id, relation="relates_to")
+    assert first is not None
+    duplicate = await create_edge(m1.id, m2.id, relation="relates_to")
+    assert duplicate is None
+
+
+async def test_create_edge_different_relation_allowed() -> None:
+    """Same source/target pair with different relations are distinct edges."""
+    from sova.knowledge.graph import create_edge
+
+    m1, m2 = await _create_two_memories()
+    e1 = await create_edge(m1.id, m2.id, relation="relates_to")
+    e2 = await create_edge(m1.id, m2.id, relation="refines")
+    assert e1 is not None
+    assert e2 is not None
+    assert e1.id != e2.id
+
+
+async def test_delete_edge() -> None:
+    """delete_edge() removes an edge and returns True."""
+    from sova.knowledge.graph import create_edge, delete_edge, get_edges
+
+    m1, m2 = await _create_two_memories()
+    edge = await create_edge(m1.id, m2.id)
+    assert edge is not None
+    assert await delete_edge(edge.id) is True
+    assert await get_edges(m1.id) == []
+
+
+async def test_delete_edge_nonexistent() -> None:
+    """delete_edge() returns False for nonexistent edge."""
+    from sova.knowledge.graph import delete_edge
+
+    assert await delete_edge(9999) is False
+
+
+async def test_get_edges() -> None:
+    """get_edges() returns all edges for a memory (both directions)."""
+    from sova.knowledge.graph import create_edge, get_edges
+    from sova.knowledge.memory import store
+
+    m1, m2 = await _create_two_memories()
+    m3 = await store(category="learning", title="Memory C", content="Content C", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id)
+    await create_edge(m3.id, m1.id)
+
+    edges = await get_edges(m1.id)
+    assert len(edges) == 2
+
+
+# ---------------------------------------------------------------------------
+# graph.py -- neighbor traversal
+# ---------------------------------------------------------------------------
+
+
+async def test_get_neighbors_depth_1() -> None:
+    """get_neighbors() returns direct neighbors at depth=1."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+
+    m1, m2 = await _create_two_memories()
+    await create_edge(m1.id, m2.id)
+
+    neighbors = await get_neighbors(m1.id, depth=1)
+    assert len(neighbors) == 1
+    assert neighbors[0].id == m2.id
+
+
+async def test_get_neighbors_bidirectional() -> None:
+    """get_neighbors() traverses edges in both directions."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+
+    m1, m2 = await _create_two_memories()
+    await create_edge(m1.id, m2.id)
+
+    # Query from target side
+    neighbors = await get_neighbors(m2.id, depth=1)
+    assert len(neighbors) == 1
+    assert neighbors[0].id == m1.id
+
+
+async def test_get_neighbors_depth_2() -> None:
+    """get_neighbors() traverses 2 hops."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+    from sova.knowledge.memory import store
+
+    m1, m2 = await _create_two_memories()
+    m3 = await store(category="learning", title="Memory C", content="Content C", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id)
+    await create_edge(m2.id, m3.id)
+
+    neighbors = await get_neighbors(m1.id, depth=2)
+    neighbor_ids = {n.id for n in neighbors}
+    assert m2.id in neighbor_ids
+    assert m3.id in neighbor_ids
+
+
+async def test_get_neighbors_circular() -> None:
+    """get_neighbors() handles circular edges without infinite loops."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+    from sova.knowledge.memory import store
+
+    m1, m2 = await _create_two_memories()
+    m3 = await store(category="learning", title="Memory C", content="Content C", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id)
+    await create_edge(m2.id, m3.id)
+    await create_edge(m3.id, m1.id)
+
+    neighbors = await get_neighbors(m1.id, depth=2)
+    assert len(neighbors) == 2  # m2 and m3, not m1 again
+
+
+async def test_get_neighbors_filters_superseded() -> None:
+    """get_neighbors() excludes superseded memories."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+    from sova.knowledge.memory import store, supersede
+
+    m1, m2 = await _create_two_memories()
+    m3 = await store(category="learning", title="Replacement", content="New", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id)
+    await supersede(m2.id, m3.id)
+
+    neighbors = await get_neighbors(m1.id, depth=1)
+    assert len(neighbors) == 0
+
+
+async def test_get_neighbors_invalid_depth() -> None:
+    """get_neighbors() raises ValueError for depth outside 1-2."""
+    from sova.knowledge.graph import get_neighbors
+
+    with pytest.raises(ValueError, match="depth must be 1 or 2"):
+        await get_neighbors(1, depth=0)
+    with pytest.raises(ValueError, match="depth must be 1 or 2"):
+        await get_neighbors(1, depth=3)
+
+
+async def test_get_neighbors_filter_by_relation() -> None:
+    """get_neighbors() can filter by relation type."""
+    from sova.knowledge.graph import create_edge, get_neighbors
+    from sova.knowledge.memory import store
+
+    m1, m2 = await _create_two_memories()
+    m3 = await store(category="learning", title="Memory C", content="Content C", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id, relation="relates_to")
+    await create_edge(m1.id, m3.id, relation="refines")
+
+    neighbors = await get_neighbors(m1.id, depth=1, relation="refines")
+    assert len(neighbors) == 1
+    assert neighbors[0].id == m3.id
+
+
+# ---------------------------------------------------------------------------
+# graph.py -- auto_link (requires embeddings mock)
+# ---------------------------------------------------------------------------
+
+
+async def test_auto_link_no_embeddings() -> None:
+    """auto_link() returns empty list when embeddings unavailable."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import auto_link
+
+    m1, _ = await _create_two_memories()
+    with patch("sova.knowledge.graph.is_available", return_value=False):
+        result = await auto_link(m1.id)
+    assert result == []
+
+
+async def test_auto_link_creates_edges() -> None:
+    """auto_link() creates edges for memories with similar embeddings."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import auto_link
+    from sova.knowledge.memory import store
+
+    # Create memories with controlled embeddings (high similarity)
+    emb_a = [1.0, 0.0, 0.0]
+    emb_b = [0.95, 0.05, 0.0]  # Very similar
+    emb_c = [0.0, 1.0, 0.0]  # Very different
+
+    m1 = await store(category="learning", title="A", content="A", tags=[], embedding=emb_a)
+    m2 = await store(category="learning", title="B", content="B", tags=[], embedding=emb_b)
+    await store(category="learning", title="C", content="C", tags=[], embedding=emb_c)
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        edges = await auto_link(m1.id)
+
+    assert len(edges) == 1
+    assert edges[0].target_id == m2.id
+
+
+async def test_auto_link_caps_at_max() -> None:
+    """auto_link() limits to AUTO_LINK_MAX_EDGES edges."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import AUTO_LINK_MAX_EDGES, auto_link
+    from sova.knowledge.memory import store
+
+    base_emb = [1.0, 0.0, 0.0]
+    source = await store(category="learning", title="Source", content="Source", tags=[], embedding=base_emb)
+
+    # Create more candidates than the max, all with high similarity
+    for i in range(AUTO_LINK_MAX_EDGES + 3):
+        emb = [0.95 - i * 0.01, 0.05 + i * 0.01, 0.0]
+        await store(category="learning", title=f"T{i}", content=f"T{i}", tags=[], embedding=emb)
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        edges = await auto_link(source.id)
+
+    assert len(edges) <= AUTO_LINK_MAX_EDGES
+
+
+# ---------------------------------------------------------------------------
+# graph.py -- discover_edges
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_edges_no_embeddings() -> None:
+    """discover_edges() returns 0 when embeddings unavailable."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import discover_edges
+
+    with patch("sova.knowledge.graph.is_available", return_value=False):
+        assert await discover_edges() == 0
+
+
+async def test_discover_edges_same_category() -> None:
+    """discover_edges() links similar memories within the same category."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import discover_edges, get_edges
+    from sova.knowledge.memory import store
+
+    emb_a = [1.0, 0.0, 0.0]
+    emb_b = [0.95, 0.05, 0.0]
+    m1 = await store(category="learning", title="A", content="A", tags=[], embedding=emb_a)
+    await store(category="learning", title="B", content="B", tags=[], embedding=emb_b)
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        count = await discover_edges(category="learning")
+
+    assert count == 1
+    edges = await get_edges(m1.id)
+    assert len(edges) == 1
+
+
+# ---------------------------------------------------------------------------
+# memory.py -- search with expand
+# ---------------------------------------------------------------------------
+
+
+async def test_search_expand_includes_neighbors() -> None:
+    """search(expand=True) includes graph neighbors in results."""
+    from sova.knowledge.graph import create_edge
+    from sova.knowledge.memory import search, store
+
+    m1 = await store(category="learning", title="Direct hit", content="Searchable", tags=["test"], embedding=None)
+    m2 = await store(category="learning", title="Neighbor", content="Related context", tags=["other"], embedding=None)
+    await create_edge(m1.id, m2.id)
+
+    results = await search(query="Searchable", expand=True)
+    result_ids = {m.id for m in results}
+    assert m1.id in result_ids
+    assert m2.id in result_ids
+
+
+async def test_search_expand_false_default() -> None:
+    """search(expand=False) does not include neighbors (backward compat)."""
+    from sova.knowledge.graph import create_edge
+    from sova.knowledge.memory import search, store
+
+    m1 = await store(category="learning", title="Direct hit", content="Searchable", tags=["test"], embedding=None)
+    m2 = await store(category="learning", title="Neighbor", content="Unrelated title", tags=["other"], embedding=None)
+    await create_edge(m1.id, m2.id)
+
+    results = await search(query="Searchable")
+    result_ids = {m.id for m in results}
+    assert m1.id in result_ids
+    assert m2.id not in result_ids

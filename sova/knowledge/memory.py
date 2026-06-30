@@ -7,6 +7,7 @@ from sqlalchemy import or_, select
 from sova.db.models import Memory
 from sova.db.session import get_session
 from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text
+from sova.knowledge.graph import get_neighbors
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
@@ -129,6 +130,7 @@ async def search(
     tags: list[str] | None = None,
     tier: str | None = None,
     include_superseded: bool = False,
+    expand: bool = False,
 ) -> list[Memory]:
     """Search memories with optional filters.
 
@@ -138,6 +140,7 @@ async def search(
         tags: Filter by tags (any match).
         tier: Filter by knowledge tier.
         include_superseded: If False (default), exclude superseded entries.
+        expand: If True, include 1-hop graph neighbors of matching results.
 
     Returns:
         List of matching Memory records.
@@ -169,7 +172,12 @@ async def search(
     async with await get_session() as session:
         async with session.begin():
             result = await session.execute(stmt)
-            return list(result.scalars().all())
+            results = list(result.scalars().all())
+
+    if expand and results:
+        results = await _expand_with_neighbors(results)
+
+    return results
 
 
 async def promote(memory_id: int, new_tier: str) -> Memory | None:
@@ -218,6 +226,7 @@ async def semantic_search(
     limit: int = 10,
     threshold: float = 0.0,
     query_embedding: list[float] | None = None,
+    expand: bool = False,
 ) -> list[tuple[Memory, float]]:
     """Search memories by semantic similarity using embeddings.
 
@@ -260,7 +269,33 @@ async def semantic_search(
             scored.append((mem, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[:limit]
+    top = scored[:limit]
+
+    if expand and top:
+        memories_only = [m for m, _ in top]
+        expanded = await _expand_with_neighbors(memories_only)
+        existing_ids = {m.id for m, _ in top}
+        for nb in expanded:
+            if nb.id not in existing_ids:
+                existing_ids.add(nb.id)
+                top.append((nb, 0.0))
+
+    return top
+
+
+async def _expand_with_neighbors(memories: list[Memory]) -> list[Memory]:
+    """Expand a list of memories with their 1-hop graph neighbors."""
+    existing_ids = {m.id for m in memories}
+    expanded = list(memories)
+
+    for mem in memories:
+        neighbors = await get_neighbors(mem.id, depth=1)
+        for nb in neighbors:
+            if nb.id not in existing_ids:
+                existing_ids.add(nb.id)
+                expanded.append(nb)
+
+    return expanded
 
 
 async def find_similar(
