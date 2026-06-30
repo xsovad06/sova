@@ -4460,3 +4460,193 @@ class TestDevelopStepInnerCheckLoop:
 
         ctx = _make_ctx(config=ProjectConfig(check_cmd=""), worktree_dir=tmp_path)
         assert _resolve_check_cmd(ctx) is None
+
+    async def test_checks_still_failing_after_all_cycles(self) -> None:
+        """Loop exhaustion: changes are produced but checks keep failing."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=2, guard_test_weakening=False),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # which probe
+                MagicMock(success=False, stdout="FAIL", stderr="err1"),  # initial check
+                # Cycle 1: has changes, re-check fails
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=False, stdout="FAIL again", stderr="err2"),  # re-check fails
+                # Cycle 2: has changes, re-check fails
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=False, stdout="FAIL still", stderr="err3"),  # re-check fails
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="opus",
+                cost_usd=Decimal("0.10"),
+                input_tokens=100,
+                output_tokens=50,
+            )
+            summary = await step._run_inner_check_loop(ctx)
+
+        assert summary == "checks still failing after 2 fix cycle(s)"
+        assert mock_invoke.await_count == 2
+
+    async def test_test_weakening_continues_when_not_last_cycle(self) -> None:
+        """Test weakening on non-final cycle skips re-run but continues loop."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=2, guard_test_weakening=True),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # which probe
+                MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
+                # Cycle 1: test weakening -> skip (not last cycle)
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
+                MagicMock(success=True, stdout=""),  # git diff --cached
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git diff --name-only (committed check)
+                MagicMock(success=True),  # git checkout to restore tests
+                # Cycle 2: no test weakening, re-check passes
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
+                MagicMock(success=True, stdout=""),  # git diff --cached
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git diff --name-only (committed check)
+                MagicMock(success=True, stdout="All passed", stderr=""),  # re-check passes
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="opus",
+                cost_usd=Decimal("0.10"),
+                input_tokens=100,
+                output_tokens=50,
+            )
+            mock_dirty.side_effect = [
+                set(),  # cycle 1 pre
+                {"tests/test_foo.py"},  # cycle 1 post (weakened)
+                set(),  # cycle 2 pre
+                set(),  # cycle 2 post (clean)
+            ]
+            summary = await step._run_inner_check_loop(ctx)
+
+        assert summary == "checks passed after 2 fix cycle(s)"
+
+    async def test_committed_test_weakening_detected(self) -> None:
+        """Test weakening via committed (not just unstaged) test file changes."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=1, guard_test_weakening=True),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # which probe
+                MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
+                # Cycle 1: LLM committed, so new commits exist
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=""),  # git diff (no unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached (no staged)
+                MagicMock(success=True, stdout="def456\n"),  # rev-parse HEAD (post, DIFFERENT)
+                # _check_test_weakening: committed diff shows test file
+                MagicMock(success=True, stdout="tests/test_bar.py\nsrc/bar.py\n"),
+                MagicMock(success=True),  # git checkout to restore tests
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="opus",
+                cost_usd=Decimal("0.10"),
+                input_tokens=100,
+                output_tokens=50,
+            )
+            mock_dirty.side_effect = [
+                set(),  # pre: no dirty test files
+                set(),  # post: no uncommitted dirty (committed instead)
+            ]
+            summary = await step._run_inner_check_loop(ctx)
+
+        assert "test weakening detected" in summary
+
+    async def test_detect_fix_changes_all_sources(self) -> None:
+        """_detect_fix_changes detects unstaged, staged, and commit changes independently."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            # Case: only staged changes
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff (no unstaged)
+                MagicMock(success=True, stdout=" file.py | 1 +\n"),  # git diff --cached (staged)
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (same as pre)
+            ]
+            changes = await step._detect_fix_changes(ctx, "abc123")
+
+        assert changes["has_staged"] is True
+        assert changes["has_unstaged"] is False
+        assert changes["has_new_commits"] is False
+        assert changes["any"] is True
+
+    async def test_get_head_hash_failure(self) -> None:
+        """_get_head_hash returns empty string on failure."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="", stderr="not a repo")
+            result = await step._get_head_hash(ctx)
+
+        assert result == ""
+
+    async def test_get_dirty_test_files_returns_matches(self) -> None:
+        """_get_dirty_test_files filters for test file patterns."""
+        from sova.core.steps.develop import _get_dirty_test_files
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(
+                success=True,
+                stdout="src/module.py\ntests/test_core.py\nutils_test.py\n",
+            )
+            result = await _get_dirty_test_files(Path("/tmp/worktree"))
+
+        assert result == {"tests/test_core.py", "utils_test.py"}
