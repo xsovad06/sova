@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -336,8 +336,6 @@ def test_load_model_generic_exception_returns_none() -> None:
 
 
 def test_embed_text_success_returns_list() -> None:
-    from unittest.mock import MagicMock
-
     from sova.knowledge.embeddings import embed_text
 
     fake_vector = MagicMock()
@@ -353,8 +351,6 @@ def test_embed_text_success_returns_list() -> None:
 
 
 def test_embed_text_encode_exception_returns_none() -> None:
-    from unittest.mock import MagicMock
-
     from sova.knowledge.embeddings import embed_text
 
     fake_model = MagicMock()
@@ -369,6 +365,144 @@ def test_embed_text_encode_exception_returns_none() -> None:
 # ---------------------------------------------------------------------------
 # dashboard -- semantic_list_memories
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# CLI -- _backfill_embeddings async core
+# ---------------------------------------------------------------------------
+
+
+async def test_backfill_embeddings_all_have_embeddings() -> None:
+    """When no memories lack embeddings, backfill reports nothing to do."""
+    async def _noop_init(*a: object, **kw: object) -> None:
+        pass
+
+    # Mock the DB query to return no memories without embeddings
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.begin = MagicMock(return_value=AsyncMock().__aenter__.return_value)
+
+    # Create a proper async context manager for get_session
+    async def mock_get_session():
+        return mock_session
+
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_begin_ctx = AsyncMock()
+    mock_begin_ctx.__aenter__ = AsyncMock(return_value=None)
+    mock_begin_ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin_ctx)
+
+    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
+        "sova.knowledge.embeddings.is_available", return_value=True
+    ), patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A), patch(
+        "sova.db.session.get_session", side_effect=mock_get_session
+    ):
+        from sova.cli.commands.memory import _backfill_embeddings
+
+        await _backfill_embeddings(project_dir=None)
+    # Reaches "All memories already have embeddings" path
+
+
+async def test_backfill_embeddings_updates_memories() -> None:
+    """Memories without embeddings get computed and saved."""
+    async def _noop_init(*a: object, **kw: object) -> None:
+        pass
+
+    mock_mem = MagicMock()
+    mock_mem.id = 1
+    mock_mem.title = "Test"
+    mock_mem.content = "Content"
+
+    # First session: query returns one memory
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_mem]
+    mock_session1 = AsyncMock()
+    mock_session1.execute = AsyncMock(return_value=mock_result)
+    mock_session1.__aenter__ = AsyncMock(return_value=mock_session1)
+    mock_session1.__aexit__ = AsyncMock(return_value=False)
+    mock_begin1 = AsyncMock()
+    mock_begin1.__aenter__ = AsyncMock(return_value=None)
+    mock_begin1.__aexit__ = AsyncMock(return_value=False)
+    mock_session1.begin = MagicMock(return_value=mock_begin1)
+
+    # Second session: accept the update
+    mock_session2 = AsyncMock()
+    mock_session2.execute = AsyncMock()
+    mock_session2.__aenter__ = AsyncMock(return_value=mock_session2)
+    mock_session2.__aexit__ = AsyncMock(return_value=False)
+    mock_begin2 = AsyncMock()
+    mock_begin2.__aenter__ = AsyncMock(return_value=None)
+    mock_begin2.__aexit__ = AsyncMock(return_value=False)
+    mock_session2.begin = MagicMock(return_value=mock_begin2)
+
+    call_count = 0
+
+    async def mock_get_session():
+        nonlocal call_count
+        call_count += 1
+        return mock_session1 if call_count == 1 else mock_session2
+
+    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
+        "sova.knowledge.embeddings.is_available", return_value=True
+    ), patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A), patch(
+        "sova.db.session.get_session", side_effect=mock_get_session
+    ):
+        from sova.cli.commands.memory import _backfill_embeddings
+
+        await _backfill_embeddings(project_dir=None)
+    # Reaches "Updated 1/1 memories" path
+    assert mock_session2.execute.called
+
+
+async def test_backfill_embeddings_exits_when_unavailable() -> None:
+    async def _noop_init(*a: object, **kw: object) -> None:
+        pass
+
+    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
+        "sova.knowledge.embeddings.is_available", return_value=False
+    ), patch("sova.knowledge.embeddings.embed_text"):
+        from sova.cli.commands.memory import _backfill_embeddings
+
+        import typer
+
+        with pytest.raises((SystemExit, typer.Exit)):
+            await _backfill_embeddings(project_dir=None)
+
+
+# ---------------------------------------------------------------------------
+# CLI -- _search semantic path (async core)
+# ---------------------------------------------------------------------------
+
+
+async def test_cli_search_semantic_with_results() -> None:
+    from sova.cli.commands.memory import _search
+    from sova.knowledge.memory import store
+
+    async def _noop_init(*a: object, **kw: object) -> None:
+        pass
+
+    with patch("sova.knowledge.memory.embed_text", return_value=_VEC_A):
+        await store(category="learning", title="Bash tips", content="Quote vars.", tags=[])
+
+    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
+        "sova.knowledge.memory.embed_text", return_value=_VEC_A
+    ):
+        await _search(query="bash", category=None, tier=None, project_dir=None, semantic=True)
+
+
+async def test_cli_search_semantic_empty() -> None:
+    from sova.cli.commands.memory import _search
+
+    async def _noop_init(*a: object, **kw: object) -> None:
+        pass
+
+    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
+        "sova.knowledge.memory.embed_text", return_value=_VEC_B
+    ):
+        await _search(query="nothing", category=None, tier=None, project_dir=None, semantic=True)
 
 
 async def test_semantic_list_memories_returns_scores() -> None:
