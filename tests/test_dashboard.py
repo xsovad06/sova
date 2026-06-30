@@ -1897,6 +1897,50 @@ class TestStartCommandWorktreeResolution:
         worktree.mkdir(parents=True)
         assert await _resolve_issue_worktree("#42", tmp_path) == worktree
 
+    async def test_resolve_issue_worktree_branch_fallback(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree falls back to branch-based lookup."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        wt_path = tmp_path / "worktrees" / "feat-branch"
+        wt_path.mkdir(parents=True)
+        with patch(
+            "sova.dashboard.services.agent_context.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=wt_path,
+        ):
+            result = await _resolve_issue_worktree("standup", tmp_path, branch_name="feat/issue-99")
+        assert result == wt_path
+
+    async def test_resolve_issue_worktree_branch_fallback_filters_main(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree skips branch worktree if it equals project_dir."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        with patch(
+            "sova.dashboard.services.agent_context.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=tmp_path,
+        ):
+            result = await _resolve_issue_worktree("standup", tmp_path, branch_name="main")
+        assert result == tmp_path
+
+    async def test_resolve_issue_worktree_branch_fallback_error(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree handles branch lookup errors gracefully."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        with patch(
+            "sova.dashboard.services.agent_context.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("git error"),
+        ):
+            result = await _resolve_issue_worktree("standup", tmp_path, branch_name="broken")
+        assert result == tmp_path
+
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -5468,6 +5512,165 @@ class TestReadFileHandoff:
 # ---------------------------------------------------------------------------
 
 
+class TestAgentContextHelpers:
+    """Tests for agent_context helper functions."""
+
+    def test_strip_frontmatter_removes_yaml(self) -> None:
+        """_strip_frontmatter removes YAML frontmatter block."""
+        from sova.dashboard.services.agent_context import _strip_frontmatter
+
+        content = "---\nname: test\n---\nBody content"
+        assert _strip_frontmatter(content) == "Body content"
+
+    def test_strip_frontmatter_no_frontmatter(self) -> None:
+        """_strip_frontmatter returns content unchanged when no frontmatter."""
+        from sova.dashboard.services.agent_context import _strip_frontmatter
+
+        content = "Just regular content"
+        assert _strip_frontmatter(content) == "Just regular content"
+
+    def test_resolve_command_prompt_local_command(self, tmp_path: Path) -> None:
+        """_resolve_command_prompt returns slash command for local project commands."""
+        from sova.dashboard.services.agent_context import _resolve_command_prompt
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "test-cmd.md").write_text("# Test")
+
+        result = _resolve_command_prompt("test-cmd", {"issue": "42"}, tmp_path)
+        assert result == "/test-cmd issue=42"
+
+    def test_resolve_command_prompt_local_command_no_args(self, tmp_path: Path) -> None:
+        """_resolve_command_prompt returns slash command without args."""
+        from sova.dashboard.services.agent_context import _resolve_command_prompt
+
+        cmd_dir = tmp_path / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+        (cmd_dir / "test-cmd.md").write_text("# Test")
+
+        result = _resolve_command_prompt("test-cmd", None, tmp_path)
+        assert result == "/test-cmd"
+
+    def test_resolve_command_prompt_fallback(self, tmp_path: Path) -> None:
+        """_resolve_command_prompt returns slash command when no file found."""
+        from sova.dashboard.services.agent_context import _resolve_command_prompt
+
+        result = _resolve_command_prompt("nonexistent", {"x": "1"}, tmp_path)
+        assert result == "/nonexistent x=1"
+
+    async def test_resolve_command_context_with_issue(self, tmp_path: Path) -> None:
+        """_resolve_command_context extracts issue from args."""
+        from sova.dashboard.services.agent_context import _resolve_command_context
+
+        pr_number, issue = await _resolve_command_context({"issue": "42"}, "develop", tmp_path)
+        assert pr_number is None
+        assert issue == "42"
+
+    async def test_resolve_command_context_with_pr(self, tmp_path: Path) -> None:
+        """_resolve_command_context extracts pr_number from args."""
+        from sova.dashboard.services.agent_context import _resolve_command_context
+
+        pr_number, issue = await _resolve_command_context({"issue": "42", "pr": "100"}, "develop", tmp_path)
+        assert pr_number == 100
+        assert issue == "42"
+
+    async def test_resolve_command_context_invalid_pr(self, tmp_path: Path) -> None:
+        """_resolve_command_context handles non-numeric PR gracefully."""
+        from sova.dashboard.services.agent_context import _resolve_command_context
+
+        pr_number, issue = await _resolve_command_context({"pr": "abc"}, "develop", tmp_path)
+        assert pr_number is None
+        assert issue == "develop"
+
+    async def test_resolve_command_context_pr_resolves_issue(self, tmp_path: Path) -> None:
+        """_resolve_command_context resolves issue from PR when issue is missing."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_command_context
+
+        with patch(
+            "sova.dashboard.services.agent_context._resolve_issue_from_pr",
+            new_callable=AsyncMock,
+            return_value="55",
+        ):
+            pr_number, issue = await _resolve_command_context({"pr": "100"}, "develop", tmp_path)
+        assert pr_number == 100
+        assert issue == "55"
+
+    async def test_resolve_project_gh_env_success(self, tmp_path: Path) -> None:
+        """_resolve_project_gh_env returns env dict on success."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_project_gh_env
+
+        mock_cfg = MagicMock()
+        mock_cfg.github_user = "testuser"
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={"GH_TOKEN": "tok"},
+            ),
+        ):
+            result = await _resolve_project_gh_env(tmp_path)
+        assert result == {"GH_TOKEN": "tok"}
+
+    async def test_resolve_project_gh_env_failure(self, tmp_path: Path) -> None:
+        """_resolve_project_gh_env returns None on failure."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_context import _resolve_project_gh_env
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=Exception("no config"),
+        ):
+            result = await _resolve_project_gh_env(tmp_path)
+        assert result is None
+
+    async def test_resolve_issue_from_pr_non_numeric(self, tmp_path: Path) -> None:
+        """_resolve_issue_from_pr handles non-numeric pr_number gracefully."""
+        from sova.dashboard.services.agent_context import _resolve_issue_from_pr
+
+        result = await _resolve_issue_from_pr("abc", tmp_path)
+        assert result == ""
+
+    async def test_resolve_issue_from_pr_success(self, tmp_path: Path) -> None:
+        """_resolve_issue_from_pr extracts issue from PR body."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_from_pr
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.stdout = "Some text\nCloses #42\nMore text"
+        with patch(
+            "sova.dashboard.services.agent_context.run_shell",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await _resolve_issue_from_pr(100, tmp_path)
+        assert result == "42"
+
+    async def test_resolve_issue_from_pr_no_match(self, tmp_path: Path) -> None:
+        """_resolve_issue_from_pr returns empty when no issue link found."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_from_pr
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.stdout = "No issue link here"
+        with patch(
+            "sova.dashboard.services.agent_context.run_shell",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            result = await _resolve_issue_from_pr(100, tmp_path)
+        assert result == ""
+
+
 class TestStepProgress:
     """Tests for get_step_progress pipeline variant detection."""
 
@@ -7453,7 +7656,7 @@ class TestResolveIssueFromPr:
         mock_result = AsyncMock()
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "## Summary\n\nCloses #42\n"
-        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "42"
@@ -7467,7 +7670,7 @@ class TestResolveIssueFromPr:
         mock_result = AsyncMock()
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "Fixes #123"
-        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "123"
@@ -7481,7 +7684,7 @@ class TestResolveIssueFromPr:
         mock_result = AsyncMock()
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "resolves #77"
-        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "77"
@@ -7495,7 +7698,7 @@ class TestResolveIssueFromPr:
         mock_result = AsyncMock()
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "Just a regular PR body"
-        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == ""
@@ -7509,7 +7712,7 @@ class TestResolveIssueFromPr:
         mock_result = AsyncMock()
         mock_result.return_value.success = False
         mock_result.return_value.stdout = ""
-        monkeypatch.setattr("sova.dashboard.services.agent_lifecycle.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == ""
@@ -7521,7 +7724,7 @@ class TestResolveIssueFromPr:
         from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
 
         monkeypatch.setattr(
-            "sova.dashboard.services.agent_lifecycle.run_shell",
+            "sova.dashboard.services.agent_context.run_shell",
             AsyncMock(side_effect=OSError("nope")),
         )
 
