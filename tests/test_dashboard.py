@@ -7033,33 +7033,6 @@ class TestSummarizeCiChecks:
 
 
 class TestTTLCache:
-    def test_cache_miss(self) -> None:
-        from sova.dashboard.services.agent_recovery import _check_ttl_cache
-
-        cache: dict = {}
-        hit, value = _check_ttl_cache(cache, "key")
-        assert not hit
-        assert value is None
-
-    def test_cache_hit(self) -> None:
-        import time
-
-        from sova.dashboard.services.agent_recovery import _check_ttl_cache
-
-        cache = {"key": (time.monotonic(), "result")}
-        hit, value = _check_ttl_cache(cache, "key")
-        assert hit
-        assert value == "result"
-
-    def test_cache_expired(self) -> None:
-        import time
-
-        from sova.dashboard.services.agent_recovery import _check_ttl_cache
-
-        cache = {"key": (time.monotonic() - 120, "stale")}
-        hit, value = _check_ttl_cache(cache, "key")
-        assert not hit
-
     def test_issue_cache_miss(self) -> None:
         from sova.dashboard.services import agent_recovery
 
@@ -7071,11 +7044,9 @@ class TestTTLCache:
         assert result is None
 
     def test_issue_cache_sentinel_no_pr(self) -> None:
-        import time
-
         from sova.dashboard.services import agent_recovery
 
-        agent_recovery._issue_pr_cache["99"] = (time.monotonic(), agent_recovery._SENTINEL_NO_PR)
+        agent_recovery._issue_pr_cache["99"] = agent_recovery._SENTINEL_NO_PR
         resolved, pr, result = agent_recovery._check_issue_cache("99")
         assert resolved
         assert pr is None
@@ -7083,13 +7054,10 @@ class TestTTLCache:
         agent_recovery._issue_pr_cache.clear()
 
     def test_issue_cache_pr_known_synthesis_cached(self) -> None:
-        import time
-
         from sova.dashboard.services import agent_recovery
 
-        now = time.monotonic()
-        agent_recovery._issue_pr_cache["99"] = (now, 42)
-        agent_recovery._synthesis_cache[("99", 42)] = (now, [{"id": "test"}])
+        agent_recovery._issue_pr_cache["99"] = 42
+        agent_recovery._synthesis_cache[("99", 42)] = [{"id": "test"}]
         resolved, pr, result = agent_recovery._check_issue_cache("99")
         assert resolved
         assert pr == 42
@@ -7098,11 +7066,9 @@ class TestTTLCache:
         agent_recovery._synthesis_cache.clear()
 
     def test_issue_cache_pr_known_synthesis_not_cached(self) -> None:
-        import time
-
         from sova.dashboard.services import agent_recovery
 
-        agent_recovery._issue_pr_cache["99"] = (time.monotonic(), 42)
+        agent_recovery._issue_pr_cache["99"] = 42
         agent_recovery._synthesis_cache.clear()
         resolved, pr, result = agent_recovery._check_issue_cache("99")
         assert not resolved
@@ -7220,17 +7186,14 @@ class TestExecuteHandoffAction:
 
 class TestInvalidateSynthesisCache:
     def test_clears_both_caches(self) -> None:
-        import time
-
         from sova.dashboard.services.agent_recovery import (
             _issue_pr_cache,
             _synthesis_cache,
             invalidate_synthesis_cache,
         )
 
-        now = time.monotonic()
-        _synthesis_cache[("42", 99)] = (now, [{"id": "test"}])
-        _issue_pr_cache["42"] = (now, 99)
+        _synthesis_cache[("42", 99)] = [{"id": "test"}]
+        _issue_pr_cache["42"] = 99
 
         invalidate_synthesis_cache("42", 99)
 
@@ -7320,12 +7283,11 @@ class TestSynthesizePrActionsCachePaths:
         assert result is None
 
     async def test_uses_cached_pr_number(self, monkeypatch) -> None:
-        import time
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services import agent_recovery
 
-        agent_recovery._issue_pr_cache["42"] = (time.monotonic(), 99)
+        agent_recovery._issue_pr_cache["42"] = 99
 
         mock_adapter = AsyncMock()
         mock_adapter.get_pr_reviews.return_value = []
@@ -7339,13 +7301,10 @@ class TestSynthesizePrActionsCachePaths:
         mock_find.assert_not_awaited()
 
     async def test_returns_cached_synthesis_result(self, monkeypatch) -> None:
-        import time
-
         from sova.dashboard.services import agent_recovery
 
-        now = time.monotonic()
-        agent_recovery._issue_pr_cache["42"] = (now, 99)
-        agent_recovery._synthesis_cache[("42", 99)] = (now, [{"id": "cached_action"}])
+        agent_recovery._issue_pr_cache["42"] = 99
+        agent_recovery._synthesis_cache[("42", 99)] = [{"id": "cached_action"}]
 
         result = await agent_recovery.synthesize_pr_actions("42")
         assert result == [{"id": "cached_action"}]
@@ -7395,7 +7354,6 @@ class TestSynthesizePrActionsCachePaths:
         assert result[0]["id"] == "integrate"
 
     async def test_synthesis_cache_hit_after_pr_lookup(self, monkeypatch) -> None:
-        import time
         from unittest.mock import AsyncMock
 
         from sova.dashboard.services import agent_recovery
@@ -7406,8 +7364,7 @@ class TestSynthesizePrActionsCachePaths:
             AsyncMock(return_value=PRInfo(number=99, url="https://github.com/user/repo/pull/99")),
         )
 
-        now = time.monotonic()
-        agent_recovery._synthesis_cache[("42", 99)] = (now, [{"id": "cached"}])
+        agent_recovery._synthesis_cache[("42", 99)] = [{"id": "cached"}]
 
         result = await agent_recovery.synthesize_pr_actions("42")
         assert result == [{"id": "cached"}]

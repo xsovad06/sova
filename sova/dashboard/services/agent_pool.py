@@ -6,6 +6,7 @@ Owns the in-memory registry of running agents per project.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class ProjectAgents:
 
 
 _projects: dict[str, ProjectAgents] = {}
+_projects_lock = threading.Lock()
 _default_project_dir: Path | None = None
 
 
@@ -81,12 +83,13 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
     if slug is None:
         slug = get_project_slug() or _DEFAULT_SLUG
 
-    pa = _projects.get(slug)
-    if pa is None:
-        project_dir = get_project_dir()
-        if project_dir is None:
-            project_dir = _default_project_dir or Path.cwd()
-        pa = _projects.setdefault(slug, ProjectAgents(project_dir=project_dir.resolve()))
+    with _projects_lock:
+        pa = _projects.get(slug)
+        if pa is None:
+            project_dir = get_project_dir()
+            if project_dir is None:
+                project_dir = _default_project_dir or Path.cwd()
+            pa = _projects.setdefault(slug, ProjectAgents(project_dir=project_dir.resolve()))
 
     return pa
 

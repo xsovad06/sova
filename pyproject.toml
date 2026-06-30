@@ -36,6 +36,7 @@ dependencies = [
     "markdown>=3.5",
     "tomlkit>=0.13",
     "mcp>=1.0,<2.0",
+    "cachetools>=5.3",
 ]
 
 [project.urls]

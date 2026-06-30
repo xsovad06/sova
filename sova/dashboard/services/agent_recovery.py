@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from cachetools import TTLCache
 
 from sova.utils.logging import get_logger
 
@@ -13,23 +14,13 @@ log = get_logger(component="dashboard.control.recovery")
 
 _SENTINEL_NO_PR = -1  # cached "no PR exists" marker (distinct from None = not cached)
 
-# TTL cache for synthesized PR actions: (issue, pr) -> (monotonic_ts, result)
-_synthesis_cache: dict[tuple[str, int], tuple[float, list[dict] | None]] = {}
-# Issue-level cache to avoid find_pr_for_issue shell call on cache hit
-_issue_pr_cache: dict[str, tuple[float, int | None]] = {}
 _SYNTHESIS_TTL_SECONDS = 60
+# TTL cache for synthesized PR actions: (issue, pr) -> actions list or None
+_synthesis_cache: TTLCache[tuple[str, int], list[dict] | None] = TTLCache(maxsize=256, ttl=_SYNTHESIS_TTL_SECONDS)
+# Issue-level cache to avoid find_pr_for_issue shell call on cache hit
+_issue_pr_cache: TTLCache[str, int | None] = TTLCache(maxsize=256, ttl=_SYNTHESIS_TTL_SECONDS)
 
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
-
-
-def _check_ttl_cache(cache: dict, key: object) -> tuple[bool, object]:
-    """Check a TTL cache entry. Returns (hit, value)."""
-    entry = cache.get(key)
-    if entry:
-        ts, value = entry
-        if time.monotonic() - ts < _SYNTHESIS_TTL_SECONDS:
-            return True, value
-    return False, None
 
 
 def _check_issue_cache(issue_number: str) -> tuple[bool, int | None, list[dict] | None]:
@@ -41,16 +32,18 @@ def _check_issue_cache(issue_number: str) -> tuple[bool, int | None, list[dict] 
     - fully_resolved=False, pr=N, result=None: PR known but synthesis not cached
     - fully_resolved=False, pr=None, result=None: issue cache miss entirely
     """
-    issue_hit, cached_pr = _check_ttl_cache(_issue_pr_cache, issue_number)
-    if not issue_hit:
+    try:
+        cached_pr = _issue_pr_cache[issue_number]
+    except KeyError:
         return False, None, None
     if cached_pr == _SENTINEL_NO_PR:
         return True, None, None
     if cached_pr is not None:
-        synth_hit, synth_result = _check_ttl_cache(_synthesis_cache, (issue_number, cached_pr))
-        if synth_hit:
+        try:
+            synth_result = _synthesis_cache[(issue_number, cached_pr)]
             return True, cached_pr, synth_result
-        # PR number is known from cache; skip find_pr_for_issue
+        except KeyError:
+            pass
         return False, cached_pr, None
     return False, None, None
 
@@ -468,11 +461,11 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
         reviews = await adapter.get_pr_reviews(pr_number)
     except Exception:
         log.debug("synthesize.fetch_reviews_failed", issue=issue_number, exc_info=True)
-        _synthesis_cache[cache_key] = (time.monotonic(), None)
+        _synthesis_cache[cache_key] = None
         return None
 
     if not reviews:
-        _synthesis_cache[cache_key] = (time.monotonic(), None)
+        _synthesis_cache[cache_key] = None
         return None
 
     latest_by_reviewer = _deduplicate_reviews(reviews)
@@ -484,7 +477,7 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
     elif approvals > 0 and approvals == human_review_count:
         actions = _build_integrate_actions(issue_number, pr_number)
 
-    _synthesis_cache[cache_key] = (time.monotonic(), actions)
+    _synthesis_cache[cache_key] = actions
     return actions
 
 
@@ -513,19 +506,20 @@ async def synthesize_pr_actions(issue_number: str) -> list[dict] | None:
     else:
         pr_info = await find_pr_for_issue(issue_number, repo=repo, github_user=gh_user)
         if not pr_info:
-            _issue_pr_cache[issue_number] = (time.monotonic(), _SENTINEL_NO_PR)
+            _issue_pr_cache[issue_number] = _SENTINEL_NO_PR
             return None
         pr_number = pr_info.number
-        _issue_pr_cache[issue_number] = (time.monotonic(), pr_number)
+        _issue_pr_cache[issue_number] = pr_number
 
     cache_key = (issue_number, pr_number)
-    synth_hit, synth_result = _check_ttl_cache(_synthesis_cache, cache_key)
-    if synth_hit:
-        return synth_result
+    try:
+        return _synthesis_cache[cache_key]
+    except KeyError:
+        pass
 
     try:
         if await _has_active_run(issue_number):
-            _synthesis_cache[cache_key] = (time.monotonic(), None)
+            _synthesis_cache[cache_key] = None
             return None
     except Exception:
         log.debug("synthesize.active_run_check_failed", issue=issue_number, exc_info=True)
