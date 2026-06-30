@@ -57,6 +57,7 @@ _NESTED_SECTIONS = (
     "task_source",
     "agent",
     "review",
+    "develop",
     "ci",
     "watch",
     "worktree",

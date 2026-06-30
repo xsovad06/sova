@@ -104,6 +104,16 @@ class ReviewConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_")
 
 
+class DevelopConfig(BaseSettings):
+    """Inner check loop configuration for the develop step."""
+
+    max_fix_cycles: int = Field(3, ge=0)
+    check_timeout: int = Field(300, gt=0)
+    guard_test_weakening: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_DEVELOP_")
+
+
 class CIConfig(BaseSettings):
     """CI monitoring configuration."""
 
@@ -326,6 +336,7 @@ class ProjectConfig(BaseSettings):
     task_source: TaskSourceConfig = Field(default_factory=TaskSourceConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    develop: DevelopConfig = Field(default_factory=DevelopConfig)
     ci: CIConfig = Field(default_factory=CIConfig)
     watch: WatchConfig = Field(default_factory=WatchConfig)
     worktree: WorktreeConfig = Field(default_factory=WorktreeConfig)
