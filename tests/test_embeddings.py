@@ -374,6 +374,7 @@ def test_embed_text_encode_exception_returns_none() -> None:
 
 async def test_backfill_embeddings_all_have_embeddings() -> None:
     """When no memories lack embeddings, backfill reports nothing to do."""
+
     async def _noop_init(*a: object, **kw: object) -> None:
         pass
 
@@ -395,10 +396,11 @@ async def test_backfill_embeddings_all_have_embeddings() -> None:
     mock_begin_ctx.__aexit__ = AsyncMock(return_value=False)
     mock_session.begin = MagicMock(return_value=mock_begin_ctx)
 
-    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
-        "sova.knowledge.embeddings.is_available", return_value=True
-    ), patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A), patch(
-        "sova.db.session.get_session", side_effect=mock_get_session
+    with (
+        patch("sova.db.session.init_db", side_effect=_noop_init),
+        patch("sova.knowledge.embeddings.is_available", return_value=True),
+        patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A),
+        patch("sova.db.session.get_session", side_effect=mock_get_session),
     ):
         from sova.cli.commands.memory import _backfill_embeddings
 
@@ -408,6 +410,7 @@ async def test_backfill_embeddings_all_have_embeddings() -> None:
 
 async def test_backfill_embeddings_updates_memories() -> None:
     """Memories without embeddings get computed and saved."""
+
     async def _noop_init(*a: object, **kw: object) -> None:
         pass
 
@@ -445,10 +448,11 @@ async def test_backfill_embeddings_updates_memories() -> None:
         call_count += 1
         return mock_session1 if call_count == 1 else mock_session2
 
-    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
-        "sova.knowledge.embeddings.is_available", return_value=True
-    ), patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A), patch(
-        "sova.db.session.get_session", side_effect=mock_get_session
+    with (
+        patch("sova.db.session.init_db", side_effect=_noop_init),
+        patch("sova.knowledge.embeddings.is_available", return_value=True),
+        patch("sova.knowledge.embeddings.embed_text", return_value=_VEC_A),
+        patch("sova.db.session.get_session", side_effect=mock_get_session),
     ):
         from sova.cli.commands.memory import _backfill_embeddings
 
@@ -461,12 +465,14 @@ async def test_backfill_embeddings_exits_when_unavailable() -> None:
     async def _noop_init(*a: object, **kw: object) -> None:
         pass
 
-    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
-        "sova.knowledge.embeddings.is_available", return_value=False
-    ), patch("sova.knowledge.embeddings.embed_text"):
-        from sova.cli.commands.memory import _backfill_embeddings
-
+    with (
+        patch("sova.db.session.init_db", side_effect=_noop_init),
+        patch("sova.knowledge.embeddings.is_available", return_value=False),
+        patch("sova.knowledge.embeddings.embed_text"),
+    ):
         import typer
+
+        from sova.cli.commands.memory import _backfill_embeddings
 
         with pytest.raises((SystemExit, typer.Exit)):
             await _backfill_embeddings(project_dir=None)
@@ -487,8 +493,9 @@ async def test_cli_search_semantic_with_results() -> None:
     with patch("sova.knowledge.memory.embed_text", return_value=_VEC_A):
         await store(category="learning", title="Bash tips", content="Quote vars.", tags=[])
 
-    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
-        "sova.knowledge.memory.embed_text", return_value=_VEC_A
+    with (
+        patch("sova.db.session.init_db", side_effect=_noop_init),
+        patch("sova.knowledge.memory.embed_text", return_value=_VEC_A),
     ):
         await _search(query="bash", category=None, tier=None, project_dir=None, semantic=True)
 
@@ -499,8 +506,9 @@ async def test_cli_search_semantic_empty() -> None:
     async def _noop_init(*a: object, **kw: object) -> None:
         pass
 
-    with patch("sova.db.session.init_db", side_effect=_noop_init), patch(
-        "sova.knowledge.memory.embed_text", return_value=_VEC_B
+    with (
+        patch("sova.db.session.init_db", side_effect=_noop_init),
+        patch("sova.knowledge.memory.embed_text", return_value=_VEC_B),
     ):
         await _search(query="nothing", category=None, tier=None, project_dir=None, semantic=True)
 
