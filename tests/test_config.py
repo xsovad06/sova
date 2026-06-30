@@ -214,6 +214,7 @@ def test_sensitive_fields_hidden_from_repr() -> None:
 
     nc = NotificationConfig(slack_webhook_url="https://hooks.slack.com/secret")
     assert "https://hooks.slack.com/secret" not in repr(nc)
+    assert "desktop" in repr(nc)
 
 
 def test_dashboard_section_loaded_from_toml(tmp_path: Path) -> None:
