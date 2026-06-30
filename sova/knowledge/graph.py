@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 
 from sova.db.models import Memory, MemoryEdge
 from sova.db.session import get_session
@@ -53,7 +54,11 @@ async def create_edge(
                 return None
             edge = MemoryEdge(source_id=source_id, target_id=target_id, relation=relation, weight=weight)
             session.add(edge)
-            await session.flush()
+            try:
+                await session.flush()
+            except IntegrityError:
+                await session.rollback()
+                return None
             log.info("graph.edge_created", source=source_id, target=target_id, relation=relation)
             return edge
 

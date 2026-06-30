@@ -853,7 +853,11 @@ async def test_auto_link_caps_at_max() -> None:
     with patch("sova.knowledge.graph.is_available", return_value=True):
         edges = await auto_link(source.id)
 
+    # Must create exactly MAX_EDGES, proving the cap is enforced
     assert len(edges) == AUTO_LINK_MAX_EDGES
+    # Verify edges are ordered by highest similarity (descending weight)
+    weights = [e.weight for e in edges]
+    assert weights == sorted(weights, reverse=True)
 
 
 # ---------------------------------------------------------------------------
@@ -892,23 +896,41 @@ async def test_discover_edges_same_category() -> None:
 
 
 async def test_discover_edges_batch_boundaries() -> None:
-    """discover_edges() handles memories spanning multiple batches."""
+    """discover_edges() handles memories spanning multiple batches.
+
+    Creates memories across batch boundaries and verifies that only
+    within-batch pairs are compared (cross-batch pairs are not linked).
+    """
     from unittest.mock import patch
 
-    from sova.knowledge.graph import _DISCOVER_BATCH_SIZE, discover_edges
+    from sova.knowledge.graph import _DISCOVER_BATCH_SIZE, discover_edges, get_edges
     from sova.knowledge.memory import store
 
-    # Create enough memories to span multiple batches
-    count = _DISCOVER_BATCH_SIZE + 10
-    for i in range(count):
-        emb = [1.0 - i * 0.001, i * 0.001, 0.0]
-        await store(category="batch_test", title=f"M{i}", content=f"M{i}", tags=[], embedding=emb)
+    batch1_ids = []
+    for i in range(_DISCOVER_BATCH_SIZE):
+        # All batch-1 memories are very similar to each other
+        emb = [1.0 - i * 0.0001, i * 0.0001, 0.0]
+        m = await store(category="batch_test", title=f"B1_{i}", content=f"B1_{i}", tags=[], embedding=emb)
+        batch1_ids.append(m.id)
+
+    # Add a few memories in a second batch that are dissimilar to batch 1
+    batch2_ids = []
+    for i in range(5):
+        emb = [0.0, 1.0 - i * 0.001, i * 0.001]
+        m = await store(category="batch_test", title=f"B2_{i}", content=f"B2_{i}", tags=[], embedding=emb)
+        batch2_ids.append(m.id)
 
     with patch("sova.knowledge.graph.is_available", return_value=True):
         total = await discover_edges(category="batch_test")
 
-    # Should complete without error; edges only created within batch windows
-    assert total >= 0
+    # Edges should be created (within-batch similar pairs exist)
+    assert total > 0
+
+    # Cross-batch pairs should NOT be linked (dissimilar embeddings)
+    for b2_id in batch2_ids:
+        edges = await get_edges(b2_id)
+        linked_ids = {e.source_id if e.target_id == b2_id else e.target_id for e in edges}
+        assert not linked_ids.intersection(batch1_ids), "Cross-batch edge found between dissimilar memories"
 
 
 # ---------------------------------------------------------------------------

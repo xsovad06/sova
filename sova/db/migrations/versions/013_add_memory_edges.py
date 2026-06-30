@@ -28,9 +28,14 @@ def upgrade() -> None:
         sa.Column("source_id", sa.Integer, sa.ForeignKey("memories.id", ondelete="CASCADE"), nullable=False),
         sa.Column("target_id", sa.Integer, sa.ForeignKey("memories.id", ondelete="CASCADE"), nullable=False),
         sa.Column("relation", sa.String(30), nullable=False, server_default="relates_to"),
-        sa.Column("weight", sa.Numeric(5, 4), server_default="1.0"),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("weight", sa.Numeric(5, 4), nullable=False, server_default="1.0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.UniqueConstraint("source_id", "target_id", "relation", name="uq_memory_edge"),
+        sa.CheckConstraint(
+            "relation IN ('relates_to', 'refines', 'depends_on', 'supersedes', 'contradicts')",
+            name="ck_memory_edge_relation",
+        ),
+        sa.CheckConstraint("weight >= 0.0 AND weight <= 1.0", name="ck_memory_edge_weight"),
     )
     op.create_index("ix_memory_edges_source", "memory_edges", ["source_id"])
     op.create_index("ix_memory_edges_target", "memory_edges", ["target_id"])

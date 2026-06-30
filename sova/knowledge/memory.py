@@ -6,7 +6,7 @@ from sqlalchemy import or_, select
 
 from sova.db.models import Memory, MemoryEdge
 from sova.db.session import get_session
-from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text
+from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text, is_available
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
@@ -61,6 +61,15 @@ async def store(
             await session.flush()
 
     log.info("knowledge.stored", title=title, category=category, tier=tier)
+
+    if is_available() and memory.embedding is not None:
+        try:
+            from sova.knowledge.graph import auto_link
+
+            await auto_link(memory.id)
+        except Exception:
+            log.warning("knowledge.auto_link_failed", memory_id=memory.id, exc_info=True)
+
     return memory
 
 
