@@ -11,6 +11,8 @@ from sova.utils.logging import get_logger
 
 _log = get_logger(component="adapter.base")
 
+_EGRESS_BLOCKED = "egress.blocked"
+
 
 class TaskState(StrEnum):
     """Issue lifecycle states managed by agents on the tracker."""
@@ -145,7 +147,7 @@ class TaskAdapter(ABC):
         """Post a comment on the task (egress-filtered)."""
         filtered = filter_egress(body, mode=_get_egress_mode(), destination="post_comment")
         if filtered is None:
-            _log.warning("egress.blocked", method="post_comment", task_id=task_id)
+            _log.warning(_EGRESS_BLOCKED, method="post_comment", task_id=task_id)
             return
         await self._do_post_comment(task_id, filtered)
 
@@ -157,7 +159,7 @@ class TaskAdapter(ABC):
         """Post a comment on a pull request (egress-filtered)."""
         filtered = filter_egress(body, mode=_get_egress_mode(), destination="post_pr_comment")
         if filtered is None:
-            _log.warning("egress.blocked", method="post_pr_comment", pr=pr_number)
+            _log.warning(_EGRESS_BLOCKED, method="post_pr_comment", pr=pr_number)
             return
         await self._do_post_pr_comment(pr_number, filtered)
 
@@ -176,7 +178,7 @@ class TaskAdapter(ABC):
         mode = _get_egress_mode()
         filtered_body = filter_egress(body, mode=mode, destination="post_pr_review.body")
         if filtered_body is None:
-            _log.warning("egress.blocked", method="post_pr_review", pr=pr_number)
+            _log.warning(_EGRESS_BLOCKED, method="post_pr_review", pr=pr_number)
             return
 
         filtered_comments = []
@@ -184,7 +186,7 @@ class TaskAdapter(ABC):
             comment_body = comment.get("body", "")
             filtered_comment_body = filter_egress(comment_body, mode=mode, destination="post_pr_review.comment")
             if filtered_comment_body is None:
-                _log.warning("egress.blocked", method="post_pr_review.comment", pr=pr_number)
+                _log.warning(_EGRESS_BLOCKED, method="post_pr_review.comment", pr=pr_number)
                 return
             filtered_comments.append({**comment, "body": filtered_comment_body})
 
@@ -204,7 +206,7 @@ class TaskAdapter(ABC):
         """Update the issue body/description on the tracker (egress-filtered)."""
         filtered = filter_egress(body, mode=_get_egress_mode(), destination="edit_body")
         if filtered is None:
-            _log.warning("egress.blocked", method="edit_body", task_id=task_id)
+            _log.warning(_EGRESS_BLOCKED, method="edit_body", task_id=task_id)
             return
         await self._do_edit_body(task_id, filtered)
 

@@ -43,7 +43,7 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
     ),
     # AWS secret keys (40 char base64-ish after a separator)
     (
-        re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[=:]\s*([A-Za-z0-9/+=]{40})"),
+        re.compile(r"(?i)(?:aws_secret_access_key|aws_secret)\s*[=:]\s*([a-z0-9/+=]{40})"),
         "aws_secret_key",
         "[REDACTED:aws_secret]",
     ),
@@ -65,7 +65,7 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
     ),
     # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
     (
-        re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{36,})\b"),
+        re.compile(r"\b(gh[pousr]_\w{36,})\b"),
         "github_token",
         "[REDACTED:github_token]",
     ),
@@ -83,12 +83,12 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
     # Generic "token" / "secret" with separator -- requires = or : followed by a value
     # Avoids matching "tokenizer", "token count", "secret sauce", etc.
     (
-        re.compile(r"(?i)\btoken\s*[=:]\s*['\"]?([A-Za-z0-9_\-/.+=]{8,})['\"]?"),
+        re.compile(r"(?i)\btoken\s*[=:]\s*['\"]?([a-z0-9_\-/.+=]{8,})['\"]?"),
         "generic_token",
         "[REDACTED:token]",
     ),
     (
-        re.compile(r"(?i)\bsecret\s*[=:]\s*['\"]?([A-Za-z0-9_\-/.+=]{8,})['\"]?"),
+        re.compile(r"(?i)\bsecret\s*[=:]\s*['\"]?([a-z0-9_\-/.+=]{8,})['\"]?"),
         "generic_secret",
         "[REDACTED:secret]",
     ),
