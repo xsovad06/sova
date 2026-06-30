@@ -97,9 +97,7 @@ async def _bfs_collect_neighbor_ids(
         if current_depth >= depth:
             continue
 
-        stmt = select(MemoryEdge).where(
-            or_(MemoryEdge.source_id == current_id, MemoryEdge.target_id == current_id)
-        )
+        stmt = select(MemoryEdge).where(or_(MemoryEdge.source_id == current_id, MemoryEdge.target_id == current_id))
         if relation is not None:
             stmt = stmt.where(MemoryEdge.relation == relation)
 
