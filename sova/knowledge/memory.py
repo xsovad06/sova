@@ -305,9 +305,7 @@ async def _expand_with_neighbors(memories: list[Memory]) -> list[Memory]:
     async with await get_session() as session:
         async with session.begin():
             edge_result = await session.execute(
-                select(MemoryEdge).where(
-                    or_(MemoryEdge.source_id.in_(all_ids), MemoryEdge.target_id.in_(all_ids))
-                )
+                select(MemoryEdge).where(or_(MemoryEdge.source_id.in_(all_ids), MemoryEdge.target_id.in_(all_ids)))
             )
             neighbor_ids: set[int] = set()
             for edge in edge_result.scalars().all():
