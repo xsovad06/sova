@@ -5521,12 +5521,15 @@ class TestAgentRecoveryDirect:
             await session.flush()
             run_id = run.id
 
-        with patch(
-            "sova.dashboard.services.handoff_service.get_handoff",
-            return_value=None,
-        ), patch(
-            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            side_effect=RuntimeError("gh failed"),
+        with (
+            patch(
+                "sova.dashboard.services.handoff_service.get_handoff",
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+                side_effect=RuntimeError("gh failed"),
+            ),
         ):
             interrupted = await recover_stale_runs()
 
@@ -7200,9 +7203,12 @@ class TestLoadRepoConfig:
 
         from sova.dashboard.services.agent_recovery import _load_repo_config
 
-        with patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")), patch(
-            "sova.config.loader.load_config",
-            side_effect=RuntimeError("bad config"),
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
+            patch(
+                "sova.config.loader.load_config",
+                side_effect=RuntimeError("bad config"),
+            ),
         ):
             assert _load_repo_config() is None
 
@@ -7213,9 +7219,12 @@ class TestLoadRepoConfig:
 
         mock_cfg = MagicMock()
         mock_cfg.github_repo = ""
-        with patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")), patch(
-            "sova.config.loader.load_config",
-            return_value=mock_cfg,
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=mock_cfg,
+            ),
         ):
             assert _load_repo_config() is None
 
@@ -7233,17 +7242,21 @@ class TestGetPrStatusForIssue:
         from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
 
         mock_pr = MagicMock(number=10)
-        with patch(
-            "sova.dashboard.services.agent_recovery._load_repo_config",
-            return_value=("owner/repo", "user"),
-        ), patch(
-            "sova.git.operations.find_pr_for_issue",
-            new_callable=AsyncMock,
-            return_value=mock_pr,
-        ), patch(
-            "sova.git.operations.get_pr_status",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("api error"),
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery._load_repo_config",
+                return_value=("owner/repo", "user"),
+            ),
+            patch(
+                "sova.git.operations.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=mock_pr,
+            ),
+            patch(
+                "sova.git.operations.get_pr_status",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("api error"),
+            ),
         ):
             result = await get_pr_status_for_issue("42")
         assert result["has_pr"] is True
@@ -7258,29 +7271,40 @@ class TestGetPrStatusForIssue:
 
         mock_pr = MagicMock(number=10)
         mock_status = MagicMock(
-            number=10, state="OPEN", review_decision=None,
-            mergeable=True, title="test", url="http://x",
-            is_approved=False, is_mergeable=True,
+            number=10,
+            state="OPEN",
+            review_decision=None,
+            mergeable=True,
+            title="test",
+            url="http://x",
+            is_approved=False,
+            is_mergeable=True,
         )
-        with patch(
-            "sova.dashboard.services.agent_recovery._load_repo_config",
-            return_value=("owner/repo", "user"),
-        ), patch(
-            "sova.git.operations.find_pr_for_issue",
-            new_callable=AsyncMock,
-            return_value=mock_pr,
-        ), patch(
-            "sova.git.operations.get_pr_status",
-            new_callable=AsyncMock,
-            return_value=mock_status,
-        ), patch(
-            "sova.git.operations.get_ci_checks",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("ci api error"),
-        ), patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery._load_repo_config",
+                return_value=("owner/repo", "user"),
+            ),
+            patch(
+                "sova.git.operations.find_pr_for_issue",
+                new_callable=AsyncMock,
+                return_value=mock_pr,
+            ),
+            patch(
+                "sova.git.operations.get_pr_status",
+                new_callable=AsyncMock,
+                return_value=mock_status,
+            ),
+            patch(
+                "sova.git.operations.get_ci_checks",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("ci api error"),
+            ),
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+            ),
         ):
             result = await get_pr_status_for_issue("42")
         assert result["has_pr"] is True
@@ -7397,8 +7421,9 @@ class TestPruneCompleted:
 
         pa = ProjectAgents()
         pa.recently_completed.append(
-            CompletedAgent(run_id=1, issue="1", role="dev", status="done", cost=0.5,
-                           completed_at=time.monotonic() - 9999),
+            CompletedAgent(
+                run_id=1, issue="1", role="dev", status="done", cost=0.5, completed_at=time.monotonic() - 9999
+            ),
         )
         _prune_completed(pa)
         assert len(pa.recently_completed) == 0
@@ -7415,12 +7440,12 @@ class TestPruneCompleted:
         now = 10000.0
         pa = ProjectAgents()
         pa.recently_completed.append(
-            CompletedAgent(run_id=1, issue="1", role="dev", status="done", cost=0.5,
-                           completed_at=now - RECENTLY_COMPLETED_TTL - 1),
+            CompletedAgent(
+                run_id=1, issue="1", role="dev", status="done", cost=0.5, completed_at=now - RECENTLY_COMPLETED_TTL - 1
+            ),
         )
         pa.recently_completed.append(
-            CompletedAgent(run_id=2, issue="2", role="dev", status="done", cost=0.5,
-                           completed_at=now - 1),
+            CompletedAgent(run_id=2, issue="2", role="dev", status="done", cost=0.5, completed_at=now - 1),
         )
         _prune_completed(pa, now=now)
         assert len(pa.recently_completed) == 1
