@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from sqlalchemy import or_, select
 
-from sova.db.models import Memory
+from sova.db.models import Memory, MemoryEdge
 from sova.db.session import get_session
 from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text
-from sova.knowledge.graph import get_neighbors
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
@@ -299,16 +298,39 @@ async def _append_neighbors(top: list[tuple[Memory, float]]) -> list[tuple[Memor
 
 
 async def _expand_with_neighbors(memories: list[Memory]) -> list[Memory]:
-    """Expand a list of memories with their 1-hop graph neighbors."""
-    existing_ids = {m.id for m in memories}
-    expanded = list(memories)
+    """Expand a list of memories with their 1-hop graph neighbors (batched)."""
+    all_ids = [m.id for m in memories]
+    existing_ids = set(all_ids)
 
-    for mem in memories:
-        neighbors = await get_neighbors(mem.id, depth=1)
-        for nb in neighbors:
-            if nb.id not in existing_ids:
-                existing_ids.add(nb.id)
-                expanded.append(nb)
+    async with await get_session() as session:
+        async with session.begin():
+            edge_result = await session.execute(
+                select(MemoryEdge).where(
+                    or_(MemoryEdge.source_id.in_(all_ids), MemoryEdge.target_id.in_(all_ids))
+                )
+            )
+            neighbor_ids: set[int] = set()
+            for edge in edge_result.scalars().all():
+                neighbor_ids.add(edge.source_id)
+                neighbor_ids.add(edge.target_id)
+            neighbor_ids -= existing_ids
+
+            if not neighbor_ids:
+                return list(memories)
+
+            mem_result = await session.execute(
+                select(Memory).where(
+                    Memory.id.in_(neighbor_ids),
+                    Memory.superseded_by.is_(None),
+                )
+            )
+            neighbors = list(mem_result.scalars().all())
+
+    expanded = list(memories)
+    for nb in neighbors:
+        if nb.id not in existing_ids:
+            existing_ids.add(nb.id)
+            expanded.append(nb)
 
     return expanded
 
