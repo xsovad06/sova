@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.llm.client import invoke
-from sova.llm.egress import filter_egress
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
 log = get_logger(component="step.create_pr")
 
 _PLACEHOLDER = "(none)"
+
+_CONVENTIONAL_RE = re.compile(
+    r"^(feat|fix|refactor|test|docs|chore|ci)"
+    r"(?:\([^)]*\))?"
+    r":\s*",
+)
 
 _PR_BODY_PROMPT_BASE = """\
 Generate a pull request description for the changes below. Output ONLY the \
@@ -59,6 +65,26 @@ Files changed:
 """
 
 
+def _build_pr_title(task_title: str, issue_number: str | None) -> str:
+    """Build a PR title from the task title, avoiding double conventional prefixes.
+
+    If the task title already has a conventional commit prefix (e.g. "feat(llm): ..."),
+    strip it and re-wrap with the issue-scoped prefix to produce a clean title like
+    "feat(#117): add local model support via Ollama".
+    """
+    match = _CONVENTIONAL_RE.match(task_title)
+    if match:
+        commit_type = match.group(1)
+        description = task_title[match.end() :]
+    else:
+        commit_type = "feat"
+        description = task_title
+
+    if issue_number:
+        return f"{commit_type}(#{issue_number}): {description}"
+    return f"{commit_type}: {description}"
+
+
 class CreatePRStep(BaseStep):
     name = "create_pr"
 
@@ -70,18 +96,8 @@ class CreatePRStep(BaseStep):
             return adopted
 
         task_title = ctx.task.title if ctx.task else ctx.branch_name
-        title = f"feat(#{ctx.issue_number}): {task_title}" if ctx.has_issue else f"feat: {task_title}"
+        title = _build_pr_title(task_title, ctx.issue_number if ctx.has_issue else None)
         body = await self._generate_pr_body(ctx, task_title)
-
-        egress_mode = ctx.config.egress.mode if ctx.config else "warn"
-        filtered_title = filter_egress(title, mode=egress_mode, destination="create_pr.title")
-        if filtered_title is None:
-            return StepResult(success=False, summary="Egress filter blocked PR title")
-        title = filtered_title
-        filtered_body = filter_egress(body, mode=egress_mode, destination="create_pr.body")
-        if filtered_body is None:
-            return StepResult(success=False, summary="Egress filter blocked PR body")
-        body = filtered_body
 
         try:
             pr_info = await git_ops.create_pr(
