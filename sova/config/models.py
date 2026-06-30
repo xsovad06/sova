@@ -279,6 +279,15 @@ class OutputConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_OUTPUT_")
 
 
+class MonitoringConfig(BaseSettings):
+    """Resource monitoring configuration for agent processes."""
+
+    enabled: bool = False
+    interval: float = Field(5.0, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -332,6 +341,7 @@ class ProjectConfig(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 
