@@ -7293,11 +7293,19 @@ class TestGetPrStatusForIssue:
 
 
 class TestTTLCache:
-    def test_issue_cache_miss(self) -> None:
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
         from sova.dashboard.services import agent_recovery
 
         agent_recovery._issue_pr_cache.clear()
         agent_recovery._synthesis_cache.clear()
+        yield
+        agent_recovery._issue_pr_cache.clear()
+        agent_recovery._synthesis_cache.clear()
+
+    def test_issue_cache_miss(self) -> None:
+        from sova.dashboard.services import agent_recovery
+
         resolved, pr, result = agent_recovery._check_issue_cache("99")
         assert not resolved
         assert pr is None
@@ -7311,7 +7319,6 @@ class TestTTLCache:
         assert resolved
         assert pr is None
         assert result is None
-        agent_recovery._issue_pr_cache.clear()
 
     def test_issue_cache_pr_known_synthesis_cached(self) -> None:
         from sova.dashboard.services import agent_recovery
@@ -7322,19 +7329,15 @@ class TestTTLCache:
         assert resolved
         assert pr == 42
         assert result == [{"id": "test"}]
-        agent_recovery._issue_pr_cache.clear()
-        agent_recovery._synthesis_cache.clear()
 
     def test_issue_cache_pr_known_synthesis_not_cached(self) -> None:
         from sova.dashboard.services import agent_recovery
 
         agent_recovery._issue_pr_cache["99"] = 42
-        agent_recovery._synthesis_cache.clear()
         resolved, pr, result = agent_recovery._check_issue_cache("99")
         assert not resolved
         assert pr == 42
         assert result is None
-        agent_recovery._issue_pr_cache.clear()
 
     def test_issue_cache_pr_none_value(self) -> None:
         """When cached_pr is None (not sentinel), return miss."""
@@ -7345,7 +7348,35 @@ class TestTTLCache:
         assert not resolved
         assert pr is None
         assert result is None
-        agent_recovery._issue_pr_cache.clear()
+
+    def test_ttl_expiry(self) -> None:
+        """TTLCache entries expire after the configured TTL."""
+        from cachetools import TTLCache
+
+        short_ttl_cache: TTLCache[str, int] = TTLCache(maxsize=256, ttl=0.1)
+        short_ttl_cache["key"] = 42
+        assert short_ttl_cache["key"] == 42
+
+        import time
+
+        time.sleep(0.15)
+        with pytest.raises(KeyError):
+            _ = short_ttl_cache["key"]
+
+    def test_lru_eviction_on_maxsize(self) -> None:
+        """Oldest entry is evicted when maxsize is exceeded."""
+        from cachetools import TTLCache
+
+        cache: TTLCache[int, str] = TTLCache(maxsize=3, ttl=60)
+        cache[1] = "a"
+        cache[2] = "b"
+        cache[3] = "c"
+        assert len(cache) == 3
+
+        cache[4] = "d"
+        assert len(cache) == 3
+        assert 1 not in cache  # LRU entry evicted
+        assert cache[4] == "d"
 
 
 # ---------------------------------------------------------------------------

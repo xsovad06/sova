@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,8 @@ _SYNTHESIS_TTL_SECONDS = 60
 _synthesis_cache: TTLCache[tuple[str, int], list[dict] | None] = TTLCache(maxsize=256, ttl=_SYNTHESIS_TTL_SECONDS)
 # Issue-level cache to avoid find_pr_for_issue shell call on cache hit
 _issue_pr_cache: TTLCache[str, int | None] = TTLCache(maxsize=256, ttl=_SYNTHESIS_TTL_SECONDS)
+# Reentrant lock protecting both caches from concurrent thread access
+_cache_lock = threading.RLock()
 
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
@@ -32,20 +35,22 @@ def _check_issue_cache(issue_number: str) -> tuple[bool, int | None, list[dict] 
     - fully_resolved=False, pr=N, result=None: PR known but synthesis not cached
     - fully_resolved=False, pr=None, result=None: issue cache miss entirely
     """
-    try:
-        cached_pr = _issue_pr_cache[issue_number]
-    except KeyError:
-        return False, None, None
-    if cached_pr == _SENTINEL_NO_PR:
-        return True, None, None
-    if cached_pr is not None:
+    with _cache_lock:
         try:
-            synth_result = _synthesis_cache[(issue_number, cached_pr)]
-            return True, cached_pr, synth_result
+            cached_pr = _issue_pr_cache[issue_number]
         except KeyError:
-            pass
-        return False, cached_pr, None
-    return False, None, None
+            return False, None, None
+        if cached_pr == _SENTINEL_NO_PR:
+            return True, None, None
+        if cached_pr is not None:
+            try:
+                synth_result = _synthesis_cache[(issue_number, cached_pr)]
+                return True, cached_pr, synth_result
+            except KeyError:
+                pass
+            # PR number is known from cache; synthesis cache miss means we skip find_pr shell call
+            return False, cached_pr, None
+        return False, None, None
 
 
 def _deduplicate_reviews(reviews: list) -> dict:
@@ -461,11 +466,13 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
         reviews = await adapter.get_pr_reviews(pr_number)
     except Exception:
         log.debug("synthesize.fetch_reviews_failed", issue=issue_number, exc_info=True)
-        _synthesis_cache[cache_key] = None
+        with _cache_lock:
+            _synthesis_cache[cache_key] = None
         return None
 
     if not reviews:
-        _synthesis_cache[cache_key] = None
+        with _cache_lock:
+            _synthesis_cache[cache_key] = None
         return None
 
     latest_by_reviewer = _deduplicate_reviews(reviews)
@@ -477,7 +484,8 @@ async def _fetch_and_interpret_reviews(issue_number: str, pr_number: int, cache_
     elif approvals > 0 and approvals == human_review_count:
         actions = _build_integrate_actions(issue_number, pr_number)
 
-    _synthesis_cache[cache_key] = actions
+    with _cache_lock:
+        _synthesis_cache[cache_key] = actions
     return actions
 
 
@@ -506,20 +514,24 @@ async def synthesize_pr_actions(issue_number: str) -> list[dict] | None:
     else:
         pr_info = await find_pr_for_issue(issue_number, repo=repo, github_user=gh_user)
         if not pr_info:
-            _issue_pr_cache[issue_number] = _SENTINEL_NO_PR
+            with _cache_lock:
+                _issue_pr_cache[issue_number] = _SENTINEL_NO_PR
             return None
         pr_number = pr_info.number
-        _issue_pr_cache[issue_number] = pr_number
+        with _cache_lock:
+            _issue_pr_cache[issue_number] = pr_number
 
     cache_key = (issue_number, pr_number)
-    try:
-        return _synthesis_cache[cache_key]
-    except KeyError:
-        pass
+    with _cache_lock:
+        try:
+            return _synthesis_cache[cache_key]
+        except KeyError:
+            pass
 
     try:
         if await _has_active_run(issue_number):
-            _synthesis_cache[cache_key] = None
+            with _cache_lock:
+                _synthesis_cache[cache_key] = None
             return None
     except Exception:
         log.debug("synthesize.active_run_check_failed", issue=issue_number, exc_info=True)
@@ -529,8 +541,9 @@ async def synthesize_pr_actions(issue_number: str) -> list[dict] | None:
 
 def invalidate_synthesis_cache(issue: str, pr: int) -> None:
     """Invalidate synthesized PR actions cache for an issue/PR pair."""
-    _synthesis_cache.pop((issue, pr), None)
-    _issue_pr_cache.pop(issue, None)
+    with _cache_lock:
+        _synthesis_cache.pop((issue, pr), None)
+        _issue_pr_cache.pop(issue, None)
 
 
 async def get_synthesized_handoff() -> dict | None:
