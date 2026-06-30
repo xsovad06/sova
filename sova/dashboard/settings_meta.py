@@ -98,7 +98,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.provider",
         "Provider",
-        "LLM provider backend (claude-code for Claude CLI, litellm for multi-provider API)",
+        "LLM provider backend (claude-code, litellm, or hybrid for automatic local/cloud routing)",
         "llm",
     ),
     SettingMeta(
@@ -122,7 +122,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "llm.routing",
         "Model routing",
-        "Per-complexity-tier model overrides (keys: trivial/simple/moderate/complex/epic, values: haiku/sonnet/opus)",
+        "Model routing by complexity tier or task type (values: haiku/sonnet/opus/ollama/model-name)",
         "llm",
         "object",
     ),

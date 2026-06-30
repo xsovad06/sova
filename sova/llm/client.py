@@ -51,15 +51,46 @@ async def invoke(
     prompt: str,
     *,
     model: str | None = None,
+    task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = 600,
 ) -> LLMResult:
-    """Run a prompt via the active LLM provider."""
+    """Run a prompt via the active LLM provider.
+
+    Args:
+        task_type: Routing category (e.g. "triage", "harden", "planner").
+            When set and *model* is ``None``, looks up ``llm.routing[task_type]``
+            to select a model. Ignored when *model* is explicitly provided.
+            Requires ``provider = "litellm"`` or ``"hybrid"``.
+    """
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
-    return await get_provider().invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
+    resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
+    return await get_provider().invoke(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
+
+
+def _resolve_task_type_model(model: str | None, task_type: str | None, *, cwd: Path | str | None = None) -> str | None:
+    """Resolve model from task_type routing if no explicit model is provided."""
+    if model or not task_type:
+        return model
+
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(Path(cwd) if cwd else None)
+        if not cfg.llm.routing:
+            return model
+
+        override = cfg.llm.routing.get(task_type)
+        if override is not None:
+            log.info("llm.task_type_route", task_type=task_type, model=override)
+            return override
+    except Exception:
+        log.debug("llm.task_type_resolve_failed", task_type=task_type, exc_info=True)
+
+    return model
 
 
 async def invoke_command(
@@ -81,6 +112,7 @@ async def invoke_streaming(
     prompt: str,
     *,
     model: str | None = None,
+    task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
 ) -> AsyncIterator[StreamEvent]:
@@ -88,7 +120,8 @@ async def invoke_streaming(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
-    async for event in get_provider().invoke_streaming(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd):
+    resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
+    async for event in get_provider().invoke_streaming(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd):
         yield event
 
 

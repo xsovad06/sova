@@ -121,6 +121,7 @@ class GenerateTasksStep(BaseStep):
 
             result = await invoke(
                 prompt,
+                task_type="generate_tasks",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=180,

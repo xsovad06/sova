@@ -34,6 +34,19 @@ def _check_litellm() -> None:
         raise ImportError("litellm is not installed. Install it with: pip install sova[litellm]")
 
 
+def _is_connection_error(exc: BaseException) -> bool:
+    """Check if an exception indicates a connection failure (e.g. Ollama down)."""
+    error_types = ("ConnectionError", "ConnectError", "ConnectionRefusedError")
+    if type(exc).__name__ in error_types:
+        return True
+    # LiteLLM wraps connection errors; check the chain
+    cause = exc.__cause__ or exc.__context__
+    if cause and type(cause).__name__ in error_types:
+        return True
+    msg = str(exc).lower()
+    return "connection refused" in msg or "connect error" in msg
+
+
 class LiteLLMProvider(LLMProvider):
     """Routes LLM calls through LiteLLM's unified API.
 
@@ -71,13 +84,15 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             return await self._call(target_model, prompt, timeout=timeout, start=start)
-        except Exception:
+        except Exception as exc:
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
+            reason = "connection_error" if _is_connection_error(exc) else "api_error"
             log.warning(
                 "llm.litellm.fallback",
                 primary=target_model,
                 fallback=self.fallback_model,
+                reason=reason,
             )
             start = time.monotonic()
             return await self._call(self.fallback_model, prompt, timeout=timeout, start=start)
@@ -96,13 +111,15 @@ class LiteLLMProvider(LLMProvider):
         try:
             async for event in self._stream(target_model, prompt, start):
                 yield event
-        except Exception:
+        except Exception as exc:
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
+            reason = "connection_error" if _is_connection_error(exc) else "api_error"
             log.warning(
                 "llm.litellm.stream_fallback",
                 primary=target_model,
                 fallback=self.fallback_model,
+                reason=reason,
             )
             start = time.monotonic()
             async for event in self._stream(self.fallback_model, prompt, start):

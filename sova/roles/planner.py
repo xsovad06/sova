@@ -119,6 +119,7 @@ class PlannerRole(AgentRole):
 
             result = await invoke(
                 prompt,
+                task_type="planner",
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 10,
                 timeout=180,

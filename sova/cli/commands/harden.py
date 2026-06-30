@@ -107,7 +107,7 @@ async def _harden_single_task(
     prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
 
     try:
-        result = await invoke(prompt, cwd=resolved_dir, timeout=300)
+        result = await invoke(prompt, task_type="harden", cwd=resolved_dir, timeout=300)
     except RuntimeError as exc:
         console.print(f"[red]  Failed: {exc}[/red]")
         return (task, "failed", None)

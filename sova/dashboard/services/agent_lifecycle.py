@@ -93,6 +93,7 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import get_runtime
+from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control")
@@ -221,7 +222,7 @@ async def get_unified_agents(slug: str | None = None) -> dict:
                     "step_index": progress["step_index"],
                     "total_steps": progress["total_steps"],
                     "elapsed_seconds": round(elapsed),
-                    "cost_usd": float(run.total_cost_usd or 0),
+                    "cost_usd": decimal_to_json(run.total_cost_usd),
                     "output_lines": 0,
                     "source": "external",
                     "pr_number": run.pr_number,

@@ -129,7 +129,7 @@ def create_provider(
 
         return ClaudeCodeProvider()
 
-    if provider_type == "litellm":
+    if provider_type in ("litellm", "hybrid"):
         from sova.llm.litellm_provider import LiteLLMProvider
 
         return LiteLLMProvider(
@@ -138,7 +138,7 @@ def create_provider(
             api_base=api_base or None,
         )
 
-    available = ["claude-code", "litellm"]
+    available = ["claude-code", "litellm", "hybrid"]
     raise ValueError(f"Unknown LLM provider: {provider_type!r}. Available: {', '.join(available)}")
 
 

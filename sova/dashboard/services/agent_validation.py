@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sova.dashboard.services.agent_pool import ProjectAgents
+from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.control.validation")
@@ -117,17 +118,14 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
 
             current = lifecycle.total_cost_usd
             if current >= max_budget:
-                # Convert Decimal to float for JSON serialization
-                spent = float(current)
-                limit = float(max_budget)
                 return {
                     "error": (
                         f"Issue #{issue} has exceeded the per-issue budget "
                         f"(${lifecycle.total_cost_usd:.2f} / ${max_budget:.2f}). "
                         f"Use --force to bypass."
                     ),
-                    "total_cost_usd": spent,
-                    "max_issue_budget": limit,
+                    "total_cost_usd": decimal_to_json(current),
+                    "max_issue_budget": decimal_to_json(max_budget),
                 }
     except Exception:
         log.warning("issue_budget_check.failed", issue=issue, exc_info=True)
