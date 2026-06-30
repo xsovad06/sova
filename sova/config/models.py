@@ -181,7 +181,7 @@ class NotificationConfig(BaseSettings):
     """Notification configuration for human-in-the-loop."""
 
     desktop: bool = False
-    slack_webhook_url: str = ""
+    slack_webhook_url: str = Field("", repr=False)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_NOTIFICATION_")
 

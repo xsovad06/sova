@@ -205,6 +205,17 @@ github_repo = "user/repo"
     assert cfg.notification.slack_webhook_url == ""
 
 
+def test_sensitive_fields_hidden_from_repr() -> None:
+    """Sensitive config fields must not appear in repr() output."""
+    from sova.config.models import NotificationConfig, TaskSourceConfig
+
+    ts = TaskSourceConfig(jira_api_token="secret-jira-token")
+    assert "secret-jira-token" not in repr(ts)
+
+    nc = NotificationConfig(slack_webhook_url="https://hooks.slack.com/secret")
+    assert "https://hooks.slack.com/secret" not in repr(nc)
+
+
 def test_dashboard_section_loaded_from_toml(tmp_path: Path) -> None:
     """Dashboard config is loaded from [dashboard] section in sova.toml."""
     toml_content = """
