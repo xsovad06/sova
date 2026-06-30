@@ -6,6 +6,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from sova.llm.egress import EgressMode, filter_egress
+from sova.utils.logging import get_logger
+
+_log = get_logger(component="adapter.base")
+
 
 class TaskState(StrEnum):
     """Issue lifecycle states managed by agents on the tracker."""
@@ -70,12 +75,40 @@ class Milestone:
     description: str = ""
 
 
+_cached_egress_mode: EgressMode | None = None
+
+
+def _get_egress_mode() -> EgressMode:
+    """Load egress mode from config (cached after first call)."""
+    global _cached_egress_mode
+    if _cached_egress_mode is not None:
+        return _cached_egress_mode
+    try:
+        from sova.config.loader import load_config
+
+        _cached_egress_mode = load_config().egress.mode
+    except Exception:
+        _log.warning("egress.config_load_failed", exc_info=True)
+        _cached_egress_mode = "warn"
+    return _cached_egress_mode
+
+
+def _reset_egress_cache() -> None:
+    """Clear the cached egress mode (for testing and config reload)."""
+    global _cached_egress_mode
+    _cached_egress_mode = None
+
+
 class TaskAdapter(ABC):
     """Abstract base for task source adapters.
 
     Each adapter connects to a tracker (GitHub, Jira Cloud) and provides
     both read access and state management. Agents own the issue lifecycle
     on the tracker -- every state transition is visible to humans.
+
+    Outbound text methods use the Template Method pattern: the public method
+    runs the egress filter, then delegates to the ``_do_*`` abstract method.
+    Subclasses implement ``_do_*`` instead of the public method.
     """
 
     def __init__(self, repo: str, github_user: str = "") -> None:
@@ -106,15 +139,32 @@ class TaskAdapter(ABC):
     async def remove_label(self, task_id: str, label: str) -> None:
         """Remove a label from the task."""
 
-    @abstractmethod
+    # -- Egress-filtered methods (Template Method pattern) -------------------
+
     async def post_comment(self, task_id: str, body: str) -> None:
-        """Post a comment on the task."""
+        """Post a comment on the task (egress-filtered)."""
+        filtered = filter_egress(body, mode=_get_egress_mode(), destination="post_comment")
+        if filtered is None:
+            _log.warning("egress.blocked", method="post_comment", task_id=task_id)
+            return
+        await self._do_post_comment(task_id, filtered)
 
     @abstractmethod
+    async def _do_post_comment(self, task_id: str, body: str) -> None:
+        """Post a comment on the task (implementation)."""
+
     async def post_pr_comment(self, pr_number: int, body: str) -> None:
-        """Post a comment on a pull request."""
+        """Post a comment on a pull request (egress-filtered)."""
+        filtered = filter_egress(body, mode=_get_egress_mode(), destination="post_pr_comment")
+        if filtered is None:
+            _log.warning("egress.blocked", method="post_pr_comment", pr=pr_number)
+            return
+        await self._do_post_pr_comment(pr_number, filtered)
 
     @abstractmethod
+    async def _do_post_pr_comment(self, pr_number: int, body: str) -> None:
+        """Post a comment on a pull request (implementation)."""
+
     async def post_pr_review(
         self,
         pr_number: int,
@@ -122,11 +172,45 @@ class TaskAdapter(ABC):
         event: str,
         comments: list[dict],
     ) -> None:
-        """Post a review on a pull request with optional inline comments."""
+        """Post a review on a pull request with optional inline comments (egress-filtered)."""
+        mode = _get_egress_mode()
+        filtered_body = filter_egress(body, mode=mode, destination="post_pr_review.body")
+        if filtered_body is None:
+            _log.warning("egress.blocked", method="post_pr_review", pr=pr_number)
+            return
+
+        filtered_comments = []
+        for comment in comments:
+            comment_body = comment.get("body", "")
+            filtered_comment_body = filter_egress(comment_body, mode=mode, destination="post_pr_review.comment")
+            if filtered_comment_body is None:
+                _log.warning("egress.blocked", method="post_pr_review.comment", pr=pr_number)
+                return
+            filtered_comments.append({**comment, "body": filtered_comment_body})
+
+        await self._do_post_pr_review(pr_number, filtered_body, event, filtered_comments)
 
     @abstractmethod
+    async def _do_post_pr_review(
+        self,
+        pr_number: int,
+        body: str,
+        event: str,
+        comments: list[dict],
+    ) -> None:
+        """Post a review on a pull request (implementation)."""
+
     async def edit_body(self, task_id: str, body: str) -> None:
-        """Update the issue body/description on the tracker."""
+        """Update the issue body/description on the tracker (egress-filtered)."""
+        filtered = filter_egress(body, mode=_get_egress_mode(), destination="edit_body")
+        if filtered is None:
+            _log.warning("egress.blocked", method="edit_body", task_id=task_id)
+            return
+        await self._do_edit_body(task_id, filtered)
+
+    @abstractmethod
+    async def _do_edit_body(self, task_id: str, body: str) -> None:
+        """Update the issue body/description (implementation)."""
 
     @abstractmethod
     async def get_state(self, task_id: str) -> TaskState:
@@ -140,7 +224,6 @@ class TaskAdapter(ABC):
     async def get_pr_reviews(self, pr_number: int) -> list[PRReview]:
         """Fetch all reviews on a pull request."""
 
-    @abstractmethod
     async def create_issue(
         self,
         title: str,
@@ -149,7 +232,7 @@ class TaskAdapter(ABC):
         issue_type: str = "",
         parent_key: str = "",
     ) -> Task:
-        """Create a new issue/task on the tracker.
+        """Create a new issue/task on the tracker (egress-filtered).
 
         Args:
             title: Issue title/summary.
@@ -161,6 +244,26 @@ class TaskAdapter(ABC):
         Returns:
             The created Task with populated fields.
         """
+        mode = _get_egress_mode()
+        filtered_title = filter_egress(title, mode=mode, destination="create_issue.title")
+        if filtered_title is None:
+            raise RuntimeError("Egress filter blocked issue title")
+        filtered_body = filter_egress(body, mode=mode, destination="create_issue.body") if body else body
+        if filtered_body is None:
+            _log.warning("egress.blocked_body_using_empty", method="create_issue")
+            filtered_body = ""
+        return await self._do_create_issue(filtered_title, filtered_body, labels, issue_type, parent_key)
+
+    @abstractmethod
+    async def _do_create_issue(
+        self,
+        title: str,
+        body: str = "",
+        labels: list[str] | None = None,
+        issue_type: str = "",
+        parent_key: str = "",
+    ) -> Task:
+        """Create a new issue/task on the tracker (implementation)."""
 
     @abstractmethod
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:

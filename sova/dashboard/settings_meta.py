@@ -31,6 +31,7 @@ GROUPS: dict[str, str] = {
     "notification": "Notifications",
     "server": "Server",
     "external_reviews": "External Reviews",
+    "egress": "Egress Filter",
     "security": "Security",
     "dashboard": "Dashboard",
     "output": "Output Storage",
@@ -53,6 +54,7 @@ GROUP_ORDER: list[str] = [
     "notification",
     "server",
     "external_reviews",
+    "egress",
     "security",
     "dashboard",
     "output",
@@ -467,6 +469,13 @@ _REGISTRY: list[SettingMeta] = [
         "Minimum coverage percentage on new code (must match SonarCloud quality gate)",
         "external_reviews",
         "number",
+    ),
+    # -- Egress Filter --
+    SettingMeta(
+        "egress.mode",
+        "Filter mode",
+        "Egress filter mode: off (passthrough), warn (redact and post), block (skip the post)",
+        "egress",
     ),
     # -- Security --
     SettingMeta(

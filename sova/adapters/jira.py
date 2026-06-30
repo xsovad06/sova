@@ -247,7 +247,7 @@ class JiraAdapter(TaskAdapter):
         if response.status_code not in (200, 204):
             log.warning("remove_label.failed", issue=issue_key, label=label, status=response.status_code)
 
-    async def post_comment(self, task_id: str, body: str) -> None:
+    async def _do_post_comment(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.post(
             f"/issue/{issue_key}/comment",
@@ -256,10 +256,10 @@ class JiraAdapter(TaskAdapter):
         if response.status_code not in (200, 201):
             log.warning("post_comment.failed", issue=issue_key, status=response.status_code)
 
-    async def post_pr_comment(self, pr_number: int, body: str) -> None:
+    async def _do_post_pr_comment(self, pr_number: int, body: str) -> None:
         log.info("post_pr_comment.no_op_for_jira", pr=pr_number)
 
-    async def post_pr_review(
+    async def _do_post_pr_review(
         self,
         pr_number: int,
         body: str,
@@ -268,7 +268,7 @@ class JiraAdapter(TaskAdapter):
     ) -> None:
         log.info("post_pr_review.no_op_for_jira", pr=pr_number)
 
-    async def edit_body(self, task_id: str, body: str) -> None:
+    async def _do_edit_body(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(
             f"/issue/{issue_key}",
@@ -469,7 +469,7 @@ class JiraAdapter(TaskAdapter):
             if resp.status_code not in (200, 204):
                 log.warning("clear_labels.failed", issue=issue_key, status=resp.status_code)
 
-    async def create_issue(
+    async def _do_create_issue(
         self,
         title: str,
         body: str = "",

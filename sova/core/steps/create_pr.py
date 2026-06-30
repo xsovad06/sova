@@ -9,6 +9,7 @@ from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.llm.client import invoke
+from sova.llm.egress import filter_egress
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -71,6 +72,12 @@ class CreatePRStep(BaseStep):
         task_title = ctx.task.title if ctx.task else ctx.branch_name
         title = f"feat(#{ctx.issue_number}): {task_title}" if ctx.has_issue else f"feat: {task_title}"
         body = await self._generate_pr_body(ctx, task_title)
+
+        egress_mode = ctx.config.egress.mode if ctx.config else "warn"
+        filtered_body = filter_egress(body, mode=egress_mode, destination="create_pr")
+        if filtered_body is None:
+            return StepResult(success=False, summary="Egress filter blocked PR body")
+        body = filtered_body
 
         try:
             pr_info = await git_ops.create_pr(

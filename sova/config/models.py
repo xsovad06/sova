@@ -245,6 +245,14 @@ class ExternalReviewsConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
+class EgressConfig(BaseSettings):
+    """Egress filter configuration for outbound text scanning."""
+
+    mode: Literal["off", "warn", "block"] = "warn"
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_EGRESS_")
+
+
 class SecurityConfig(BaseSettings):
     """Prompt injection guard configuration."""
 
@@ -320,6 +328,7 @@ class ProjectConfig(BaseSettings):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     external_reviews: ExternalReviewsConfig = Field(default_factory=ExternalReviewsConfig)
+    egress: EgressConfig = Field(default_factory=EgressConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
