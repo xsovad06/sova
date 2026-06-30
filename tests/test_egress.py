@@ -238,6 +238,33 @@ class TestAdapterEgressIntegration:
             assert "mysecretvalue" not in call_body
 
     @pytest.mark.asyncio()
+    async def test_post_pr_comment_redacts_in_warn_mode(self, mock_adapter: AsyncMock) -> None:
+        with patch("sova.adapters.base._get_egress_mode", return_value="warn"):
+            await mock_adapter.post_pr_comment(1, "api_key=sk-abcdef1234567890")
+            mock_adapter._do_post_pr_comment.assert_called_once()
+            call_body = mock_adapter._do_post_pr_comment.call_args[0][1]
+            assert "sk-abcdef1234567890" not in call_body
+            assert "[REDACTED:" in call_body
+
+    @pytest.mark.asyncio()
+    async def test_post_pr_comment_blocks_in_block_mode(self, mock_adapter: AsyncMock) -> None:
+        with patch("sova.adapters.base._get_egress_mode", return_value="block"):
+            await mock_adapter.post_pr_comment(1, "api_key=sk-abcdef1234567890")
+            mock_adapter._do_post_pr_comment.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_post_pr_review_blocks_if_body_has_secret(self, mock_adapter: AsyncMock) -> None:
+        with patch("sova.adapters.base._get_egress_mode", return_value="block"):
+            await mock_adapter.post_pr_review(1, "password=hunter2abc", "COMMENT", [])
+            mock_adapter._do_post_pr_review.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_edit_body_blocks_in_block_mode(self, mock_adapter: AsyncMock) -> None:
+        with patch("sova.adapters.base._get_egress_mode", return_value="block"):
+            await mock_adapter.edit_body("42", "password=mysecretvalue")
+            mock_adapter._do_edit_body.assert_not_called()
+
+    @pytest.mark.asyncio()
     async def test_create_issue_filters_body(self, mock_adapter: AsyncMock) -> None:
         from sova.adapters.base import Task
 
@@ -246,6 +273,75 @@ class TestAdapterEgressIntegration:
             await mock_adapter.create_issue("New task", body="password=secret123")
             call_body = mock_adapter._do_create_issue.call_args[0][1]
             assert "secret123" not in call_body
+
+    @pytest.mark.asyncio()
+    async def test_create_issue_blocks_title_raises(self, mock_adapter: AsyncMock) -> None:
+        with patch("sova.adapters.base._get_egress_mode", return_value="block"):
+            with pytest.raises(RuntimeError, match="Egress filter blocked issue title"):
+                await mock_adapter.create_issue("api_key=sk-abcdef1234567890", body="clean body")
+
+    @pytest.mark.asyncio()
+    async def test_create_issue_blocked_body_uses_empty(self, mock_adapter: AsyncMock) -> None:
+        from sova.adapters.base import Task
+
+        mock_adapter._do_create_issue.return_value = Task(id="1", title="Test")
+        with patch("sova.adapters.base._get_egress_mode", return_value="block"):
+            await mock_adapter.create_issue("Clean title", body="password=hunter2abc")
+            call_body = mock_adapter._do_create_issue.call_args[0][1]
+            assert call_body == ""
+
+
+# ---------------------------------------------------------------------------
+# _get_egress_mode caching
+# ---------------------------------------------------------------------------
+
+
+class TestGetEgressMode:
+    def setup_method(self) -> None:
+        from sova.adapters.base import _reset_egress_cache
+
+        _reset_egress_cache()
+
+    def teardown_method(self) -> None:
+        from sova.adapters.base import _reset_egress_cache
+
+        _reset_egress_cache()
+
+    def test_loads_from_config(self) -> None:
+        from sova.adapters.base import _get_egress_mode
+
+        with patch("sova.config.loader.load_config") as mock_load:
+            mock_load.return_value.egress.mode = "block"
+            result = _get_egress_mode()
+            assert result == "block"
+
+    def test_caches_after_first_call(self) -> None:
+        from sova.adapters.base import _get_egress_mode
+
+        with patch("sova.config.loader.load_config") as mock_load:
+            mock_load.return_value.egress.mode = "off"
+            assert _get_egress_mode() == "off"
+            assert _get_egress_mode() == "off"
+            mock_load.assert_called_once()
+
+    def test_falls_back_to_warn_on_config_error(self) -> None:
+        from sova.adapters.base import _get_egress_mode
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            result = _get_egress_mode()
+            assert result == "warn"
+
+    def test_reset_clears_cache(self) -> None:
+        from sova.adapters.base import _get_egress_mode, _reset_egress_cache
+
+        with patch("sova.config.loader.load_config") as mock_load:
+            mock_load.return_value.egress.mode = "block"
+            assert _get_egress_mode() == "block"
+
+            _reset_egress_cache()
+            mock_load.return_value.egress.mode = "off"
+            assert _get_egress_mode() == "off"
+            assert mock_load.call_count == 2
 
 
 # ---------------------------------------------------------------------------
