@@ -283,6 +283,94 @@ async def test_dedup_falls_back_to_title_match() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# embeddings.py -- _load_model cache and error paths
+# ---------------------------------------------------------------------------
+
+
+def test_load_model_returns_cached_instance() -> None:
+    import sova.knowledge.embeddings as emb
+
+    sentinel = object()
+    original = emb._model_cache
+    try:
+        emb._model_cache = sentinel
+        assert emb._load_model() is sentinel
+    finally:
+        emb._model_cache = original
+
+
+def test_load_model_generic_exception_returns_none() -> None:
+    import sova.knowledge.embeddings as emb
+
+    original = emb._model_cache
+    try:
+        emb._model_cache = None
+        with patch(
+            "sova.knowledge.embeddings.SentenceTransformer",
+            side_effect=RuntimeError("boom"),
+            create=True,
+        ):
+            # Force the import to succeed but constructor to fail
+            import sys
+
+            fake_module = type(sys)("sentence_transformers")
+
+            def _raise(*a: object, **kw: object) -> None:
+                raise RuntimeError("boom")
+
+            fake_module.SentenceTransformer = type("ST", (), {"__init__": staticmethod(_raise)})
+            sys.modules["sentence_transformers"] = fake_module
+            try:
+                result = emb._load_model()
+                assert result is None
+            finally:
+                del sys.modules["sentence_transformers"]
+    finally:
+        emb._model_cache = original
+
+
+# ---------------------------------------------------------------------------
+# embeddings.py -- embed_text success and error paths
+# ---------------------------------------------------------------------------
+
+
+def test_embed_text_success_returns_list() -> None:
+    from unittest.mock import MagicMock
+
+    from sova.knowledge.embeddings import embed_text
+
+    fake_vector = MagicMock()
+    fake_vector.tolist.return_value = [0.1, 0.2, 0.3]
+    fake_model = MagicMock()
+    fake_model.encode.return_value = fake_vector
+
+    with patch("sova.knowledge.embeddings._load_model", return_value=fake_model):
+        result = embed_text("hello world")
+
+    assert result == [0.1, 0.2, 0.3]
+    fake_model.encode.assert_called_once_with("hello world", convert_to_numpy=True)
+
+
+def test_embed_text_encode_exception_returns_none() -> None:
+    from unittest.mock import MagicMock
+
+    from sova.knowledge.embeddings import embed_text
+
+    fake_model = MagicMock()
+    fake_model.encode.side_effect = RuntimeError("encode failed")
+
+    with patch("sova.knowledge.embeddings._load_model", return_value=fake_model):
+        result = embed_text("hello world")
+
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# dashboard -- semantic_list_memories
+# ---------------------------------------------------------------------------
+
+
 async def test_semantic_list_memories_returns_scores() -> None:
     from sova.dashboard.services.memory_service import semantic_list_memories
     from sova.knowledge.memory import store
