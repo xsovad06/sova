@@ -260,26 +260,41 @@ async def semantic_search(
             result = await session.execute(stmt)
             all_memories = list(result.scalars().all())
 
+    top = _rank_by_similarity(all_memories, query_embedding, threshold, limit)
+
+    if expand and top:
+        top = await _append_neighbors(top)
+
+    return top
+
+
+def _rank_by_similarity(
+    memories: list[Memory],
+    query_embedding: list[float],
+    threshold: float,
+    limit: int,
+) -> list[tuple[Memory, float]]:
+    """Score memories against query embedding and return top matches."""
     scored: list[tuple[Memory, float]] = []
-    for mem in all_memories:
+    for mem in memories:
         if mem.embedding is None:
             continue
         score = cosine_similarity(query_embedding, mem.embedding)
         if score >= threshold:
             scored.append((mem, score))
-
     scored.sort(key=lambda x: x[1], reverse=True)
-    top = scored[:limit]
+    return scored[:limit]
 
-    if expand and top:
-        memories_only = [m for m, _ in top]
-        expanded = await _expand_with_neighbors(memories_only)
-        existing_ids = {m.id for m, _ in top}
-        for nb in expanded:
-            if nb.id not in existing_ids:
-                existing_ids.add(nb.id)
-                top.append((nb, 0.0))
 
+async def _append_neighbors(top: list[tuple[Memory, float]]) -> list[tuple[Memory, float]]:
+    """Expand top results with 1-hop graph neighbors."""
+    memories_only = [m for m, _ in top]
+    expanded = await _expand_with_neighbors(memories_only)
+    existing_ids = {m.id for m, _ in top}
+    for nb in expanded:
+        if nb.id not in existing_ids:
+            existing_ids.add(nb.id)
+            top.append((nb, 0.0))
     return top
 
 

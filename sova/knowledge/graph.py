@@ -77,6 +77,39 @@ async def get_edges(memory_id: int) -> list[MemoryEdge]:
             return list(result.scalars().all())
 
 
+async def _bfs_collect_neighbor_ids(
+    session: object,
+    memory_id: int,
+    depth: int,
+    relation: str | None,
+) -> list[int]:
+    """BFS traversal collecting neighbor IDs up to given depth."""
+    visited: set[int] = {memory_id}
+    queue: deque[tuple[int, int]] = deque([(memory_id, 0)])
+    neighbor_ids: list[int] = []
+
+    while queue:
+        current_id, current_depth = queue.popleft()
+        if current_depth >= depth:
+            continue
+
+        stmt = select(MemoryEdge).where(
+            or_(MemoryEdge.source_id == current_id, MemoryEdge.target_id == current_id)
+        )
+        if relation is not None:
+            stmt = stmt.where(MemoryEdge.relation == relation)
+
+        result = await session.execute(stmt)
+        for edge in result.scalars().all():
+            other_id = edge.target_id if edge.source_id == current_id else edge.source_id
+            if other_id not in visited:
+                visited.add(other_id)
+                neighbor_ids.append(other_id)
+                queue.append((other_id, current_depth + 1))
+
+    return neighbor_ids
+
+
 async def get_neighbors(
     memory_id: int,
     *,
@@ -91,32 +124,9 @@ async def get_neighbors(
     if depth < 1 or depth > 2:
         raise ValueError("depth must be 1 or 2")
 
-    visited: set[int] = {memory_id}
-    queue: deque[tuple[int, int]] = deque([(memory_id, 0)])
-    neighbor_ids: list[int] = []
-
     async with await get_session() as session:
         async with session.begin():
-            while queue:
-                current_id, current_depth = queue.popleft()
-                if current_depth >= depth:
-                    continue
-
-                stmt = select(MemoryEdge).where(
-                    or_(MemoryEdge.source_id == current_id, MemoryEdge.target_id == current_id)
-                )
-                if relation is not None:
-                    stmt = stmt.where(MemoryEdge.relation == relation)
-
-                result = await session.execute(stmt)
-                edges = list(result.scalars().all())
-
-                for edge in edges:
-                    other_id = edge.target_id if edge.source_id == current_id else edge.source_id
-                    if other_id not in visited:
-                        visited.add(other_id)
-                        neighbor_ids.append(other_id)
-                        queue.append((other_id, current_depth + 1))
+            neighbor_ids = await _bfs_collect_neighbor_ids(session, memory_id, depth, relation)
 
             if not neighbor_ids:
                 return []
@@ -174,6 +184,37 @@ async def auto_link(memory_id: int) -> list[MemoryEdge]:
     return created
 
 
+async def _compare_category_batch(cat_memories: list[Memory]) -> int:
+    """Compare all memory pairs within a single category and create edges for similar ones."""
+    created = 0
+    for batch_start in range(0, len(cat_memories), _DISCOVER_BATCH_SIZE):
+        batch_end = min(batch_start + _DISCOVER_BATCH_SIZE, len(cat_memories))
+        for i in range(batch_start, batch_end):
+            mem_a = cat_memories[i]
+            for mem_b in cat_memories[i + 1 :]:
+                score = cosine_similarity(mem_a.embedding, mem_b.embedding)
+                if score < AUTO_LINK_THRESHOLD:
+                    continue
+                edge = await create_edge(mem_a.id, mem_b.id, relation="relates_to", weight=round(score, 4))
+                if edge is not None:
+                    created += 1
+    return created
+
+
+async def _fetch_memories_with_embeddings(category: str | None) -> list[Memory]:
+    """Fetch non-superseded memories that have embeddings, optionally filtered by category."""
+    async with await get_session() as session:
+        async with session.begin():
+            stmt = select(Memory).where(
+                Memory.superseded_by.is_(None),
+                Memory.embedding.isnot(None),
+            )
+            if category is not None:
+                stmt = stmt.where(Memory.category == category)
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+
 async def discover_edges(category: str | None = None) -> int:
     """Batch-discover edges across all memories in a category.
 
@@ -184,37 +225,17 @@ async def discover_edges(category: str | None = None) -> int:
         log.info("graph.discover_skipped", reason="embeddings unavailable")
         return 0
 
-    async with await get_session() as session:
-        async with session.begin():
-            stmt = select(Memory).where(
-                Memory.superseded_by.is_(None),
-                Memory.embedding.isnot(None),
-            )
-            if category is not None:
-                stmt = stmt.where(Memory.category == category)
-            result = await session.execute(stmt)
-            all_memories = list(result.scalars().all())
-
+    all_memories = await _fetch_memories_with_embeddings(category)
     if not all_memories:
         return 0
 
-    # Group by category for within-category comparison
     by_category: dict[str, list[Memory]] = {}
     for mem in all_memories:
         by_category.setdefault(mem.category, []).append(mem)
 
     total_created = 0
     for cat_memories in by_category.values():
-        for batch_start in range(0, len(cat_memories), _DISCOVER_BATCH_SIZE):
-            batch_end = min(batch_start + _DISCOVER_BATCH_SIZE, len(cat_memories))
-            for i in range(batch_start, batch_end):
-                mem_a = cat_memories[i]
-                for mem_b in cat_memories[i + 1 :]:
-                    score = cosine_similarity(mem_a.embedding, mem_b.embedding)
-                    if score >= AUTO_LINK_THRESHOLD:
-                        edge = await create_edge(mem_a.id, mem_b.id, relation="relates_to", weight=round(score, 4))
-                        if edge is not None:
-                            total_created += 1
+        total_created += await _compare_category_batch(cat_memories)
 
     log.info("graph.discover_complete", total_edges=total_created, memories_scanned=len(all_memories))
     return total_created
