@@ -35,6 +35,7 @@ GROUPS: dict[str, str] = {
     "security": "Security",
     "dashboard": "Dashboard",
     "output": "Output Storage",
+    "monitoring": "Resource Monitoring",
 }
 
 GROUP_ORDER: list[str] = [
@@ -58,6 +59,7 @@ GROUP_ORDER: list[str] = [
     "security",
     "dashboard",
     "output",
+    "monitoring",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -513,6 +515,21 @@ _REGISTRY: list[SettingMeta] = [
         "Retention (days)",
         "Days to keep agent output lines after run completion",
         "output",
+        "number",
+    ),
+    # -- Resource Monitoring --
+    SettingMeta(
+        "monitoring.enabled",
+        "Enabled",
+        "Collect CPU, memory, and I/O metrics for agent processes",
+        "monitoring",
+        "boolean",
+    ),
+    SettingMeta(
+        "monitoring.interval",
+        "Sample interval (s)",
+        "Seconds between resource samples (must be > 0)",
+        "monitoring",
         "number",
     ),
 ]

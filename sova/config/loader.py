@@ -72,6 +72,7 @@ _NESTED_SECTIONS = (
     "security",
     "dashboard",
     "output",
+    "monitoring",
 )
 
 
