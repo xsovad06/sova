@@ -1,7 +1,11 @@
-"""Complexity-to-model routing rules.
+"""Model routing rules -- complexity-based and task-type-based.
 
-Maps ComplexityTier values to model alias strings (haiku/sonnet/opus).
-Supports per-tier config overrides via LLMConfig.routing.
+Maps ComplexityTier values and task-type strings to model aliases.
+Supports per-tier and per-task-type config overrides via LLMConfig.routing.
+
+Task-type routing enables local model offloading: lightweight tasks (triage,
+extraction, pr_body) can be routed to ``ollama/`` models while heavy tasks
+(develop, review) stay on cloud models.
 """
 
 from __future__ import annotations
@@ -21,17 +25,47 @@ _DEFAULT_ROUTING: dict[ComplexityTier, str] = {
     ComplexityTier.EPIC: "opus",
 }
 
+# Known task-type keys (disjoint from complexity-tier keys).
+# Used to disambiguate when both namespaces share the routing dict.
+# Not referenced in routing logic yet -- serves as a registry for consumers
+# (settings UI, config validation) to distinguish task-type keys from
+# complexity-tier keys in the shared ``llm.routing`` dict.
+TASK_TYPE_KEYS: frozenset[str] = frozenset(
+    {
+        "triage",
+        "extraction",
+        "pr_body",
+        "develop",
+        "review",
+        "self_review",
+        "address_review",
+        "harden",
+        "validate",
+        "monitor_ci",
+        "generate_tasks",
+        "planner",
+    }
+)
+
 
 def route_model(
     complexity: ComplexityTier,
     *,
+    task_type: str | None = None,
     llm_config: LLMConfig | None = None,
 ) -> tuple[str, str]:
-    """Select model alias based on task complexity.
+    """Select model alias based on task type or complexity.
 
-    Checks llm_config.routing overrides first, falls back to _DEFAULT_ROUTING.
+    Priority: task-type routing > complexity config override > default routing.
     Returns (model_alias, reason) tuple.
     """
+    # Task-type routing (most specific)
+    if task_type and llm_config is not None:
+        override = llm_config.routing.get(task_type)
+        if override is not None:
+            return override, f"task_type:{task_type}->{override}"
+
+    # Complexity config override
     if llm_config is not None:
         override = llm_config.routing.get(complexity.value)
         if override is not None:

@@ -64,7 +64,7 @@ class TaskSourceConfig(BaseSettings):
 class LLMConfig(BaseSettings):
     """LLM provider configuration."""
 
-    provider: Literal["claude-code", "litellm"] = "claude-code"
+    provider: Literal["claude-code", "litellm", "hybrid"] = "claude-code"
     model: str = ""
     fallback_model: str = ""
     api_base: str = ""
@@ -75,7 +75,7 @@ class LLMConfig(BaseSettings):
     @model_validator(mode="after")
     def _default_model_for_litellm(self) -> LLMConfig:
         """Ensure litellm provider always has an explicit model."""
-        if self.provider == "litellm" and not self.model:
+        if self.provider in ("litellm", "hybrid") and not self.model:
             self.model = "claude-sonnet-4-6"
         return self
 

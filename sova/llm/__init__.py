@@ -16,7 +16,7 @@ from sova.llm.cost import record_cost
 from sova.llm.guard import PromptInjectionError, ScanResult, scan_prompt
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider, create_provider
-from sova.llm.routing import route_model
+from sova.llm.routing import TASK_TYPE_KEYS, route_model
 
 __all__ = [
     "ComplexityTier",
@@ -25,6 +25,7 @@ __all__ = [
     "PromptInjectionError",
     "ScanResult",
     "StreamEvent",
+    "TASK_TYPE_KEYS",
     "assess_complexity",
     "create_provider",
     "get_provider",

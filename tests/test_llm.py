@@ -458,6 +458,118 @@ class TestRouteModel:
 
         assert route_model(ComplexityTier.COMPLEX, llm_config=None) == ("opus", "complexity:complex->opus")
 
+    def test_task_type_routing_takes_priority(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b", "trivial": "haiku"})
+        result = route_model(ComplexityTier.TRIVIAL, task_type="triage", llm_config=llm_cfg)
+        assert result == ("ollama/qwen3:8b", "task_type:triage->ollama/qwen3:8b")
+
+    def test_task_type_falls_through_to_complexity(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"trivial": "haiku"})
+        result = route_model(ComplexityTier.TRIVIAL, task_type="extraction", llm_config=llm_cfg)
+        assert result == ("haiku", "config:override->haiku")
+
+    def test_task_type_no_config_uses_defaults(self) -> None:
+        from sova.llm.routing import route_model
+
+        result = route_model(ComplexityTier.MODERATE, task_type="triage")
+        assert result == ("sonnet", "complexity:moderate->sonnet")
+
+    def test_task_type_none_ignored(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b"})
+        result = route_model(ComplexityTier.MODERATE, task_type=None, llm_config=llm_cfg)
+        assert result == ("sonnet", "complexity:moderate->sonnet")
+
+    def test_task_type_empty_string_ignored(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"triage": "ollama/qwen3:8b"})
+        result = route_model(ComplexityTier.MODERATE, task_type="", llm_config=llm_cfg)
+        assert result == ("sonnet", "complexity:moderate->sonnet")
+
+    def test_mixed_routing_keys(self) -> None:
+        from sova.config.models import LLMConfig
+        from sova.llm.routing import route_model
+
+        llm_cfg = LLMConfig(routing={"trivial": "haiku", "triage": "ollama/qwen3:8b"})
+        # Task-type key should work
+        assert route_model(ComplexityTier.TRIVIAL, task_type="triage", llm_config=llm_cfg) == (
+            "ollama/qwen3:8b",
+            "task_type:triage->ollama/qwen3:8b",
+        )
+        # Complexity key should work when no task_type match
+        assert route_model(ComplexityTier.TRIVIAL, task_type="extraction", llm_config=llm_cfg) == (
+            "haiku",
+            "config:override->haiku",
+        )
+
+
+class TestTaskTypeKeys:
+    def test_disjoint_from_complexity_tiers(self) -> None:
+        from sova.llm.routing import TASK_TYPE_KEYS
+
+        complexity_keys = {t.value for t in ComplexityTier}
+        overlap = TASK_TYPE_KEYS & complexity_keys
+        assert not overlap, f"Overlapping keys: {overlap}"
+
+    def test_known_keys_present(self) -> None:
+        from sova.llm.routing import TASK_TYPE_KEYS
+
+        for key in ("triage", "extraction", "pr_body", "harden", "planner"):
+            assert key in TASK_TYPE_KEYS
+
+
+class TestResolveTaskTypeModel:
+    def test_explicit_model_takes_priority(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        assert _resolve_task_type_model("opus", "triage") == "opus"
+
+    def test_no_task_type_returns_model(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        assert _resolve_task_type_model(None, None) is None
+
+    def test_task_type_resolves_from_config(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            result = _resolve_task_type_model(None, "triage")
+            assert result == "ollama/qwen3:8b"
+
+    def test_task_type_not_in_config_returns_none(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            result = _resolve_task_type_model(None, "extraction")
+            assert result is None
+
+    def test_config_load_failure_returns_model(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError):
+            result = _resolve_task_type_model(None, "triage")
+            assert result is None
+
+    def test_empty_routing_returns_model(self) -> None:
+        from sova.llm.client import _resolve_task_type_model
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.llm.routing = {}
+            result = _resolve_task_type_model(None, "triage")
+            assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Provider: _parse_result()
@@ -688,6 +800,19 @@ class TestLLMProvider:
 
         with pytest.raises(ValueError, match="Unknown LLM provider"):
             create_provider("nonexistent")
+
+    def test_create_provider_hybrid(self) -> None:
+        from sova.llm.provider import create_provider
+
+        with patch.dict("sys.modules", {"litellm": MagicMock(__version__="1.0.0")}):
+            import sova.llm.litellm_provider as llm_mod
+
+            llm_mod._HAS_LITELLM = True
+            llm_mod.litellm = MagicMock()
+            from sova.llm.litellm_provider import LiteLLMProvider
+
+            provider = create_provider("hybrid")
+            assert isinstance(provider, LiteLLMProvider)
 
     def test_get_provider_default(self) -> None:
         from sova.llm.client import get_provider
@@ -1420,6 +1545,151 @@ class TestLiteLLMProvider:
 
         assert available is True
         assert "1.0.0" in detail
+
+
+# ---------------------------------------------------------------------------
+# _is_connection_error
+# ---------------------------------------------------------------------------
+
+
+class TestIsConnectionError:
+    def test_connection_refused(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        assert _is_connection_error(ConnectionRefusedError("refused")) is True
+
+    def test_connection_error(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        assert _is_connection_error(ConnectionError("failed")) is True
+
+    def test_wrapped_connection_error(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        inner = ConnectionRefusedError("refused")
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        assert _is_connection_error(outer) is True
+
+    def test_connection_refused_in_message(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        assert _is_connection_error(RuntimeError("Connection refused by server")) is True
+
+    def test_unrelated_error(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        assert _is_connection_error(ValueError("bad value")) is False
+
+    def test_api_error_not_connection(self) -> None:
+        from sova.llm.litellm_provider import _is_connection_error
+
+        assert _is_connection_error(RuntimeError("Model not found")) is False
+
+
+# ---------------------------------------------------------------------------
+# LLMConfig hybrid provider
+# ---------------------------------------------------------------------------
+
+
+class TestHybridConfig:
+    def test_hybrid_provider_literal_accepted(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="hybrid")
+        assert cfg.provider == "hybrid"
+        assert cfg.model == "claude-sonnet-4-6"
+
+    def test_hybrid_defaults_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="hybrid", model="")
+        assert cfg.model == "claude-sonnet-4-6"
+
+    def test_hybrid_preserves_explicit_model(self) -> None:
+        from sova.config.models import LLMConfig
+
+        cfg = LLMConfig(provider="hybrid", model="gpt-4o")
+        assert cfg.model == "gpt-4o"
+
+
+# ---------------------------------------------------------------------------
+# Doctor: Ollama check
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorOllamaCheck:
+    async def test_no_ollama_models_returns_empty(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.llm.routing = {"trivial": "haiku"}
+            checks = await _check_ollama(tmp_path)
+            assert checks == []
+
+    async def test_ollama_not_installed(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value=None),
+        ):
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            checks = await _check_ollama(tmp_path)
+            assert len(checks) == 1
+            assert checks[0][0] == "ollama CLI"
+            assert checks[0][1] is False
+
+    async def test_ollama_not_running(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            mock_run.return_value = MagicMock(success=False, stdout="")
+            checks = await _check_ollama(tmp_path)
+            assert any(c[0] == "ollama running" and c[1] is False for c in checks)
+
+    async def test_ollama_model_installed(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            mock_run.return_value = MagicMock(
+                success=True,
+                stdout="NAME\tID\tSIZE\tMODIFIED\nqwen3:8b\tabc123\t5.0 GB\t2 hours ago\n",
+            )
+            checks = await _check_ollama(tmp_path)
+            assert any(c[0] == "ollama running" and c[1] is True for c in checks)
+            model_check = [c for c in checks if "qwen3" in c[0]]
+            assert model_check
+            assert model_check[0][1] is True
+
+    async def test_ollama_model_not_pulled(self, tmp_path: Path) -> None:
+        from sova.cli.commands.doctor import _check_ollama
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.cli.commands.doctor.shutil.which", return_value="/usr/local/bin/ollama"),
+            patch("sova.cli.commands.doctor.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_cfg.return_value.llm.routing = {"triage": "ollama/qwen3:8b"}
+            mock_run.return_value = MagicMock(
+                success=True,
+                stdout="NAME\tID\tSIZE\tMODIFIED\nllama3:8b\tabc123\t5.0 GB\t2 hours ago\n",
+            )
+            checks = await _check_ollama(tmp_path)
+            model_check = [c for c in checks if "qwen3" in c[0]]
+            assert model_check
+            assert model_check[0][1] is False
+            assert "ollama pull" in model_check[0][2]
 
 
 # ---------------------------------------------------------------------------

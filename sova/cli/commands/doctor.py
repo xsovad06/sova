@@ -47,6 +47,7 @@ async def _doctor(project: Path | None) -> None:
     checks.extend(await _check_sova_config(project_dir))
     checks.extend(_check_install_completeness(project_dir))
     checks.extend(await _check_llm_provider(project_dir))
+    checks.extend(await _check_ollama(project_dir))
     checks.extend(await _check_agent_runtime(project_dir))
 
     _render_results(checks)
@@ -227,6 +228,48 @@ async def _check_llm_provider(project_dir: Path) -> list[_Check]:
         checks.append(("llm provider", available, f"{provider_type}: {detail}", True))
     except Exception as exc:
         checks.append(("llm provider", False, str(exc)[:80], False))
+    return checks
+
+
+async def _check_ollama(project_dir: Path) -> list[_Check]:
+    """Check Ollama availability when routing config references ollama/ models."""
+    checks: list[_Check] = []
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        ollama_models = [v for v in cfg.llm.routing.values() if v.startswith("ollama/")]
+        if not ollama_models:
+            return []
+
+        ollama_path = shutil.which("ollama")
+        if not ollama_path:
+            checks.append(("ollama CLI", False, "not found -- install: https://ollama.com/", False))
+            return checks
+
+        result = await run("ollama", "list")
+        if not result.success:
+            checks.append(("ollama running", False, "not running -- start with: ollama serve", False))
+            return checks
+
+        checks.append(("ollama running", True, "connected", False))
+
+        installed_models = set()
+        for line in result.stdout.strip().splitlines()[1:]:
+            parts = line.split()
+            if parts:
+                name = parts[0].split(":")[0]
+                installed_models.add(name)
+
+        for model in ollama_models:
+            model_name = model.removeprefix("ollama/")
+            base_name = model_name.split(":")[0]
+            found = base_name in installed_models
+            detail = "installed" if found else f"not pulled -- run: ollama pull {model_name}"
+            checks.append((f"ollama model: {model_name}", found, detail, False))
+
+    except Exception as exc:
+        checks.append(("ollama", False, str(exc)[:80], False))
     return checks
 
 

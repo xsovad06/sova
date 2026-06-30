@@ -4956,7 +4956,7 @@ class TestIssueBudgetCheck:
         assert result is not None
         assert "error" in result
         assert "exceeded" in result["error"]
-        assert result["total_cost_usd"] == 55.0
+        assert result["total_cost_usd"] == "55.000000"
 
     async def test_allows_under_budget_issue(self) -> None:
         from pathlib import Path
