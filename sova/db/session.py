@@ -7,6 +7,7 @@ Backs up SQLite databases before running migrations.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -22,6 +23,15 @@ _session_factory = None
 _engines: dict[str, tuple] = {}
 
 _DB_FILENAME = "sova.db"
+_init_lock: asyncio.Lock | None = None
+
+
+def _get_init_lock() -> asyncio.Lock:
+    """Lazily create the init lock (must be called inside a running event loop)."""
+    global _init_lock
+    if _init_lock is None:
+        _init_lock = asyncio.Lock()
+    return _init_lock
 
 
 def _get_database_url(project_dir: Path | None = None) -> str:
@@ -162,19 +172,23 @@ async def init_db_for_project(project_dir: Path) -> None:
     if url in _engines:
         return
 
-    connect_args = {}
-    if url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
+    async with _get_init_lock():
+        if url in _engines:
+            return
 
-    engine = create_async_engine(url, connect_args=connect_args)
+        connect_args = {}
+        if url.startswith("sqlite"):
+            connect_args["check_same_thread"] = False
 
-    _backup_db(url)
-    await _run_migrations(engine)
-    if _get_db_path_from_url(url) is not None:
-        await engine.dispose()
+        engine = create_async_engine(url, connect_args=connect_args)
 
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    _engines[url] = (engine, factory)
+        _backup_db(url)
+        await _run_migrations(engine)
+        if _get_db_path_from_url(url) is not None:
+            await engine.dispose()
+
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        _engines[url] = (engine, factory)
 
 
 async def get_session(project_dir: Path | None = None) -> AsyncSession:

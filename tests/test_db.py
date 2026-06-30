@@ -7,7 +7,16 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import inspect, select
 
-from sova.db.models import CostRecord, FailureRecord, Memory, StepExecution, TaskAssessmentRecord, TaskRun
+from sova.db.models import (
+    CostRecord,
+    FailureRecord,
+    IssueLifecycle,
+    LifecyclePhaseRecord,
+    Memory,
+    StepExecution,
+    TaskAssessmentRecord,
+    TaskRun,
+)
 from sova.db.session import close_db, get_session, init_db
 
 
@@ -521,3 +530,260 @@ async def test_query_issueless_runs() -> None:
         assert len(issueless) == 3
         labels = {r.run_label for r in issueless}
         assert labels == {"plan-a", "plan-b", "plan-c"}
+
+
+# ---------------------------------------------------------------------------
+# FK index coverage (issue #235)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "table_name,index_name",
+    [
+        ("task_runs", "ix_task_runs_lifecycle_id"),
+        ("task_runs", "ix_task_runs_workflow_definition_id"),
+        ("lifecycle_phases", "ix_lifecycle_phases_task_run_id"),
+    ],
+)
+async def test_fk_index_exists(table_name: str, index_name: str) -> None:
+    """FK columns have indexes."""
+    async with await get_session() as session:
+        conn = await session.connection()
+        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes(table_name))
+    index_names = {idx["name"] for idx in indexes}
+    assert index_name in index_names
+
+
+async def test_lifecycle_phases_composite_index_exists() -> None:
+    """lifecycle_phases has composite index on (lifecycle_id, phase)."""
+    async with await get_session() as session:
+        conn = await session.connection()
+        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("lifecycle_phases"))
+    composite = [idx for idx in indexes if idx["name"] == "ix_lifecycle_phases_lifecycle_phase"]
+    assert len(composite) == 1
+    assert composite[0]["column_names"] == ["lifecycle_id", "phase"]
+
+
+async def test_old_lifecycle_phases_lifecycle_index_replaced() -> None:
+    """The old single-column ix_lifecycle_phases_lifecycle index should not exist."""
+    async with await get_session() as session:
+        conn = await session.connection()
+        indexes = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_indexes("lifecycle_phases"))
+    index_names = {idx["name"] for idx in indexes}
+    assert "ix_lifecycle_phases_lifecycle" not in index_names
+
+
+async def test_lifecycle_phases_query_benefits_from_composite_index() -> None:
+    """Query filtering on (lifecycle_id, phase) works correctly."""
+    async with await get_session() as session:
+        lc = IssueLifecycle(issue_number="50", project_slug="test")
+        session.add(lc)
+        await session.commit()
+        await session.refresh(lc)
+
+        session.add(LifecyclePhaseRecord(lifecycle_id=lc.id, phase="development", status="active"))
+        session.add(LifecyclePhaseRecord(lifecycle_id=lc.id, phase="review", status="pending"))
+        await session.commit()
+
+        result = await session.execute(
+            select(LifecyclePhaseRecord).where(
+                LifecyclePhaseRecord.lifecycle_id == lc.id,
+                LifecyclePhaseRecord.phase == "development",
+            )
+        )
+        records = result.scalars().all()
+        assert len(records) == 1
+        assert records[0].status == "active"
+
+
+# ---------------------------------------------------------------------------
+# Migration 012 tests
+# ---------------------------------------------------------------------------
+
+
+def _import_migration_012():
+    """Import migration 012 via spec_from_file_location."""
+    import importlib.util
+    from pathlib import Path
+
+    versions_dir = Path(__file__).resolve().parent.parent / "sova" / "db" / "migrations" / "versions"
+    migration_path = versions_dir / "012_add_fk_indexes.py"
+    spec = importlib.util.spec_from_file_location("migration_012", migration_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+async def test_migration_012_get_index_names_helper() -> None:
+    """Migration 012 _get_index_names correctly collects index names."""
+    from unittest.mock import MagicMock, patch
+
+    from alembic import op
+
+    mod = _import_migration_012()
+
+    mock_conn = MagicMock()
+    mock_inspector = MagicMock()
+    mock_inspector.get_indexes.return_value = [
+        {"name": "ix_task_runs_lifecycle_id", "column_names": ["lifecycle_id"]},
+        {"name": "ix_task_runs_issue", "column_names": ["issue_number"]},
+    ]
+
+    with patch.object(op, "get_bind", return_value=mock_conn), patch("sqlalchemy.inspect", return_value=mock_inspector):
+        result = mod._get_index_names("task_runs")
+        assert result == {"ix_task_runs_lifecycle_id", "ix_task_runs_issue"}
+
+
+async def test_migration_012_upgrade_idempotent() -> None:
+    """Migration 012 upgrade skips existing indexes."""
+    from unittest.mock import patch
+
+    mod = _import_migration_012()
+
+    all_indexes = {
+        "ix_task_runs_lifecycle_id",
+        "ix_task_runs_workflow_definition_id",
+        "ix_lifecycle_phases_task_run_id",
+        "ix_lifecycle_phases_lifecycle_phase",
+        "ix_lifecycle_phases_lifecycle",
+    }
+
+    with (
+        patch.object(mod, "_get_index_names", return_value=all_indexes),
+        patch.object(mod, "op") as mock_op,
+    ):
+        mod.upgrade()
+        mock_op.create_index.assert_not_called()
+        mock_op.drop_index.assert_called_once()
+
+
+async def test_migration_012_upgrade_creates_indexes() -> None:
+    """Migration 012 upgrade creates all indexes when none exist."""
+    from unittest.mock import patch
+
+    mod = _import_migration_012()
+
+    with (
+        patch.object(mod, "_get_index_names", return_value=set()),
+        patch.object(mod, "op") as mock_op,
+    ):
+        mod.upgrade()
+        assert mock_op.create_index.call_count == 4
+        mock_op.drop_index.assert_not_called()
+
+
+async def test_migration_012_downgrade_restores_old_index() -> None:
+    """Migration 012 downgrade recreates the old single-column index."""
+    from unittest.mock import patch
+
+    mod = _import_migration_012()
+
+    post_upgrade_indexes = {
+        "ix_lifecycle_phases_lifecycle_phase",
+        "ix_lifecycle_phases_task_run_id",
+        "ix_task_runs_workflow_definition_id",
+        "ix_task_runs_lifecycle_id",
+    }
+
+    with (
+        patch.object(mod, "_get_index_names", return_value=post_upgrade_indexes),
+        patch.object(mod, "op") as mock_op,
+    ):
+        mod.downgrade()
+        mock_op.create_index.assert_called_once_with(
+            "ix_lifecycle_phases_lifecycle", "lifecycle_phases", ["lifecycle_id"]
+        )
+        assert mock_op.drop_index.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# init_db_for_project lock (issue #235)
+# ---------------------------------------------------------------------------
+
+
+async def test_init_db_for_project_lock_prevents_concurrent_init(tmp_path) -> None:
+    """Concurrent init_db_for_project calls should not duplicate work."""
+    import asyncio
+    from unittest.mock import patch
+
+    from sova.db.session import _engines, init_db_for_project
+
+    test_dir = tmp_path / "test-lock-project"
+    test_url = f"sqlite+aiosqlite:///{test_dir}/.claude/sova.db"
+
+    _engines.pop(test_url, None)
+
+    call_count = 0
+
+    async def slow_migrations(engine):
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0.05)
+
+    with (
+        patch("sova.db.session._get_database_url", return_value=test_url),
+        patch("sova.db.session._run_migrations", side_effect=slow_migrations),
+        patch("sova.db.session._backup_db"),
+        patch("sova.db.session._get_db_path_from_url", return_value=None),
+    ):
+        await asyncio.gather(
+            init_db_for_project(test_dir),
+            init_db_for_project(test_dir),
+            init_db_for_project(test_dir),
+        )
+
+    assert call_count == 1
+    _engines.pop(test_url, None)
+
+
+async def test_init_db_for_project_disposes_sqlite_engine(tmp_path) -> None:
+    """init_db_for_project disposes the engine after migration for SQLite DBs."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.db.session import _engines, init_db_for_project
+
+    test_dir = tmp_path / "dispose-test"
+    test_url = f"sqlite+aiosqlite:///{test_dir}/.claude/sova.db"
+    _engines.pop(test_url, None)
+
+    mock_engine = AsyncMock()
+    mock_engine.dispose = AsyncMock()
+
+    with (
+        patch("sova.db.session._get_database_url", return_value=test_url),
+        patch("sova.db.session._run_migrations", new_callable=AsyncMock),
+        patch("sova.db.session._backup_db"),
+        patch("sova.db.session._get_db_path_from_url", return_value=tmp_path / "sova.db"),
+        patch("sova.db.session.create_async_engine", return_value=mock_engine),
+        patch("sova.db.session.async_sessionmaker"),
+    ):
+        await init_db_for_project(test_dir)
+        mock_engine.dispose.assert_awaited_once()
+
+    _engines.pop(test_url, None)
+
+
+async def test_init_db_for_project_skips_dispose_for_non_sqlite(tmp_path) -> None:
+    """init_db_for_project skips dispose for non-SQLite (e.g., PostgreSQL) DBs."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.db.session import _engines, init_db_for_project
+
+    test_dir = tmp_path / "pg-test"
+    test_url = "postgresql+asyncpg://localhost/test"
+    _engines.pop(test_url, None)
+
+    mock_engine = AsyncMock()
+
+    with (
+        patch("sova.db.session._get_database_url", return_value=test_url),
+        patch("sova.db.session._run_migrations", new_callable=AsyncMock),
+        patch("sova.db.session._backup_db"),
+        patch("sova.db.session._get_db_path_from_url", return_value=None),
+        patch("sova.db.session.create_async_engine", return_value=mock_engine),
+        patch("sova.db.session.async_sessionmaker"),
+    ):
+        await init_db_for_project(test_dir)
+        mock_engine.dispose.assert_not_awaited()
+
+    _engines.pop(test_url, None)
