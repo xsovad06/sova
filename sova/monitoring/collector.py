@@ -39,6 +39,7 @@ class ResourceCollector:
         self.samples: deque[ResourceSample] = deque(maxlen=_MAX_SAMPLES)
         self._task: asyncio.Task[None] | None = None
         self._create_time: float | None = None
+        self._stop_event: asyncio.Event | None = None
 
     def start(self) -> None:
         """Start the background sampling loop."""
@@ -56,22 +57,17 @@ class ResourceCollector:
             log.warning("collector.start_failed", pid=self.pid, reason="process_not_found")
             return
 
+        self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._sample_loop(proc))
 
     async def stop(self) -> ResourceSummary:
         """Stop sampling and return the summary."""
         if self._task is not None and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                # Expected: we just cancelled _task. Check if stop() itself
-                # was cancelled (the CancelledError would originate from the
-                # caller's scope rather than our cancel() call).
-                current = asyncio.current_task()
-                if current is not None and current.cancelled():
-                    raise
+            if self._stop_event is not None:
+                self._stop_event.set()
+            await self._task
         self._task = None
+        self._stop_event = None
         return self.get_summary()
 
     def get_summary(self) -> ResourceSummary:
@@ -80,7 +76,8 @@ class ResourceCollector:
 
     async def _sample_loop(self, proc: psutil.Process) -> None:
         """Sample the process tree at regular intervals."""
-        while True:
+        stop = self._stop_event
+        while stop is not None and not stop.is_set():
             try:
                 # PID reuse check
                 if proc.create_time() != self._create_time:
@@ -93,7 +90,11 @@ class ResourceCollector:
                 log.info("collector.process_exited", pid=self.pid, samples=len(self.samples))
                 return
 
-            await asyncio.sleep(self.interval)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=self.interval)
+                return  # stop event was set
+            except TimeoutError:
+                pass  # interval elapsed, continue sampling
 
     def _take_sample(self, proc: psutil.Process) -> ResourceSample:
         """Take a single resource measurement of the process tree."""
