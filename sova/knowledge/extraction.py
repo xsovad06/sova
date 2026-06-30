@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
+from sova.db.models import Memory
 from sova.knowledge import memory
+from sova.knowledge.embeddings import embed_text
 from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 
@@ -236,26 +238,24 @@ async def _deduplicate_and_store(
 ) -> str:
     """Check for duplicates, bump confirmation counters, or store new.
 
+    Uses embedding-based similarity when available, falls back to title substring matching.
     Returns "stored", "confirmed", or "skipped".
     """
-    existing = await memory.search(category=mem.category, query=mem.title[:50])
+    # Compute embedding once, reuse for both dedup search and storage
+    match_text = f"{mem.title} {mem.content}"
+    embedding = embed_text(match_text)
+    similar = await memory.find_similar(match_text, category=mem.category, query_embedding=embedding)
 
-    for existing_mem in existing:
-        if _titles_match(existing_mem.title, mem.title):
-            counter = _parse_confirmation_counter(existing_mem.content)
-            new_counter = counter + 1
+    if similar:
+        existing_mem, _score = similar[0]
+        return await _confirm_existing(existing_mem)
 
-            new_content = _CONFIRMATION_RE.sub(f"[confirmed: {new_counter}]", existing_mem.content)
-            if not _CONFIRMATION_RE.search(existing_mem.content):
-                new_content = f"{existing_mem.content}\n\n[confirmed: {new_counter}]"
-
-            await memory.update(existing_mem.id, content=new_content)
-
-            if new_counter >= _PROMOTION_THRESHOLD:
-                await memory.promote(existing_mem.id, "shared")
-                log.info("extraction.promoted", memory_id=existing_mem.id, counter=new_counter)
-
-            return "confirmed"
+    # Lexical fallback only when embeddings are unavailable
+    if embedding is None:
+        existing = await memory.search(category=mem.category, query=mem.title[:50])
+        for existing_mem in existing:
+            if _titles_match(existing_mem.title, mem.title):
+                return await _confirm_existing(existing_mem)
 
     content_with_counter = f"{mem.content}\n\n[confirmed: 0]"
     await memory.store(
@@ -265,12 +265,31 @@ async def _deduplicate_and_store(
         tags=mem.tags,
         repo=repo,
         issue_number=issue_number,
+        embedding=embedding,
     )
     return "stored"
 
 
+async def _confirm_existing(existing_mem: "Memory") -> str:
+    """Bump the confirmation counter on an existing memory."""
+    counter = _parse_confirmation_counter(existing_mem.content)
+    new_counter = counter + 1
+
+    new_content = _CONFIRMATION_RE.sub(f"[confirmed: {new_counter}]", existing_mem.content)
+    if not _CONFIRMATION_RE.search(existing_mem.content):
+        new_content = f"{existing_mem.content}\n\n[confirmed: {new_counter}]"
+
+    await memory.update(existing_mem.id, content=new_content)
+
+    if new_counter >= _PROMOTION_THRESHOLD:
+        await memory.promote(existing_mem.id, "shared")
+        log.info("extraction.promoted", memory_id=existing_mem.id, counter=new_counter)
+
+    return "confirmed"
+
+
 def _titles_match(existing: str, new: str) -> bool:
-    """Check if two titles refer to the same pattern."""
+    """Check if two titles refer to the same pattern (lexical fallback)."""
     existing_lower = existing.lower().strip()
     new_lower = new.lower().strip()
 

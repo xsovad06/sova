@@ -6,11 +6,14 @@ from sqlalchemy import or_, select
 
 from sova.db.models import Memory
 from sova.db.session import get_session
+from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
 
-_MUTABLE_FIELDS = frozenset({"title", "content", "category", "tags", "tier", "repo", "issue_number", "superseded_by"})
+_MUTABLE_FIELDS = frozenset(
+    {"title", "content", "category", "tags", "tier", "repo", "issue_number", "superseded_by", "embedding"}
+)
 
 
 async def store(
@@ -22,6 +25,7 @@ async def store(
     tier: str = "project",
     repo: str = "",
     issue_number: str = "",
+    embedding: list[float] | None = None,
 ) -> Memory:
     """Create a new memory entry.
 
@@ -33,10 +37,13 @@ async def store(
         tier: Knowledge tier (project, shared).
         repo: Repository identifier (e.g., user/repo).
         issue_number: Related issue number.
+        embedding: Pre-computed embedding vector. Computed automatically if None.
 
     Returns:
         The created Memory record.
     """
+    if embedding is None:
+        embedding = embed_text(f"{title} {content}")
     memory = Memory(
         category=category,
         title=title,
@@ -45,6 +52,7 @@ async def store(
         tier=tier,
         repo=repo,
         issue_number=issue_number,
+        embedding=embedding,
     )
 
     async with await get_session() as session:
@@ -200,3 +208,82 @@ async def supersede(old_id: int, new_id: int) -> bool:
             memory.superseded_by = new_id
             log.info("knowledge.superseded", old_id=old_id, new_id=new_id)
             return True
+
+
+async def semantic_search(
+    *,
+    query: str,
+    category: str | None = None,
+    tier: str | None = None,
+    limit: int = 10,
+    threshold: float = 0.0,
+    query_embedding: list[float] | None = None,
+) -> list[tuple[Memory, float]]:
+    """Search memories by semantic similarity using embeddings.
+
+    Falls back to lexical search if embeddings are unavailable or query is empty.
+
+    Args:
+        query_embedding: Pre-computed embedding for the query. Computed automatically if None.
+
+    Returns:
+        List of (Memory, similarity_score) tuples, sorted by score descending.
+    """
+    if not query.strip():
+        results = await search(category=category, tier=tier)
+        return [(m, 0.0) for m in results[:limit]]
+
+    if query_embedding is None:
+        query_embedding = embed_text(query)
+    if query_embedding is None:
+        log.warning("semantic_search.fallback", reason="embedding unavailable")
+        results = await search(query=query, category=category, tier=tier)
+        return [(m, 0.0) for m in results[:limit]]
+
+    stmt = select(Memory).where(Memory.superseded_by.is_(None))
+    if category is not None:
+        stmt = stmt.where(Memory.category == category)
+    if tier is not None:
+        stmt = stmt.where(Memory.tier == tier)
+
+    async with await get_session() as session:
+        async with session.begin():
+            result = await session.execute(stmt)
+            all_memories = list(result.scalars().all())
+
+    scored: list[tuple[Memory, float]] = []
+    for mem in all_memories:
+        if mem.embedding is None:
+            continue
+        score = cosine_similarity(query_embedding, mem.embedding)
+        if score >= threshold:
+            scored.append((mem, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:limit]
+
+
+async def find_similar(
+    text: str,
+    *,
+    category: str | None = None,
+    threshold: float | None = None,
+    query_embedding: list[float] | None = None,
+) -> list[tuple[Memory, float]]:
+    """Find memories semantically similar to the given text.
+
+    Used for deduplication during extraction. Returns matches above threshold.
+
+    Args:
+        query_embedding: Pre-computed embedding. Computed automatically if None.
+    """
+    if threshold is None:
+        threshold = SIMILARITY_THRESHOLD
+
+    return await semantic_search(
+        query=text,
+        category=category,
+        threshold=threshold,
+        limit=5,
+        query_embedding=query_embedding,
+    )
