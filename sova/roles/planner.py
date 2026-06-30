@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.core.steps.generate_tasks import extract_json
 from sova.ipc.handoff import (
     AgentHandoff,
     DashboardHandoff,
@@ -171,19 +172,39 @@ class PlannerRole(AgentRole):
         return ""
 
     def _parse_response(self, text: str) -> list[PlannedTask] | None:
+        raw = extract_json(text)
+        if not raw:
+            return []
+
         try:
-            cleaned = text.strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-            data = json.loads(cleaned)
-            if not isinstance(data, list):
-                log.warning("planner.parse_not_list")
-                return None
-            return [PlannedTask.model_validate(item) for item in data]
-        except (ValueError, KeyError, ValidationError) as exc:
+            data = json.loads(raw)
+        except (ValueError, KeyError) as exc:
             log.warning("planner.parse_failed", error=str(exc), exc_info=True)
             return None
+
+        # Unwrap {"tasks": [...]} or similar single-key wrappers (consistent
+        # with _parse_tasks in generate_tasks.py)
+        if isinstance(data, dict):
+            for key in ("tasks", "proposed_tasks", "items", "results"):
+                if key in data and isinstance(data[key], list):
+                    data = data[key]
+                    break
+            else:
+                log.warning("planner.parse_not_list")
+                return None
+
+        if not isinstance(data, list):
+            log.warning("planner.parse_not_list")
+            return None
+
+        results: list[PlannedTask] = []
+        for item in data:
+            try:
+                results.append(PlannedTask.model_validate(item))
+            except ValidationError:
+                log.warning("planner.skip_item", title=item.get("title", "?"))
+                continue
+        return results
 
     async def _write_handoff(self, ctx: ExecutionContext, tasks: list[PlannedTask]) -> None:
         task_dicts = [t.model_dump() for t in tasks]
