@@ -149,7 +149,7 @@ class TestResourceCollector:
             # sample, then process dies.
             mock_proc.cpu_percent.side_effect = [0.0, 25.0, psutil.NoSuchProcess(123)]
 
-            await collector.start()
+            collector.start()
             # Wait for the loop to finish (process dies)
             await asyncio.sleep(0.1)
             await collector.stop()
@@ -164,7 +164,7 @@ class TestResourceCollector:
         mock_proc = _make_mock_process()
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.15)
             summary = await collector.stop()
 
@@ -178,7 +178,7 @@ class TestResourceCollector:
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.2)
             summary = await collector.stop()
 
@@ -192,7 +192,7 @@ class TestResourceCollector:
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.3)
             summary = await collector.stop()
 
@@ -211,7 +211,7 @@ class TestResourceCollector:
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.15)
             summary = await collector.stop()
 
@@ -224,7 +224,7 @@ class TestResourceCollector:
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.15)
             summary = await collector.stop()
 
@@ -250,7 +250,7 @@ class TestResourceCollector:
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.15)
             summary = await collector.stop()
 
@@ -265,7 +265,7 @@ class TestResourceCollector:
         mock_proc = _make_mock_process()
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.15)
 
             summary = collector.get_summary()
@@ -278,9 +278,9 @@ class TestResourceCollector:
         mock_proc = _make_mock_process()
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             task1 = collector._task
-            await collector.start()  # should not create new task
+            collector.start()  # should not create new task
             assert collector._task is task1
             await collector.stop()
 
@@ -289,11 +289,74 @@ class TestResourceCollector:
         mock_proc = _make_mock_process()
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
-            await collector.start()
+            collector.start()
             await asyncio.sleep(0.1)
             await collector.stop()
             summary = await collector.stop()  # should not raise
             assert summary.sample_count >= 0
+
+    @pytest.mark.asyncio
+    async def test_sample_loop_process_exit_during_sample(self) -> None:
+        """Cover the NoSuchProcess except branch in _sample_loop (lines 92-94)."""
+        mock_proc = _make_mock_process()
+        # First create_time() call is for start(), second is the PID-reuse
+        # check in _sample_loop which then calls _take_sample -> cpu_percent
+        # raises NoSuchProcess to simulate process dying mid-sample.
+        mock_proc.create_time.side_effect = [1000.0, 1000.0]
+        mock_proc.cpu_percent.side_effect = [0.0, psutil.NoSuchProcess(123)]
+
+        with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
+            collector = ResourceCollector(pid=123, interval=0.01)
+            collector.start()
+            await asyncio.sleep(0.1)
+            summary = await collector.stop()
+            assert summary.sample_count == 0
+
+    def test_take_sample_child_io_access_denied(self) -> None:
+        """Cover child io_counters except branch (lines 131-132)."""
+        child_mem = MagicMock()
+        child_mem.rss = 512
+        child_mem.vms = 1024
+
+        child = MagicMock()
+        child.pid = 456
+        child.cpu_percent.return_value = 5.0
+        child.memory_info.return_value = child_mem
+        child.io_counters.side_effect = NotImplementedError
+
+        mock_proc = _make_mock_process(children=[child])
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+        sample = collector._take_sample(mock_proc)
+        # Parent IO should still be counted; child IO skipped
+        assert sample.io_read_bytes == 500
+        assert sample.io_write_bytes == 600
+        assert sample.num_children == 1
+        assert sample.memory_rss_bytes == 1024 + 512
+
+    def test_take_sample_children_raises_no_such_process(self) -> None:
+        """Cover proc.children() raising NoSuchProcess (lines 135-136)."""
+        mock_proc = _make_mock_process()
+        mock_proc.children.side_effect = psutil.NoSuchProcess(123)
+
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+        sample = collector._take_sample(mock_proc)
+        # Should still return a valid sample from parent data
+        assert sample.cpu_percent == 25.0
+        assert sample.memory_rss_bytes == 1024
+        assert sample.num_children == 0
+
+    @pytest.mark.asyncio
+    async def test_start_zombie_process(self) -> None:
+        """ZombieProcess (subclass of NoSuchProcess) is caught by start()."""
+        with patch(
+            "sova.monitoring.collector.psutil.Process",
+            side_effect=psutil.ZombieProcess(123),
+        ):
+            collector = ResourceCollector(pid=123)
+            collector.start()
+            assert collector._task is None
 
 
 # ---------------------------------------------------------------------------
