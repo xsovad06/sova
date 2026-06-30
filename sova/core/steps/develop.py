@@ -190,16 +190,8 @@ class DevelopStep(BaseStep):
             log.info("step.develop.inner_check_disabled")
             return ""
 
-        check_cmd = _resolve_check_cmd(ctx)
+        check_cmd = await self._resolve_and_verify_check_cmd(ctx)
         if check_cmd is None:
-            log.info("step.develop.no_check_cmd")
-            return ""
-
-        # Verify the check command is executable
-        cmd_name = check_cmd.split()[0]
-        probe = await run("which", cmd_name, cwd=ctx.working_dir, timeout=10)
-        if not probe.success:
-            log.warning("step.develop.check_cmd_not_found", cmd=check_cmd)
             return ""
 
         # Initial check run
@@ -218,70 +210,11 @@ class DevelopStep(BaseStep):
 
             log.info("step.develop.fix_cycle", cycle=cycle, max=max_cycles)
 
-            pre_dirty = await _get_dirty_test_files(ctx.working_dir) if develop_cfg.guard_test_weakening else set()
-
-            prompt = (
-                f"The project's check command (`{check_cmd}`) failed with the following output:\n\n"
-                f"```\n{check_output[-3000:]}\n```\n\n"
-                f"Fix ALL issues causing the check failures. Modify only the source code -- "
-                f"do NOT weaken, delete, or skip tests. Do NOT commit -- just fix and stage the changes."
-            )
-
-            # Record pre-fix commit for no-op and test-weakening detection
-            pre_hash_result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
-            pre_hash = pre_hash_result.stdout.strip() if pre_hash_result.success else ""
-
-            try:
-                llm_result = await invoke(
-                    prompt,
-                    model=ctx.config.agent.model,
-                    cwd=ctx.working_dir,
-                    max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
-                )
-                ctx.add_cost(llm_result.cost_usd)
-            except RuntimeError as exc:
-                log.error("step.develop.fix_llm_failed", error=str(exc), exc_info=True)
-                return f"check fix LLM failed on cycle {cycle}: {exc}"
-
-            # Detect no-op fix (check unstaged, staged, AND new commits)
-            diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
-            has_unstaged = diff_result.success and bool(diff_result.stdout.strip())
-            staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
-            has_staged = staged.success and bool(staged.stdout.strip())
-            post_hash_result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
-            post_hash = post_hash_result.stdout.strip() if post_hash_result.success else ""
-            has_new_commits = pre_hash != post_hash
-
-            if not has_unstaged and not has_staged and not has_new_commits:
-                log.warning("step.develop.fix_no_changes", cycle=cycle)
-                if cycle == max_cycles:
-                    return f"checks still failing after {max_cycles} fix cycle(s) (no changes produced)"
-                continue
-
-            # Guard against test weakening (uncommitted AND committed changes)
-            if develop_cfg.guard_test_weakening:
-                post_dirty = await _get_dirty_test_files(ctx.working_dir)
-                newly_modified_uncommitted = post_dirty - pre_dirty
-                # Also detect test files modified in new commits
-                newly_modified_committed: set[str] = set()
-                if has_new_commits and pre_hash:
-                    committed_diff = await run("git", "diff", "--name-only", pre_hash, "HEAD", cwd=ctx.working_dir)
-                    if committed_diff.success and committed_diff.stdout.strip():
-                        newly_modified_committed = {
-                            f for f in committed_diff.stdout.strip().splitlines() if _TEST_FILE_RE.search(f)
-                        }
-                newly_modified = sorted(newly_modified_uncommitted | newly_modified_committed)
-                if newly_modified:
-                    log.warning(
-                        "step.develop.test_weakening_detected",
-                        files=newly_modified[:5],
-                        cycle=cycle,
-                    )
-                    # Restore test files in a single git command and skip this cycle
-                    await run("git", "checkout", "HEAD", "--", *newly_modified, cwd=ctx.working_dir)
-                    if cycle == max_cycles:
-                        return f"checks still failing after {max_cycles} fix cycle(s) (test weakening detected)"
-                    continue
+            result = await self._try_fix_cycle(ctx, check_cmd, check_output, cycle, max_cycles)
+            if result is not None:
+                if result == "":
+                    continue  # no-op or test weakening; skip re-run
+                return result
 
             # Re-run checks
             check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
@@ -293,6 +226,136 @@ class DevelopStep(BaseStep):
             log.warning("step.develop.checks_still_failing", cycle=cycle, output=check_output[:500])
 
         return f"checks still failing after {max_cycles} fix cycle(s)"
+
+    async def _resolve_and_verify_check_cmd(self, ctx: ExecutionContext) -> str | None:
+        """Resolve the check command and verify it is executable.
+
+        Returns the command string, or None if unavailable/not found.
+        """
+        check_cmd = _resolve_check_cmd(ctx)
+        if check_cmd is None:
+            log.info("step.develop.no_check_cmd")
+            return None
+
+        cmd_name = check_cmd.split()[0]
+        probe = await run("which", cmd_name, cwd=ctx.working_dir, timeout=10)
+        if not probe.success:
+            log.warning("step.develop.check_cmd_not_found", cmd=check_cmd)
+            return None
+
+        return check_cmd
+
+    async def _try_fix_cycle(
+        self,
+        ctx: ExecutionContext,
+        check_cmd: str,
+        check_output: str,
+        cycle: int,
+        max_cycles: int,
+    ) -> str | None:
+        """Attempt one fix cycle: invoke LLM, detect no-op, guard test weakening.
+
+        Returns a summary string to short-circuit the loop, or None to continue
+        (re-run checks).
+        """
+        develop_cfg = ctx.config.develop
+        pre_dirty = await _get_dirty_test_files(ctx.working_dir) if develop_cfg.guard_test_weakening else set()
+
+        pre_hash = await self._get_head_hash(ctx)
+        fix_error = await self._invoke_fix_llm(ctx, check_cmd, check_output, cycle)
+        if fix_error is not None:
+            return fix_error
+
+        changes = await self._detect_fix_changes(ctx, pre_hash)
+        if not changes["any"]:
+            log.warning("step.develop.fix_no_changes", cycle=cycle)
+            if cycle == max_cycles:
+                return f"checks still failing after {max_cycles} fix cycle(s) (no changes produced)"
+            return ""  # signal: skip re-run, continue loop
+
+        if develop_cfg.guard_test_weakening:
+            weakened = await self._check_test_weakening(ctx, pre_dirty, pre_hash, changes["has_new_commits"], cycle)
+            if weakened:
+                await run("git", "checkout", "HEAD", "--", *weakened, cwd=ctx.working_dir)
+                if cycle == max_cycles:
+                    return f"checks still failing after {max_cycles} fix cycle(s) (test weakening detected)"
+                return ""  # signal: skip re-run, continue loop
+
+        return None  # signal: proceed to re-run checks
+
+    async def _get_head_hash(self, ctx: ExecutionContext) -> str:
+        """Return the current HEAD commit hash."""
+        result = await run("git", "rev-parse", "HEAD", cwd=ctx.working_dir)
+        return result.stdout.strip() if result.success else ""
+
+    async def _invoke_fix_llm(
+        self,
+        ctx: ExecutionContext,
+        check_cmd: str,
+        check_output: str,
+        cycle: int,
+    ) -> str | None:
+        """Invoke the LLM to fix check failures. Returns error summary or None on success."""
+        prompt = (
+            f"The project's check command (`{check_cmd}`) failed with the following output:\n\n"
+            f"```\n{check_output[-3000:]}\n```\n\n"
+            f"Fix ALL issues causing the check failures. Modify only the source code -- "
+            f"do NOT weaken, delete, or skip tests. Do NOT commit -- just fix and stage the changes."
+        )
+        try:
+            llm_result = await invoke(
+                prompt,
+                model=ctx.config.agent.model,
+                cwd=ctx.working_dir,
+                max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+            )
+            ctx.add_cost(llm_result.cost_usd)
+        except RuntimeError as exc:
+            log.error("step.develop.fix_llm_failed", error=str(exc), exc_info=True)
+            return f"check fix LLM failed on cycle {cycle}: {exc}"
+        return None
+
+    async def _detect_fix_changes(self, ctx: ExecutionContext, pre_hash: str) -> dict[str, bool]:
+        """Detect whether the LLM fix produced any changes (unstaged, staged, or new commits)."""
+        diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        has_unstaged = diff_result.success and bool(diff_result.stdout.strip())
+        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        has_staged = staged.success and bool(staged.stdout.strip())
+        post_hash = await self._get_head_hash(ctx)
+        has_new_commits = pre_hash != post_hash
+        return {
+            "has_unstaged": has_unstaged,
+            "has_staged": has_staged,
+            "has_new_commits": has_new_commits,
+            "any": has_unstaged or has_staged or has_new_commits,
+        }
+
+    async def _check_test_weakening(
+        self,
+        ctx: ExecutionContext,
+        pre_dirty: set[str],
+        pre_hash: str,
+        has_new_commits: bool,
+        cycle: int,
+    ) -> list[str]:
+        """Check if the fix modified test files. Returns sorted list of weakened files (empty if clean)."""
+        post_dirty = await _get_dirty_test_files(ctx.working_dir)
+        newly_modified_uncommitted = post_dirty - pre_dirty
+        newly_modified_committed: set[str] = set()
+        if has_new_commits and pre_hash:
+            committed_diff = await run("git", "diff", "--name-only", pre_hash, "HEAD", cwd=ctx.working_dir)
+            if committed_diff.success and committed_diff.stdout.strip():
+                newly_modified_committed = {
+                    f for f in committed_diff.stdout.strip().splitlines() if _TEST_FILE_RE.search(f)
+                }
+        newly_modified = sorted(newly_modified_uncommitted | newly_modified_committed)
+        if newly_modified:
+            log.warning(
+                "step.develop.test_weakening_detected",
+                files=newly_modified[:5],
+                cycle=cycle,
+            )
+        return newly_modified
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         """Gate: development must produce actual code changes."""
