@@ -31,6 +31,7 @@ class TestScanAndRedactPatterns:
         assert not result.clean
         assert "aws_access_key" in result.flags
         assert "AKIAIOSFODNN7EXAMPLE" not in result.redacted_text
+        assert result.redacted_text == "Key: [REDACTED:aws_key] found in config"
 
     def test_aws_secret_key(self) -> None:
         text = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY1"
@@ -45,18 +46,21 @@ class TestScanAndRedactPatterns:
         assert not result.clean
         assert "github_token" in result.flags
         assert "ghp_" not in result.redacted_text
+        assert result.redacted_text == "export GITHUB_TOKEN=[REDACTED:github_token]"
 
     def test_slack_token(self) -> None:
         text = "SLACK_TOKEN=xoxb-123456789012-abcdefghij"
         result = scan_and_redact(text)
         assert not result.clean
         assert "slack_token" in result.flags
+        assert result.redacted_text == "SLACK_TOKEN=[REDACTED:slack_token]"
 
     def test_generic_api_key(self) -> None:
         text = 'api_key = "sk-proj-abc123def456ghi789"'
         result = scan_and_redact(text)
         assert not result.clean
         assert "api_key" in result.flags
+        assert "sk-proj-abc123def456ghi789" not in result.redacted_text
 
     def test_generic_token_with_separator(self) -> None:
         text = "token=abc123def456ghi789jkl"
@@ -79,6 +83,7 @@ class TestScanAndRedactPatterns:
         assert not result.clean
         assert "password" in result.flags
         assert "my_secret_password_123" not in result.redacted_text
+        assert result.redacted_text == "[REDACTED:password]"
 
     def test_connection_string_postgresql(self) -> None:
         text = "DATABASE_URL=postgresql://admin:s3cret@db.example.com:5432/mydb"
@@ -281,14 +286,10 @@ class TestAdapterEgressIntegration:
                 await mock_adapter.create_issue("api_key=sk-abcdef1234567890", body="clean body")
 
     @pytest.mark.asyncio()
-    async def test_create_issue_blocked_body_uses_empty(self, mock_adapter: AsyncMock) -> None:
-        from sova.adapters.base import Task
-
-        mock_adapter._do_create_issue.return_value = Task(id="1", title="Test")
+    async def test_create_issue_blocked_body_raises(self, mock_adapter: AsyncMock) -> None:
         with patch("sova.adapters.base._get_egress_mode", return_value="block"):
-            await mock_adapter.create_issue("Clean title", body="password=hunter2abc")
-            call_body = mock_adapter._do_create_issue.call_args[0][1]
-            assert call_body == ""
+            with pytest.raises(RuntimeError, match="Egress filter blocked issue body"):
+                await mock_adapter.create_issue("Clean title", body="password=hunter2abc")
 
 
 # ---------------------------------------------------------------------------
@@ -297,16 +298,6 @@ class TestAdapterEgressIntegration:
 
 
 class TestGetEgressMode:
-    def setup_method(self) -> None:
-        from sova.adapters.base import _reset_egress_cache
-
-        _reset_egress_cache()
-
-    def teardown_method(self) -> None:
-        from sova.adapters.base import _reset_egress_cache
-
-        _reset_egress_cache()
-
     def test_loads_from_config(self) -> None:
         from sova.adapters.base import _get_egress_mode
 
@@ -315,14 +306,14 @@ class TestGetEgressMode:
             result = _get_egress_mode()
             assert result == "block"
 
-    def test_caches_after_first_call(self) -> None:
+    def test_no_cache_reads_config_each_call(self) -> None:
         from sova.adapters.base import _get_egress_mode
 
         with patch("sova.config.loader.load_config") as mock_load:
             mock_load.return_value.egress.mode = "off"
             assert _get_egress_mode() == "off"
             assert _get_egress_mode() == "off"
-            mock_load.assert_called_once()
+            assert mock_load.call_count == 2
 
     def test_falls_back_to_warn_on_config_error(self) -> None:
         from sova.adapters.base import _get_egress_mode
@@ -330,18 +321,6 @@ class TestGetEgressMode:
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
             result = _get_egress_mode()
             assert result == "warn"
-
-    def test_reset_clears_cache(self) -> None:
-        from sova.adapters.base import _get_egress_mode, _reset_egress_cache
-
-        with patch("sova.config.loader.load_config") as mock_load:
-            mock_load.return_value.egress.mode = "block"
-            assert _get_egress_mode() == "block"
-
-            _reset_egress_cache()
-            mock_load.return_value.egress.mode = "off"
-            assert _get_egress_mode() == "off"
-            assert mock_load.call_count == 2
 
 
 # ---------------------------------------------------------------------------

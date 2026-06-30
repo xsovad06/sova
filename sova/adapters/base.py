@@ -77,28 +77,15 @@ class Milestone:
     description: str = ""
 
 
-_cached_egress_mode: EgressMode | None = None
-
-
 def _get_egress_mode() -> EgressMode:
-    """Load egress mode from config (cached after first call)."""
-    global _cached_egress_mode
-    if _cached_egress_mode is not None:
-        return _cached_egress_mode
+    """Load egress mode from config (no cache -- supports multi-project mode)."""
     try:
         from sova.config.loader import load_config
 
-        _cached_egress_mode = load_config().egress.mode
+        return load_config().egress.mode
     except Exception:
         _log.warning("egress.config_load_failed", exc_info=True)
-        _cached_egress_mode = "warn"
-    return _cached_egress_mode
-
-
-def _reset_egress_cache() -> None:
-    """Clear the cached egress mode (for testing and config reload)."""
-    global _cached_egress_mode
-    _cached_egress_mode = None
+        return "warn"
 
 
 class TaskAdapter(ABC):
@@ -252,8 +239,7 @@ class TaskAdapter(ABC):
             raise RuntimeError("Egress filter blocked issue title")
         filtered_body = filter_egress(body, mode=mode, destination="create_issue.body") if body else body
         if filtered_body is None:
-            _log.warning("egress.blocked_body_using_empty", method="create_issue")
-            filtered_body = ""
+            raise RuntimeError("Egress filter blocked issue body")
         return await self._do_create_issue(filtered_title, filtered_body, labels, issue_type, parent_key)
 
     @abstractmethod

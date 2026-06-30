@@ -207,6 +207,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Runtime-specific prompt formatting is not abstracted** -- `start_agent()` builds prompts for Claude Code (bash-fenced CLI commands), but alternative runtimes (Aider) expect task descriptions, not shell commands. Prompt construction should be runtime-aware or delegated to the runtime itself. PR #181 SOVA review. [confirmed: 0]
 - **`start_command` is Claude Code-specific but routes through generic runtime** -- Claude commands (`/{command}`, `.claude/commands/`) are meaningless to non-Claude runtimes. Guard with `runtime.name != "claude-code"` check before building command prompts. PR #181 CodeRabbit. [confirmed: 0]
 
+## Egress Filter
+
+- **Regex boundary patterns must use lookahead/lookbehind, not consuming groups** -- `(?:^|[^A-Z0-9])(AKIA...)(?:[^A-Z0-9]|$)` consumes the boundary character (space, separator) alongside the secret. Replacement with `[REDACTED]` deletes those characters, producing malformed output like `Key:[REDACTED]found`. Use zero-width assertions: `(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])`. File: `sova/llm/egress.py`. PR #278 CodeRabbit. [confirmed: 0]
+- **Module-level caches break multi-project dashboard** -- `_cached_egress_mode` stores the first project's config and returns it for all subsequent projects. Remove the cache (config reads are cheap) or key by `project_dir`. File: `sova/llm/egress.py`. PR #278 CodeRabbit. [confirmed: 0]
+
 ## Security / Input Validation
 
 - **Regex optional groups need atomic structure to prevent backtracking** -- `(?:your|the|all)?\s*` allows polynomial backtracking because the optional word and trailing whitespace can match independently. Use `(?:(?:your|the|all)\s+)?` so the word and its trailing space form a single optional unit. SonarCloud security hotspot. File: `sova/llm/guard.py`. PR #248. [confirmed: 0]

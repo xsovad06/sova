@@ -74,7 +74,11 @@ class CreatePRStep(BaseStep):
         body = await self._generate_pr_body(ctx, task_title)
 
         egress_mode = ctx.config.egress.mode if ctx.config else "warn"
-        filtered_body = filter_egress(body, mode=egress_mode, destination="create_pr")
+        filtered_title = filter_egress(title, mode=egress_mode, destination="create_pr.title")
+        if filtered_title is None:
+            return StepResult(success=False, summary="Egress filter blocked PR title")
+        title = filtered_title
+        filtered_body = filter_egress(body, mode=egress_mode, destination="create_pr.body")
         if filtered_body is None:
             return StepResult(success=False, summary="Egress filter blocked PR body")
         body = filtered_body
