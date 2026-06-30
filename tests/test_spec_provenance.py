@@ -1154,5 +1154,7 @@ def _make_ctx(
     ctx.cost_usd = Decimal("0")
     ctx.config = MagicMock()
     ctx.config.agent.max_budget = Decimal("5")
+    ctx.config.check_cmd = ""
+    ctx.config.develop.max_fix_cycles = 0
     ctx.add_cost = MagicMock()
     return ctx

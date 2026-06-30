@@ -106,7 +106,7 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
 
     Returns the command string, or None if no check command is available.
     """
-    if ctx.config.check_cmd:
+    if ctx.config.check_cmd and ctx.config.check_cmd.strip():
         return ctx.config.check_cmd
 
     makefile = Path(ctx.working_dir) / "Makefile"
@@ -238,7 +238,7 @@ class DevelopStep(BaseStep):
             return None
 
         cmd_name = check_cmd.split()[0]
-        probe = await run("which", cmd_name, cwd=ctx.working_dir, timeout=10)
+        probe = await run("sh", "-c", f"command -v {cmd_name}", cwd=ctx.working_dir, timeout=10)
         if not probe.success:
             log.warning("step.develop.check_cmd_not_found", cmd=check_cmd)
             return None
@@ -276,7 +276,19 @@ class DevelopStep(BaseStep):
         if develop_cfg.guard_test_weakening:
             weakened = await self._check_test_weakening(ctx, pre_dirty, pre_hash, changes["has_new_commits"], cycle)
             if weakened:
-                await run("git", "checkout", "HEAD", "--", *weakened, cwd=ctx.working_dir)
+                # Defense-in-depth: if the LLM committed despite explicit instructions
+                # not to, `git checkout HEAD -- files` would restore from the bad HEAD.
+                # Use `git reset --hard pre_hash` to undo the entire commit instead.
+                if changes["has_new_commits"] and pre_hash:
+                    log.error(
+                        "step.develop.llm_committed_despite_instructions",
+                        cycle=cycle,
+                        msg="LLM created commits in fix loop (violating explicit instructions); "
+                        "resetting to pre-fix state",
+                    )
+                    await run("git", "reset", "--hard", pre_hash, cwd=ctx.working_dir)
+                else:
+                    await run("git", "checkout", "HEAD", "--", *weakened, cwd=ctx.working_dir)
                 if cycle == max_cycles:
                     return f"checks still failing after {max_cycles} fix cycle(s) (test weakening detected)"
                 return ""  # signal: skip re-run, continue loop
@@ -316,7 +328,12 @@ class DevelopStep(BaseStep):
         return None
 
     async def _detect_fix_changes(self, ctx: ExecutionContext, pre_hash: str) -> dict[str, bool]:
-        """Detect whether the LLM fix produced any changes (unstaged, staged, or new commits)."""
+        """Detect whether the LLM fix produced any changes (unstaged, staged, or new commits).
+
+        Commit detection is defense-in-depth: the prompt instructs the LLM not to commit,
+        but agents sometimes disobey. Detecting commits here lets _try_fix_cycle handle
+        test weakening restoration correctly (via ``git reset --hard``).
+        """
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         has_unstaged = diff_result.success and bool(diff_result.stdout.strip())
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
