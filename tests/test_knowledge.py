@@ -913,3 +913,191 @@ async def test_search_expand_false_default() -> None:
     result_ids = {m.id for m in results}
     assert m1.id in result_ids
     assert m2.id not in result_ids
+
+
+# ---------------------------------------------------------------------------
+# Coverage: graph.py -- edge cases
+# ---------------------------------------------------------------------------
+
+
+async def test_get_neighbors_isolated_node() -> None:
+    """get_neighbors() returns empty list for a node with no edges."""
+    from sova.knowledge.graph import get_neighbors
+    from sova.knowledge.memory import store
+
+    m = await store(category="learning", title="Isolated", content="No edges", tags=[], embedding=None)
+    assert await get_neighbors(m.id, depth=1) == []
+
+
+async def test_auto_link_memory_not_found() -> None:
+    """auto_link() returns empty list when memory ID does not exist."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import auto_link
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        assert await auto_link(99999) == []
+
+
+async def test_auto_link_memory_no_embedding() -> None:
+    """auto_link() returns empty list when the memory has no embedding."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import auto_link
+    from sova.knowledge.memory import store
+
+    m = await store(category="learning", title="No emb", content="C", tags=[], embedding=None)
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        assert await auto_link(m.id) == []
+
+
+async def test_discover_edges_no_memories() -> None:
+    """discover_edges() returns 0 when no memories with embeddings exist."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import discover_edges
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        assert await discover_edges(category="nonexistent") == 0
+
+
+async def test_discover_edges_below_threshold() -> None:
+    """discover_edges() skips pairs below similarity threshold."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import discover_edges, get_edges
+    from sova.knowledge.memory import store
+
+    # Very different embeddings -- should not link
+    m1 = await store(category="learning", title="A", content="A", tags=[], embedding=[1.0, 0.0, 0.0])
+    await store(category="learning", title="B", content="B", tags=[], embedding=[0.0, 1.0, 0.0])
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        count = await discover_edges(category="learning")
+
+    assert count == 0
+    assert await get_edges(m1.id) == []
+
+
+# ---------------------------------------------------------------------------
+# Coverage: memory.py -- update invalid field
+# ---------------------------------------------------------------------------
+
+
+async def test_update_invalid_field_raises() -> None:
+    """update() raises ValueError for non-mutable fields."""
+    from sova.knowledge.memory import store, update
+
+    mem = await store(category="learning", title="T", content="C", tags=[])
+    with pytest.raises(ValueError, match="Cannot update field"):
+        await update(mem.id, id=999)
+
+
+# ---------------------------------------------------------------------------
+# Coverage: memory.py -- semantic_search and find_similar
+# ---------------------------------------------------------------------------
+
+
+async def test_semantic_search_empty_query() -> None:
+    """semantic_search() falls back to search() for empty query."""
+    from sova.knowledge.memory import semantic_search, store
+
+    await store(category="learning", title="A", content="Something", tags=[])
+    results = await semantic_search(query="", category="learning")
+    assert len(results) == 1
+    assert results[0][1] == 0.0  # score is 0.0 for fallback
+
+
+async def test_semantic_search_no_embedding_fallback() -> None:
+    """semantic_search() falls back to lexical search when embedding is unavailable."""
+    from unittest.mock import patch
+
+    from sova.knowledge.memory import semantic_search, store
+
+    await store(category="learning", title="Bash tips", content="Quote vars", tags=[])
+    with patch("sova.knowledge.memory.embed_text", return_value=None):
+        results = await semantic_search(query="Bash")
+    assert len(results) == 1
+    assert results[0][0].title == "Bash tips"
+    assert results[0][1] == 0.0
+
+
+async def test_semantic_search_with_embeddings() -> None:
+    """semantic_search() scores by cosine similarity when embeddings available."""
+    from sova.knowledge.memory import semantic_search, store
+
+    emb_a = [1.0, 0.0, 0.0]
+    emb_b = [0.0, 1.0, 0.0]
+    await store(category="learning", title="Close", content="C", tags=[], embedding=emb_a)
+    await store(category="learning", title="Far", content="F", tags=[], embedding=emb_b)
+
+    query_emb = [0.95, 0.05, 0.0]
+    results = await semantic_search(query="test", query_embedding=query_emb, category="learning")
+    assert len(results) == 2
+    assert results[0][0].title == "Close"
+    assert results[0][1] > results[1][1]
+
+
+async def test_semantic_search_with_expand() -> None:
+    """semantic_search(expand=True) includes graph neighbors."""
+    from sova.knowledge.graph import create_edge
+    from sova.knowledge.memory import semantic_search, store
+
+    emb = [1.0, 0.0, 0.0]
+    m1 = await store(category="learning", title="Hit", content="C", tags=[], embedding=emb)
+    m2 = await store(category="learning", title="Neighbor", content="N", tags=[], embedding=None)
+    await create_edge(m1.id, m2.id)
+
+    results = await semantic_search(query="test", query_embedding=[0.99, 0.01, 0.0], expand=True)
+    result_ids = {m.id for m, _ in results}
+    assert m1.id in result_ids
+    assert m2.id in result_ids
+
+
+async def test_semantic_search_filters_by_tier() -> None:
+    """semantic_search() filters results by tier."""
+    from sova.knowledge.memory import semantic_search, store
+
+    emb = [1.0, 0.0, 0.0]
+    await store(category="learning", title="Project", content="P", tags=[], tier="project", embedding=emb)
+    await store(category="learning", title="Shared", content="S", tags=[], tier="shared", embedding=emb)
+
+    results = await semantic_search(query="test", query_embedding=[0.99, 0.01, 0.0], tier="project")
+    assert len(results) == 1
+    assert results[0][0].title == "Project"
+
+
+async def test_semantic_search_threshold() -> None:
+    """semantic_search() filters by threshold."""
+    from sova.knowledge.memory import semantic_search, store
+
+    await store(category="learning", title="A", content="C", tags=[], embedding=[1.0, 0.0, 0.0])
+    await store(category="learning", title="B", content="C", tags=[], embedding=[0.0, 1.0, 0.0])
+
+    results = await semantic_search(query="test", query_embedding=[0.99, 0.01, 0.0], threshold=0.9)
+    assert len(results) == 1
+    assert results[0][0].title == "A"
+
+
+async def test_find_similar() -> None:
+    """find_similar() delegates to semantic_search with defaults."""
+    from sova.knowledge.memory import find_similar, store
+
+    emb = [1.0, 0.0, 0.0]
+    await store(category="learning", title="Match", content="C", tags=[], embedding=emb)
+
+    results = await find_similar("test", category="learning", query_embedding=[0.99, 0.01, 0.0])
+    assert len(results) == 1
+    assert results[0][0].title == "Match"
+
+
+async def test_find_similar_default_threshold() -> None:
+    """find_similar() uses SIMILARITY_THRESHOLD when threshold not given."""
+    from sova.knowledge.memory import find_similar, store
+
+    await store(category="learning", title="A", content="C", tags=[], embedding=[1.0, 0.0, 0.0])
+    await store(category="learning", title="B", content="C", tags=[], embedding=[0.0, 1.0, 0.0])
+
+    # With default threshold, very dissimilar memories should be filtered
+    results = await find_similar("test", category="learning", query_embedding=[0.99, 0.01, 0.0])
+    assert all(score >= 0.5 for _, score in results)
