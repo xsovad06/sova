@@ -197,6 +197,69 @@ class TestMemoryCommands:
         result = runner.invoke(app, ["memory", "prune"])
         assert result.exit_code == 0
 
+    @patch("sova.knowledge.memory.semantic_search")
+    @patch("sova.db.session.init_db")
+    def test_memory_search_semantic_no_results(self, mock_init, mock_sem_search) -> None:
+        from sova.cli.app import app
+
+        mock_init.return_value = None
+        mock_sem_search.return_value = []
+
+        result = runner.invoke(app, ["memory", "search", "--semantic", "test query"])
+        assert result.exit_code == 0
+        assert "No memories found" in result.output
+
+    @patch("sova.knowledge.memory.semantic_search")
+    @patch("sova.db.session.init_db")
+    def test_memory_search_semantic_with_results(self, mock_init, mock_sem_search) -> None:
+        from sova.cli.app import app
+
+        mock_mem = MagicMock()
+        mock_mem.id = 1
+        mock_mem.category = "learning"
+        mock_mem.title = "Bash quoting patterns"
+        mock_mem.tier = "project"
+        mock_init.return_value = None
+        mock_sem_search.return_value = [(mock_mem, 0.95)]
+
+        result = runner.invoke(app, ["memory", "search", "--semantic", "bash"])
+        assert result.exit_code == 0
+        assert "Bash quoting" in result.output
+        assert "0.950" in result.output
+        assert "1 result(s)" in result.output
+
+    def test_memory_backfill_embeddings_help(self) -> None:
+        from sova.cli.app import app
+
+        result = runner.invoke(app, ["memory", "backfill-embeddings", "--help"])
+        assert result.exit_code == 0
+
+    @patch("sova.knowledge.embeddings.is_available", return_value=False)
+    @patch("sova.knowledge.embeddings.embed_text")
+    @patch("sova.db.session.init_db")
+    def test_backfill_embeddings_unavailable(self, mock_init, _mock_embed, _mock_avail) -> None:
+        from sova.cli.app import app
+
+        mock_init.return_value = None
+
+        result = runner.invoke(app, ["memory", "backfill-embeddings"])
+        assert result.exit_code == 1
+        assert "sentence-transformers is not installed" in result.output
+
+    @patch("sova.knowledge.embeddings.is_available", return_value=True)
+    @patch("sova.knowledge.embeddings.embed_text", return_value=[0.1, 0.2])
+    @patch("sova.db.session.init_db")
+    def test_backfill_embeddings_no_memories_to_update(self, mock_init, _mock_embed, _mock_avail) -> None:
+        """All memories already have embeddings -- nothing to do."""
+        from sova.cli.app import app
+
+        mock_init.return_value = None
+        # The autouse setup_db fixture has already created a real in-memory DB,
+        # which is empty -- so there are no memories without embeddings.
+        result = runner.invoke(app, ["memory", "backfill-embeddings"])
+        assert result.exit_code == 0
+        assert "All memories already have embeddings" in result.output
+
 
 # ---------------------------------------------------------------------------
 # Admin commands
