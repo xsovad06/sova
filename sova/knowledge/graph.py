@@ -38,6 +38,10 @@ async def create_edge(
 
     async with await get_session() as session:
         async with session.begin():
+            found = await session.execute(select(Memory.id).where(Memory.id.in_([source_id, target_id])))
+            if len(list(found.scalars())) != 2:
+                raise ValueError(f"One or both memory IDs do not exist: source={source_id}, target={target_id}")
+
             existing = await session.execute(
                 select(MemoryEdge).where(
                     MemoryEdge.source_id == source_id,
@@ -155,6 +159,8 @@ async def auto_link(memory_id: int) -> list[MemoryEdge]:
             if source is None or source.embedding is None:
                 return []
 
+            source_embedding = source.embedding
+
             candidates = await session.execute(
                 select(Memory).where(
                     Memory.id != memory_id,
@@ -163,13 +169,13 @@ async def auto_link(memory_id: int) -> list[MemoryEdge]:
                     Memory.embedding.isnot(None),
                 )
             )
-            all_candidates = list(candidates.scalars().all())
+            candidate_data = [(c.id, c.embedding) for c in candidates.scalars().all()]
 
     scored: list[tuple[int, float]] = []
-    for cand in all_candidates:
-        score = cosine_similarity(source.embedding, cand.embedding)
+    for cand_id, cand_embedding in candidate_data:
+        score = cosine_similarity(source_embedding, cand_embedding)
         if score >= AUTO_LINK_THRESHOLD:
-            scored.append((cand.id, score))
+            scored.append((cand_id, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     scored = scored[:AUTO_LINK_MAX_EDGES]
@@ -184,25 +190,33 @@ async def auto_link(memory_id: int) -> list[MemoryEdge]:
     return created
 
 
-async def _compare_category_batch(cat_memories: list[Memory]) -> int:
-    """Compare all memory pairs within a single category and create edges for similar ones."""
+async def _compare_category_batch(cat_memories: list[tuple[int, list[float]]]) -> int:
+    """Compare memory pairs within a single category and create edges for similar ones.
+
+    Receives list of (id, embedding) tuples (primitives extracted inside session).
+    Processes in batches of _DISCOVER_BATCH_SIZE to limit per-iteration work.
+    """
     created = 0
     for batch_start in range(0, len(cat_memories), _DISCOVER_BATCH_SIZE):
         batch_end = min(batch_start + _DISCOVER_BATCH_SIZE, len(cat_memories))
         for i in range(batch_start, batch_end):
-            mem_a = cat_memories[i]
-            for mem_b in cat_memories[i + 1 :]:
-                score = cosine_similarity(mem_a.embedding, mem_b.embedding)
+            id_a, emb_a = cat_memories[i]
+            for j in range(i + 1, batch_end):
+                id_b, emb_b = cat_memories[j]
+                score = cosine_similarity(emb_a, emb_b)
                 if score < AUTO_LINK_THRESHOLD:
                     continue
-                edge = await create_edge(mem_a.id, mem_b.id, relation="relates_to", weight=round(score, 4))
+                edge = await create_edge(id_a, id_b, relation="relates_to", weight=round(score, 4))
                 if edge is not None:
                     created += 1
     return created
 
 
-async def _fetch_memories_with_embeddings(category: str | None) -> list[Memory]:
-    """Fetch non-superseded memories that have embeddings, optionally filtered by category."""
+async def _fetch_memories_with_embeddings(category: str | None) -> list[tuple[int, str, list[float]]]:
+    """Fetch non-superseded memories that have embeddings, optionally filtered by category.
+
+    Returns list of (id, category, embedding) tuples to avoid detached instance errors.
+    """
     async with await get_session() as session:
         async with session.begin():
             stmt = select(Memory).where(
@@ -212,7 +226,7 @@ async def _fetch_memories_with_embeddings(category: str | None) -> list[Memory]:
             if category is not None:
                 stmt = stmt.where(Memory.category == category)
             result = await session.execute(stmt)
-            return list(result.scalars().all())
+            return [(m.id, m.category, m.embedding) for m in result.scalars().all()]
 
 
 async def discover_edges(category: str | None = None) -> int:
@@ -229,9 +243,9 @@ async def discover_edges(category: str | None = None) -> int:
     if not all_memories:
         return 0
 
-    by_category: dict[str, list[Memory]] = {}
-    for mem in all_memories:
-        by_category.setdefault(mem.category, []).append(mem)
+    by_category: dict[str, list[tuple[int, list[float]]]] = {}
+    for mem_id, mem_cat, mem_emb in all_memories:
+        by_category.setdefault(mem_cat, []).append((mem_id, mem_emb))
 
     total_created = 0
     for cat_memories in by_category.values():

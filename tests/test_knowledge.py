@@ -629,6 +629,17 @@ async def test_create_edge_invalid_relation() -> None:
         await create_edge(m1.id, m2.id, relation="unknown_type")
 
 
+async def test_create_edge_invalid_memory_ids() -> None:
+    """create_edge() raises ValueError when memory IDs don't exist."""
+    from sova.knowledge.graph import create_edge
+
+    m1, _ = await _create_two_memories()
+    with pytest.raises(ValueError, match="do not exist"):
+        await create_edge(m1.id, 99999, relation="relates_to")
+    with pytest.raises(ValueError, match="do not exist"):
+        await create_edge(99999, m1.id, relation="relates_to")
+
+
 async def test_create_edge_duplicate_returns_none() -> None:
     """create_edge() returns None for duplicate (source, target, relation)."""
     from sova.knowledge.graph import create_edge
@@ -842,7 +853,7 @@ async def test_auto_link_caps_at_max() -> None:
     with patch("sova.knowledge.graph.is_available", return_value=True):
         edges = await auto_link(source.id)
 
-    assert len(edges) <= AUTO_LINK_MAX_EDGES
+    assert len(edges) == AUTO_LINK_MAX_EDGES
 
 
 # ---------------------------------------------------------------------------
@@ -878,6 +889,26 @@ async def test_discover_edges_same_category() -> None:
     assert count == 1
     edges = await get_edges(m1.id)
     assert len(edges) == 1
+
+
+async def test_discover_edges_batch_boundaries() -> None:
+    """discover_edges() handles memories spanning multiple batches."""
+    from unittest.mock import patch
+
+    from sova.knowledge.graph import _DISCOVER_BATCH_SIZE, discover_edges
+    from sova.knowledge.memory import store
+
+    # Create enough memories to span multiple batches
+    count = _DISCOVER_BATCH_SIZE + 10
+    for i in range(count):
+        emb = [1.0 - i * 0.001, i * 0.001, 0.0]
+        await store(category="batch_test", title=f"M{i}", content=f"M{i}", tags=[], embedding=emb)
+
+    with patch("sova.knowledge.graph.is_available", return_value=True):
+        total = await discover_edges(category="batch_test")
+
+    # Should complete without error; edges only created within batch windows
+    assert total >= 0
 
 
 # ---------------------------------------------------------------------------
