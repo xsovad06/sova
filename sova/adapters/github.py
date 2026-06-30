@@ -148,7 +148,7 @@ class GitHubAdapter(TaskAdapter):
             label,
         )
 
-    async def post_comment(self, task_id: str, body: str) -> None:
+    async def _do_post_comment(self, task_id: str, body: str) -> None:
         await self._gh(
             "issue",
             "comment",
@@ -159,7 +159,7 @@ class GitHubAdapter(TaskAdapter):
             body,
         )
 
-    async def post_pr_comment(self, pr_number: int, body: str) -> None:
+    async def _do_post_pr_comment(self, pr_number: int, body: str) -> None:
         await self._gh(
             "pr",
             "comment",
@@ -170,7 +170,7 @@ class GitHubAdapter(TaskAdapter):
             body,
         )
 
-    async def post_pr_review(
+    async def _do_post_pr_review(
         self,
         pr_number: int,
         body: str,
@@ -207,7 +207,7 @@ class GitHubAdapter(TaskAdapter):
         if not result.success:
             raise RuntimeError(f"Failed to post PR review on #{pr_number}: {result.stderr[:300]}")
 
-    async def edit_body(self, task_id: str, body: str) -> None:
+    async def _do_edit_body(self, task_id: str, body: str) -> None:
         result = await self._gh(
             "issue",
             "edit",
@@ -299,7 +299,7 @@ class GitHubAdapter(TaskAdapter):
             )
         return parsed
 
-    async def create_issue(
+    async def _do_create_issue(
         self,
         title: str,
         body: str = "",

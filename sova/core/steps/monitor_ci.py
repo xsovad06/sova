@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Callable
 from typing import Any
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.operations import CICheck, get_ci_checks, get_ci_failure_logs
+from sova.llm.egress import scan_and_redact
 from sova.utils.logging import get_logger
 
 _ShellRunner = Callable[..., Any]
@@ -26,19 +26,10 @@ log = get_logger(component="step.monitor_ci")
 
 _MAX_CI_FIX_ATTEMPTS = 3
 
-_SENSITIVE_PATTERNS = re.compile(
-    r"(?i)"
-    r"(?:token|secret|password|api[_-]?key|authorization)[=:\s]+\S+"
-    r"|ghp_[A-Za-z0-9]{36}"
-    r"|ghs_[A-Za-z0-9]{36}"
-    r"|github_pat_[A-Za-z0-9_]{82}"
-    r"|sk-[A-Za-z0-9]{48}"
-)
-
 
 def _redact_logs(text: str) -> str:
     """Strip tokens, keys, and secrets from CI log output."""
-    return _SENSITIVE_PATTERNS.sub("[REDACTED]", text)
+    return scan_and_redact(text).redacted_text
 
 
 class MonitorCIStep(BaseStep):
