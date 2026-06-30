@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,7 +13,7 @@ from sova.adapters.base import Task, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.core.planning import PlannedTask, PlanResult, ProjectScanResult
-from sova.core.steps.generate_tasks import GenerateTasksStep, _extract_json, _parse_tasks
+from sova.core.steps.generate_tasks import GenerateTasksStep, _parse_tasks, extract_json
 from sova.core.steps.scan_project import ScanProjectStep, _scan_project_root
 from sova.core.steps.validate_tasks import ValidateTasksStep, _word_overlap
 
@@ -321,25 +322,71 @@ class TestGenerateTasksStep:
 
 class TestExtractJson:
     def test_plain_json(self) -> None:
-        assert _extract_json('[{"a": 1}]') == '[{"a": 1}]'
+        assert extract_json('[{"a": 1}]') == '[{"a": 1}]'
 
     def test_fenced_json(self) -> None:
         text = '```json\n[{"a": 1}]\n```'
-        assert _extract_json(text) == '[{"a": 1}]'
+        assert extract_json(text) == '[{"a": 1}]'
 
     def test_fenced_no_lang(self) -> None:
         text = '```\n[{"a": 1}]\n```'
-        assert _extract_json(text) == '[{"a": 1}]'
+        assert extract_json(text) == '[{"a": 1}]'
 
 
 class TestExtractJsonEdgeCases:
     def test_fenced_no_newlines(self) -> None:
         text = '```[{"a": 1}]```'
-        assert _extract_json(text) == '[{"a": 1}]'
+        assert extract_json(text) == '[{"a": 1}]'
 
     def test_fenced_no_closing_newline(self) -> None:
         text = '```json[{"a": 1}]```'
-        assert _extract_json(text) == '[{"a": 1}]'
+        assert extract_json(text) == '[{"a": 1}]'
+
+    def test_empty_string(self) -> None:
+        assert extract_json("") == ""
+
+    def test_whitespace_only(self) -> None:
+        assert extract_json("   \n\n  ") == ""
+
+    def test_prose_before_json(self) -> None:
+        text = 'Here are the tasks I propose:\n\n[{"title": "test"}]'
+        result = extract_json(text)
+        assert result == '[{"title": "test"}]'
+
+    def test_prose_before_fenced_json(self) -> None:
+        text = 'Here are my suggestions:\n\n```json\n[{"a": 1}]\n```\n\nLet me know!'
+        result = extract_json(text)
+        assert result == '[{"a": 1}]'
+
+    def test_prose_before_and_after_json(self) -> None:
+        text = 'Based on my analysis:\n[{"title": "test"}]\nHope this helps!'
+        result = extract_json(text)
+        assert result == '[{"title": "test"}]'
+
+    def test_multiple_fences_takes_first(self) -> None:
+        text = '```json\n[{"a": 1}]\n```\n\n```json\n[{"b": 2}]\n```'
+        result = extract_json(text)
+        assert result == '[{"a": 1}]'
+
+    def test_nested_json_object_instead_of_array(self) -> None:
+        text = '{"tasks": [{"title": "test"}]}'
+        result = extract_json(text)
+        assert result == '{"tasks": [{"title": "test"}]}'
+
+    def test_brackets_inside_json_strings(self) -> None:
+        """raw_decode handles brackets in quoted strings correctly."""
+        text = '[{"title": "see [docs] for details", "body": "fix {config}"}]'
+        result = extract_json(text)
+        parsed = json.loads(result)
+        assert len(parsed) == 1
+        assert parsed[0]["title"] == "see [docs] for details"
+
+    def test_prose_with_brackets_before_json(self) -> None:
+        """Brackets in prose before JSON don't break extraction."""
+        text = 'See [this link] for context.\n[{"title": "task"}]'
+        result = extract_json(text)
+        parsed = json.loads(result)
+        assert isinstance(parsed, list)
 
 
 class TestParseTasks:
@@ -422,6 +469,70 @@ class TestParseTasks:
         assert result is not None
         assert len(result) == 1
         assert result[0].title == "good"
+
+    def test_empty_string_returns_empty_list(self) -> None:
+        result = _parse_tasks("")
+        assert result is not None
+        assert result == []
+
+    def test_whitespace_only_returns_empty_list(self) -> None:
+        result = _parse_tasks("   \n\n  ")
+        assert result is not None
+        assert result == []
+
+    def test_prose_wrapped_json(self) -> None:
+        import json
+
+        tasks = [{"title": "test", "body": "body text", "labels": [], "priority": "medium", "complexity": "small"}]
+        text = f"Here are my suggestions:\n\n{json.dumps(tasks)}\n\nHope this helps!"
+        result = _parse_tasks(text)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "test"
+
+    def test_wrapped_in_object_with_tasks_key(self) -> None:
+        import json
+
+        data = json.dumps(
+            {
+                "tasks": [
+                    {"title": "test", "body": "body text", "labels": [], "priority": "medium", "complexity": "small"}
+                ]
+            }
+        )
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "test"
+
+    def test_non_dict_items_skipped(self) -> None:
+        import json
+
+        data = json.dumps(["just a string", {"title": "good", "body": "body text", "labels": []}])
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "good"
+
+    def test_description_field_maps_to_body(self) -> None:
+        """LLM sometimes uses 'description' instead of 'body'."""
+        import json
+
+        data = json.dumps(
+            [
+                {
+                    "title": "feat(cli): add command",
+                    "description": "Add a new CLI command for exports.",
+                    "labels": [],
+                    "priority": "medium",
+                    "complexity": "simple",
+                }
+            ]
+        )
+        result = _parse_tasks(data)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].body == "Add a new CLI command for exports."
 
 
 # ---------------------------------------------------------------------------

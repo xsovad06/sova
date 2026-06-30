@@ -3336,13 +3336,120 @@ class TestPlannerRole:
         result = role._parse_response('{"key": "value"}')
         assert result is None
 
-    def test_parse_response_returns_none_for_validation_error(self) -> None:
+    def test_parse_response_skips_invalid_items(self) -> None:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        # Missing required fields triggers ValidationError from Pydantic
+        # Missing required fields: item is skipped, returns empty list
         result = role._parse_response('[{"title": "t"}]')
+        assert result is not None
+        assert result == []
+
+    def test_parse_response_empty_string_returns_empty_list(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        result = role._parse_response("")
+        assert result is not None
+        assert result == []
+
+    def test_parse_response_whitespace_returns_empty_list(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        result = role._parse_response("   \n\n  ")
+        assert result is not None
+        assert result == []
+
+    def test_parse_response_prose_before_json(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        json_body = (
+            '[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        )
+        text = f"Here are the tasks I propose:\n\n{json_body}"
+        result = role._parse_response(text)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "t"
+
+    def test_parse_response_prose_with_fenced_json(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        json_body = (
+            '[{"title":"t","description":"d","priority":"low","complexity":"trivial","component":"c","rationale":"r"}]'
+        )
+        text = f"My analysis below:\n\n```json\n{json_body}\n```\n\nLet me know!"
+        result = role._parse_response(text)
+        assert result is not None
+        assert len(result) == 1
+
+    def test_parse_response_unwraps_object_wrapper(self) -> None:
+        import json
+
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        task = {
+            "title": "t",
+            "description": "d",
+            "priority": "low",
+            "complexity": "trivial",
+            "component": "c",
+            "rationale": "r",
+        }
+        text = json.dumps({"tasks": [task]})
+        result = role._parse_response(text)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0].title == "t"
+
+    def test_parse_response_unwraps_proposed_tasks_key(self) -> None:
+        import json
+
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        task = {
+            "title": "t",
+            "description": "d",
+            "priority": "low",
+            "complexity": "trivial",
+            "component": "c",
+            "rationale": "r",
+        }
+        text = json.dumps({"proposed_tasks": [task]})
+        result = role._parse_response(text)
+        assert result is not None
+        assert len(result) == 1
+
+    def test_parse_response_unknown_dict_returns_none(self) -> None:
+        from sova.roles.planner import PlannerRole
+
+        role = PlannerRole()
+        result = role._parse_response('{"unknown_key": "value"}')
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_execute_empty_llm_response_succeeds_with_no_tasks(self) -> None:
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.planner import PlannerRole
+
+        adapter = _mock_adapter()
+        adapter.list_tasks.return_value = []
+        ctx = _make_ctx(role="planner", adapter=adapter, issue_number="")
+
+        mock_result = LLMResult(text="", model="test", cost_usd=Decimal("0.005"))
+        with patch("sova.llm.client.invoke", new=AsyncMock(return_value=mock_result)):
+            role = PlannerRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "No tasks proposed" in result.summary
 
     async def test_gather_open_issues_exception_returns_empty(self) -> None:
         from sova.roles.planner import PlannerRole
@@ -3511,13 +3618,14 @@ class TestPlannerRole:
         assert handoff_arg.issue == "planner"
         assert "planned_tasks" in handoff_arg.details
 
-    def test_parse_response_handles_valid_json_invalid_schema(self) -> None:
+    def test_parse_response_skips_invalid_schema_items(self) -> None:
         from sova.roles.planner import PlannerRole
 
         role = PlannerRole()
-        # Valid JSON but invalid schema -- "priority" has an invalid value
+        # Valid JSON but invalid schema -- item is skipped, returns empty list
         result = role._parse_response(json.dumps([{"title": "test", "priority": "invalid"}]))
-        assert result is None
+        assert result is not None
+        assert result == []
 
     async def test_write_handoff_includes_create_issues_action(self) -> None:
         from unittest.mock import MagicMock, patch
