@@ -37,7 +37,7 @@ _PatternEntry = tuple[re.Pattern[str], str, str]
 _SENSITIVE_PATTERNS: list[_PatternEntry] = [
     # AWS access keys (AKIA...)
     (
-        re.compile(r"(?:^|[^A-Z0-9])(AKIA[0-9A-Z]{16})(?:[^A-Z0-9]|$)"),
+        re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"),
         "aws_access_key",
         "[REDACTED:aws_key]",
     ),
