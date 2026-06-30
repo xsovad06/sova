@@ -53,8 +53,10 @@ class TaskRun(Base):
             return None
         return value.lstrip("#").strip() if value else value
 
-    lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"))
-    workflow_definition_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("workflow_definitions.id"))
+    lifecycle_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"), index=True)
+    workflow_definition_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("workflow_definitions.id"), index=True
+    )
 
     __table_args__ = (
         Index("ix_task_runs_issue", "issue_number"),
@@ -236,7 +238,7 @@ class LifecyclePhaseRecord(Base):
     lifecycle_id: Mapped[int] = mapped_column(Integer, ForeignKey("issue_lifecycles.id"), nullable=False)
     phase: Mapped[str] = mapped_column(String(30), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
-    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID))
+    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), index=True)
     error_message: Mapped[str | None] = mapped_column(Text)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     attempt: Mapped[int] = mapped_column(Integer, default=1)
@@ -245,7 +247,7 @@ class LifecyclePhaseRecord(Base):
 
     lifecycle: Mapped["IssueLifecycle"] = relationship(back_populates="phases")
 
-    __table_args__ = (Index("ix_lifecycle_phases_lifecycle", "lifecycle_id"),)
+    __table_args__ = (Index("ix_lifecycle_phases_lifecycle_phase", "lifecycle_id", "phase"),)
 
 
 class WorkflowDefinition(Base):

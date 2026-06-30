@@ -727,6 +727,165 @@ class TestReviewerRole:
         assert not result.success
         assert "no linked pr" in result.error.lower()
 
+    async def test_execute_branch_discovery_failure_non_fatal(self) -> None:
+        """Branch discovery failure should not prevent the review from proceeding."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx.branch_name = ""
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch(
+                "sova.roles.reviewer.get_pr_branch",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("gh failed"),
+            ),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+
+    async def test_execute_extract_memory_failure_non_fatal(self) -> None:
+        """Memory extraction failure should not prevent reviewer from returning success."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+            patch(
+                "sova.knowledge.extraction.extract_memories",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("extraction failed"),
+            ),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+
+    async def test_execute_handoff_db_failure_non_fatal(self) -> None:
+        """DB handoff write failure should not prevent reviewer from returning success."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx.task_run_id = 1
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch(
+                "sova.roles.reviewer.write_handoff",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("DB write failed"),
+            ),
+            patch("sova.roles.reviewer.write_handoff_file"),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+
+    async def test_execute_handoff_file_failure_non_fatal(self) -> None:
+        """File handoff write failure should not prevent reviewer from returning success."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+        llm_resp = json.dumps({"findings": [], "summary": "OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch(
+                "sova.roles.reviewer.write_handoff_file",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+
+    async def test_execute_review_rationale_failure_non_fatal(self) -> None:
+        """Review rationale spec append failure should not prevent success."""
+        import json
+        from decimal import Decimal
+        from unittest.mock import patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        role = ReviewerRole()
+        findings = [{"file": "x.py", "severity": 5, "category": "bug", "description": "Issue"}]
+        llm_resp = json.dumps({"findings": findings, "summary": "Found issue"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_branch", new_callable=AsyncMock, return_value="feat/x"),
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file"),
+            patch(
+                "sova.core.steps._spec_helpers.append_spec_section",
+                side_effect=OSError("spec write failed"),
+            ),
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "1 findings" in result.summary
+
     async def test_execute_posts_inline_review_comments(self) -> None:
         import json
         from decimal import Decimal
@@ -2645,6 +2804,34 @@ class TestReviewerParsing:
         assert "Null ref" in comment
         assert "Findings requiring action" in comment
         assert "BLOCK" in comment
+
+    def test_format_findings_revise_assessment(self) -> None:
+        """Findings with severity < 7 produce REVISE assessment."""
+        from sova.roles.reviewer import ReviewFinding, _format_findings_comment
+
+        findings = [
+            ReviewFinding(file="a.py", severity=5, category="bug", description="Moderate issue"),
+        ]
+        comment = _format_findings_comment(findings, "Needs work", 50)
+        assert "REVISE" in comment
+        assert "actionable findings" in comment
+
+    def test_parse_findings_nested_invalid_json_after_extraction(self) -> None:
+        """When extracted JSON substring is also invalid, return empty findings."""
+        from sova.roles.reviewer import _parse_findings
+
+        text = "Here is some text {this is not valid json at all} end"
+        findings, summary = _parse_findings(text)
+        assert findings == []
+        assert "Failed" in summary
+
+    def test_parse_findings_no_braces(self) -> None:
+        """When no braces exist at all, return empty findings."""
+        from sova.roles.reviewer import _parse_findings
+
+        findings, summary = _parse_findings("totally plain text with no json")
+        assert findings == []
+        assert "Failed" in summary
 
 
 class TestReviewerExceptionPaths:
