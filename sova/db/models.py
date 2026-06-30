@@ -141,6 +141,9 @@ class CostRecord(Base):
     task_run: Mapped["TaskRun | None"] = relationship(back_populates="cost_records")
 
 
+_MEMORIES_ID_FK = "memories.id"
+
+
 class Memory(Base):
     """Agent memory entries."""
 
@@ -155,7 +158,7 @@ class Memory(Base):
     issue_number: Mapped[str] = mapped_column(String(50), default="")
     tier: Mapped[str] = mapped_column(String(20), default="project")
     embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
-    superseded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey("memories.id"))
+    superseded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -176,8 +179,8 @@ class MemoryEdge(Base):
     __tablename__ = "memory_edges"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_id: Mapped[int] = mapped_column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), nullable=False)
-    target_id: Mapped[int] = mapped_column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), nullable=False)
+    source_id: Mapped[int] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK, ondelete="CASCADE"), nullable=False)
+    target_id: Mapped[int] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK, ondelete="CASCADE"), nullable=False)
     relation: Mapped[str] = mapped_column(String(30), nullable=False, default="relates_to")
     weight: Mapped[float] = mapped_column(Numeric(5, 4), default=1.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
