@@ -1,8 +1,10 @@
-"""Agent process lifecycle -- start/stop/wait, status queries, pipeline progress.
+"""Agent process lifecycle -- start/stop/wait, status queries.
 
 Manages concurrent agent processes per project.
 Uses sova.ipc.runtime.AgentRuntime under the hood.
-Delegates DB persistence to agent_db and pool management to agent_pool.
+Delegates DB persistence to agent_db, pool management to agent_pool,
+context resolution to agent_context, validation to agent_validation,
+and pipeline progress to agent_progress.
 """
 
 from __future__ import annotations
@@ -14,11 +16,23 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sova.core.steps import (
-    get_address_review_step_names,
-    get_developer_step_names,
-    get_planner_step_names,
-    get_researcher_step_names,
+from sova.dashboard.services.agent_context import (  # re-export facade
+    _resolve_command_context as _resolve_command_context,
+)
+from sova.dashboard.services.agent_context import (
+    _resolve_command_prompt as _resolve_command_prompt,
+)
+from sova.dashboard.services.agent_context import (
+    _resolve_issue_from_pr as _resolve_issue_from_pr,
+)
+from sova.dashboard.services.agent_context import (
+    _resolve_issue_worktree as _resolve_issue_worktree,
+)
+from sova.dashboard.services.agent_context import (
+    _resolve_project_gh_env as _resolve_project_gh_env,
+)
+from sova.dashboard.services.agent_context import (
+    _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_db import (
     _create_task_run,
@@ -35,20 +49,53 @@ from sova.dashboard.services.agent_pool import (
     _get_project_agents,
     _prune_completed,
 )
+from sova.dashboard.services.agent_progress import (
+    _ADDRESS_REVIEW_ONLY as _ADDRESS_REVIEW_ONLY,
+)
+from sova.dashboard.services.agent_progress import (
+    _PLANNER_ONLY as _PLANNER_ONLY,
+)
+from sova.dashboard.services.agent_progress import (
+    _RESEARCHER_ONLY as _RESEARCHER_ONLY,
+)
+from sova.dashboard.services.agent_progress import (
+    _STANDALONE_ROLES as _STANDALONE_ROLES,
+)
+from sova.dashboard.services.agent_progress import (  # re-export facade
+    ADDRESS_REVIEW_PIPELINE as ADDRESS_REVIEW_PIPELINE,
+)
+from sova.dashboard.services.agent_progress import (
+    DEVELOPER_PIPELINE as DEVELOPER_PIPELINE,
+)
+from sova.dashboard.services.agent_progress import (
+    PLANNER_PIPELINE as PLANNER_PIPELINE,
+)
+from sova.dashboard.services.agent_progress import (
+    RESEARCHER_PIPELINE as RESEARCHER_PIPELINE,
+)
+from sova.dashboard.services.agent_progress import (
+    _detect_pipeline as _detect_pipeline,
+)
+from sova.dashboard.services.agent_progress import (
+    get_step_progress as get_step_progress,
+)
+from sova.dashboard.services.agent_validation import (  # re-export facade
+    _check_issue_budget as _check_issue_budget,
+)
+from sova.dashboard.services.agent_validation import (
+    _check_issue_conflict as _check_issue_conflict,
+)
+from sova.dashboard.services.agent_validation import (
+    _check_pr_merged_on_failure as _check_pr_merged_on_failure,
+)
+from sova.dashboard.services.agent_validation import (
+    _transition_to_in_progress as _transition_to_in_progress,
+)
 from sova.dashboard.services.output_service import OutputWriter
-from sova.git.worktree import find_worktree_by_branch
 from sova.ipc.runtime import get_runtime
 from sova.utils.logging import get_logger
-from sova.utils.shell import run as run_shell
 
 log = get_logger(component="dashboard.control")
-
-DEVELOPER_PIPELINE = get_developer_step_names()
-ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
-RESEARCHER_PIPELINE = get_researcher_step_names()
-PLANNER_PIPELINE = get_planner_step_names()
-
-_CLAUDE_DIR = ".claude"
 
 _background_tasks: set[asyncio.Task[None]] = set()
 
@@ -191,62 +238,6 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 
 
 # -- Agent lifecycle ----------------------------------------------------------
-
-
-async def _check_issue_conflict(issue: str, pa: ProjectAgents, *, force: bool = False) -> dict | None:
-    """Check if an agent is already running for this issue (in-memory + DB).
-
-    Returns an error dict if a conflict exists, None if clear.
-    When *force* is True, stale (dead-PID) DB runs are marked interrupted
-    and live conflicts are skipped so the caller can proceed.
-    Must be called inside ``pa._lock``.
-    """
-    for existing in pa.agents.values():
-        if existing.issue == issue:
-            if force:
-                log.info("issue_conflict.force_skipped", issue=issue, run_id=existing.run_id)
-                continue
-            return {
-                "error": f"Issue #{issue} already has an active agent (run {existing.run_id})",
-                "existing_run_id": existing.run_id,
-            }
-
-    try:
-        from sqlalchemy import select
-
-        from sova.dashboard.services.agent_recovery import _is_process_alive
-        from sova.dashboard.services.work_service import _TERMINAL
-        from sova.db.models import TaskRun
-        from sova.db.session import get_session
-
-        in_memory_ids = set(pa.agents.keys())
-        async with await get_session(project_dir=pa.project_dir) as session:
-            async with session.begin():
-                stmt = select(TaskRun).where(
-                    TaskRun.issue_number == issue,
-                    TaskRun.status.notin_(_TERMINAL),
-                    TaskRun.pid.isnot(None),
-                )
-                result = await session.execute(stmt)
-                runs = result.scalars().all()
-
-                for run in runs:
-                    if run.id in in_memory_ids:
-                        continue
-                    if _is_process_alive(run.pid):
-                        if force:
-                            log.info("issue_conflict.force_skipped_external", issue=issue, run_id=run.id, pid=run.pid)
-                            continue
-                        msg = f"Issue #{issue} already has an active agent (external run {run.id}, PID {run.pid})"
-                        return {"error": msg, "existing_run_id": run.id}
-                    run.status = "interrupted"
-                    run.error_message = "Stale run: process no longer alive"
-                    run.ended_at = datetime.now(timezone.utc)
-                    log.warning("issue_conflict.auto_recovered", run_id=run.id, issue=issue, pid=run.pid)
-    except Exception:
-        log.warning("issue_conflict_check.db_failed", issue=issue, exc_info=True)
-
-    return None
 
 
 async def start_agent(
@@ -402,90 +393,6 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
     return {"status": "stopped", "pid": pid, "run_id": agent.run_id}
 
 
-async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name: str = "") -> Path:
-    """Return the worktree path for an issue if one exists, else project_dir.
-
-    Falls back to branch-based lookup via ``find_worktree_by_branch()`` when
-    the issue-based directory doesn't exist but *branch_name* is provided.
-    Filters out the main worktree to avoid running in the project root.
-    """
-    issue_id = issue.lstrip("#").strip()
-    if issue_id and issue_id.isdigit():
-        candidate = project_dir / _CLAUDE_DIR / "worktrees" / issue_id
-        if candidate.is_dir():
-            log.info("command.using_worktree", issue=issue_id, path=str(candidate))
-            return candidate
-
-    if branch_name:
-        try:
-            wt_path = await find_worktree_by_branch(branch_name, cwd=project_dir)
-            if wt_path is not None and wt_path.resolve() != project_dir.resolve():
-                log.info("command.using_branch_worktree", branch=branch_name, path=str(wt_path))
-                return wt_path
-        except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError):
-            log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
-
-    return project_dir
-
-
-def _strip_frontmatter(content: str) -> str:
-    """Remove YAML frontmatter (--- ... ---) from command file content."""
-    if content.startswith("---"):
-        end = content.find("---", 3)
-        if end != -1:
-            return content[end + 3 :].lstrip("\n")
-    return content
-
-
-def _resolve_command_prompt(command: str, args: dict | None, project_dir: Path) -> str:
-    """Build the prompt for a Claude Code command."""
-    arg_str = ""
-    if args:
-        arg_str = " ".join(f"{k}={v}" for k, v in args.items())
-
-    target_cmd = project_dir / _CLAUDE_DIR / "commands" / f"{command}.md"
-    if target_cmd.is_file():
-        prompt = f"/{command}"
-        if arg_str:
-            prompt += " " + arg_str
-        return prompt
-
-    sova_root = Path(__file__).resolve().parent.parent.parent.parent
-    sova_cmd = sova_root / _CLAUDE_DIR / "commands" / f"{command}.md"
-    if not sova_cmd.is_file():
-        sova_cmd = sova_root / "commands" / f"{command}.md"
-
-    if sova_cmd.is_file():
-        content = sova_cmd.read_text(encoding="utf-8")
-        content = _strip_frontmatter(content)
-        content = content.replace("$ARGUMENTS", arg_str)
-        log.info("command.resolved_from_sova", command=command, source=str(sova_cmd))
-        return content
-
-    prompt = f"/{command}"
-    if arg_str:
-        prompt += " " + arg_str
-    return prompt
-
-
-async def _resolve_command_context(safe_args: dict, command: str, project_dir: Path) -> tuple[int | None, str]:
-    """Extract PR number and issue identifier from command args."""
-    raw_pr = safe_args.get("pr")
-    try:
-        pr_number = int(raw_pr) if raw_pr is not None else None
-    except (ValueError, TypeError):
-        pr_number = None
-        raw_pr = None
-
-    issue = str(safe_args.get("issue", "")).strip()
-    if not issue:
-        if raw_pr is not None:
-            issue = await _resolve_issue_from_pr(raw_pr, project_dir)
-        if not issue:
-            issue = command
-    return pr_number, issue
-
-
 async def start_command(
     command: str,
     args: dict | None = None,
@@ -583,29 +490,6 @@ async def start_command(
 # -- Completion handling ------------------------------------------------------
 
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
-
-
-async def _check_pr_merged_on_failure(pr_number: int | None, project_dir: Path | None) -> bool:
-    """Check if a PR was merged on GitHub despite the agent process failing.
-
-    Used by _wait_and_finalize to avoid marking integration runs as "failed"
-    when the merge succeeded but post-merge cleanup crashed.
-    """
-    if pr_number is None:
-        return False
-    try:
-        from sova.config.loader import load_config
-        from sova.git.pr import get_pr_status
-
-        cfg = load_config(project_dir)
-        repo = cfg.github_repo
-        if not repo:
-            return False
-        status = await get_pr_status(pr_number, repo=repo, github_user=cfg.github_user)
-        return status.state == "MERGED"
-    except Exception:
-        log.debug("check_pr_merged.failed", pr_number=pr_number, exc_info=True)
-        return False
 
 
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
@@ -785,168 +669,6 @@ async def resume_from_approval(run_id: int) -> dict:
         "resumed_from": run_id,
         "issue": issue,
         "role": role,
-    }
-
-
-# -- PR to issue resolution ---------------------------------------------------
-
-
-async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str:
-    """Extract a linked issue number from a PR body via gh CLI (best-effort)."""
-    import re
-
-    pr_str = str(int(pr_number))
-    try:
-        result = await run_shell(
-            "gh",
-            "pr",
-            "view",
-            pr_str,
-            "--json",
-            "body",
-            "--jq",
-            ".body",
-            cwd=project_dir,
-            timeout=10,
-        )
-        if result.success and result.stdout:
-            match = re.search(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", result.stdout, re.IGNORECASE)
-            if match:
-                return match.group(1)
-    except Exception:
-        log.debug("resolve_issue_from_pr.failed", pr=pr_number, exc_info=True)
-    return ""
-
-
-# -- GH auth resolution ------------------------------------------------------
-
-
-async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:
-    """Resolve GH_TOKEN env for the project's configured github_user."""
-    try:
-        from sova.config.loader import load_config
-        from sova.utils.gh import resolve_gh_env
-
-        cfg = load_config(project_dir)
-        return await resolve_gh_env(cfg.github_user)
-    except Exception:
-        log.debug("gh_env.resolve_failed", exc_info=True)
-        return None
-
-
-# -- Budget checks -----------------------------------------------------------
-
-
-async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
-    """Check if the issue has exceeded its cumulative budget across all runs.
-
-    Returns an error dict if over budget, None if clear.
-    """
-    try:
-        from sova.config.loader import load_config
-        from sova.dashboard.services.lifecycle_service import get_lifecycle_for_issue
-        from sova.db.session import get_session
-
-        cfg = load_config(project_dir)
-        max_budget = cfg.agent.max_issue_budget
-
-        async with await get_session(project_dir=project_dir) as session:
-            lifecycle = await get_lifecycle_for_issue(session, issue)
-            if lifecycle is None:
-                return None
-
-            if lifecycle.total_cost_usd >= max_budget:
-                return {
-                    "error": (
-                        f"Issue #{issue} has exceeded the per-issue budget "
-                        f"(${lifecycle.total_cost_usd:.2f} / ${max_budget:.2f}). "
-                        f"Use --force to bypass."
-                    ),
-                    "total_cost_usd": float(lifecycle.total_cost_usd),
-                    "max_issue_budget": float(max_budget),
-                }
-    except Exception:
-        log.warning("issue_budget_check.failed", issue=issue, exc_info=True)
-
-    return None
-
-
-# -- Tracker state transitions -----------------------------------------------
-
-
-async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
-    """Move the issue to IN_PROGRESS on the configured tracker."""
-    try:
-        from sova.adapters import create_adapter
-        from sova.adapters.base import TaskState
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
-        adapter = create_adapter(cfg)
-        await adapter.transition_state(issue, TaskState.IN_PROGRESS)
-        log.info("issue.transitioned", issue=issue, state="in_progress")
-    except Exception:
-        log.warning("issue.transition_failed", issue=issue, exc_info=True)
-
-
-# -- Pipeline progress -------------------------------------------------------
-
-
-_ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
-_STANDALONE_ROLES = frozenset({"reviewer"})
-_RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
-_PLANNER_ONLY = frozenset({"scan_project", "generate_tasks", "validate_tasks"})
-
-
-def _detect_pipeline(current_step: str | None, role: str | None, pr_number: int | None) -> tuple[list[str], str]:
-    """Return (pipeline_steps, variant_name) for the given run context."""
-    if role == "planner" or (current_step is not None and current_step in _PLANNER_ONLY):
-        return PLANNER_PIPELINE, "planner"
-    if role == "researcher" or (current_step is not None and current_step in _RESEARCHER_ONLY):
-        return RESEARCHER_PIPELINE, "researcher"
-
-    is_address_review = (current_step in (None, "agent") and role == "developer" and pr_number is not None) or (
-        current_step is not None and current_step in _ADDRESS_REVIEW_ONLY
-    )
-    if is_address_review:
-        return ADDRESS_REVIEW_PIPELINE, "address_review"
-
-    return DEVELOPER_PIPELINE, "developer"
-
-
-def get_step_progress(current_step: str | None, *, role: str | None = None, pr_number: int | None = None) -> dict:
-    """Compute step index from current_step name.
-
-    Uses role+pr_number only when current_step is None or "agent" (the
-    dashboard outer-process TaskRun sentinel). WorkflowEngine TaskRuns
-    progress through real step names and acquire pr_number mid-pipeline
-    via _sync_task_run_context, so gating on current_step avoids false
-    positives for developer runs that created a PR.
-    """
-    is_command = role is not None and (role.startswith("command:") or role in _STANDALONE_ROLES)
-    if is_command:
-        return {
-            "step_index": 0,
-            "total_steps": 1,
-            "steps": ["running"],
-            "pipeline_variant": "command",
-        }
-
-    pipeline, variant = _detect_pipeline(current_step, role, pr_number)
-
-    if current_step is None or current_step == "agent":
-        idx = 0
-    else:
-        try:
-            idx = pipeline.index(current_step)
-        except ValueError:
-            idx = 0
-
-    return {
-        "step_index": idx,
-        "total_steps": len(pipeline),
-        "steps": pipeline,
-        "pipeline_variant": variant,
     }
 
 

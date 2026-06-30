@@ -133,6 +133,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## Refactoring / Code Quality
 
 - **Slug lookup must reject non-conforming input, not sanitize it** -- use `re.fullmatch()` to reject bad slugs. [confirmed: 1]
+- **Preserve return type contracts when extracting functions to new modules** -- copy-pasting a function during module split can silently change return types (e.g., `Decimal` to `str` when `float()` wrapper is dropped). Verify return type annotations AND actual return expressions match the original, especially for values consumed by JSON serialization or API responses. PR #273 review. [confirmed: 0]
 
 ## Command Distribution
 
