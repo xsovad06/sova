@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
@@ -167,6 +167,25 @@ class Memory(Base):
         Index("ix_memories_category", "category"),
         Index("ix_memories_tags", "tags"),
         Index("ix_memories_superseded_by", "superseded_by"),
+    )
+
+
+class MemoryEdge(Base):
+    """Directed relationship between two memories."""
+
+    __tablename__ = "memory_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), nullable=False)
+    target_id: Mapped[int] = mapped_column(Integer, ForeignKey("memories.id", ondelete="CASCADE"), nullable=False)
+    relation: Mapped[str] = mapped_column(String(30), nullable=False, default="relates_to")
+    weight: Mapped[float] = mapped_column(Numeric(5, 4), default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "target_id", "relation", name="uq_memory_edge"),
+        Index("ix_memory_edges_source", "source_id"),
+        Index("ix_memory_edges_target", "target_id"),
     )
 
 
