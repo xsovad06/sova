@@ -21,6 +21,7 @@ GROUPS: dict[str, str] = {
     "pipeline": "Pipeline",
     "task_source": "Task Source",
     "review": "Code Review",
+    "develop": "Develop Step",
     "ci": "CI / CD",
     "watch": "Watch Mode",
     "worktree": "Worktrees",
@@ -48,6 +49,7 @@ GROUP_ORDER: list[str] = [
     "task_source",
     "commit",
     "review",
+    "develop",
     "ci",
     "triage",
     "watch",
@@ -253,6 +255,28 @@ _REGISTRY: list[SettingMeta] = [
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
+    # -- Develop Step --
+    SettingMeta(
+        "develop.max_fix_cycles",
+        "Max fix cycles",
+        "Maximum check-fix cycles after development before giving up (0 = disabled)",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.check_timeout",
+        "Check timeout (s)",
+        "Timeout in seconds for each check command execution",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.guard_test_weakening",
+        "Guard test weakening",
+        "Detect and reject LLM fixes that weaken test files instead of fixing code",
+        "develop",
+        "boolean",
+    ),
     # -- CI --
     SettingMeta("ci.poll_interval", "Poll interval (s)", "Seconds between CI status checks", "ci", "number"),
     SettingMeta("ci.max_wait", "Max wait (s)", "Maximum seconds to wait for CI to complete", "ci", "number"),
