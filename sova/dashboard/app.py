@@ -225,6 +225,7 @@ def create_app(
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
+        """Liveness probe endpoint. Returns 200 OK if the app is running. Does not check DB connectivity or service health."""
         return {"status": "ok"}
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
