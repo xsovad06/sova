@@ -223,6 +223,10 @@ def create_app(
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
     templates = Jinja2Templates(directory=BASE / "templates")
 

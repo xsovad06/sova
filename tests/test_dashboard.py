@@ -163,6 +163,11 @@ async def client():
 
 
 class TestDashboardHealth:
+    async def test_healthz_returns_ok(self, client: AsyncClient) -> None:
+        resp = await client.get("/healthz")
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+
     async def test_root_redirects_to_dashboard(self, client: AsyncClient) -> None:
         resp = await client.get("/", follow_redirects=False)
         assert resp.status_code == 307
