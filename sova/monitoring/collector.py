@@ -25,6 +25,10 @@ _MAX_SAMPLES = 4096
 class ResourceCollector:
     """Collects resource metrics for a process tree by PID.
 
+    Maintains rolling aggregates so that ``get_summary()`` covers the entire
+    monitoring period even when early samples are evicted from the bounded
+    deque (``_MAX_SAMPLES``).
+
     Usage::
 
         collector = ResourceCollector(pid=agent_process.pid)
@@ -45,6 +49,18 @@ class ResourceCollector:
         # samples don't produce negative totals.
         self._prev_io: dict[int, tuple[int, int]] = {}
 
+        # Rolling aggregates -- updated on every sample so that summaries
+        # remain accurate even after early samples are evicted from the deque.
+        self._total_samples: int = 0
+        self._peak_cpu: float = 0.0
+        self._cpu_sum: float = 0.0
+        self._peak_rss: int = 0
+        self._peak_vms: int = 0
+        self._total_io_read: int = 0
+        self._total_io_write: int = 0
+        self._has_any_io: bool = False
+        self._peak_threads: int = 0
+
     def start(self) -> None:
         """Start the background sampling loop."""
         if self._task is not None and not self._task.done():
@@ -59,6 +75,9 @@ class ResourceCollector:
             proc.cpu_percent()
         except psutil.NoSuchProcess:
             log.warning("collector.start_failed", pid=self.pid, reason="process_not_found")
+            return
+        except psutil.AccessDenied:
+            log.warning("collector.start_failed", pid=self.pid, reason="access_denied")
             return
 
         self._stop_event = asyncio.Event()
@@ -75,8 +94,36 @@ class ResourceCollector:
         return self.get_summary()
 
     def get_summary(self) -> ResourceSummary:
-        """Compute summary from samples collected so far."""
-        return ResourceSummary.from_samples(self.samples)
+        """Compute summary from rolling aggregates (covers full monitoring period)."""
+        if self._total_samples == 0:
+            return ResourceSummary.empty()
+        return ResourceSummary(
+            sample_count=self._total_samples,
+            peak_cpu_percent=self._peak_cpu,
+            avg_cpu_percent=self._cpu_sum / self._total_samples,
+            peak_memory_rss_bytes=self._peak_rss,
+            peak_memory_vms_bytes=self._peak_vms,
+            total_io_read_bytes=self._total_io_read if self._has_any_io else None,
+            total_io_write_bytes=self._total_io_write if self._has_any_io else None,
+            peak_num_threads=self._peak_threads,
+        )
+
+    def _update_aggregates(self, sample: ResourceSample) -> None:
+        """Update rolling aggregates with a new sample."""
+        self._total_samples += 1
+        self._cpu_sum += sample.cpu_percent
+        if sample.cpu_percent > self._peak_cpu:
+            self._peak_cpu = sample.cpu_percent
+        if sample.memory_rss_bytes > self._peak_rss:
+            self._peak_rss = sample.memory_rss_bytes
+        if sample.memory_vms_bytes > self._peak_vms:
+            self._peak_vms = sample.memory_vms_bytes
+        if sample.io_read_bytes is not None:
+            self._has_any_io = True
+            self._total_io_read += sample.io_read_bytes
+            self._total_io_write += sample.io_write_bytes or 0
+        if sample.num_threads > self._peak_threads:
+            self._peak_threads = sample.num_threads
 
     async def _sample_loop(self, proc: psutil.Process) -> None:
         """Sample the process tree at regular intervals."""
@@ -90,6 +137,7 @@ class ResourceCollector:
 
                 sample = self._take_sample(proc)
                 self.samples.append(sample)
+                self._update_aggregates(sample)
             except psutil.NoSuchProcess:
                 log.info("collector.process_exited", pid=self.pid, samples=len(self.samples))
                 return
@@ -114,6 +162,13 @@ class ResourceCollector:
         mem = proc.memory_info()
         rss = mem.rss
         vms = mem.vms
+
+        # Thread count for the process tree
+        threads = 0
+        try:
+            threads = proc.num_threads()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
         # Collect per-PID I/O and compute deltas against previous sample.
         # has_any_io tracks whether at least one process reported I/O.
@@ -140,6 +195,10 @@ class ResourceCollector:
                     child_mem = child.memory_info()
                     rss += child_mem.rss
                     vms += child_mem.vms
+                    try:
+                        threads += child.num_threads()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
                     try:
                         child_io = child.io_counters()
                         current_io[child.pid] = (child_io.read_bytes, child_io.write_bytes)
@@ -168,4 +227,5 @@ class ResourceCollector:
             io_read_bytes=io_delta_read if has_any_io else None,
             io_write_bytes=io_delta_write if has_any_io else None,
             num_children=num_children,
+            num_threads=threads,
         )

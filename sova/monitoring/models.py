@@ -8,7 +8,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ResourceSample:
-    """A single point-in-time resource measurement for a process tree."""
+    """A single point-in-time resource measurement for a process tree.
+
+    I/O values are per-interval deltas (computed per-PID in ResourceCollector).
+    CPU measurements for newly-discovered child processes will be 0.0 in their
+    first sample as psutil requires a baseline measurement.
+    """
 
     timestamp: float
     cpu_percent: float
@@ -17,11 +22,18 @@ class ResourceSample:
     io_read_bytes: int | None
     io_write_bytes: int | None
     num_children: int
+    num_threads: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ResourceSummary:
-    """Aggregated summary computed from a series of ResourceSamples."""
+    """Aggregated summary computed from a series of ResourceSamples.
+
+    When constructed via ``from_samples``, only the in-memory sample window
+    is considered.  ``ResourceCollector.get_summary()`` uses rolling aggregates
+    that cover the entire monitoring period even when early samples have been
+    evicted from the bounded deque.
+    """
 
     sample_count: int
     peak_cpu_percent: float
@@ -30,6 +42,7 @@ class ResourceSummary:
     peak_memory_vms_bytes: int
     total_io_read_bytes: int | None
     total_io_write_bytes: int | None
+    peak_num_threads: int = 0
 
     @classmethod
     def empty(cls) -> ResourceSummary:
@@ -41,6 +54,7 @@ class ResourceSummary:
             peak_memory_vms_bytes=0,
             total_io_read_bytes=None,
             total_io_write_bytes=None,
+            peak_num_threads=0,
         )
 
     @classmethod
@@ -67,4 +81,5 @@ class ResourceSummary:
             peak_memory_vms_bytes=max(s.memory_vms_bytes for s in samples),
             total_io_read_bytes=io_read,
             total_io_write_bytes=io_write,
+            peak_num_threads=max(s.num_threads for s in samples),
         )
