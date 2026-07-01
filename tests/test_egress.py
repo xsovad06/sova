@@ -111,7 +111,6 @@ class TestScanAndRedactPatterns:
 
     def test_jwt_token(self) -> None:
         text = (
-            "Authorization: Bearer "
             "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9."
             "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
             "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
@@ -119,6 +118,44 @@ class TestScanAndRedactPatterns:
         result = scan_and_redact(text)
         assert not result.clean
         assert "jwt" in result.flags
+
+    def test_jwt_in_bearer_header(self) -> None:
+        text = (
+            "Authorization: Bearer "
+            "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9."
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+        )
+        result = scan_and_redact(text)
+        assert not result.clean
+        assert result.flags[0] in ("jwt", "bearer_token")
+
+    def test_github_fine_grained_pat(self) -> None:
+        token = "github_pat_" + "A" * 82
+        text = f"Use {token} for authentication"
+        result = scan_and_redact(text)
+        assert not result.clean
+        assert "github_token" in result.flags
+        assert "github_pat_" not in result.redacted_text
+        assert "[REDACTED:github_token]" in result.redacted_text
+
+    def test_bearer_token_header(self) -> None:
+        text = "Authorization: Bearer abc123def456ghi789jkl"
+        result = scan_and_redact(text)
+        assert not result.clean
+        assert "bearer_token" in result.flags
+        assert "abc123def456ghi789jkl" not in result.redacted_text
+
+    def test_bearer_token_lowercase(self) -> None:
+        text = "authorization: bearer mytoken12345678abcdef"
+        result = scan_and_redact(text)
+        assert not result.clean
+        assert "bearer_token" in result.flags
+
+    def test_bearer_no_false_positive_in_prose(self) -> None:
+        """The word 'bearer' in normal text should not trigger detection."""
+        result = scan_and_redact("The bearer of this certificate is authorized.")
+        assert result.clean
 
     def test_multiple_patterns(self) -> None:
         text = "api_key=sk-abcdef123456\npassword=hunter2!"
