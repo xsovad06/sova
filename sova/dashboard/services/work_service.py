@@ -471,7 +471,7 @@ def _classify_run_role_based(run: TaskRun, variant: str) -> str:
         return "in_review"
     if role == "triage":
         return "triaged"
-    if role.startswith("command:integrate") or role.startswith("command:approve"):
+    if role.startswith(("command:integrate", "command:approve")):
         return "in_review"
     if role in ("developer", "") or role.startswith("command:"):
         return "developing"
