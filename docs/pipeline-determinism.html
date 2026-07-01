@@ -1,0 +1,944 @@
+<!--
+  ============================================================================
+  SOVA Pipeline Determinism Analysis
+  ============================================================================
+
+  Maps every action in the SOVA development lifecycle to its execution mode:
+    - DETERMINISTIC (code)  -- fully controlled, predictable output
+    - LLM CALL (targeted)   -- single model invocation with structured I/O
+    - AGENT (autonomous)    -- full Claude CLI session with tool access
+
+  Goal: minimize non-deterministic surface area. Agents handle creative work
+  (development, review). Everything else should be deterministic code.
+
+  REGENERATION: run /create-determinism-analysis (not yet automated)
+  ============================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SOVA Pipeline Determinism Analysis</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #0f172a;
+    --surface: #1e293b;
+    --surface-2: #273548;
+    --border: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --brand: #3b82f6;
+    --brand-light: #60a5fa;
+    --green: #22c55e;
+    --green-bg: rgba(34, 197, 94, 0.12);
+    --green-border: rgba(34, 197, 94, 0.3);
+    --amber: #f59e0b;
+    --amber-bg: rgba(245, 158, 11, 0.12);
+    --amber-border: rgba(245, 158, 11, 0.3);
+    --red: #ef4444;
+    --red-bg: rgba(239, 68, 68, 0.12);
+    --red-border: rgba(239, 68, 68, 0.3);
+    --purple: #a855f7;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem;
+    line-height: 1.6;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: 0.25rem;
+    color: var(--brand-light);
+  }
+
+  .subtitle {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: 2rem;
+  }
+
+  h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin: 2rem 0 0.75rem 0;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 1.5rem 0 0.5rem 0;
+    color: var(--text-muted);
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .dot-code { background: var(--green); }
+  .dot-llm { background: var(--amber); }
+  .dot-agent { background: var(--red); }
+  .dot-human { background: var(--purple); }
+
+  /* ── Pipeline phase ── */
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 1.25rem;
+    overflow: hidden;
+  }
+
+  .phase-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .phase-number {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--brand);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  /* ── Step rows ── */
+  .step-row {
+    display: grid;
+    grid-template-columns: 28px 170px 1fr 110px;
+    gap: 0.75rem;
+    align-items: start;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+
+  .step-row:last-child { border-bottom: none; }
+
+  .step-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-top: 5px;
+  }
+
+  .step-name {
+    font-weight: 500;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.8rem;
+    color: var(--text);
+    padding-top: 1px;
+  }
+
+  .step-desc {
+    color: var(--text-muted);
+  }
+
+  .step-tag {
+    text-align: right;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    display: inline-block;
+    white-space: nowrap;
+    justify-self: end;
+  }
+
+  .tag-code {
+    background: var(--green-bg);
+    border: 1px solid var(--green-border);
+    color: var(--green);
+  }
+
+  .tag-llm {
+    background: var(--amber-bg);
+    border: 1px solid var(--amber-border);
+    color: var(--amber);
+  }
+
+  .tag-agent {
+    background: var(--red-bg);
+    border: 1px solid var(--red-border);
+    color: var(--red);
+  }
+
+  .tag-human {
+    background: rgba(168, 85, 247, 0.12);
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    color: var(--purple);
+  }
+
+  .ind-code { background: var(--green); }
+  .ind-llm { background: var(--amber); }
+  .ind-agent { background: var(--red); }
+  .ind-human { background: var(--purple); }
+
+  /* ── Summary cards ── */
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+  }
+
+  .summary-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+  }
+
+  .summary-card h4 {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+  }
+
+  .summary-card .number {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .summary-card .detail {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+
+  .num-code { color: var(--green); }
+  .num-llm { color: var(--amber); }
+  .num-agent { color: var(--red); }
+
+  /* ── Opportunity table ── */
+  .opp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-top: 0.75rem;
+  }
+
+  .opp-table th {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .opp-table td {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  .opp-table tr:last-child td { border-bottom: none; }
+
+  .arrow { color: var(--green); font-weight: 600; }
+
+  .notes-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+
+  .notes-box strong { color: var(--text); }
+
+  .notes-box ul {
+    margin: 0.5rem 0 0 1.25rem;
+  }
+
+  .notes-box li {
+    margin-bottom: 0.25rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Pipeline Determinism Analysis</h1>
+<p class="subtitle">SOVA development lifecycle -- action-by-action execution mode map -- 2026-06-30</p>
+
+<div class="legend">
+  <div class="legend-item"><span class="dot dot-code"></span> Deterministic (code)</div>
+  <div class="legend-item"><span class="dot dot-llm"></span> LLM call (targeted)</div>
+  <div class="legend-item"><span class="dot dot-agent"></span> Agent (autonomous)</div>
+  <div class="legend-item"><span class="dot dot-human"></span> Human decision</div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 1: Counts                                            -->
+<!-- ============================================================ -->
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <h4>Deterministic (code)</h4>
+    <div class="number num-code">32</div>
+    <div class="detail">Git ops, state transitions, polling, routing, handoffs, branch naming, orchestration</div>
+  </div>
+  <div class="summary-card">
+    <h4>LLM calls (targeted)</h4>
+    <div class="number num-llm">9</div>
+    <div class="detail">PR body, commit validation, CI fix, rebase conflicts, memory extraction, findings</div>
+  </div>
+  <div class="summary-card">
+    <h4>Agent (autonomous)</h4>
+    <div class="number num-agent">7</div>
+    <div class="detail">Develop, simplify, self-review, address review, research, spec, triage</div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 2: Orchestration layer                               -->
+<!-- ============================================================ -->
+
+<h2>Orchestration Layer</h2>
+<p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+  Everything outside the pipeline steps: task selection, role routing, agent spawning, handoff processing. All deterministic.
+</p>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">0</span> Orchestration & Routing</div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">WatchLoop.scan()</span>
+    <span class="step-desc">Select next task from backlog by hardcoded priority map (RESEARCHED > TRIAGED > BACKLOG)</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">dispatcher</span>
+    <span class="step-desc">Route task to role via <code>_STATE_TO_ROLE</code> dict lookup -- no LLM decisions</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">WorkflowEngine</span>
+    <span class="step-desc">Execute steps in fixed order. Skip via <code>can_skip()</code> (config thresholds, not LLM). No reordering.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">auto_handoff</span>
+    <span class="step-desc">Process handoff actions: check <code>auto_execute</code> flag, circuit breaker count, spawn next role</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">start_agent()</span>
+    <span class="step-desc">Build prompt from fixed template + CLI command. No LLM prompt generation.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">state transitions</span>
+    <span class="step-desc">GitHub labels via hardcoded <code>_STATE_LABELS</code> map. Board moves via <code>_STATE_TO_BOARD</code>.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">branch naming</span>
+    <span class="step-desc">Fixed pattern: <code>feat/issue-{N}</code> or <code>feat/{sanitized_label}</code></span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 3: Triage pipeline                                   -->
+<!-- ============================================================ -->
+
+<h2>Phase 1: Triage</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">1</span> Triage Role</div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">fetch task</span>
+    <span class="step-desc">Load issue data from adapter (GitHub API)</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">assess complexity</span>
+    <span class="step-desc">LLM reads issue body, codebase context, estimates effort and assigns labels</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">apply labels</span>
+    <span class="step-desc">Set priority/area labels, transition state to TRIAGED</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 4: Research pipeline                                 -->
+<!-- ============================================================ -->
+
+<h2>Phase 2: Research & Spec</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">2</span> Researcher Role (4 steps)</div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">fetch_task</span>
+    <span class="step-desc">Populate ExecutionContext with task data from adapter</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">research</span>
+    <span class="step-desc">Full Claude CLI session: explore codebase, read files, write "## Research" section to issue</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">spec</span>
+    <span class="step-desc">Full Claude CLI session: read research + issue, generate <code>.claude/specs/{issue}.md</code></span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">extract_memory</span>
+    <span class="step-desc">Haiku call (~$0.01): extract 0-5 reusable learnings from research context</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-human"></span>
+    <span class="step-name">spec approval</span>
+    <span class="step-desc">Human reviews spec, approves or requests revision via dashboard button</span>
+    <span class="step-tag tag-human">human</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 5: Developer pipeline                                -->
+<!-- ============================================================ -->
+
+<h2>Phase 3: Development (Developer Pipeline -- 15 steps)</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">3</span> Developer Role</div>
+
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">1. sync</span>
+    <span class="step-desc">Pull latest base branch, fetch task data, detect state</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">2. assess</span>
+    <span class="step-desc">Verify issue is ready (Gate 3: must be RESEARCHED), check for existing PR</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">3. create_worktree</span>
+    <span class="step-desc">Create isolated git worktree, deterministic path + branch name</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">4. develop</span>
+    <span class="step-desc">Full Claude CLI: TDD implementation via <code>/develop</code> command. All code decisions.</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">5. simplify</span>
+    <span class="step-desc">Full Claude CLI: code quality pass via <code>/simplify</code> command</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">6. self_review</span>
+    <span class="step-desc">Full Claude CLI: review own changes via <code>/review</code> command</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">7. commit</span>
+    <span class="step-desc">Detect changes, build conventional commit message from context, <code>git add + commit</code></span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">8. validate</span>
+    <span class="step-desc">Run pre-push hooks. On failure: LLM reads error output, fixes code (up to 2 retries)</span>
+    <span class="step-tag tag-llm">llm on failure</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">9. push</span>
+    <span class="step-desc"><code>git push</code> (force-with-lease if PR exists)</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">10. create_pr</span>
+    <span class="step-desc">Title: deterministic from task title. Body: Sonnet LLM call (~$0.01) with structured fallback.</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">11. wait_external</span>
+    <span class="step-desc">Poll CodeRabbit/SonarCloud status with configurable timeout. Pure polling loop.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">12. address_findings</span>
+    <span class="step-desc">If external findings exist: LLM reads SonarCloud + CodeRabbit issues, fixes code</span>
+    <span class="step-tag tag-llm">llm if findings</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">13. monitor_ci</span>
+    <span class="step-desc">Poll CI checks. On failure: LLM reads failure logs, fixes code (up to 3 retries)</span>
+    <span class="step-tag tag-llm">llm on failure</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">14. extract_memory</span>
+    <span class="step-desc">Haiku call (~$0.01): extract reusable learnings from run context</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">15. handoff_reviewer</span>
+    <span class="step-desc">Write structured handoff JSON with <code>auto_execute=true</code> for reviewer</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 6: Review                                            -->
+<!-- ============================================================ -->
+
+<h2>Phase 4: Review</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">4</span> Reviewer Role (standalone, no WorkflowEngine)</div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">fetch PR diff</span>
+    <span class="step-desc">Load diff, chunk if >100KB, load spec for context compression</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">review chunks</span>
+    <span class="step-desc">Sonnet call per chunk: structured findings (file, line, severity, category, suggestion)</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">post review</span>
+    <span class="step-desc">Post findings as GitHub PR review via adapter. Fallback to issue comment.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">extract_memory</span>
+    <span class="step-desc">Haiku call: extract learnings from review findings</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">handoff</span>
+    <span class="step-desc">Write handoff: to developer if findings, to user if clean. Deterministic routing.</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 7: Address review pipeline                           -->
+<!-- ============================================================ -->
+
+<h2>Phase 5: Address Review (9 steps)</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">5</span> Developer Role (address-review variant)</div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">1. rebase</span>
+    <span class="step-desc">Rebase onto latest base. Conflicts: LLM resolves merge markers (up to 3 attempts)</span>
+    <span class="step-tag tag-llm">llm on conflict</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-agent"></span>
+    <span class="step-name">2. address_review</span>
+    <span class="step-desc">Full Claude CLI: read reviewer findings + spec context, fix code and tests</span>
+    <span class="step-tag tag-agent">agent</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">3. commit</span>
+    <span class="step-desc">Build "fix: address review findings" message, <code>git add + commit</code></span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">4. validate</span>
+    <span class="step-desc">Run pre-push hooks. On failure: LLM fixes violations (up to 2 retries)</span>
+    <span class="step-tag tag-llm">llm on failure</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">5. push</span>
+    <span class="step-desc"><code>git push --force-with-lease</code> (post-rebase history rewrite)</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">6. monitor_ci</span>
+    <span class="step-desc">Poll CI. On failure: LLM reads logs, fixes code (up to 3 retries)</span>
+    <span class="step-tag tag-llm">llm on failure</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">7. resolve_reviews</span>
+    <span class="step-desc">Dismiss bot CHANGES_REQUESTED, resolve CodeRabbit threads via GitHub API</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">8. extract_memory</span>
+    <span class="step-desc">Haiku call: extract learnings from address-review context</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">9. handoff_user</span>
+    <span class="step-desc">Write handoff with "Integrate PR" action for human</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 8: Integration                                       -->
+<!-- ============================================================ -->
+
+<h2>Phase 6: Integration</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">6</span> /integrate-pr command (human-triggered)</div>
+  <div class="step-row">
+    <span class="step-indicator ind-human"></span>
+    <span class="step-name">trigger</span>
+    <span class="step-desc">Human clicks "Integrate" button or runs <code>/integrate-pr</code></span>
+    <span class="step-tag tag-human">human</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">rebase</span>
+    <span class="step-desc">Rebase onto latest main (conflict resolution via LLM if needed)</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">CI wait</span>
+    <span class="step-desc">Poll CI checks until all green</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">merge</span>
+    <span class="step-desc">Squash merge via <code>gh pr merge --squash</code></span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">cleanup</span>
+    <span class="step-desc">Delete branch, close issue, remove worktree, update project board</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">learn</span>
+    <span class="step-desc">Ingest review feedback into agent memory via <code>/ingest-review</code></span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 9: Planner pipeline                                  -->
+<!-- ============================================================ -->
+
+<h2>Phase 0: Planning (Planner Pipeline -- 4 steps)</h2>
+
+<div class="phase">
+  <div class="phase-header"><span class="phase-number">P</span> Planner Role (issueless)</div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">1. scan_project</span>
+    <span class="step-desc">Gather git log, issue list, tech stack, directory structure -- pure data collection</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">2. generate_tasks</span>
+    <span class="step-desc">LLM reads scan summary, proposes 5-10 tasks with acceptance criteria (JSON)</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-code"></span>
+    <span class="step-name">3. validate_tasks</span>
+    <span class="step-desc">Specificity checks, testability heuristics, duplicate detection -- no LLM</span>
+    <span class="step-tag tag-code">deterministic</span>
+  </div>
+  <div class="step-row">
+    <span class="step-indicator ind-llm"></span>
+    <span class="step-name">4. extract_memory</span>
+    <span class="step-desc">Haiku call: extract learnings from planning context</span>
+    <span class="step-tag tag-llm">llm call</span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 10: Determinism opportunities                        -->
+<!-- ============================================================ -->
+
+<h2>Determinism Opportunities</h2>
+<p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:0.75rem;">
+  Actions currently using an LLM that could be replaced with deterministic code.
+</p>
+
+<div class="phase">
+  <table class="opp-table">
+    <thead>
+      <tr>
+        <th>Current Action</th>
+        <th>Current Mode</th>
+        <th></th>
+        <th>Proposed Mode</th>
+        <th>How</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>PR title generation</td>
+        <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
+        <td class="arrow">--></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td>Strip existing prefix from task title, re-wrap with <code>type(#N)</code>. <strong>DONE</strong></td>
+      </tr>
+      <tr>
+        <td>PR body generation</td>
+        <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
+        <td class="arrow">--></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td>Structured template from commits + diff stats + issue body. Fallback already exists in <code>_build_fallback_body()</code>; promote it to primary.</td>
+      </tr>
+      <tr>
+        <td>Commit message (step 7)</td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td>Already deterministic. Verify no agent override path exists.</td>
+      </tr>
+      <tr>
+        <td>Memory extraction</td>
+        <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
+        <td class="arrow">--></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td>Rule-based: extract file paths, error patterns, test failures. Low value vs cost -- consider removing entirely or running only on failure.</td>
+      </tr>
+      <tr>
+        <td>Review feedback ingestion</td>
+        <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
+        <td class="arrow">--></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
+        <td>Parse review comments structurally (category, severity already in JSON). Store raw findings, no summarization needed.</td>
+      </tr>
+      <tr>
+        <td>Triage assessment</td>
+        <td><span class="step-tag tag-agent" style="display:inline">agent</span></td>
+        <td class="arrow">--></td>
+        <td><span class="step-tag tag-llm" style="display:inline">llm call</span></td>
+        <td>Replace full agent with single structured LLM call (Haiku): input=issue body, output=JSON {priority, area, complexity, labels}. No tool access needed.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 11: Must remain LLM/Agent                            -->
+<!-- ============================================================ -->
+
+<h2>Must Remain Non-Deterministic</h2>
+
+<div class="notes-box">
+  <strong>Core value -- agents exist for these:</strong>
+  <ul>
+    <li><strong>develop</strong> (step 4) -- TDD implementation is the product's core value proposition</li>
+    <li><strong>simplify</strong> (step 5) -- requires understanding code semantics to identify improvements</li>
+    <li><strong>self_review</strong> (step 6) -- needs to reason about correctness, security, design</li>
+    <li><strong>address_review</strong> (AR step 2) -- must understand reviewer intent and fix accordingly</li>
+    <li><strong>research</strong> (phase 2) -- exploratory codebase navigation, can't be templated</li>
+    <li><strong>spec</strong> (phase 2) -- synthesis of research into structured specification</li>
+    <li><strong>reviewer</strong> (phase 4) -- structured LLM call already (Sonnet + JSON schema), not a full agent</li>
+  </ul>
+
+  <br>
+  <strong>Acceptable LLM usage -- conditional, bounded:</strong>
+  <ul>
+    <li><strong>validate fix</strong> (step 8) -- only fires on hook failure, bounded to 2 retries</li>
+    <li><strong>CI fix loop</strong> (step 13) -- only fires on CI failure, bounded to 3 retries + budget check</li>
+    <li><strong>rebase conflicts</strong> (AR step 1) -- only fires on conflict, bounded to 3 attempts</li>
+    <li><strong>address_findings</strong> (step 12) -- only fires when external tools report issues</li>
+  </ul>
+
+  <br>
+  <strong>Design principle:</strong> agents do the creative work (develop, review, fix).
+  Everything else -- routing, state management, git operations, PR metadata, handoffs,
+  CI polling, external review thread lifecycle -- is deterministic code. When adding new
+  pipeline features, default to code. Only reach for an LLM when the task requires
+  understanding natural language or generating novel code.
+</div>
+
+<!-- ============================================================ -->
+<!-- SECTION 12: Summary stats                                    -->
+<!-- ============================================================ -->
+
+<h2>Execution Mode Breakdown by Pipeline</h2>
+
+<div class="phase">
+  <table class="opp-table">
+    <thead>
+      <tr>
+        <th>Pipeline</th>
+        <th style="text-align:center;color:var(--green)">Code</th>
+        <th style="text-align:center;color:var(--amber)">LLM</th>
+        <th style="text-align:center;color:var(--red)">Agent</th>
+        <th>Determinism %</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Orchestration</td>
+        <td style="text-align:center">7</td>
+        <td style="text-align:center">0</td>
+        <td style="text-align:center">0</td>
+        <td><strong style="color:var(--green)">100%</strong></td>
+      </tr>
+      <tr>
+        <td>Developer (15 steps)</td>
+        <td style="text-align:center">7</td>
+        <td style="text-align:center">5</td>
+        <td style="text-align:center">3</td>
+        <td><strong>47%</strong> (80% if conditional LLM counted as code)</td>
+      </tr>
+      <tr>
+        <td>Address-Review (9 steps)</td>
+        <td style="text-align:center">4</td>
+        <td style="text-align:center">4</td>
+        <td style="text-align:center">1</td>
+        <td><strong>44%</strong> (78% if conditional LLM counted as code)</td>
+      </tr>
+      <tr>
+        <td>Researcher (4+1 steps)</td>
+        <td style="text-align:center">1</td>
+        <td style="text-align:center">1</td>
+        <td style="text-align:center">2</td>
+        <td><strong>25%</strong></td>
+      </tr>
+      <tr>
+        <td>Reviewer (5 actions)</td>
+        <td style="text-align:center">3</td>
+        <td style="text-align:center">2</td>
+        <td style="text-align:center">0</td>
+        <td><strong>60%</strong></td>
+      </tr>
+      <tr>
+        <td>Integration (6 actions)</td>
+        <td style="text-align:center">4</td>
+        <td style="text-align:center">1</td>
+        <td style="text-align:center">0</td>
+        <td><strong>83%</strong></td>
+      </tr>
+      <tr>
+        <td>Planner (4 steps)</td>
+        <td style="text-align:center">2</td>
+        <td style="text-align:center">2</td>
+        <td style="text-align:center">0</td>
+        <td><strong>50%</strong></td>
+      </tr>
+      <tr style="border-top: 2px solid var(--border);">
+        <td><strong>Total</strong></td>
+        <td style="text-align:center"><strong>28</strong></td>
+        <td style="text-align:center"><strong>15</strong></td>
+        <td style="text-align:center"><strong>6</strong></td>
+        <td><strong>57%</strong> strict / <strong>76%</strong> counting conditional LLM as code</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="notes-box" style="margin-top:1.5rem;">
+  <strong>Key takeaway:</strong> The orchestration layer is 100% deterministic -- no model dependency
+  in routing, scheduling, state management, or handoff processing. Non-determinism is concentrated
+  in 6 agent sessions (the creative work) and 9 targeted LLM calls (5 of which are conditional --
+  only fire on failure). With the proposed opportunities above, the strict determinism ratio could
+  reach ~65% and the effective ratio ~82%.
+</div>
+
+</body>
+</html>

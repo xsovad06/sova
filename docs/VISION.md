@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-06-28
+> **Last updated**: 2026-06-30
 
 ## What This Becomes
 
@@ -298,7 +298,8 @@ Target: October 2026.
 | ~~--~~ | ~~JIRA adapter~~ | ~~JIRA Cloud task source with lifecycle enrichment~~ (done: #220) |
 | -- | Additional adapters | Linear, Odoo task source adapters |
 | -- | Additional personas | Go, React, Rust framework guidance |
-| -- | Intelligent model routing | dynamically select Opus/Sonnet/Haiku based on task complexity |
+| ~~--~~ | ~~Intelligent model routing~~ | ~~dynamically select Opus/Sonnet/Haiku based on task complexity~~ (done: #155-157) |
+| #277 | Pipeline determinism | replace LLM calls with deterministic code in PR body, memory extraction, triage, review ingestion |
 | #254-259 | Resource monitoring | per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor |
 
 ## Design Principles

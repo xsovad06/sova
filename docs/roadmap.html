@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-29</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-06-30</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -515,7 +515,7 @@ flowchart TD
       direction TB
       I164["#164 PlannerRole\nclass\n(DONE)"]:::done
       I165["#165 Planning pipeline\nsteps\n(DONE)"]:::done
-      I166["#166 Start planner\nwithout issue"]:::guided
+      I166["#166 Start planner\nwithout issue\n(DONE)"]:::done
       I164 --> I165
       I165 --> I166
     end
@@ -540,7 +540,7 @@ flowchart TD
 
   subgraph TIER4["TIER 4: LLM INFRA (Sep)"]
     direction TB
-    I117["#117 Ollama local\nmodel support"]:::guided
+    I117["#117 Ollama local\nmodel support\n(DONE)"]:::done
   end
 
   subgraph RELEASE["RELEASE GATE (Sep-Oct)"]
@@ -574,12 +574,12 @@ flowchart TD
       <div class="grid-label">Health Audit</div>
       <pre class="mermaid">
 flowchart TD
-  I235["#235 DB hardening\nFK indexes + engine lock"]:::autonomous
-  I236["#236 Split agent_lifecycle\ninto focused modules"]:::autonomous
-  I237["#237 Reviewer parsing\n+ complexity"]:::autonomous
-  I238["#238 Cache + concurrency\nsafety"]:::autonomous
-  I239["#239 Test coverage\nscheduler + knowledge"]:::autonomous
-  I240["#240 Health check\n+ config masking"]:::autonomous
+  I235["#235 DB hardening\nFK indexes + engine lock\n(DONE)"]:::done
+  I236["#236 Split agent_lifecycle\ninto focused modules\n(DONE)"]:::done
+  I237["#237 Reviewer parsing\n+ complexity\n(DONE)"]:::done
+  I238["#238 Cache + concurrency\nsafety\n(DONE)"]:::done
+  I239["#239 Test coverage\nscheduler + knowledge\n(DONE)"]:::done
+  I240["#240 Health check\n+ config masking\n(DONE)"]:::done
   I235 -.-> I238
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
   classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
@@ -594,7 +594,7 @@ flowchart TD
       <div class="grid-label">Knowledge System</div>
       <pre class="mermaid">
 flowchart TD
-  I224["#224 Semantic memory\nsearch (embeddings)"]:::autonomous
+  I224["#224 Semantic memory\nsearch (embeddings)\n(DONE)"]:::done
   I225["#225 Memory relationship\ngraph"]:::autonomous
   I226["#226 Relevance-filtered\nmemory injection"]:::autonomous
   I227["#227 Memory lifecycle\nconsolidation + decay"]:::autonomous
@@ -614,7 +614,7 @@ flowchart TD
       <pre class="mermaid">
 flowchart TD
   I198["#198 Prompt injection\nguard (mid-pipeline)\n(DONE)"]:::done
-  I199["#199 LLM output\negress filter"]:::medium
+  I199["#199 LLM output\negress filter\n(DONE)"]:::done
   I198 --> I199
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
   classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
@@ -747,6 +747,17 @@ flowchart TD
   classDef human fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
   classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
     </pre>
+  </div>
+
+  <!-- Pipeline Determinism -->
+  <h3 class="subsection-title">Pipeline Determinism</h3>
+  <div class="diagram-container">
+    <div class="task-row">
+      <span class="task-number">#277</span>
+      <span class="task-title">Replace LLM calls with deterministic code in pipeline operations</span>
+      <span class="task-badge badge-autonomous">agentic</span>
+      <span class="task-badge badge-high">high</span>
+    </div>
   </div>
 
   <!-- Standalone Features -->
@@ -951,10 +962,10 @@ flowchart TD
           <span class="task-title">Planning pipeline steps (scan, generate, validate)</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#166</span>
           <span class="task-title">Start planner agent without issue number</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
         </div>
         <div class="task-row done">
           <span class="task-number">#155</span>
@@ -998,10 +1009,10 @@ flowchart TD
       <!-- Tier 4 -->
       <div class="timeline-label">Tier 4<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Sep</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#117</span>
           <span class="task-title">Ollama local model support for cost-tier tasks</span>
-          <span class="task-badge badge-guided">human</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1056,10 +1067,10 @@ flowchart TD
           <span class="task-title">Mid-pipeline prompt injection guard for LLM calls</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#199</span>
           <span class="task-title">LLM output egress filter for external-facing actions</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1115,37 +1126,35 @@ flowchart TD
       <!-- Health Audit -->
       <div class="timeline-label">Audit<br><span style="font-weight:400;font-size:0.65rem;color:var(--green)">Parallel</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#235</span>
           <span class="task-title">DB hardening: FK indexes + engine init lock</span>
-          <span class="task-badge badge-autonomous">agentic</span>
-          <span class="task-badge badge-high">high</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#236</span>
           <span class="task-title">Split agent_lifecycle.py into focused modules</span>
-          <span class="task-badge badge-autonomous">agentic</span>
-          <span class="task-badge badge-high">high</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#237</span>
           <span class="task-title">Harden reviewer JSON parsing + reduce complexity</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#238</span>
           <span class="task-title">Replace manual TTL caches + concurrency locks</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#239</span>
           <span class="task-title">Expand scheduler + knowledge.sharing test coverage</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#240</span>
           <span class="task-title">Health check endpoint + config credential masking</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1154,10 +1163,10 @@ flowchart TD
       <!-- Knowledge System -->
       <div class="timeline-label">Knowledge<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#224</span>
           <span class="task-title">Semantic memory search via embeddings</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
         <div class="task-row">
           <span class="task-number">#225</span>
@@ -1206,6 +1215,19 @@ flowchart TD
           <span class="task-number">#205</span>
           <span class="task-title">RTK token compression for headless agent runs</span>
           <span class="task-badge badge-guided">hybrid</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
+      <!-- Pipeline Determinism -->
+      <div class="timeline-label">Determinism<br><span style="font-weight:400;font-size:0.65rem;color:var(--amber)">Priority</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#277</span>
+          <span class="task-title">Replace LLM calls with deterministic code in pipeline operations</span>
+          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-high">high</span>
         </div>
       </div>
 
@@ -1357,7 +1379,7 @@ gantt
     #163 Approval resume UI          :done, t163, 2026-06-28, 1d
     #164 PlannerRole class           :done, t164, 2026-06-28, 1d
     #165 Planning pipeline steps     :done, t165, 2026-06-29, 1d
-    #166 Start planner UI            :t166, after t165, 2d
+    #166 Start planner UI            :done, t166, 2026-06-29, 1d
     #155 Complexity scorer           :done, t155, 2026-06-27, 1d
     #156 Model routing rules         :done, t156, 2026-06-28, 1d
     #157 Routing in CostRecord       :done, t157, 2026-06-29, 1d
@@ -1367,19 +1389,22 @@ gantt
     #188 Phase milestones in setup   :done, t188, 2026-06-29, 1d
 
   section Tier 4 LLM Infra
-    #117 Ollama local models         :t117, 2026-09-01, 5d
+    #117 Ollama local models         :done, t117, 2026-06-30, 1d
 
   section Health Audit
-    #235 DB hardening                :t235, 2026-07-01, 1d
-    #236 Split agent_lifecycle       :t236, 2026-07-01, 2d
-    #237 Reviewer robustness         :t237, 2026-07-01, 2d
-    #238 Cache + concurrency safety  :t238, after t235, 1d
-    #239 Test coverage gaps          :t239, 2026-07-01, 3d
-    #240 Health check + config       :t240, 2026-07-01, 1d
+    #235 DB hardening                :done, t235, 2026-06-30, 1d
+    #236 Split agent_lifecycle       :done, t236, 2026-06-30, 1d
+    #237 Reviewer robustness         :done, t237, 2026-06-30, 1d
+    #238 Cache + concurrency safety  :done, t238, 2026-06-30, 1d
+    #239 Test coverage gaps          :done, t239, 2026-06-29, 1d
+    #240 Health check + config       :done, t240, 2026-06-30, 1d
 
   section Security Hardening
     #198 Prompt injection guard      :done, t198, 2026-06-27, 1d
-    #199 LLM output egress filter    :t199, after t198, 2d
+    #199 LLM output egress filter    :done, t199, 2026-06-30, 1d
+
+  section Pipeline Determinism
+    #277 Deterministic pipeline ops  :crit, t277, 2026-07-01, 3d
 
   section Resource Monitoring
     #254 psutil + ResourceCollector  :t254, 2026-07-14, 2d
@@ -1409,22 +1434,23 @@ gantt
         <li><strong>Tier 1</strong> (COMPLETE): Agent Runtime (#158-160) + Status Badges (#152-154)</li>
         <li><strong>Tier 2</strong> (COMPLETE): Pipeline Reliability (#206-208) + Step Visualization (#149-151) + Kanban (#145-148)</li>
         <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157), Spec-Driven Pipeline (#245-247)</li>
-        <li><strong>Tier 4</strong> (Sep): Ollama local model support (#117) -- architecture decision needed</li>
+        <li><strong>Tier 4</strong> (COMPLETE): Ollama local model support (#117)</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
+        <li><strong>Pipeline determinism</strong>: #277 (top priority) -- replace LLM calls with deterministic code in PR body, memory extraction, review ingestion, triage</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
         <li><strong>Resource monitoring (Chain K)</strong>: psutil integration (#254), DB persistence (#255), dashboard metrics (#256), live widget (#257), cross-project (#258), capacity advisor (#259)</li>
-        <li><strong>Recently completed</strong>: #157 (routing in CostRecord), #188 (phase milestones), #165 (planning pipeline steps), #247 (spec context compression), #156 (model routing rules), #246 (provenance threading), #164 (PlannerRole), #163 (approval resume), #162 (pause-for-approval), #245 (spec-anchored review), #161 (SpecStep), #155 (complexity scorer)</li>
+        <li><strong>Recently completed</strong>: #238 (cache + concurrency), #224 (semantic memory search), #199 (egress filter), #117 (Ollama), #235 (DB hardening), #240 (health check), #236 (split agent_lifecycle), #237 (reviewer robustness), #239 (test coverage), #166 (start planner UI), #157 (routing in CostRecord), #188 (phase milestones)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
-        <li><strong>Security hardening</strong>: Prompt injection guard (#198, done) -> Egress filter (#199, medium) -- remaining: 1 agentic issue</li>
-        <li><strong>Agentic (6 tier remaining):</strong> #199, #254, #255, #256, #258, #259, #250 -- API/service layers with clear acceptance criteria</li>
-        <li><strong>Human (4 issues):</strong> #166, #117, #6, #21, #20 -- interactive UI, architecture decisions, content creation</li>
+        <li><strong>Security hardening</strong>: COMPLETE -- Prompt injection guard (#198) + Egress filter (#199)</li>
+        <li><strong>Agentic (6 remaining):</strong> #277 (top priority), #250, #254, #255, #256, #258, #259 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Human (2 issues):</strong> #6, #21, #20 -- velocity measurement, content creation, release tagging</li>
         <li><strong>Hybrid (1 issue):</strong> #257 (live metrics widget) -- engine logic and UX decisions</li>
-        <li><strong>Health audit (6 issues):</strong> #235-240 -- all agentic, well-scoped with clear file lists</li>
-        <li><strong>Knowledge system (4 issues):</strong> #224-227 -- semantic search, graph, injection, lifecycle</li>
+        <li><strong>Health audit</strong>: COMPLETE -- all 6 issues (#235-240) done</li>
+        <li><strong>Knowledge system (3 remaining):</strong> #225-227 -- graph, injection, lifecycle (#224 done)</li>
         <li><strong>Agent quality (5 issues):</strong> #232-234, #241, #205 -- dev loop, regression, review quality</li>
         <li><strong>Resource monitoring (6 issues):</strong> #254-259 -- psutil, DB, dashboard, live widget, cross-project, capacity advisor</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
