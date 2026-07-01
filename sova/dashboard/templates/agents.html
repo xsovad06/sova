@@ -911,7 +911,7 @@ async function loadAgents() {
 function renderAgentCard(agent) {
   var colors = roleColor(agent.role);
   var pipeline = renderStepPipeline(agent.current_step, agent.role, false, agent.pipeline_variant);
-  var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
+  var cost = agent.cost_usd ? '$' + parseFloat(agent.cost_usd).toFixed(4) : '$0.00';
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
@@ -948,7 +948,7 @@ function renderAgentCard(agent) {
 function renderCompletedCard(agent) {
   var colors = roleColor(agent.role);
   var borderColor = agent.status === 'done' ? 'border-accent-green/40' : 'border-accent-red/40';
-  var cost = agent.cost_usd ? '$' + agent.cost_usd.toFixed(4) : '$0.00';
+  var cost = agent.cost_usd ? '$' + parseFloat(agent.cost_usd).toFixed(4) : '$0.00';
   var agoText = agent.completed_seconds_ago + 's ago';
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;

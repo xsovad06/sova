@@ -78,7 +78,7 @@ async function loadDashboard() {
           '</div>' +
           '<div class="mb-1">' + pipeline + '</div>' +
           '<div class="flex justify-between text-xs text-gray-500">' +
-            '<span class="text-accent-green">$' + (a.cost_usd || 0).toFixed(2) + '</span>' +
+            '<span class="text-accent-green">$' + parseFloat(a.cost_usd || 0).toFixed(2) + '</span>' +
             '<span>' + formatElapsed(a.elapsed_seconds) + '</span>' +
           '</div>' +
         '</a>';
@@ -95,8 +95,8 @@ async function loadDashboard() {
 
     // Costs
     var c = overview.costs;
-    document.getElementById('card-today-cost').textContent = '$' + c.today_cost_usd.toFixed(2);
-    document.getElementById('card-7d-cost').textContent = '$' + c.rolling_7d_usd.toFixed(2);
+    document.getElementById('card-today-cost').textContent = '$' + parseFloat(c.today_cost_usd || 0).toFixed(2);
+    document.getElementById('card-7d-cost').textContent = '$' + parseFloat(c.rolling_7d_usd || 0).toFixed(2);
     document.getElementById('card-invocations').textContent = c.total_invocations + ' total invocations';
 
     // Completion rate
