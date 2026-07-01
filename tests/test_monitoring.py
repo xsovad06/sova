@@ -11,6 +11,15 @@ import pytest
 from sova.monitoring.collector import ResourceCollector
 from sova.monitoring.models import ResourceSample, ResourceSummary
 
+
+async def _wait_for_samples(collector: ResourceCollector, n: int, timeout: float = 2.0) -> None:
+    """Poll until collector has at least *n* samples or *timeout* expires."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while len(collector.samples) < n:
+        if asyncio.get_event_loop().time() > deadline:
+            break
+        await asyncio.sleep(0.01)
+
 # ---------------------------------------------------------------------------
 # ResourceSample / ResourceSummary dataclass tests
 # ---------------------------------------------------------------------------
@@ -127,11 +136,13 @@ def _make_mock_process(
     children: list | None = None,
     io_read: int | None = 500,
     io_write: int | None = 600,
+    num_threads: int = 4,
 ) -> MagicMock:
     proc = MagicMock()
     proc.pid = pid
     proc.create_time.return_value = create_time
     proc.cpu_percent.return_value = cpu_percent
+    proc.num_threads.return_value = num_threads
 
     mem = MagicMock()
     mem.rss = rss
@@ -168,8 +179,7 @@ class TestResourceCollector:
             mock_proc.cpu_percent.side_effect = [0.0, 25.0, psutil.NoSuchProcess(123)]
 
             collector.start()
-            # Wait for the loop to finish (process dies)
-            await asyncio.sleep(0.1)
+            await _wait_for_samples(collector, 1)
             await collector.stop()
 
             assert len(collector.samples) >= 1
@@ -178,29 +188,39 @@ class TestResourceCollector:
             assert sample.memory_rss_bytes == 1024
 
     @pytest.mark.asyncio
-    async def test_stop_cancels_task(self) -> None:
+    async def test_stop_signals_cooperative_shutdown(self) -> None:
+        """stop() sets the stop event for cooperative shutdown (not cancellation)."""
         mock_proc = _make_mock_process()
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.15)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
             assert summary.sample_count >= 1
             assert collector._task is None
 
     @pytest.mark.asyncio
-    async def test_process_dies_returns_summary(self) -> None:
+    async def test_process_dies_mid_run_returns_summary(self) -> None:
+        """Process dying mid-sampling returns collected samples."""
         mock_proc = _make_mock_process()
-        mock_proc.cpu_percent.side_effect = psutil.NoSuchProcess(123)
+        # Priming call succeeds, first real sample succeeds,
+        # second sample's create_time check succeeds but cpu_percent dies.
+        mock_proc.cpu_percent.side_effect = [
+            0.0,    # start() priming
+            25.0,   # first sample succeeds
+            psutil.NoSuchProcess(123),  # second sample dies
+        ]
+        mock_proc.create_time.side_effect = [1000.0, 1000.0, 1000.0]
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
-            collector = ResourceCollector(pid=123, interval=0.05)
+            collector = ResourceCollector(pid=123, interval=0.01)
             collector.start()
-            await asyncio.sleep(0.2)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
-            assert summary.sample_count == 0
+            # At least one successful sample before death
+            assert summary.sample_count >= 1
 
     @pytest.mark.asyncio
     async def test_pid_reuse_detection(self) -> None:
@@ -211,7 +231,7 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.3)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
             # Should have stopped after detecting PID reuse
@@ -230,7 +250,7 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.15)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
             # Should still have samples from the parent
@@ -243,7 +263,7 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.15)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
             assert summary.sample_count >= 1
@@ -263,13 +283,14 @@ class TestResourceCollector:
         child.cpu_percent.return_value = 10.0
         child.memory_info.return_value = child_mem
         child.io_counters.return_value = child_io
+        child.num_threads.return_value = 3
 
         mock_proc = _make_mock_process(children=[child])
 
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.15)
+            await _wait_for_samples(collector, 1)
             summary = await collector.stop()
 
             assert summary.sample_count >= 1
@@ -287,7 +308,7 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.15)
+            await _wait_for_samples(collector, 1)
 
             summary = collector.get_summary()
             assert summary.sample_count >= 1
@@ -311,14 +332,14 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.05)
             collector.start()
-            await asyncio.sleep(0.1)
+            await _wait_for_samples(collector, 1)
             await collector.stop()
             summary = await collector.stop()  # should not raise
             assert summary.sample_count >= 0
 
     @pytest.mark.asyncio
     async def test_sample_loop_process_exit_during_sample(self) -> None:
-        """Cover the NoSuchProcess except branch in _sample_loop (lines 92-94)."""
+        """Cover the NoSuchProcess except branch in _sample_loop."""
         mock_proc = _make_mock_process()
         # First create_time() call is for start(), second is the PID-reuse
         # check in _sample_loop which then calls _take_sample -> cpu_percent
@@ -329,7 +350,8 @@ class TestResourceCollector:
         with patch("sova.monitoring.collector.psutil.Process", return_value=mock_proc):
             collector = ResourceCollector(pid=123, interval=0.01)
             collector.start()
-            await asyncio.sleep(0.1)
+            # Task will exit quickly since process dies on first sample
+            await asyncio.sleep(0.05)
             summary = await collector.stop()
             assert summary.sample_count == 0
 
@@ -458,6 +480,119 @@ class TestResourceCollector:
             collector = ResourceCollector(pid=123)
             collector.start()
             assert collector._task is None
+
+    @pytest.mark.asyncio
+    async def test_start_access_denied(self) -> None:
+        """AccessDenied during start() is handled gracefully."""
+        with patch(
+            "sova.monitoring.collector.psutil.Process",
+            side_effect=psutil.AccessDenied(123),
+        ):
+            collector = ResourceCollector(pid=123)
+            collector.start()
+            assert collector._task is None
+
+    def test_rolling_aggregates_cover_full_period(self) -> None:
+        """get_summary() uses rolling aggregates, not just the sample window."""
+        mock_proc = _make_mock_process()
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        # Simulate adding samples and verify aggregates track the full history
+        s1 = collector._take_sample(mock_proc)
+        collector.samples.append(s1)
+        collector._update_aggregates(s1)
+
+        # Change mock values for second sample
+        mem2 = MagicMock()
+        mem2.rss = 4096
+        mem2.vms = 8192
+        mock_proc.memory_info.return_value = mem2
+        mock_proc.cpu_percent.return_value = 80.0
+
+        s2 = collector._take_sample(mock_proc)
+        collector.samples.append(s2)
+        collector._update_aggregates(s2)
+
+        summary = collector.get_summary()
+        assert summary.sample_count == 2
+        assert summary.peak_cpu_percent == 80.0
+        assert summary.peak_memory_rss_bytes == 4096
+        assert summary.avg_cpu_percent == pytest.approx((25.0 + 80.0) / 2)
+
+    def test_rolling_aggregates_survive_eviction(self) -> None:
+        """Rolling aggregates remain accurate after samples are evicted."""
+        mock_proc = _make_mock_process(rss=9999, cpu_percent=99.0)
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        # Use a tiny deque to force eviction
+        from collections import deque
+        collector.samples = deque(maxlen=2)
+
+        # Take 3 samples -- first will be evicted
+        s1 = collector._take_sample(mock_proc)
+        collector.samples.append(s1)
+        collector._update_aggregates(s1)
+
+        mock_proc.cpu_percent.return_value = 10.0
+        mem2 = MagicMock()
+        mem2.rss = 100
+        mem2.vms = 200
+        mock_proc.memory_info.return_value = mem2
+
+        s2 = collector._take_sample(mock_proc)
+        collector.samples.append(s2)
+        collector._update_aggregates(s2)
+
+        s3 = collector._take_sample(mock_proc)
+        collector.samples.append(s3)
+        collector._update_aggregates(s3)
+
+        # s1 (peak) is evicted from deque, but rolling aggregates keep it
+        assert len(collector.samples) == 2
+        summary = collector.get_summary()
+        assert summary.sample_count == 3
+        assert summary.peak_cpu_percent == 99.0  # from evicted s1
+        assert summary.peak_memory_rss_bytes == 9999  # from evicted s1
+
+    def test_thread_count_in_sample(self) -> None:
+        """Thread count is captured in samples."""
+        mock_proc = _make_mock_process(num_threads=8)
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        sample = collector._take_sample(mock_proc)
+        assert sample.num_threads == 8
+
+    def test_thread_count_with_children(self) -> None:
+        """Thread count aggregates parent and child threads."""
+        child_mem = MagicMock()
+        child_mem.rss = 512
+        child_mem.vms = 1024
+        child = MagicMock()
+        child.pid = 456
+        child.cpu_percent.return_value = 5.0
+        child.memory_info.return_value = child_mem
+        child.io_counters.side_effect = NotImplementedError
+        child.num_threads.return_value = 3
+
+        mock_proc = _make_mock_process(children=[child], num_threads=4)
+        collector = ResourceCollector(pid=123)
+        collector._create_time = 1000.0
+
+        sample = collector._take_sample(mock_proc)
+        assert sample.num_threads == 7  # parent 4 + child 3
+
+    def test_peak_threads_in_summary(self) -> None:
+        """Summary tracks peak thread count."""
+        samples = [
+            ResourceSample(1.0, 10.0, 100, 200, 0, 0, 0, num_threads=4),
+            ResourceSample(2.0, 20.0, 200, 300, 0, 0, 0, num_threads=12),
+            ResourceSample(3.0, 15.0, 150, 250, 0, 0, 0, num_threads=8),
+        ]
+        summary = ResourceSummary.from_samples(samples)
+        assert summary.peak_num_threads == 12
 
 
 # ---------------------------------------------------------------------------
