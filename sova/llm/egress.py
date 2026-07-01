@@ -63,9 +63,9 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
         "sk_api_key",
         "[REDACTED:sk_key]",
     ),
-    # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_)
+    # GitHub tokens (ghp_, gho_, ghu_, ghs_, ghr_) and fine-grained PATs (github_pat_)
     (
-        re.compile(r"\b(gh[pousr]_\w{36,})\b"),
+        re.compile(r"\b(gh[pousr]_\w{36,}|github_pat_\w{82,})\b"),
         "github_token",
         "[REDACTED:github_token]",
     ),
@@ -79,6 +79,12 @@ _SENSITIVE_PATTERNS: list[_PatternEntry] = [
         re.compile(r"\b(xapp-[A-Za-z0-9\-]+)\b"),
         "slack_app_token",
         "[REDACTED:slack_token]",
+    ),
+    # Bearer token in Authorization headers (space-separated, not key=value)
+    (
+        re.compile(r"(?i)\b(?:authorization[:\s]+)?bearer\s+([A-Za-z0-9_\-/.+=]{8,})\b"),
+        "bearer_token",
+        "[REDACTED:bearer_token]",
     ),
     # Generic "token" / "secret" with separator -- requires = or : followed by a value
     # Avoids matching "tokenizer", "token count", "secret sauce", etc.
