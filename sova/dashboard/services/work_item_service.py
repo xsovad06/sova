@@ -224,9 +224,7 @@ def compute_work_item_state(
 
     if handoff and handoff.get("status") == "awaiting_action":
         pr_computed = (pr_data or {}).get("computed_state", "")
-        if pr_computed in ("changes_requested", "ci_failed"):
-            pass
-        else:
+        if pr_computed not in ("changes_requested", "ci_failed"):
             next_actions = handoff.get("next_actions", [])
             action_ids = {a.get("id") or a.get("action") or a.get("command") or "" for a in next_actions}
             if action_ids & _SPEC_ACTION_IDS:

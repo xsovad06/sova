@@ -1033,7 +1033,7 @@ function renderRunsTable(runs, targetId) {
         '<td class="p-3 text-gray-300">' + escapeHtml(r.role) + '</td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(r.status) + '"></span><span class="' + statusColor(r.status) + '">' + escapeHtml(r.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + escapeHtml(r.current_step || '--') + '</td>' +
-        '<td class="p-3 text-right text-accent-green">$' + parseFloat(r.total_cost_usd || 0).toFixed(4) + '</td>' +
+        '<td class="p-3 text-right text-accent-green">$' + (parseFloat(r.total_cost_usd) || 0).toFixed(4) + '</td>' +
         '<td class="p-3 text-gray-500 text-xs">' + (r.started_at ? new Date(r.started_at).toLocaleString() : '--') + '</td>' +
         '</tr>';
     }).join('') + '</tbody></table>';
