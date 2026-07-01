@@ -160,7 +160,7 @@ function renderPhaseDetail(data, phase) {
       html += '<div><span class="text-gray-500">Run:</span> <a href="' + prefix + '/work/' + record.task_run_id + '" class="text-accent hover:underline">#' + record.task_run_id + '</a></div>';
     }
     if (record.cost_usd) {
-      html += '<div><span class="text-gray-500">Cost:</span> <span class="text-accent-green">$' + record.cost_usd.toFixed(4) + '</span></div>';
+      html += '<div><span class="text-gray-500">Cost:</span> <span class="text-accent-green">$' + parseFloat(record.cost_usd || 0).toFixed(4) + '</span></div>';
     }
     if (record.attempt > 1) {
       html += '<div><span class="text-gray-500">Attempt:</span> ' + record.attempt + '</div>';
@@ -236,7 +236,7 @@ function renderPhaseHistory(data) {
       html += '<a href="' + prefix + '/work/' + p.task_run_id + '" class="text-xs text-accent hover:underline">Run #' + p.task_run_id + '</a>';
     }
     if (p.cost_usd) {
-      html += '<span class="text-xs text-accent-green">$' + p.cost_usd.toFixed(4) + '</span>';
+      html += '<span class="text-xs text-accent-green">$' + parseFloat(p.cost_usd || 0).toFixed(4) + '</span>';
     }
     if (p.attempt > 1) {
       html += '<span class="text-xs text-gray-500">Attempt ' + p.attempt + '</span>';
@@ -262,7 +262,7 @@ function renderSummary(data) {
   el.innerHTML = parts.join('<span class="text-gray-700 mx-2">|</span>');
 
   var costEl = document.getElementById('lc-cost');
-  costEl.textContent = '$' + (data.total_cost_usd || 0).toFixed(4);
+  costEl.textContent = '$' + parseFloat(data.total_cost_usd || 0).toFixed(4);
 }
 
 async function loadLifecycle() {

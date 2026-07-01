@@ -65,7 +65,7 @@ async function loadTasks() {
             (t.branch_name ? '<p>Branch: <span class="text-gray-300 font-mono">' + escapeHtml(t.branch_name) + '</span></p>' : '') +
             (prBadge ? '<p>' + prBadge + '</p>' : '') +
             '<p>Time: <span class="text-gray-300">' + escapeHtml(t.time_in_state || '--') + '</span></p>' +
-            '<p>Cost: <span class="text-accent-green">$' + (t.total_cost_usd || 0).toFixed(4) + '</span></p>' +
+            '<p>Cost: <span class="text-accent-green">$' + parseFloat(t.total_cost_usd || 0).toFixed(4) + '</span></p>' +
           '</div>' +
         '</div>';
       }).join('');
@@ -83,7 +83,7 @@ async function loadTasks() {
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.role || '--') + '</td>' +
           '<td class="px-4 py-2 text-sm">' + statusBadge(t.status) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.current_step || '--') + '</td>' +
-          '<td class="px-4 py-2 text-sm text-accent-green">$' + (t.total_cost_usd || 0).toFixed(4) + '</td>' +
+          '<td class="px-4 py-2 text-sm text-accent-green">$' + parseFloat(t.total_cost_usd || 0).toFixed(4) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-500">' + endedAt + '</td>' +
         '</tr>';
       }).join('');

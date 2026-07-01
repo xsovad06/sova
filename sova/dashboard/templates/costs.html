@@ -84,21 +84,21 @@ async function loadCosts() {
     fetchAPI(apiUrl('/costs/by-routing')),
   ]);
 
-  document.getElementById('cost-total').textContent = '$' + summary.total_cost_usd.toFixed(2);
-  document.getElementById('cost-today').textContent = '$' + summary.today_cost_usd.toFixed(2);
-  document.getElementById('cost-7d').textContent = '$' + summary.rolling_7d_usd.toFixed(2);
+  document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
+  document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
+  document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
   document.getElementById('cost-invocations').textContent = summary.total_invocations;
 
   // Daily chart (CSS bars)
-  const maxCost = Math.max(...daily.map(d => d.cost_usd), 0.01);
+  const maxCost = Math.max(...daily.map(d => parseFloat(d.cost_usd || 0)), 0.01);
   document.getElementById('daily-chart').innerHTML = daily.length === 0
     ? '<p class="text-gray-500 text-sm">No cost data</p>'
     : `<div class="flex gap-1 h-32">
         ${daily.map(d => {
-          const pct = (d.cost_usd / maxCost) * 100;
+          const pct = (parseFloat(d.cost_usd || 0) / maxCost) * 100;
           return `<div class="flex flex-col items-center flex-1 group">
             <div class="flex-1 flex flex-col items-center justify-end w-full">
-              <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${d.cost_usd.toFixed(2)}</span>
+              <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${parseFloat(d.cost_usd || 0).toFixed(2)}</span>
               <div class="w-full bg-accent/70 rounded-t transition-all" style="height: ${Math.max(pct, 2)}%"></div>
             </div>
             <span class="text-xs text-gray-600 mt-1">${d.date.substring(5)}</span>
@@ -135,7 +135,7 @@ function renderCostTable(data, keyField) {
     </tr></thead>
     <tbody>${data.map(row => `<tr class="border-t border-gray-700/30">
       <td class="py-1.5 text-accent">${escapeHtml(row[keyField])}</td>
-      <td class="py-1.5 text-right text-accent-green">$${row.cost_usd.toFixed(2)}</td>
+      <td class="py-1.5 text-right text-accent-green">$${parseFloat(row.cost_usd || 0).toFixed(2)}</td>
       <td class="py-1.5 text-right text-gray-400">${row.count || row.invocations || 0}</td>
     </tr>`).join('')}</tbody>
   </table>`;
