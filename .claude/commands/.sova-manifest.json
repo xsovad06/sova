@@ -81,10 +81,6 @@
       "hash": "31e9b7661bf2394b",
       "managed": true
     },
-    "ship.md": {
-      "hash": "519aa9019d41e257",
-      "managed": true
-    },
     "standup.md": {
       "hash": "e70fae50fc97d7a9",
       "managed": true
@@ -111,6 +107,14 @@
     },
     "simplify.md": {
       "hash": "f9fae2f288fa89c3",
+      "managed": true
+    },
+    "create-roadmap.md": {
+      "hash": "e09c2e46bcce3421",
+      "managed": true
+    },
+    "update-roadmap.md": {
+      "hash": "7f6d4e0e9c99f610",
       "managed": true
     }
   }
