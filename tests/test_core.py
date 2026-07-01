@@ -4414,6 +4414,54 @@ class TestDevelopStepInnerCheckLoop:
 
         assert "test weakening detected" in summary
 
+    async def test_committed_test_weakening_triggers_hard_reset(self) -> None:
+        """When the LLM commits test file changes (disobeying instructions),
+        git reset --hard pre_hash is used instead of git checkout HEAD."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=1, guard_test_weakening=True),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+            patch("sova.core.steps.develop._get_dirty_test_files", new_callable=AsyncMock) as mock_dirty,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
+                MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (no unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (no staged)
+                MagicMock(success=True, stdout="def456\n"),  # git rev-parse HEAD (post, DIFFERENT)
+                # _check_test_weakening: committed diff check
+                MagicMock(success=True, stdout="tests/test_foo.py\n"),  # git diff --name-only abc123 HEAD
+                MagicMock(success=True),  # git reset --hard abc123
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="opus",
+                cost_usd=Decimal("0.10"),
+                input_tokens=100,
+                output_tokens=50,
+            )
+            mock_dirty.side_effect = [
+                set(),  # pre_dirty: no tests dirty before fix
+                set(),  # post_dirty: no uncommitted test changes (committed instead)
+            ]
+            summary = await step._run_inner_check_loop(ctx)
+
+        assert "test weakening detected" in summary
+        # Verify git reset --hard was called with the pre-fix hash
+        reset_call = mock_run.call_args_list[-1]
+        assert reset_call.args == ("git", "reset", "--hard", "abc123")
+
     async def test_execute_includes_check_summary(self) -> None:
         from sova.core.steps.develop import DevelopStep
         from sova.llm.models import LLMResult
