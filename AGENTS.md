@@ -48,6 +48,7 @@ sova/
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
+    monitoring/                     # Resource monitoring (psutil-based CPU, memory, I/O tracking)
     db/                            # SQLAlchemy ORM models + async session
     utils/                         # Logging, shell, formatting
   commands/                        # 29 standardized commands (markdown with category frontmatter)
@@ -59,7 +60,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (5276+ tests)
+  tests/                           # pytest suite (2721+ tests)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

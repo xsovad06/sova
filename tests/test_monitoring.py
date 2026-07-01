@@ -20,6 +20,7 @@ async def _wait_for_samples(collector: ResourceCollector, n: int, timeout: float
             break
         await asyncio.sleep(0.01)
 
+
 # ---------------------------------------------------------------------------
 # ResourceSample / ResourceSummary dataclass tests
 # ---------------------------------------------------------------------------
@@ -207,8 +208,8 @@ class TestResourceCollector:
         # Priming call succeeds, first real sample succeeds,
         # second sample's create_time check succeeds but cpu_percent dies.
         mock_proc.cpu_percent.side_effect = [
-            0.0,    # start() priming
-            25.0,   # first sample succeeds
+            0.0,  # start() priming
+            25.0,  # first sample succeeds
             psutil.NoSuchProcess(123),  # second sample dies
         ]
         mock_proc.create_time.side_effect = [1000.0, 1000.0, 1000.0]
@@ -528,6 +529,7 @@ class TestResourceCollector:
 
         # Use a tiny deque to force eviction
         from collections import deque
+
         collector.samples = deque(maxlen=2)
 
         # Take 3 samples -- first will be evicted
