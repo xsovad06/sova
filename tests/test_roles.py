@@ -1825,6 +1825,22 @@ class TestAssessTask:
         assert assessment.suitability == "human_only"
         assert assessment.confidence >= 0.95
 
+    async def test_triage_human_only_label_with_empty_body(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="Manual task",
+            body="",
+            state=TaskState.BACKLOG,
+            labels=["agent:human-only"],
+        )
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "human_only"
+        assert assessment.confidence >= 0.95
+
     async def test_triage_bug_with_code_refs(self) -> None:
         from sova.roles.triage import TriageRole
 

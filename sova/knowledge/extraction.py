@@ -68,7 +68,7 @@ async def extract_memories(  # noqa: RUF029 -- async retained for caller compati
     """
     # Reference params to satisfy static analysis; they're retained for future use
     _ = (repo, task_title, files_changed, step_summaries, review_findings, spec_content, cwd)
-    log.debug("extraction.skipped", role=role, issue=issue_number, reason="no-op")
+    log.info("extraction.skipped_noop", role=role, issue=issue_number)
     return ExtractionResult()
 
 

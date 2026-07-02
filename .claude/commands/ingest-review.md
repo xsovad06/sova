@@ -29,7 +29,7 @@ Parse structured review findings from TaskRun records and update agent memory.
 
    async def main():
        await init_db(run_migrations=False)
-       async with await get_session() as session:
+       async with get_session() as session:
            stmt = select(TaskRun).where(
                TaskRun.pr_number == <PR_NUMBER>,
                TaskRun.role.in_(['reviewer', 'command:review-pr']),

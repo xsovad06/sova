@@ -2850,6 +2850,15 @@ class TestCreatePRStepIssueless:
         assert "## Context" not in body
         assert "Closes #42" in body
 
+    async def test_pr_body_omits_context_when_whitespace_only_body(self) -> None:
+        """PR body should not include Context section when issue body is whitespace-only."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body="   "))
+        body = CreatePRStep._build_pr_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
+        assert "## Context" not in body
+        assert "Closes #42" in body
+
 
 # ---------------------------------------------------------------------------
 # RebaseStep
