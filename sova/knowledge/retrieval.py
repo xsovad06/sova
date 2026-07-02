@@ -166,8 +166,8 @@ async def _search_project_tier(
             return semantic_results, True
         # Semantic returned empty (no embeddings on stored memories) -- fall through
 
-    # Lexical fallback
-    lexical = await search(query=query if stripped else None, tier="project", category=category, limit=20)
+    # Lexical fallback -- no limit so callers get truly exhaustive results
+    lexical = await search(query=query if stripped else None, tier="project", category=category)
     return [(m, 0.0) for m in lexical], False
 
 
