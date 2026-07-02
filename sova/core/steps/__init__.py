@@ -9,6 +9,7 @@ from sova.core.steps.address_external_findings import AddressExternalFindingsSte
 from sova.core.steps.address_review import AddressReviewStep
 from sova.core.steps.assess import AssessStep
 from sova.core.steps.base import BaseStep
+from sova.core.steps.capture_baseline import CaptureBaselineStep
 from sova.core.steps.commit import CommitStep
 from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
@@ -43,6 +44,7 @@ def get_developer_steps() -> list[BaseStep]:
         SyncStep(),
         AssessStep(),
         WorktreeStep(),
+        CaptureBaselineStep(),
         DevelopStep(),
         SimplifyStep(),
         SelfReviewStep(),

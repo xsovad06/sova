@@ -33,6 +33,7 @@ class ExecutionContext:
     worktree_dir: Path | None = None
     pr_number: int | None = None
     pr_url: str = ""
+    test_baseline_path: Path | None = None
     session_id: str | None = None
     cost_usd: Decimal = Decimal("0")
     force: bool = False

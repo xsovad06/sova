@@ -35,6 +35,7 @@ GROUPS: dict[str, str] = {
     "egress": "Egress Filter",
     "security": "Security",
     "dashboard": "Dashboard",
+    "testing": "Testing",
     "output": "Output Storage",
     "monitoring": "Resource Monitoring",
     "knowledge": "Knowledge Retrieval",
@@ -61,6 +62,7 @@ GROUP_ORDER: list[str] = [
     "egress",
     "security",
     "dashboard",
+    "testing",
     "output",
     "monitoring",
     "knowledge",
@@ -562,6 +564,21 @@ _REGISTRY: list[SettingMeta] = [
         "How kanban columns are grouped: step_based (by pipeline step) or role_based (by role/status category)",
         "dashboard",
         "string",
+    ),
+    # -- Testing --
+    SettingMeta(
+        "testing.baseline_enabled",
+        "Baseline enabled",
+        "Capture a test baseline snapshot before development to detect regressions",
+        "testing",
+        "boolean",
+    ),
+    SettingMeta(
+        "testing.baseline_timeout",
+        "Baseline timeout (s)",
+        "Maximum seconds for the baseline test suite run (must be > 0)",
+        "testing",
+        "number",
     ),
     # -- Output Storage --
     SettingMeta(

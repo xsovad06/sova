@@ -92,11 +92,11 @@ async def test_running_run(session: AsyncSession):
     assert status.role == "developer"
     assert status.pipeline_variant == "developer"
     assert status.current_step == "develop"
-    assert status.step_index == 3  # develop is index 3 in developer pipeline
-    assert status.total_steps == 15
+    assert status.step_index == 4  # develop is index 4 in developer pipeline
+    assert status.total_steps == 16
     assert status.completed_steps == ["sync", "assess", "create_worktree"]
-    # 3 completed out of 15 steps
-    assert abs(status.step_progress_pct - (3 / 15 * 100)) < 0.01
+    # 3 completed out of 16 steps
+    assert abs(status.step_progress_pct - (3 / 16 * 100)) < 0.01
     # Should have positive time in step (at least ~30 seconds)
     assert status.time_in_step_ms > 0
     assert status.is_stuck is False
@@ -164,8 +164,8 @@ async def test_failed_run(session: AsyncSession):
     assert status is not None
     assert status.status == "failed"
     assert status.error_message == "Tests failed"
-    # 1 completed step out of 15
-    assert abs(status.step_progress_pct - (1 / 15 * 100)) < 0.01
+    # 1 completed step out of 16
+    assert abs(status.step_progress_pct - (1 / 16 * 100)) < 0.01
     assert status.time_in_step_ms == 0  # terminal
     assert status.is_stuck is False
 
@@ -225,7 +225,7 @@ async def test_passed_status_counted_as_completed(session: AsyncSession):
     status = await get_agent_status(run.id)
     assert status is not None
     assert status.completed_steps == ["sync", "assess", "create_worktree"]
-    assert abs(status.step_progress_pct - (3 / 15 * 100)) < 0.01
+    assert abs(status.step_progress_pct - (3 / 16 * 100)) < 0.01
 
 
 @pytest.mark.asyncio
@@ -377,6 +377,7 @@ async def test_estimation_with_history(session: AsyncSession):
             ("sync", 5000),
             ("assess", 3000),
             ("create_worktree", 2000),
+            ("capture_baseline", 1000),
             ("develop", 300000),
             ("simplify", 60000),
             ("self_review", 40000),
@@ -439,9 +440,9 @@ async def test_estimation_with_history(session: AsyncSession):
     assert status is not None
     assert status.estimated_remaining_ms is not None
     assert status.estimated_remaining_ms > 0
-    # Remaining steps: develop through handoff_to_reviewer (12 steps)
-    # Expected: sum of averages = 635000
-    expected = 300000 + 60000 + 40000 + 10000 + 20000 + 5000 + 15000 + 30000 + 25000 + 120000 + 8000 + 2000
+    # Remaining steps: capture_baseline through handoff_to_reviewer (13 steps)
+    # Expected: sum of averages = 636000
+    expected = 1000 + 300000 + 60000 + 40000 + 10000 + 20000 + 5000 + 15000 + 30000 + 25000 + 120000 + 8000 + 2000
     assert abs(status.estimated_remaining_ms - expected) < 1000
 
 

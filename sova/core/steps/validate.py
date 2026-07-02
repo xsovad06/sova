@@ -3,6 +3,9 @@
 Discovers the project's pre-push hook (via core.hooksPath, .githooks/
 auto-detect, or .git/hooks fallback) and runs it. If it fails, invokes
 Claude to fix the issues and re-commits.
+
+Also checks for test regressions against the baseline snapshot captured
+by CaptureBaselineStep (issue #233).
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from pathlib import Path
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.core.test_baseline import diff_results, load_baseline, run_test_suite
 from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -120,8 +124,57 @@ class ValidateStep(BaseStep):
         )
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: commits must still exist after validation fixes."""
+        """Gate: commits must still exist and no test regressions introduced."""
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-        if log_result.success and log_result.stdout.strip():
-            return GateCheckResult(passed=True)
-        return GateCheckResult(passed=False, reason="No commits ahead of base after validation")
+        if not (log_result.success and log_result.stdout.strip()):
+            return GateCheckResult(passed=False, reason="No commits ahead of base after validation")
+
+        regression_check = await self._check_regressions(ctx)
+        if regression_check is not None:
+            return regression_check
+
+        return GateCheckResult(passed=True)
+
+    async def _check_regressions(self, ctx: ExecutionContext) -> GateCheckResult | None:
+        """Check for test regressions against baseline. Returns None if no issues."""
+        if ctx.test_baseline_path is None:
+            return None
+
+        # Use worktree_dir (where CaptureBaselineStep saves the baseline),
+        # falling back to working_dir for consistency.
+        test_dir = ctx.worktree_dir or ctx.working_dir
+        baseline = load_baseline(test_dir)
+        if baseline is None:
+            return None
+
+        test_cmd = ctx.config.test_cmd
+        if not test_cmd or not test_cmd.strip():
+            return None
+
+        try:
+            current = await run_test_suite(
+                test_cmd=test_cmd,
+                cwd=test_dir,
+                cmd_timeout=ctx.config.testing.baseline_timeout,
+            )
+        except Exception:
+            log.warning("step.validate.regression_check_failed", exc_info=True)
+            return None
+
+        report = diff_results(baseline, current)
+        if report.has_regressions:
+            names = [r.nodeid for r in report.regressions[:10]]
+            log.error(
+                "step.validate.regressions_detected",
+                count=len(report.regressions),
+                tests=names,
+            )
+            return GateCheckResult(
+                passed=False,
+                reason=f"Test regressions detected: {report.summary()} -- first: {', '.join(names[:3])}",
+            )
+
+        if report.fixed:
+            log.info("step.validate.tests_fixed", count=len(report.fixed))
+
+        return None
