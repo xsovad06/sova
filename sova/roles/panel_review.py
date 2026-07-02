@@ -237,7 +237,12 @@ async def run_panel_review(
 
             chunk_addressed = addressed_findings if chunk_idx == 0 else None
             prompt = _build_dimension_prompt(
-                dim, task, chunk, files, spec_sections=chunk_spec, addressed_findings=chunk_addressed,
+                dim,
+                task,
+                chunk,
+                files,
+                spec_sections=chunk_spec,
+                addressed_findings=chunk_addressed,
             )
             try:
                 dim_findings, dim_summary, dim_cost = await _run_dimension(dim, prompt, model=model, cwd=cwd)

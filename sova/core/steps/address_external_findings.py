@@ -21,6 +21,7 @@ class ExternalFindingDict(TypedDict):
     tool_id: str
     message: str
 
+
 log = get_logger(component="step.address_external_findings")
 
 
