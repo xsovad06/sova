@@ -107,9 +107,7 @@ async def load_context(
     return "\n\n---\n\n".join(sections)
 
 
-async def _load_relevant_memories(
-    ctx: object, category: str | None = None, config: object | None = None
-) -> str:
+async def _load_relevant_memories(ctx: object, category: str | None = None, config: object | None = None) -> str:
     """Load memories using relevance filtering from an execution context."""
     from sova.knowledge.retrieval import (
         DEFAULT_MAX_CONTEXT_TOKENS,
