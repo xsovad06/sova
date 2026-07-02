@@ -131,6 +131,10 @@ class TestResearchSaysImplemented:
         body = "## Research\n\nThe feature is ALREADY FULLY IMPLEMENTED.\n"
         assert _research_says_implemented(body)
 
+    def test_detects_has_been_implemented(self) -> None:
+        body = "## Research\n\nThe feature has been implemented in the latest release.\n"
+        assert _research_says_implemented(body)
+
     def test_ignores_implemented_outside_research(self) -> None:
         body = "Already implemented in v1.\n\n## Research\n\nNeeds new endpoint.\n"
         assert not _research_says_implemented(body)
