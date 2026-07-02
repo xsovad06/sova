@@ -111,17 +111,16 @@ function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSe
 
   var label = escapeHtml(aggregatedLabel || status);
 
-  var elapsedHtml = '';
-  if (!isTerminal && elapsedSeconds != null) {
-    var startTs = Date.now() - (elapsedSeconds * 1000);
-    elapsedHtml = ' <span class="sova-status-elapsed" data-start="' + startTs + '">' + formatElapsed(elapsedSeconds) + '</span>';
-  }
-
   return '<span class="sova-status-badge ' + colors.bg + ' ' + colors.text + stuckClass + '">' +
     '<span class="sova-status-dot ' + colors.dot + pulseClass + '"></span>' +
     '<span>' + label + '</span>' +
-    elapsedHtml +
   '</span>';
+}
+
+function liveElapsed(elapsedSeconds) {
+  if (elapsedSeconds == null) return formatElapsed(0);
+  var startTs = Date.now() - (elapsedSeconds * 1000);
+  return '<span class="sova-status-elapsed" data-start="' + startTs + '">' + formatElapsed(elapsedSeconds) + '</span>';
 }
 
 /* ============================================================
@@ -576,10 +575,15 @@ document.addEventListener('click', function(e) {
    ============================================================ */
 
 window.SOVA_GITHUB_REPO = null;
+window.SOVA_JIRA_BASE_URL = null;
+window.SOVA_JIRA_PROJECT_KEY = null;
 
 function _initGithubRepo() {
   fetchAPI(apiUrl('/settings/config')).then(function(data) {
-    window.SOVA_GITHUB_REPO = (data.config && data.config.github_repo) || null;
+    var cfg = data.config || {};
+    window.SOVA_GITHUB_REPO = cfg.github_repo || null;
+    window.SOVA_JIRA_BASE_URL = cfg['task_source.jira_base_url'] || null;
+    window.SOVA_JIRA_PROJECT_KEY = cfg['task_source.jira_project_key'] || null;
   }).catch(function() {});
 }
 
@@ -594,11 +598,23 @@ function prLink(prNumber) {
   return '#' + safe;
 }
 
-function issueLink(issueNumber) {
+function issueLink(issueNumber, url) {
   if (!issueNumber) return '--';
   var safe = escapeHtml(String(issueNumber));
+  var jiraBase = window.SOVA_JIRA_BASE_URL;
+  var jiraKey = window.SOVA_JIRA_PROJECT_KEY;
+
+  if (url) {
+    return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" ' +
+      'class="text-accent hover:underline" onclick="event.stopPropagation()">' + safe + '</a>';
+  }
+  if (jiraBase && jiraKey) {
+    var key = /^\d+$/.test(String(issueNumber)) ? jiraKey + '-' + safe : safe;
+    return '<a href="' + escapeHtml(jiraBase) + '/browse/' + escapeHtml(key) + '" target="_blank" rel="noopener" ' +
+      'class="text-accent hover:underline" onclick="event.stopPropagation()">' + escapeHtml(key) + '</a>';
+  }
   if (!/^\d+$/.test(String(issueNumber))) {
-    return '#' + safe;
+    return safe;
   }
   var repo = window.SOVA_GITHUB_REPO;
   if (repo) {
