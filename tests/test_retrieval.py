@@ -121,23 +121,31 @@ async def test_retrieve_relevant_no_memories() -> None:
 
 
 async def test_retrieve_relevant_respects_token_budget() -> None:
-    """retrieve_relevant() stops adding project memories when budget is exceeded."""
+    """retrieve_relevant() stops adding project memories when budget is exceeded (semantic path)."""
     from sova.knowledge.memory import store
     from sova.knowledge.retrieval import retrieve_relevant
 
     # Create several project memories with known content size
+    memories = []
     for i in range(10):
-        await store(
+        mem = await store(
             category="learning",
             title=f"Memory {i}",
             content=f"Content for memory number {i}. " * 20,
             tags=["test"],
             tier="project",
         )
+        memories.append(mem)
 
-    # Tiny budget: should get fewer than all 10
-    results = await retrieve_relevant(query="memory", max_context_tokens=50)
-    assert len(results) < 10
+    # Mock _search_project_tier to return semantic results (used_semantic=True)
+    # so the budget-limiting path is exercised
+    async def _mock_search(*, query, category):
+        return [(m, 0.9 - i * 0.05) for i, m in enumerate(memories)], True
+
+    with patch("sova.knowledge.retrieval._search_project_tier", side_effect=_mock_search):
+        # Tiny budget: should get fewer than all 10
+        results = await retrieve_relevant(query="memory", max_context_tokens=50)
+        assert len(results) < 10
 
 
 async def test_retrieve_relevant_shared_exceeds_budget_still_included() -> None:
@@ -205,9 +213,12 @@ async def test_format_relevant_context_with_results() -> None:
 async def test_load_context_with_ctx_uses_relevance(tmp_path: Path) -> None:
     """load_context() uses relevance filtering when ctx is provided."""
     from sova.knowledge.memory import store
+    from sova.knowledge.retrieval import retrieve_relevant as _real_retrieve
     from sova.knowledge.tiers import load_context
 
-    await store(category="learning", title="Relevant memory", content="Auth patterns.", tags=["auth"])
+    mem_relevant = await store(
+        category="learning", title="Relevant memory", content="Auth patterns.", tags=["auth"]
+    )
     await store(category="learning", title="Unrelated memory", content="CSS styling tips.", tags=["css"])
 
     class _Cfg:
@@ -215,9 +226,17 @@ async def test_load_context_with_ctx_uses_relevance(tmp_path: Path) -> None:
 
     ctx = _make_execution_context(role="developer", task_title="Fix auth bug")
 
-    result = await load_context(None, tmp_path, _Cfg(), ctx=ctx)
-    # The function should still return content (rules + memories)
-    assert isinstance(result, str)
+    # Mock retrieve_relevant to simulate semantic results returning only the relevant memory
+    async def _mock_retrieve(*, query, max_context_tokens=2000, category=None):
+        return [(mem_relevant, 0.95)]
+
+    with patch("sova.knowledge.retrieval.retrieve_relevant", side_effect=_mock_retrieve):
+        result = await load_context(None, tmp_path, _Cfg(), ctx=ctx)
+        # Relevance filtering should include auth-related memory
+        assert "Auth patterns" in result
+        assert "Relevant memory" in result
+        # Unrelated memory should not be included
+        assert "CSS styling" not in result
 
 
 async def test_load_context_without_ctx_unchanged(tmp_path: Path) -> None:

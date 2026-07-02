@@ -74,6 +74,7 @@ _NESTED_SECTIONS = (
     "dashboard",
     "output",
     "monitoring",
+    "knowledge",
 )
 
 

@@ -139,6 +139,7 @@ async def search(
     tier: str | None = None,
     include_superseded: bool = False,
     expand: bool = False,
+    limit: int | None = None,
 ) -> list[Memory]:
     """Search memories with optional filters.
 
@@ -149,6 +150,7 @@ async def search(
         tier: Filter by knowledge tier.
         include_superseded: If False (default), exclude superseded entries.
         expand: If True, include 1-hop graph neighbors of matching results.
+        limit: Maximum number of results to return (None = unlimited).
 
     Returns:
         List of matching Memory records.
@@ -176,6 +178,9 @@ async def search(
         stmt = stmt.where(or_(*tag_conditions))
 
     stmt = stmt.order_by(Memory.updated_at.desc())
+
+    if limit is not None:
+        stmt = stmt.limit(limit)
 
     async with await get_session() as session:
         async with session.begin():
