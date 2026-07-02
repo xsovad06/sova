@@ -38,6 +38,10 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
             logger.warning("Malformed .claude/settings.json -- skipping RTK hook injection")
             return False
 
+        if not isinstance(data, dict):
+            logger.warning("Malformed .claude/settings.json -- skipping RTK hook injection")
+            return False
+
         hooks = data.setdefault("hooks", {})
         pre_tool_use = hooks.setdefault("PreToolUse", [])
 
@@ -49,7 +53,7 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
         settings_path.write_text(json.dumps(data, indent=2) + "\n")
         return True
     except OSError as exc:
-        logger.warning("Failed to inject RTK hook: %s", exc)
+        logger.warning("Failed to inject RTK hook: %s", exc, exc_info=True)
         return False
 
 
@@ -64,6 +68,9 @@ def remove_rtk_hook(claude_dir: Path) -> bool:
         try:
             data = json.loads(settings_path.read_text())
         except (FileNotFoundError, json.JSONDecodeError):
+            return False
+
+        if not isinstance(data, dict):
             return False
 
         hooks = data.get("hooks", {})
@@ -84,7 +91,7 @@ def remove_rtk_hook(claude_dir: Path) -> bool:
         settings_path.write_text(json.dumps(data, indent=2) + "\n")
         return True
     except OSError as exc:
-        logger.warning("Failed to remove RTK hook: %s", exc)
+        logger.warning("Failed to remove RTK hook: %s", exc, exc_info=True)
         return False
 
 
