@@ -24,7 +24,9 @@ _MAX_BUFFER_SIZE = 1000  # Drop oldest samples if DB is persistently down
 class ResourceWriter:
     """Buffered writer that persists resource samples and summaries to the database."""
 
-    def __init__(self, project_dir: Path | None, run_id: int, *, flush_threshold: int = _DEFAULT_FLUSH_THRESHOLD) -> None:
+    def __init__(
+        self, project_dir: Path | None, run_id: int, *, flush_threshold: int = _DEFAULT_FLUSH_THRESHOLD
+    ) -> None:
         self._project_dir = project_dir
         self._run_id = run_id
         self._flush_threshold = flush_threshold
