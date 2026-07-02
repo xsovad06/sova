@@ -167,57 +167,129 @@ class TriageRole(AgentRole):
         return self._heuristic_assess(task)
 
     def _heuristic_assess(self, task: Task) -> TaskAssessment:
-        """Quick heuristic-based assessment without LLM."""
+        """Quick heuristic-based assessment without LLM.
+
+        Uses structured signals (body length, section headings, code refs,
+        labels) to produce high-confidence results, reducing LLM fallback.
+        """
         has_body = bool(task.body and task.body.strip())
         if not has_body:
             return TaskAssessment(
                 suitability="needs_spec",
-                confidence=0.7,
+                confidence=0.9,
                 reasoning="Issue has no description; needs specification before work can begin.",
                 missing_context=["description", _ACCEPTANCE_CRITERIA],
                 estimated_complexity="moderate",
                 suggested_role="triage",
             )
 
-        body = task.body.strip().lower()
+        body = task.body.strip()
+        body_lower = body.lower()
+        body_len = len(body)
 
-        # Check for acceptance criteria indicators
         has_criteria = any(
-            marker in body
-            for marker in ["- [ ]", _ACCEPTANCE_CRITERIA, "expected behavior", "## scope", "## requirements"]
+            marker in body_lower
+            for marker in [
+                "- [ ]",
+                _ACCEPTANCE_CRITERIA,
+                "expected behavior",
+                "## scope",
+                "## requirements",
+                "## solution",
+                "## steps",
+                "## design",
+            ]
         )
 
-        # Check for file/code references
         has_code_refs = any(
-            marker in body for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def "]
+            marker in body_lower
+            for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def ", "import "]
         )
 
-        if not has_criteria and len(body) < 100:
+        has_section_headings = body_lower.count("\n##") >= 1
+
+        label_set = {lbl.lower() for lbl in (task.labels or [])}
+        has_type_label = any(lbl.startswith("type:") for lbl in label_set)
+        is_bug = "type:bug" in label_set or "bug" in label_set
+        is_human_only = "agent:human-only" in label_set
+
+        if is_human_only:
             return TaskAssessment(
-                suitability="needs_spec",
-                confidence=0.6,
-                reasoning="Issue has a short description without acceptance criteria.",
-                missing_context=[_ACCEPTANCE_CRITERIA, "expected behavior"],
+                suitability="human_only",
+                confidence=0.95,
+                reasoning="Issue is labeled as human-only.",
                 estimated_complexity="moderate",
                 suggested_role="triage",
             )
 
+        complexity = self._estimate_complexity(body)
+
         if has_criteria and has_code_refs:
             return TaskAssessment(
                 suitability="ready",
-                confidence=0.85,
+                confidence=0.9,
                 reasoning="Issue has acceptance criteria and code references; ready for research.",
-                estimated_complexity="moderate",
+                estimated_complexity=complexity,
+                suggested_role="researcher",
+            )
+
+        if is_bug and has_code_refs:
+            return TaskAssessment(
+                suitability="ready",
+                confidence=0.85,
+                reasoning="Bug report with code references; ready for research.",
+                estimated_complexity=complexity,
+                suggested_role="researcher",
+            )
+
+        if not has_criteria and body_len < 100:
+            return TaskAssessment(
+                suitability="needs_spec",
+                confidence=0.8,
+                reasoning="Issue has a short description without acceptance criteria.",
+                missing_context=[_ACCEPTANCE_CRITERIA, "expected behavior"],
+                estimated_complexity="simple",
+                suggested_role="triage",
+            )
+
+        if has_criteria or (has_section_headings and body_len > 200):
+            return TaskAssessment(
+                suitability="ready",
+                confidence=0.85,
+                reasoning="Issue has structured sections indicating clear scope; ready for research.",
+                estimated_complexity=complexity,
+                suggested_role="researcher",
+            )
+
+        if body_len > 300 and (has_code_refs or has_type_label):
+            return TaskAssessment(
+                suitability="ready",
+                confidence=0.8,
+                reasoning="Issue has a detailed description with contextual signals; ready for research.",
+                estimated_complexity=complexity,
                 suggested_role="researcher",
             )
 
         return TaskAssessment(
-            suitability="ready",
-            confidence=0.8,
-            reasoning="Issue has a title and description; ready for research.",
-            estimated_complexity="moderate",
+            suitability="needs_research",
+            confidence=0.75,
+            reasoning="Issue has a description but lacks structured criteria; needs research first.",
+            estimated_complexity=complexity,
             suggested_role="researcher",
         )
+
+    @staticmethod
+    def _estimate_complexity(body: str) -> str:
+        """Estimate task complexity from body signals."""
+        body_lower = body.lower()
+        body_len = len(body)
+        if body_len < 150:
+            return "simple"
+        if body_len > 1000 and body_lower.count("\n##") >= 1:
+            return "complex"
+        if any(w in body_lower for w in ["migration", "refactor", "breaking change", "epic"]):
+            return "complex"
+        return "moderate"
 
     def _parse_llm_assessment(self, text: str) -> TaskAssessment | None:
         """Parse Claude's JSON response into a TaskAssessment."""

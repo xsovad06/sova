@@ -1,4 +1,4 @@
-"""Tests for automatic memory extraction from agent runs."""
+"""Tests for memory extraction infrastructure."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -294,118 +293,23 @@ async def test_dedup_promotes_at_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mock_llm_response(items: list[dict]) -> AsyncMock:
-    from sova.llm.models import LLMResult
+async def test_extract_memories_is_noop() -> None:
+    """extract_memories is a no-op that returns an empty ExtractionResult."""
+    from sova.knowledge.extraction import extract_memories
 
-    mock = AsyncMock()
-    mock.return_value = LLMResult(
-        text=json.dumps(items),
-        model="haiku",
-        cost_usd=Decimal("0.005"),
-        input_tokens=100,
-        output_tokens=50,
+    result = await extract_memories(
+        role="developer",
+        issue_number="42",
+        repo="user/repo",
+        task_title="Fix DB session leak",
+        files_changed=["sova/db/session.py"],
+        step_summaries=["develop: completed"],
+        cwd="/tmp",
     )
-    return mock
-
-
-async def test_extract_memories_success() -> None:
-    from sova.knowledge.extraction import extract_memories
-    from sova.knowledge.memory import search
-
-    items = [
-        {
-            "category": "learning",
-            "title": "SQLAlchemy sessions need context managers",
-            "content": "Always use async with for session management",
-            "tags": ["sqlalchemy", "async"],
-        },
-    ]
-
-    with patch("sova.knowledge.extraction.invoke", _mock_llm_response(items)):
-        result = await extract_memories(
-            role="developer",
-            issue_number="42",
-            repo="user/repo",
-            task_title="Fix DB session leak",
-            files_changed=["sova/db/session.py"],
-            step_summaries=["develop: completed"],
-            cwd="/tmp",
-        )
-
-    assert result.memories_stored == 1
-    assert result.cost_usd == Decimal("0.005")
-    assert result.error is None
-
-    stored = await search(category="learning")
-    assert len(stored) == 1
-    assert stored[0].title == "SQLAlchemy sessions need context managers"
-    assert stored[0].repo == "user/repo"
-    assert stored[0].issue_number == "42"
-
-
-async def test_extract_memories_empty_response() -> None:
-    from sova.knowledge.extraction import extract_memories
-
-    with patch("sova.knowledge.extraction.invoke", _mock_llm_response([])):
-        result = await extract_memories(
-            role="developer",
-            issue_number="1",
-            repo="user/repo",
-            task_title="Routine task",
-            files_changed=[],
-            step_summaries=[],
-            cwd="/tmp",
-        )
 
     assert result.memories_stored == 0
-    assert result.error is None
-
-
-async def test_extract_memories_llm_failure() -> None:
-    from sova.knowledge.extraction import extract_memories
-
-    mock = AsyncMock(side_effect=RuntimeError("Claude CLI failed"))
-    with patch("sova.knowledge.extraction.invoke", mock):
-        result = await extract_memories(
-            role="developer",
-            issue_number="1",
-            repo="user/repo",
-            task_title="Task",
-            files_changed=[],
-            step_summaries=[],
-            cwd="/tmp",
-        )
-
-    assert result.memories_stored == 0
-    assert result.error is not None
-    assert "Claude CLI failed" in result.error
-
-
-async def test_extract_memories_parse_failure() -> None:
-    from sova.knowledge.extraction import extract_memories
-    from sova.llm.models import LLMResult
-
-    mock = AsyncMock()
-    mock.return_value = LLMResult(
-        text="totally not json {{{",
-        model="haiku",
-        cost_usd=Decimal("0.003"),
-        input_tokens=50,
-        output_tokens=20,
-    )
-    with patch("sova.knowledge.extraction.invoke", mock):
-        result = await extract_memories(
-            role="developer",
-            issue_number="1",
-            repo="user/repo",
-            task_title="Task",
-            files_changed=[],
-            step_summaries=[],
-            cwd="/tmp",
-        )
-
-    assert result.memories_stored == 0
-    assert result.cost_usd == Decimal("0.003")
+    assert result.memories_confirmed == 0
+    assert result.cost_usd == Decimal("0")
     assert result.error is None
 
 
@@ -414,38 +318,15 @@ async def test_extract_memories_parse_failure() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_step_execute_stores_memories() -> None:
-    from sova.core.steps.extract_memory import ExtractMemoryStep
-    from sova.knowledge.extraction import ExtractionResult
-
-    step = ExtractMemoryStep()
-
-    mock_result = ExtractionResult(memories_stored=2, memories_confirmed=1, cost_usd=Decimal("0.01"))
-
-    with patch("sova.knowledge.extraction.extract_memories", new_callable=AsyncMock, return_value=mock_result):
-        ctx = _make_ctx()
-        result = await step.execute(ctx)
-
-    assert result.success is True
-    assert "2 new" in result.summary
-    assert "1 confirmed" in result.summary
-
-
-async def test_step_execute_on_failure() -> None:
+async def test_step_execute_returns_noop() -> None:
     from sova.core.steps.extract_memory import ExtractMemoryStep
 
     step = ExtractMemoryStep()
-
-    with patch(
-        "sova.knowledge.extraction.extract_memories",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("boom"),
-    ):
-        ctx = _make_ctx()
-        result = await step.execute(ctx)
+    ctx = _make_ctx()
+    result = await step.execute(ctx)
 
     assert result.success is True
-    assert "non-fatal" in result.summary
+    assert "No novel learnings" in result.summary
 
 
 async def test_step_validate_always_passes() -> None:

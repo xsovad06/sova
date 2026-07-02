@@ -782,10 +782,10 @@
       </tr>
       <tr>
         <td>PR body generation</td>
-        <td><span class="step-tag tag-llm" style="display:inline">llm</span></td>
+        <td><span class="step-tag tag-code" style="display:inline">code</span></td>
         <td class="arrow">--></td>
         <td><span class="step-tag tag-code" style="display:inline">code</span></td>
-        <td>Structured template from commits + diff stats + issue body. Fallback already exists in <code>_build_fallback_body()</code>; promote it to primary.</td>
+        <td>Deterministic template via <code>_build_pr_body()</code>: commits + diff stats + issue body excerpt (500 char limit). Done.</td>
       </tr>
       <tr>
         <td>Commit message (step 7)</td>
