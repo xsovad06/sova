@@ -348,6 +348,28 @@ class MonitoringConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")
 
 
+class CodeRabbitQuotaConfig(BaseSettings):
+    """CodeRabbit rate-limit quota tracking configuration."""
+
+    enabled: bool = False
+    plan: Literal["free", "pro", "pro_plus"] = "free"
+    reviews_per_hour: int | None = Field(None, ge=0)
+    window_minutes: int = Field(60, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_CODERABBIT_QUOTA_")
+
+    @model_validator(mode="after")
+    def _apply_plan_defaults(self) -> CodeRabbitQuotaConfig:
+        """Derive reviews_per_hour from plan when not explicitly set (None).
+
+        Explicit 0 means unlimited (no quota enforcement).
+        """
+        if self.reviews_per_hour is None:
+            _plan_defaults = {"free": 4, "pro": 5, "pro_plus": 10}
+            self.reviews_per_hour = _plan_defaults.get(self.plan, 4)
+        return self
+
+
 class RTKConfig(BaseSettings):
     """RTK (context compression) integration configuration."""
 
@@ -414,6 +436,7 @@ class ProjectConfig(BaseSettings):
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
+    coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

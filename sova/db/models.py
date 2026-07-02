@@ -344,6 +344,25 @@ class CommandContract(Base):
     __table_args__ = (Index("ix_command_contracts_name", "command_name"),)
 
 
+class CodeRabbitEvent(Base):
+    """Tracks CodeRabbit review events for rate-limit quota tracking."""
+
+    __tablename__ = "coderabbit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    review_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+
+    __table_args__ = (
+        UniqueConstraint("review_id", "project_slug", name="uq_coderabbit_event_review"),
+        Index("ix_coderabbit_events_recorded", "recorded_at"),
+        Index("ix_coderabbit_events_project", "project_slug"),
+    )
+
+
 class ResourceSampleRecord(Base):
     """Time-series resource measurement for an agent run."""
 

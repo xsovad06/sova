@@ -40,6 +40,7 @@ GROUPS: dict[str, str] = {
     "monitoring": "Resource Monitoring",
     "knowledge": "Knowledge Retrieval",
     "rtk": "RTK Compression",
+    "coderabbit_quota": "CodeRabbit Quota",
 }
 
 GROUP_ORDER: list[str] = [
@@ -68,6 +69,7 @@ GROUP_ORDER: list[str] = [
     "monitoring",
     "knowledge",
     "rtk",
+    "coderabbit_quota",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -620,6 +622,34 @@ _REGISTRY: list[SettingMeta] = [
         "Inject RTK PreToolUse hook into .claude/settings.json during install (no-op when RTK is not installed)",
         "rtk",
         "boolean",
+    ),
+    # -- CodeRabbit Quota --
+    SettingMeta(
+        "coderabbit_quota.enabled",
+        "Enabled",
+        "Track CodeRabbit review rate limits for PR throttling",
+        "coderabbit_quota",
+        "boolean",
+    ),
+    SettingMeta(
+        "coderabbit_quota.plan",
+        "Plan",
+        "CodeRabbit plan tier (free, pro, pro_plus) -- sets default reviews_per_hour",
+        "coderabbit_quota",
+    ),
+    SettingMeta(
+        "coderabbit_quota.reviews_per_hour",
+        "Reviews per hour",
+        "Maximum CodeRabbit reviews per rolling window (unset = derive from plan, 0 = unlimited)",
+        "coderabbit_quota",
+        "number",
+    ),
+    SettingMeta(
+        "coderabbit_quota.window_minutes",
+        "Window (min)",
+        "Rolling window duration in minutes for rate limit tracking",
+        "coderabbit_quota",
+        "number",
     ),
 ]
 
