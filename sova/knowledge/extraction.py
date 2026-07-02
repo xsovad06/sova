@@ -8,7 +8,6 @@ deduplication and confirmation counter tracking.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -16,13 +15,13 @@ from pathlib import Path
 from sova.db.models import Memory
 from sova.knowledge import memory
 from sova.knowledge.embeddings import embed_text
+from sova.knowledge.similarity import parse_confirmation_counter, set_confirmation_counter, titles_match
 from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.extraction")
 
 _VALID_CATEGORIES = frozenset({"learning", "review_pattern", "common_mistake", "task_insight"})
-_CONFIRMATION_RE = re.compile(r"\[confirmed:\s*(\d+)\]")
 _PROMOTION_THRESHOLD = 3
 
 
@@ -254,7 +253,7 @@ async def _deduplicate_and_store(
     if embedding is None:
         existing = await memory.search(category=mem.category, query=mem.title[:50])
         for existing_mem in existing:
-            if _titles_match(existing_mem.title, mem.title):
+            if titles_match(existing_mem.title, mem.title):
                 return await _confirm_existing(existing_mem)
 
     content_with_counter = f"{mem.content}\n\n[confirmed: 0]"
@@ -272,13 +271,10 @@ async def _deduplicate_and_store(
 
 async def _confirm_existing(existing_mem: "Memory") -> str:
     """Bump the confirmation counter on an existing memory."""
-    counter = _parse_confirmation_counter(existing_mem.content)
+    counter = parse_confirmation_counter(existing_mem.content)
     new_counter = counter + 1
 
-    new_content = _CONFIRMATION_RE.sub(f"[confirmed: {new_counter}]", existing_mem.content)
-    if not _CONFIRMATION_RE.search(existing_mem.content):
-        new_content = f"{existing_mem.content}\n\n[confirmed: {new_counter}]"
-
+    new_content = set_confirmation_counter(existing_mem.content, new_counter)
     await memory.update(existing_mem.id, content=new_content)
 
     if new_counter >= _PROMOTION_THRESHOLD:
@@ -286,25 +282,3 @@ async def _confirm_existing(existing_mem: "Memory") -> str:
         log.info("extraction.promoted", memory_id=existing_mem.id, counter=new_counter)
 
     return "confirmed"
-
-
-def _titles_match(existing: str, new: str) -> bool:
-    """Check if two titles refer to the same pattern (lexical fallback)."""
-    existing_lower = existing.lower().strip()
-    new_lower = new.lower().strip()
-
-    if existing_lower == new_lower:
-        return True
-
-    shorter = min(existing_lower, new_lower, key=len)
-    longer = max(existing_lower, new_lower, key=len)
-    if len(shorter) >= 20 and shorter in longer:
-        return True
-
-    return False
-
-
-def _parse_confirmation_counter(content: str) -> int:
-    """Extract the [confirmed: N] counter from memory content."""
-    match = _CONFIRMATION_RE.search(content)
-    return int(match.group(1)) if match else 0

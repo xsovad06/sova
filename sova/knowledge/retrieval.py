@@ -11,7 +11,7 @@ import asyncio
 
 from sova.db.models import Memory
 from sova.knowledge.embeddings import is_available
-from sova.knowledge.memory import search, semantic_search
+from sova.knowledge.memory import increment_retrieval, search, semantic_search
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.retrieval")
@@ -89,8 +89,6 @@ async def retrieve_relevant(
     Returns:
         List of (Memory, score) tuples, shared first then project by relevance.
     """
-    results: list[tuple[Memory, float]] = []
-
     # Steps 1+3: fetch shared and project tiers concurrently
     shared_memories, project_result = await asyncio.gather(
         search(tier="shared", category=category, limit=20),
@@ -98,12 +96,33 @@ async def retrieve_relevant(
     )
     project_results, used_semantic = project_result
 
-    # Process shared-tier memories (always included)
+    results, shared_tokens = _collect_shared(shared_memories, max_context_tokens)
+
+    if project_results:
+        shared_ids = {m.id for m, _ in results}
+        _append_project_results(
+            results,
+            project_results,
+            shared_ids,
+            used_semantic,
+            max_context_tokens - shared_tokens,
+        )
+
+    await _track_retrieval(results)
+    return results
+
+
+def _collect_shared(
+    shared_memories: list[Memory],
+    max_context_tokens: int,
+) -> tuple[list[tuple[Memory, float]], int]:
+    """Collect shared-tier memories and compute their token usage."""
+    results: list[tuple[Memory, float]] = []
     shared_tokens = 0
     for mem in shared_memories:
         tokens = estimate_tokens(mem.content) + estimate_tokens(mem.title)
         shared_tokens += tokens
-        results.append((mem, 1.0))  # Score 1.0 = always relevant
+        results.append((mem, 1.0))
 
     if shared_tokens > max_context_tokens:
         log.warning(
@@ -111,35 +130,39 @@ async def retrieve_relevant(
             shared_tokens=shared_tokens,
             budget=max_context_tokens,
         )
+    return results, shared_tokens
 
-    if not project_results:
-        return results
 
-    # When semantic search was not used, include all project memories
-    # (exhaustive fallback -- no relevance ranking to filter by)
-    if not used_semantic:
-        shared_ids = {m.id for m, _ in results}
-        for mem, score in project_results:
-            if mem.id not in shared_ids:
-                results.append((mem, score))
-        return results
-
-    # Calculate remaining budget for project-tier memories
-    remaining_budget = max(0, max_context_tokens - shared_tokens)
-
-    # Fill remaining budget with highest-scored project memories
-    shared_ids = {m.id for m, _ in results}
+def _append_project_results(
+    results: list[tuple[Memory, float]],
+    project_results: list[tuple[Memory, float]],
+    shared_ids: set[int],
+    used_semantic: bool,
+    remaining_budget: int,
+) -> None:
+    """Append project-tier results to the results list, respecting budget when semantic."""
+    remaining_budget = max(0, remaining_budget)
     used_tokens = 0
     for mem, score in project_results:
         if mem.id in shared_ids:
             continue
-        mem_tokens = estimate_tokens(mem.content) + estimate_tokens(mem.title)
-        if used_tokens + mem_tokens > remaining_budget and used_tokens > 0:
-            break
-        used_tokens += mem_tokens
+        if used_semantic:
+            mem_tokens = estimate_tokens(mem.content) + estimate_tokens(mem.title)
+            if used_tokens + mem_tokens > remaining_budget and used_tokens > 0:
+                break
+            used_tokens += mem_tokens
         results.append((mem, score))
 
-    return results
+
+async def _track_retrieval(results: list[tuple[Memory, float]]) -> None:
+    """Track retrieval counts for lifecycle scoring (non-fatal)."""
+    retrieved_ids = [m.id for m, _ in results if m.id is not None]
+    if not retrieved_ids:
+        return
+    try:
+        await increment_retrieval(retrieved_ids)
+    except Exception:
+        log.warning("retrieval.increment_failed", exc_info=True)
 
 
 async def _search_project_tier(

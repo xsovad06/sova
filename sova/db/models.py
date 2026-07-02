@@ -171,6 +171,10 @@ class Memory(Base):
     tier: Mapped[str] = mapped_column(String(20), default="project")
     embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     superseded_by: Mapped[int | None] = mapped_column(Integer, ForeignKey(_MEMORIES_ID_FK))
+    retrieval_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    health_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -182,6 +186,7 @@ class Memory(Base):
         Index("ix_memories_category", "category"),
         Index("ix_memories_tags", "tags"),
         Index("ix_memories_superseded_by", "superseded_by"),
+        Index("ix_memories_archived", "archived"),
     )
 
 
