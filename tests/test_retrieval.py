@@ -220,9 +220,7 @@ async def test_load_context_with_ctx_uses_relevance(tmp_path: Path) -> None:
     from sova.knowledge.memory import store
     from sova.knowledge.tiers import load_context
 
-    mem_relevant = await store(
-        category="learning", title="Relevant memory", content="Auth patterns.", tags=["auth"]
-    )
+    mem_relevant = await store(category="learning", title="Relevant memory", content="Auth patterns.", tags=["auth"])
     mem_unrelated = await store(
         category="learning", title="Unrelated memory", content="CSS styling tips.", tags=["css"]
     )
