@@ -20,6 +20,8 @@ from sova.utils.logging import get_logger
 if TYPE_CHECKING:
     from sova.dashboard.services.output_service import OutputWriter
     from sova.ipc.control import AgentProcess
+    from sova.monitoring.collector import ResourceCollector
+    from sova.monitoring.writer import ResourceWriter
 
 log = get_logger(component="dashboard.pool")
 
@@ -46,6 +48,9 @@ class AgentState:
     last_result_cost: float | None = None
     pr_number: int | None = None
     project_dir: Path = field(default_factory=Path.cwd)
+    resource_collector: ResourceCollector | None = None
+    resource_writer: ResourceWriter | None = None
+    resource_flush_task: asyncio.Task | None = None
 
 
 @dataclass

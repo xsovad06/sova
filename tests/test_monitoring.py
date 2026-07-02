@@ -1,12 +1,16 @@
-"""Tests for sova.monitoring -- resource collector and models."""
+"""Tests for sova.monitoring -- resource collector, models, writer, and cleanup."""
 
 from __future__ import annotations
 
 import asyncio
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import psutil
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.monitoring.collector import ResourceCollector
 from sova.monitoring.models import ResourceSample, ResourceSummary
@@ -636,3 +640,479 @@ class TestMonitoringConfig:
         from sova.config.loader import _NESTED_SECTIONS
 
         assert "monitoring" in _NESTED_SECTIONS
+
+
+# ---------------------------------------------------------------------------
+# DB fixtures for writer and cleanup tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+async def db():
+    """Initialize an in-memory DB for resource writer tests."""
+    from sova.db.session import close_db, init_db
+
+    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+    await init_db(run_migrations=False)
+    yield
+    await close_db()
+    os.environ.pop("SOVA_DATABASE_URL", None)
+
+
+@pytest.fixture
+async def session(db) -> AsyncSession:
+    from sova.db.session import get_session
+
+    return await get_session()
+
+
+async def _create_run(session: AsyncSession, run_id: int, **kwargs) -> None:
+    from sova.db.models import TaskRun
+
+    async with session.begin():
+        session.add(TaskRun(id=run_id, role="developer", status="running", **kwargs))
+
+
+# ---------------------------------------------------------------------------
+# ResourceWriter tests
+# ---------------------------------------------------------------------------
+
+
+class TestResourceWriter:
+    @pytest.mark.asyncio
+    async def test_add_and_flush(self, session: AsyncSession) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSampleRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 1)
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        sample = ResourceSample(
+            timestamp=writer._base_monotonic + 5.0,
+            cpu_percent=50.0,
+            memory_rss_bytes=1024,
+            memory_vms_bytes=2048,
+            io_read_bytes=100,
+            io_write_bytes=200,
+            num_children=1,
+            num_threads=4,
+        )
+        writer.add_sample(sample)
+        await writer.flush()
+
+        async with await get_session() as s:
+            async with s.begin():
+                rows = (
+                    (await s.execute(select(ResourceSampleRecord).where(ResourceSampleRecord.task_run_id == 1)))
+                    .scalars()
+                    .all()
+                )
+        assert len(rows) == 1
+        assert rows[0].cpu_percent == 50.0
+        assert rows[0].memory_rss_bytes == 1024
+        assert rows[0].io_read_bytes == 100
+        assert rows[0].num_threads == 4
+
+    @pytest.mark.asyncio
+    async def test_should_flush_threshold(self) -> None:
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1, flush_threshold=3)
+        assert not writer.should_flush()
+        for i in range(3):
+            writer.add_sample(
+                ResourceSample(
+                    timestamp=float(i),
+                    cpu_percent=10.0,
+                    memory_rss_bytes=100,
+                    memory_vms_bytes=200,
+                    io_read_bytes=None,
+                    io_write_bytes=None,
+                    num_children=0,
+                )
+            )
+        assert writer.should_flush()
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self, session: AsyncSession) -> None:
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 2)
+        writer = ResourceWriter(project_dir=None, run_id=2)
+        writer.add_sample(
+            ResourceSample(
+                timestamp=writer._base_monotonic,
+                cpu_percent=10.0,
+                memory_rss_bytes=100,
+                memory_vms_bytes=200,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                num_children=0,
+            )
+        )
+        await writer.close()
+        await writer.close()  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_add_sample_after_close_ignored(self) -> None:
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        await writer.close()
+        writer.add_sample(
+            ResourceSample(
+                timestamp=0.0,
+                cpu_percent=10.0,
+                memory_rss_bytes=100,
+                memory_vms_bytes=200,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                num_children=0,
+            )
+        )
+        assert len(writer._buffer) == 0
+
+    @pytest.mark.asyncio
+    async def test_write_summary(self, session: AsyncSession) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSummaryRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 3)
+        writer = ResourceWriter(project_dir=None, run_id=3)
+        summary = ResourceSummary(
+            sample_count=10,
+            peak_cpu_percent=80.0,
+            avg_cpu_percent=40.0,
+            peak_memory_rss_bytes=4096,
+            peak_memory_vms_bytes=8192,
+            total_io_read_bytes=1000,
+            total_io_write_bytes=2000,
+            peak_num_threads=12,
+        )
+        await writer.write_summary(summary)
+
+        async with await get_session() as s:
+            async with s.begin():
+                row = (
+                    await s.execute(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == 3))
+                ).scalar_one()
+        assert row.sample_count == 10
+        assert row.peak_cpu_percent == 80.0
+        assert row.peak_num_threads == 12
+
+    @pytest.mark.asyncio
+    async def test_write_summary_empty(self, session: AsyncSession) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSummaryRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 4)
+        writer = ResourceWriter(project_dir=None, run_id=4)
+        await writer.write_summary(ResourceSummary.empty())
+
+        async with await get_session() as s:
+            async with s.begin():
+                row = (
+                    await s.execute(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == 4))
+                ).scalar_one()
+        assert row.sample_count == 0
+
+    @pytest.mark.asyncio
+    async def test_monotonic_to_wallclock_conversion(self) -> None:
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        ts = writer._base_monotonic + 10.0
+        wallclock = writer._to_wallclock(ts)
+        expected = writer._base_wallclock + timedelta(seconds=10.0)
+        assert abs((wallclock - expected).total_seconds()) < 0.01
+
+    @pytest.mark.asyncio
+    async def test_flush_empty_buffer_noop(self) -> None:
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        await writer.flush()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Retention cleanup tests
+# ---------------------------------------------------------------------------
+
+
+class TestResourceCleanup:
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_old_samples_and_summaries(self, session: AsyncSession) -> None:
+        from sqlalchemy import func, select
+
+        from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter, cleanup_old_resources
+
+        old_time = datetime.now(timezone.utc) - timedelta(days=60)
+        await _create_run(session, 10, ended_at=old_time)
+        await _create_run(session, 11)  # no ended_at, should be kept
+
+        writer_old = ResourceWriter(project_dir=None, run_id=10)
+        writer_old.add_sample(
+            ResourceSample(
+                timestamp=writer_old._base_monotonic,
+                cpu_percent=10.0,
+                memory_rss_bytes=100,
+                memory_vms_bytes=200,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                num_children=0,
+            )
+        )
+        await writer_old.flush()
+        await writer_old.write_summary(ResourceSummary.empty())
+
+        writer_new = ResourceWriter(project_dir=None, run_id=11)
+        writer_new.add_sample(
+            ResourceSample(
+                timestamp=writer_new._base_monotonic,
+                cpu_percent=20.0,
+                memory_rss_bytes=200,
+                memory_vms_bytes=400,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                num_children=0,
+            )
+        )
+        await writer_new.flush()
+
+        deleted = await cleanup_old_resources(project_dir=None, retention_days=30)
+        assert deleted == 2  # 1 sample + 1 summary for run 10
+
+        async with await get_session() as s:
+            async with s.begin():
+                remaining_samples = (await s.execute(select(func.count()).select_from(ResourceSampleRecord))).scalar()
+                remaining_summaries = (
+                    await s.execute(select(func.count()).select_from(ResourceSummaryRecord))
+                ).scalar()
+        assert remaining_samples == 1  # run 11's sample
+        assert remaining_summaries == 0  # run 11 had no summary
+
+    @pytest.mark.asyncio
+    async def test_cleanup_no_old_runs(self, session: AsyncSession) -> None:
+        from sova.monitoring.writer import cleanup_old_resources
+
+        deleted = await cleanup_old_resources(project_dir=None, retention_days=30)
+        assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# ORM model tests
+# ---------------------------------------------------------------------------
+
+
+class TestResourceOrmModels:
+    @pytest.mark.asyncio
+    async def test_cascade_delete(self, session: AsyncSession) -> None:
+        """TaskRun deletion cascades to resource records via ORM."""
+        from sqlalchemy import func, select
+        from sqlalchemy.orm import selectinload
+
+        from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord, TaskRun
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 20)
+        writer = ResourceWriter(project_dir=None, run_id=20)
+        writer.add_sample(
+            ResourceSample(
+                timestamp=writer._base_monotonic,
+                cpu_percent=30.0,
+                memory_rss_bytes=300,
+                memory_vms_bytes=600,
+                io_read_bytes=50,
+                io_write_bytes=100,
+                num_children=0,
+            )
+        )
+        await writer.flush()
+        await writer.write_summary(
+            ResourceSummary(
+                sample_count=1,
+                peak_cpu_percent=30.0,
+                avg_cpu_percent=30.0,
+                peak_memory_rss_bytes=300,
+                peak_memory_vms_bytes=600,
+                total_io_read_bytes=50,
+                total_io_write_bytes=100,
+            )
+        )
+
+        # Use ORM delete (loads then deletes) to trigger cascade
+        async with await get_session() as s:
+            async with s.begin():
+                run = await s.get(
+                    TaskRun,
+                    20,
+                    options=[selectinload(TaskRun.resource_samples), selectinload(TaskRun.resource_summary)],
+                )
+                await s.delete(run)
+
+        async with await get_session() as s:
+            async with s.begin():
+                samples = (
+                    await s.execute(
+                        select(func.count())
+                        .select_from(ResourceSampleRecord)
+                        .where(ResourceSampleRecord.task_run_id == 20)
+                    )
+                ).scalar()
+                summaries = (
+                    await s.execute(
+                        select(func.count())
+                        .select_from(ResourceSummaryRecord)
+                        .where(ResourceSummaryRecord.task_run_id == 20)
+                    )
+                ).scalar()
+        assert samples == 0
+        assert summaries == 0
+
+    @pytest.mark.asyncio
+    async def test_taskrun_relationships(self, session: AsyncSession) -> None:
+        """TaskRun has resource_samples and resource_summary relationships."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 21)
+        writer = ResourceWriter(project_dir=None, run_id=21)
+        writer.add_sample(
+            ResourceSample(
+                timestamp=writer._base_monotonic,
+                cpu_percent=10.0,
+                memory_rss_bytes=100,
+                memory_vms_bytes=200,
+                io_read_bytes=None,
+                io_write_bytes=None,
+                num_children=0,
+            )
+        )
+        await writer.flush()
+        await writer.write_summary(ResourceSummary.empty())
+
+        async with await get_session() as s:
+            async with s.begin():
+                run = (
+                    await s.execute(
+                        select(TaskRun)
+                        .where(TaskRun.id == 21)
+                        .options(selectinload(TaskRun.resource_samples), selectinload(TaskRun.resource_summary))
+                    )
+                ).scalar_one()
+        assert len(run.resource_samples) == 1
+        assert run.resource_summary is not None
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleResourceIntegration:
+    def test_agent_state_has_resource_fields(self) -> None:
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = AgentState.__dataclass_fields__
+        assert "resource_collector" in agent
+        assert "resource_writer" in agent
+        assert "resource_flush_task" in agent
+
+    @pytest.mark.asyncio
+    async def test_start_resource_monitoring_disabled(self) -> None:
+        """When monitoring is disabled, no collector is started."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _start_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.monitoring.enabled = False
+            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+
+        assert agent.resource_collector is None
+        assert agent.resource_writer is None
+
+    @pytest.mark.asyncio
+    async def test_finalize_resource_monitoring_no_collector(self) -> None:
+        """Finalizing with no collector is a no-op."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+        await _finalize_resource_monitoring(agent)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_finalize_resource_monitoring_full(self, session: AsyncSession) -> None:
+        """Finalize stops collector, flushes, writes summary."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 30)
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=30, issue="1", role="developer", process=mock_process)
+
+        # Mock collector
+        mock_collector = MagicMock()
+        summary = ResourceSummary(
+            sample_count=5,
+            peak_cpu_percent=60.0,
+            avg_cpu_percent=30.0,
+            peak_memory_rss_bytes=2048,
+            peak_memory_vms_bytes=4096,
+            total_io_read_bytes=500,
+            total_io_write_bytes=1000,
+            peak_num_threads=8,
+        )
+        mock_collector.stop = AsyncMock(return_value=summary)
+        mock_collector.samples = []
+
+        writer = ResourceWriter(project_dir=None, run_id=30)
+        agent.resource_collector = mock_collector
+        agent.resource_writer = writer
+
+        await _finalize_resource_monitoring(agent)
+
+        mock_collector.stop.assert_awaited_once()
+
+        from sqlalchemy import select
+
+        from sova.db.models import ResourceSummaryRecord
+        from sova.db.session import get_session
+
+        async with await get_session() as s:
+            async with s.begin():
+                row = (
+                    await s.execute(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == 30))
+                ).scalar_one()
+        assert row.sample_count == 5
+        assert row.peak_cpu_percent == 60.0
