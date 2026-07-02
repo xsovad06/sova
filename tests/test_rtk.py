@@ -270,6 +270,36 @@ def test_remove_skips_non_dict_json(tmp_path: Path) -> None:
     assert result is False
 
 
+def test_inject_skips_when_hooks_is_not_dict(tmp_path: Path) -> None:
+    """Inject returns False when hooks key exists but is not a dict."""
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": "not a dict"}))
+    result = inject_rtk_hook(tmp_path)
+    assert result is False
+    # File should be untouched
+    assert json.loads((tmp_path / "settings.json").read_text())["hooks"] == "not a dict"
+
+
+def test_inject_skips_when_pretooluse_is_not_list(tmp_path: Path) -> None:
+    """Inject returns False when PreToolUse exists but is not a list."""
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": "bad"}}))
+    result = inject_rtk_hook(tmp_path)
+    assert result is False
+
+
+def test_remove_skips_when_hooks_is_not_dict(tmp_path: Path) -> None:
+    """Remove returns False when hooks key is not a dict."""
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": 42}))
+    result = remove_rtk_hook(tmp_path)
+    assert result is False
+
+
+def test_remove_skips_when_pretooluse_is_not_list(tmp_path: Path) -> None:
+    """Remove returns False when PreToolUse is not a list."""
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": {}}}))
+    result = remove_rtk_hook(tmp_path)
+    assert result is False
+
+
 # -- OSError handling --
 
 

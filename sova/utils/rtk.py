@@ -43,7 +43,14 @@ def inject_rtk_hook(claude_dir: Path) -> bool:
             return False
 
         hooks = data.setdefault("hooks", {})
+        if not isinstance(hooks, dict):
+            logger.warning("Unexpected type for hooks in settings.json -- skipping RTK hook injection")
+            return False
+
         pre_tool_use = hooks.setdefault("PreToolUse", [])
+        if not isinstance(pre_tool_use, list):
+            logger.warning("Unexpected type for PreToolUse in settings.json -- skipping RTK hook injection")
+            return False
 
         if any(_is_rtk_entry(h) for h in pre_tool_use):
             logger.debug("RTK hook already present in settings.json")
@@ -74,7 +81,12 @@ def remove_rtk_hook(claude_dir: Path) -> bool:
             return False
 
         hooks = data.get("hooks", {})
+        if not isinstance(hooks, dict):
+            return False
+
         pre_tool_use = hooks.get("PreToolUse", [])
+        if not isinstance(pre_tool_use, list):
+            return False
 
         original_len = len(pre_tool_use)
         pre_tool_use[:] = [h for h in pre_tool_use if not _is_rtk_entry(h)]
