@@ -1439,3 +1439,34 @@ class TestResourceWriterErrorPaths:
             result = await cleanup_old_resources(project_dir=None, retention_days=30)
 
         assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_flush_cancellation_requeues_samples(self) -> None:
+        """CancelledError during DB write re-queues samples instead of dropping them."""
+        from unittest.mock import AsyncMock
+
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        sample = ResourceSample(
+            timestamp=writer._base_monotonic,
+            cpu_percent=10.0,
+            memory_rss_bytes=100,
+            memory_vms_bytes=200,
+            io_read_bytes=0,
+            io_write_bytes=0,
+            num_children=0,
+        )
+        writer.add_sample(sample)
+
+        # Simulate CancelledError during the DB session context manager
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_get_session = AsyncMock(return_value=mock_session)
+
+        with patch("sova.db.session.get_session", mock_get_session):
+            with pytest.raises(asyncio.CancelledError):
+                await writer.flush()
+
+        # Samples must be re-queued, not lost
+        assert len(writer._buffer) == 1
