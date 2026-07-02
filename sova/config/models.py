@@ -348,6 +348,14 @@ class MonitoringConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")
 
 
+class RTKConfig(BaseSettings):
+    """RTK (context compression) integration configuration."""
+
+    enabled: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_RTK_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -405,6 +413,7 @@ class ProjectConfig(BaseSettings):
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    rtk: RTKConfig = Field(default_factory=RTKConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

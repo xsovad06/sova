@@ -41,6 +41,7 @@ async def _doctor(project: Path | None) -> None:
     checks.extend(await _check_gh_cli())
     checks.extend(await _check_claude_cli())
     checks.extend(_check_terminal_notifier())
+    checks.extend(_check_rtk())
 
     project_dir = (project or Path.cwd()).resolve()
     checks.append(await _check_git_hooks(project_dir))
@@ -123,6 +124,13 @@ def _check_terminal_notifier() -> list[_Check]:
     tn_path = shutil.which("terminal-notifier")
     detail = tn_path or "not found -- install: brew install terminal-notifier"
     return [("terminal-notifier", bool(tn_path), f"(optional) {detail}", False)]
+
+
+def _check_rtk() -> list[_Check]:
+    """Check RTK availability (optional context compression)."""
+    rtk_path = shutil.which("rtk")
+    detail = rtk_path or "not found -- optional context compression tool"
+    return [("rtk", bool(rtk_path), f"(optional) {detail}", False)]
 
 
 async def _check_git_hooks(project_dir: Path) -> _Check:
