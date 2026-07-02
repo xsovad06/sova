@@ -86,8 +86,11 @@ def _build_dimension_prompt(
     diff: str,
     files: list[str],
     spec_sections: dict[str, str] | None = None,
+    addressed_findings: list[dict] | None = None,
 ) -> str:
     """Build a focused review prompt for a single dimension."""
+    from sova.roles.reviewer import _format_addressed_findings
+
     preamble = _DIMENSION_PROMPTS.get(dimension, f"Review the code for {dimension} issues.")
     file_list = "\n".join(f"- {f}" for f in files)
 
@@ -96,6 +99,8 @@ def _build_dimension_prompt(
         parts = [f"### {heading}\n{content}" for heading, content in spec_sections.items()]
         spec_block = "\n\n## Spec Context\n" + "\n\n".join(parts)
 
+    addressed_block = _format_addressed_findings(addressed_findings)
+
     description_block = f"\n**Description**: {task.body}" if not spec_sections and task.body else ""
 
     return f"""{preamble}
@@ -103,6 +108,7 @@ def _build_dimension_prompt(
 ## PR Context
 **Issue**: {task.title}{description_block}
 {spec_block}
+{addressed_block}
 
 ## Changed Files
 {file_list}
@@ -191,6 +197,7 @@ async def run_panel_review(
     spec_sections: dict[str, str] | None = None,
     cwd: Path | str | None = None,
     budget_remaining: Decimal | None = None,
+    addressed_findings: list[dict] | None = None,
 ) -> ReviewResult:
     """Run dimension reviewers sequentially and aggregate results.
 
@@ -228,7 +235,10 @@ async def run_panel_review(
                 )
                 continue
 
-            prompt = _build_dimension_prompt(dim, task, chunk, files, spec_sections=chunk_spec)
+            chunk_addressed = addressed_findings if chunk_idx == 0 else None
+            prompt = _build_dimension_prompt(
+                dim, task, chunk, files, spec_sections=chunk_spec, addressed_findings=chunk_addressed,
+            )
             try:
                 dim_findings, dim_summary, dim_cost = await _run_dimension(dim, prompt, model=model, cwd=cwd)
             except Exception as exc:
