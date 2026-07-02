@@ -51,20 +51,29 @@ async def load_context(
     config: object,
     tier: str | None = None,
     category: str | None = None,
+    ctx: object | None = None,
 ) -> str:
     """Load knowledge from file-based and DB tiers, formatted for prompts.
 
     Combines:
     - Tier 0: shared knowledge from config.shared_knowledge_path (if exists)
     - Tier 1: project rules from project_dir/.claude/rules/*.md
-    - Tier 2: DB-backed memories (filtered by tier/category)
+    - Tier 2: DB-backed memories (filtered by relevance when ctx is provided,
+      or exhaustive when ctx is None)
+
+    When ``ctx`` is provided (an object with ``role``, ``task``, ``files_changed``),
+    uses relevance filtering via ``retrieve_relevant()`` to select the most
+    relevant memories within a token budget. Falls back to exhaustive injection
+    when ctx is None or embeddings are unavailable.
 
     Args:
         session: Database session (reserved for future use).
         project_dir: Root directory of the target project.
         config: ProjectConfig instance (needs shared_knowledge_path).
-        tier: Optional DB tier filter (e.g., "project", "shared").
+        tier: Optional DB tier filter (e.g., "project", "shared"). Ignored when
+            ctx is provided (retrieve_relevant handles tier selection internally).
         category: Optional category filter for DB memories.
+        ctx: Optional execution context for relevance-based retrieval.
 
     Returns:
         Formatted string combining all tiers, suitable for prompt injection.
@@ -85,13 +94,30 @@ async def load_context(
     if rules_content:
         sections.append(f"# Project Rules (Tier 1)\n\n{rules_content}")
 
-    # Tier 2: DB-backed memories (default to "project" tier when unfiltered)
-    db_memories = await search(tier=tier or "project", category=category)
-    formatted_db = format_for_prompt(db_memories)
+    # Tier 2: DB-backed memories
+    if ctx is not None:
+        formatted_db = await _load_relevant_memories(ctx, category=category)
+    else:
+        db_memories = await search(tier=tier or "project", category=category)
+        formatted_db = format_for_prompt(db_memories)
+
     if formatted_db:
         sections.append(f"# Agent Memory (Tier 2)\n\n{formatted_db}")
 
     return "\n\n---\n\n".join(sections)
+
+
+async def _load_relevant_memories(ctx: object, category: str | None = None) -> str:
+    """Load memories using relevance filtering from an execution context."""
+    from sova.knowledge.retrieval import build_context_query, format_relevant_context, retrieve_relevant
+
+    role = getattr(ctx, "role", "")
+    task = getattr(ctx, "task", None)
+    files_changed = getattr(ctx, "files_changed", [])
+
+    query = build_context_query(role=role, task=task, files_changed=files_changed)
+    results = await retrieve_relevant(query=query, category=category)
+    return format_relevant_context(results)
 
 
 def format_for_prompt(memories: list[Memory]) -> str:
