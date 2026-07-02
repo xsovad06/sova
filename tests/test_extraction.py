@@ -313,6 +313,26 @@ async def test_extract_memories_is_noop() -> None:
     assert result.error is None
 
 
+async def test_extract_memories_noop_with_all_optional_params() -> None:
+    """extract_memories accepts all optional params without error."""
+    from sova.knowledge.extraction import extract_memories
+
+    result = await extract_memories(
+        role="reviewer",
+        issue_number="99",
+        repo="org/repo",
+        task_title="Review PR",
+        files_changed=["src/a.py", "src/b.py"],
+        step_summaries=["review: completed"],
+        review_findings=[{"file": "a.py", "line": 10, "severity": 5}],
+        spec_content="## Design\nSome spec content",
+        cwd="/tmp/workspace",
+    )
+
+    assert result.memories_stored == 0
+    assert result.error is None
+
+
 # ---------------------------------------------------------------------------
 # ExtractMemoryStep
 # ---------------------------------------------------------------------------

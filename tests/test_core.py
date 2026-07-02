@@ -1313,6 +1313,52 @@ class TestCreatePRStep:
 
         adapter.transition_state.assert_awaited_once_with("42", TaskState.IN_REVIEW)
 
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_whitespace_only_body_omits_context(self, mock_create_pr, mock_run, _find) -> None:
+        """Whitespace-only issue body should not produce a Context section."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="42", title="Add widget", body="   "),
+            branch_name="feat/issue-42",
+        )
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "## Context" not in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_none_body_omits_context(self, mock_create_pr, mock_run, _find) -> None:
+        """None issue body should not produce a Context section."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="42", title="Add widget", body=None),
+            branch_name="feat/issue-42",
+        )
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "## Context" not in body_arg
+
 
 class TestHandoffToReviewerStep:
     async def test_writes_handoff_and_succeeds(self) -> None:

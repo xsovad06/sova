@@ -146,9 +146,10 @@ class CreatePRStep(BaseStep):
             lines.append(f"Closes #{ctx.issue_number}")
             lines.append("")
 
-        issue_body = ctx.task.body if ctx.task else ""
-        if issue_body:
-            excerpt = truncate(issue_body.strip(), max_length=_ISSUE_BODY_EXCERPT_LIMIT)
+        issue_body = (ctx.task.body if ctx.task else "") or ""
+        stripped_body = issue_body.strip()
+        if stripped_body:
+            excerpt = truncate(stripped_body, max_length=_ISSUE_BODY_EXCERPT_LIMIT)
             lines.extend(["## Context", "", excerpt, ""])
 
         lines.extend(

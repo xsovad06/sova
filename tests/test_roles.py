@@ -2209,6 +2209,102 @@ class TestTriageSkipPatterns:
 
 
 # ---------------------------------------------------------------------------
+# TriageRole -- _heuristic_assess edge cases (label priority, helpers)
+# ---------------------------------------------------------------------------
+
+
+class TestTriageHeuristicEdgeCases:
+    """Tests for _heuristic_assess edge cases -- label priority and extracted helpers."""
+
+    def _make_task(self, title: str = "Test", body: str = "", labels: list[str] | None = None):
+        return Task(id="42", title=title, body=body, state=TaskState.BACKLOG, labels=labels or [])
+
+    def test_human_only_label_with_empty_body(self) -> None:
+        """agent:human-only label takes priority over empty-body needs_spec."""
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = self._make_task(body="", labels=["agent:human-only"])
+        result = role._heuristic_assess(task)
+        assert result.suitability == "human_only"
+        assert "human-only" in result.reasoning.lower()
+
+    def test_human_only_label_with_whitespace_body(self) -> None:
+        """agent:human-only label takes priority over whitespace-only body."""
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = self._make_task(body="   ", labels=["agent:human-only"])
+        result = role._heuristic_assess(task)
+        assert result.suitability == "human_only"
+
+    def test_human_only_label_with_full_body(self) -> None:
+        """agent:human-only label takes priority even with a detailed body."""
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = self._make_task(
+            body="Detailed description with `code refs` and acceptance criteria\n- [ ] Done",
+            labels=["agent:human-only"],
+        )
+        result = role._heuristic_assess(task)
+        assert result.suitability == "human_only"
+
+    def test_has_criteria_markers(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        assert TriageRole._has_criteria_markers("- [ ] task item")
+        assert TriageRole._has_criteria_markers("## scope\nsome text")
+        assert not TriageRole._has_criteria_markers("just a plain paragraph")
+
+    def test_has_code_references(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        assert TriageRole._has_code_references("update src/main.py")
+        assert TriageRole._has_code_references("use the `function` here")
+        assert not TriageRole._has_code_references("plain text without code")
+
+    def test_assess_body_content_bug_with_code_refs(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        result = role._assess_body_content("crash in module.py when calling func()", {"type:bug"})
+        assert result.suitability == "ready"
+        assert result.suggested_role == "researcher"
+
+    def test_assess_body_content_short_no_criteria(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        result = role._assess_body_content("Fix the bug", set())
+        assert result.suitability == "needs_spec"
+
+    def test_assess_body_content_structured_sections(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "Description here.\n\n## Requirements\n" + "Detail " * 40
+        result = role._assess_body_content(body, set())
+        assert result.suitability == "ready"
+
+    def test_assess_body_content_long_with_type_label(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "A " * 200
+        result = role._assess_body_content(body, {"type:feature"})
+        assert result.suitability == "ready"
+
+    def test_assess_body_content_fallback_needs_research(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "A moderate description without clear markers or code. " * 3
+        result = role._assess_body_content(body, set())
+        assert result.suitability == "needs_research"
+
+
+# ---------------------------------------------------------------------------
 # TriageRole -- assess_task_with_llm
 # ---------------------------------------------------------------------------
 
