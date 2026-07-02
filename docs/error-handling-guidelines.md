@@ -180,13 +180,15 @@ Status updates are conditional (once terminal, never overwrite); cost updates ar
 
 When LLM calls fail for user-facing outputs, always provide a structured fallback from available data. **Never discard to a bare stub.**
 
+PR body generation uses a deterministic template (`_build_pr_body()`) -- no LLM call. For steps that still use conditional LLM calls (validate, monitor_ci, rebase), the pattern is:
+
 ```python
 try:
-    result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
+    result = await invoke(prompt, model=model, cwd=ctx.working_dir, timeout=120)
     return result.text
 except RuntimeError:
-    log.warning("step.create_pr.body_generation_failed", fallback="structured")
-    return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
+    log.warning("step.operation_failed", fallback="structured")
+    return build_structured_fallback(available_data)
 ```
 
 ### JSON Parsing with Substring Extraction

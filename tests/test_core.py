@@ -1170,19 +1170,12 @@ class TestCreatePRStep:
         assert gate.passed
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_generates_rich_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_generates_structured_body(self, mock_create_pr, mock_run, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
-        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- Added widget support\n\nCloses #42",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
@@ -1198,22 +1191,18 @@ class TestCreatePRStep:
         assert ctx.pr_number == 10
         body_arg = mock_create_pr.call_args.kwargs["body"]
         assert "## Summary" in body_arg
-        assert "Added widget" in body_arg
+        assert "Add widget" in body_arg
+        assert "Closes #42" in body_arg
+        assert "## Context" in body_arg
+        assert "We need a widget" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_appends_closes_when_missing(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_includes_closes_for_issue(self, mock_create_pr, mock_run, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
-        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- Did stuff",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
         mock_create_pr.return_value = MagicMock(number=12, url="https://github.com/x/y/pull/12")
 
         ctx = _make_ctx(branch_name="feat/issue-42")
@@ -1224,17 +1213,15 @@ class TestCreatePRStep:
         assert "Closes #42" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_falls_back_on_llm_failure(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
         mock_run.side_effect = [
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
         ]
-        mock_invoke.side_effect = RuntimeError("LLM unavailable")
         mock_create_pr.return_value = MagicMock(number=11, url="https://github.com/x/y/pull/11")
 
         ctx = _make_ctx(
@@ -1253,19 +1240,12 @@ class TestCreatePRStep:
         assert "src/app.py" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
-        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- Added widget\n\nCloses #42",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
@@ -1280,25 +1260,17 @@ class TestCreatePRStep:
         mock_assign.assert_awaited_once_with(10, assignee="xsovad06", repo="", github_user="xsovad06")
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_skips_assignment_when_no_github_user(
         self,
         mock_create_pr,
         mock_run,
-        mock_invoke,
         _find,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
-        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- Added widget\n\nCloses #42",
-            model="sonnet",
-            cost_usd=Decimal("0.01"),
-        )
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(branch_name="feat/issue-42")
@@ -2781,28 +2753,56 @@ class TestCreatePRStepIssueless:
         with (
             patch("sova.core.steps.create_pr.run") as mock_run,
             patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=pr_info),
-            patch("sova.core.steps.create_pr.invoke", new_callable=AsyncMock) as mock_invoke,
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout="abc123 feat: plan\n"),
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
             ]
-            mock_invoke.return_value = MagicMock(text="## Summary\nSprint plan", cost_usd=Decimal("0.01"))
             result = await step.execute(ctx)
 
         assert result.success
         assert ctx.pr_number == 99
         assert "(#" not in result.summary or "99" in result.summary
 
-    async def test_issueless_fallback_body_has_no_closes(self) -> None:
-        """Fallback PR body for issueless runs should omit Closes line."""
+    async def test_issueless_pr_body_has_no_closes(self) -> None:
+        """PR body for issueless runs should omit Closes line."""
         from sova.core.steps.create_pr import CreatePRStep
 
         ctx = _make_ctx(issue_number="", run_label="sprint-planning")
         ctx.task = None
-        body = CreatePRStep._build_fallback_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
+        body = CreatePRStep._build_pr_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
         assert "Closes" not in body
         assert "sprint plan" in body
+
+    async def test_pr_body_includes_issue_excerpt(self) -> None:
+        """PR body should include a truncated issue body excerpt."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Widget", body="Add widget support"))
+        body = CreatePRStep._build_pr_body(ctx, "Widget", "abc feat", "x.py | 3 +++")
+        assert "## Context" in body
+        assert "Add widget support" in body
+        assert "Closes #42" in body
+
+    async def test_pr_body_truncates_long_issue_body(self) -> None:
+        """Issue body excerpts longer than 500 chars should be truncated."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        long_body = "x" * 600
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Big", body=long_body))
+        body = CreatePRStep._build_pr_body(ctx, "Big", "abc feat", "x.py | 3 +++")
+        assert "## Context" in body
+        assert "..." in body
+        assert long_body not in body  # should be truncated
+
+    async def test_pr_body_omits_context_when_no_issue_body(self) -> None:
+        """PR body should not include Context section when issue has no body."""
+        from sova.core.steps.create_pr import CreatePRStep
+
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body=""))
+        body = CreatePRStep._build_pr_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
+        assert "## Context" not in body
+        assert "Closes #42" in body
 
 
 # ---------------------------------------------------------------------------

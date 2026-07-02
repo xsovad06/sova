@@ -1,8 +1,9 @@
-"""Automatic memory extraction from agent runs.
+"""Memory extraction infrastructure for agent runs.
 
-Extracts reusable learnings from an agent's completed run context via a
-single LLM call (Haiku). Stores results to the Memory DB table with
-deduplication and confirmation counter tracking.
+Automatic LLM-based extraction is disabled (no-op). The infrastructure
+functions (_build_extraction_prompt, _parse_extraction_response,
+_deduplicate_and_store) are retained for future rule-based extraction.
+Use ``/extract-knowledge`` for human-reviewed knowledge capture.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from sova.db.models import Memory
 from sova.knowledge import memory
 from sova.knowledge.embeddings import embed_text
 from sova.knowledge.similarity import parse_confirmation_counter, set_confirmation_counter, titles_match
-from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.extraction")
@@ -58,54 +58,14 @@ async def extract_memories(
     spec_content: str | None = None,
     cwd: Path | str,
 ) -> ExtractionResult:
-    """Extract reusable learnings from a completed agent run.
+    """No-op: automatic memory extraction is disabled.
 
-    Makes a single Haiku LLM call to analyze the run context, then stores
-    any novel learnings to the Memory DB. Non-fatal: never raises.
+    LLM-based extraction had low signal-to-noise. Use the human-reviewed
+    ``/extract-knowledge`` command instead. The step slot is kept in
+    pipelines so future rule-based extraction is a single-file change.
     """
-    result = ExtractionResult()
-
-    try:
-        prompt = _build_extraction_prompt(
-            role=role,
-            task_title=task_title,
-            files_changed=files_changed,
-            step_summaries=step_summaries,
-            review_findings=review_findings,
-            spec_content=spec_content,
-        )
-
-        llm_result = await invoke(prompt, model="haiku", cwd=cwd, timeout=60)
-        result.cost_usd = llm_result.cost_usd
-
-        memories = _parse_extraction_response(llm_result.text)
-        if not memories:
-            log.info("extraction.no_learnings", role=role, issue=issue_number)
-            return result
-
-        for mem in memories:
-            outcome = await _deduplicate_and_store(mem, repo=repo, issue_number=issue_number)
-            if outcome == "stored":
-                result.memories_stored += 1
-            elif outcome == "confirmed":
-                result.memories_confirmed += 1
-            else:
-                result.memories_skipped += 1
-
-        log.info(
-            "extraction.done",
-            role=role,
-            issue=issue_number,
-            stored=result.memories_stored,
-            confirmed=result.memories_confirmed,
-            skipped=result.memories_skipped,
-        )
-
-    except Exception as exc:
-        result.error = str(exc)
-        log.warning("extraction.failed", role=role, issue=issue_number, exc_info=True)
-
-    return result
+    log.debug("extraction.skipped", role=role, issue=issue_number, reason="no-op")
+    return ExtractionResult()
 
 
 def _build_extraction_prompt(

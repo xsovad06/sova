@@ -646,32 +646,10 @@ class ReviewerRole(AgentRole):
         return []
 
     async def _extract_review_memories(self, ctx: ExecutionContext, task: Task, review: ReviewResult) -> None:
-        """Extract learnings from this review into memory (non-fatal)."""
-        try:
-            from sova.knowledge.extraction import extract_memories
+        """No-op: automatic memory extraction is disabled.
 
-            await extract_memories(
-                role="reviewer",
-                issue_number=ctx.issue_number,
-                repo=ctx.repo,
-                task_title=task.title,
-                files_changed=[],
-                step_summaries=[f"review: {len(review.findings)} findings"],
-                review_findings=[
-                    {
-                        "file": f.file,
-                        "line": f.line,
-                        "severity": f.severity,
-                        "category": f.category,
-                        "description": f.description,
-                        "suggestion": f.suggestion,
-                    }
-                    for f in review.findings
-                ],
-                cwd=ctx.working_dir,
-            )
-        except Exception:
-            log.warning("reviewer.extract_memory_failed", exc_info=True)
+        Use ``/extract-knowledge`` for human-reviewed knowledge capture.
+        """
 
     async def _clear_current_step(self, ctx: ExecutionContext) -> None:
         """Clear the current_step sentinel on the TaskRun.

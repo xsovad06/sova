@@ -1796,7 +1796,96 @@ class TestAssessTask:
         assessment = await role.assess_task(task)
 
         assert assessment.suitability == "needs_spec"
+        assert assessment.confidence >= 0.9
         assert len(assessment.missing_context) > 0
+
+    async def test_triage_short_body_needs_spec(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(id="1", title="Fix something", body="Short note.", state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "needs_spec"
+        assert assessment.confidence >= 0.8
+
+    async def test_triage_human_only_label(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        task = Task(
+            id="1",
+            title="Manual task",
+            body="Something detailed enough.",
+            state=TaskState.BACKLOG,
+            labels=["agent:human-only"],
+        )
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "human_only"
+        assert assessment.confidence >= 0.95
+
+    async def test_triage_bug_with_code_refs(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "There is a bug in `sova/core/steps/create_pr.py` where the PR body is empty."
+        task = Task(id="1", title="Bug fix", body=body, state=TaskState.BACKLOG, labels=["type:bug"])
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.confidence >= 0.85
+
+    async def test_triage_structured_body_no_code_refs(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = (
+            "Implement a new feature.\n\n"
+            "## Scope\n"
+            "The feature should cover X, Y, and Z components.\n\n"
+            "## Requirements\n"
+            "Must handle edge cases A and B.\n"
+        )
+        task = Task(id="1", title="New feature", body=body, state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.confidence >= 0.85
+
+    async def test_triage_long_body_with_type_label(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "A " * 200  # 400 chars, no criteria/code but has type label
+        task = Task(id="1", title="Task", body=body, state=TaskState.BACKLOG, labels=["type:feature"])
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "ready"
+        assert assessment.confidence >= 0.8
+
+    async def test_triage_medium_body_no_signals(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = "We should improve the user experience in various ways. " * 3  # ~170 chars
+        task = Task(id="1", title="Improve UX", body=body, state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.suitability == "needs_research"
+        assert assessment.confidence >= 0.75
+
+    async def test_triage_complexity_estimation(self) -> None:
+        from sova.roles.triage import TriageRole
+
+        role = TriageRole()
+        body = (
+            "Major refactor needed.\n\n## Scope\n" + "Details. " * 100 + "\n\n## Requirements\n- Refactor all modules\n"
+        )
+        task = Task(id="1", title="Big refactor", body=body, state=TaskState.BACKLOG)
+        assessment = await role.assess_task(task)
+
+        assert assessment.estimated_complexity == "complex"
 
     async def test_researcher_assess_default(self) -> None:
         from sova.roles.researcher import ResearcherRole

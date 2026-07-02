@@ -1,4 +1,4 @@
-"""Step 9: Create PR -- generate a rich description and open a pull request."""
+"""Step 9: Create PR -- generate a structured description and open a pull request."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
-from sova.llm.client import invoke
+from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -17,52 +17,13 @@ log = get_logger(component="step.create_pr")
 
 _PLACEHOLDER = "(none)"
 
+_ISSUE_BODY_EXCERPT_LIMIT = 500
+
 _CONVENTIONAL_RE = re.compile(
     r"^(feat|fix|refactor|test|docs|chore|ci)"
     r"(?:\([^)]*\))?"
     r":\s*",
 )
-
-_PR_BODY_PROMPT_BASE = """\
-Generate a pull request description for the changes below. Output ONLY the \
-markdown body (no fences, no commentary). Use this structure:
-
-## Summary
-1-3 bullet points: WHAT changed and WHY.
-
-## Changes
-Brief description of each logical change grouped by area.
-
-## Review guidance
-What should a reviewer focus on? Any trade-offs or shortcuts?
-
-## Test plan
-How were these changes verified?
-"""
-
-_PR_BODY_ISSUE_SECTION = """
-Closes #{issue_number}
-
----
-Issue #{issue_number}: {issue_title}
-
-{issue_body}
-
-"""
-
-_PR_BODY_NO_ISSUE_SECTION = """
----
-Task: {issue_title}
-
-"""
-
-_PR_BODY_CONTEXT = """\
-Commits on this branch:
-{commit_log}
-
-Files changed:
-{diff_stat}
-"""
 
 
 def _build_pr_title(task_title: str, issue_number: str | None) -> str:
@@ -169,41 +130,12 @@ class CreatePRStep(BaseStep):
             ),
         )
 
-        issue_body = ctx.task.body if ctx.task else ""
         commit_log = log_result.stdout.strip() if log_result.success else "(unavailable)"
         diff_stat = diff_result.stdout.strip() if diff_result.success else "(unavailable)"
-
-        if ctx.has_issue:
-            middle = _PR_BODY_ISSUE_SECTION.format(
-                issue_number=ctx.issue_number,
-                issue_title=task_title,
-                issue_body=issue_body or "(no description)",
-            )
-        else:
-            middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
-
-        prompt = (
-            _PR_BODY_PROMPT_BASE
-            + middle
-            + _PR_BODY_CONTEXT.format(
-                commit_log=commit_log,
-                diff_stat=diff_stat,
-            )
-        )
-
-        try:
-            result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
-            ctx.add_cost(result.cost_usd)
-            body = result.text
-            if ctx.has_issue and f"#{ctx.issue_number}" not in body:
-                body += f"\n\nCloses #{ctx.issue_number}"
-            return body
-        except RuntimeError:
-            log.warning("step.create_pr.body_generation_failed", fallback="structured")
-            return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
+        return self._build_pr_body(ctx, task_title, commit_log, diff_stat)
 
     @staticmethod
-    def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
+    def _build_pr_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
         lines = [
             "## Summary",
             "",
@@ -213,6 +145,12 @@ class CreatePRStep(BaseStep):
         if ctx.has_issue:
             lines.append(f"Closes #{ctx.issue_number}")
             lines.append("")
+
+        issue_body = ctx.task.body if ctx.task else ""
+        if issue_body:
+            excerpt = truncate(issue_body.strip(), max_length=_ISSUE_BODY_EXCERPT_LIMIT)
+            lines.extend(["## Context", "", excerpt, ""])
+
         lines.extend(
             [
                 "## Commits",
