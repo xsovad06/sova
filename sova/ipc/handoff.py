@@ -184,6 +184,7 @@ class AgentHandoff(BaseModel):
     # What's next
     next_action: str
     pending_findings: list[dict] = Field(default_factory=list)
+    addressed_findings: list[dict] = Field(default_factory=list)
     blockers: list[str] = Field(default_factory=list)
     needs_human: bool = False
     human_message: str | None = None

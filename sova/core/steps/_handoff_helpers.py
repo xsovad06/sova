@@ -46,6 +46,7 @@ async def write_step_handoff(
         human_message=human_message or "",
         pr_number=ctx.pr_number,
         branch_name=ctx.branch_name,
+        addressed_findings=ctx.addressed_external_findings,
     )
 
     if ctx.task_run_id:
@@ -61,7 +62,11 @@ async def write_step_handoff(
         pr_number=ctx.pr_number,
         branch=ctx.branch_name,
         summary=summary,
-        details={"next_action": next_action, "cost_usd": str(ctx.cost_usd)},
+        details={
+            "next_action": next_action,
+            "cost_usd": str(ctx.cost_usd),
+            **({"addressed_findings": ctx.addressed_external_findings} if ctx.addressed_external_findings else {}),
+        },
         next_actions=actions,
     )
 

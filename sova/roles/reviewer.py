@@ -20,7 +20,14 @@ from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines
 from sova.git.operations import find_pr_for_issue, get_pr_branch, get_pr_diff, get_pr_files
-from sova.ipc.handoff import AgentHandoff, DashboardHandoff, HandoffAction, write_handoff, write_handoff_file
+from sova.ipc.handoff import (
+    AgentHandoff,
+    DashboardHandoff,
+    HandoffAction,
+    read_handoff_file,
+    write_handoff,
+    write_handoff_file,
+)
 from sova.llm.client import invoke
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
@@ -76,11 +83,45 @@ class ReviewResult:
         return list(self.findings)
 
 
+def _format_addressed_findings(findings: list[dict] | None) -> str:
+    """Format addressed external findings into a prompt section."""
+    if not findings:
+        return ""
+
+    # Group by source
+    by_source: dict[str, list[dict]] = {}
+    for f in findings:
+        source = f.get("source", "unknown")
+        by_source.setdefault(source, []).append(f)
+
+    lines = [
+        "## Already Addressed by Static Tools",
+        "The following issues were already detected and addressed by external tools "
+        "before this review. Focus your review on complementary dimensions that static "
+        "tools cannot catch: logic correctness, architecture, edge cases, concurrency, "
+        "and design intent.",
+        "",
+    ]
+    for source, items in sorted(by_source.items()):
+        lines.append(f"### {source} ({len(items)} finding{'s' if len(items) != 1 else ''})")
+        for item in items:
+            severity = item.get("severity", "?")
+            tool_id = item.get("tool_id", "")
+            file_path = item.get("file_path", "unknown")
+            msg = item.get("message", "")
+            tool_tag = f" [{tool_id}]" if tool_id else ""
+            lines.append(f"- [{severity}]{tool_tag} `{file_path}`: {msg}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _build_review_prompt(
     task: Task,
     diff: str,
     files: list[str],
     spec_sections: dict[str, str] | None = None,
+    addressed_findings: list[dict] | None = None,
 ) -> str:
     """Build the LLM prompt for code review."""
     file_list = "\n".join(f"- {f}" for f in files)
@@ -91,6 +132,8 @@ def _build_review_prompt(
     if has_spec:
         parts = [f"### {heading}\n{content}" for heading, content in spec_sections.items()]
         spec_block = "\n\n## Spec Context\n" + "\n\n".join(parts)
+
+    addressed_block = _format_addressed_findings(addressed_findings)
 
     spec_checklist = (
         "\n9. **Spec alignment** (5-8): implementation deviates from spec intent, "
@@ -114,7 +157,7 @@ Assume the code has bugs until proven otherwise.
 ## PR Context
 **Issue**: {task.title}{description_block}
 {spec_block}
-
+{addressed_block}
 ## Changed Files
 {file_list}
 
@@ -469,8 +512,13 @@ class ReviewerRole(AgentRole):
                 error=str(exc),
             )
 
+        # Load addressed external findings from developer handoff
+        addressed = await self._load_addressed_findings(ctx)
+        if addressed:
+            log.info("reviewer.addressed_findings_loaded", count=len(addressed))
+
         # Run LLM review (chunked if needed)
-        review = await self._run_review(ctx, task, diff, files)
+        review = await self._run_review(ctx, task, diff, files, addressed_findings=addressed)
 
         # Append review rationale to spec (non-fatal provenance threading)
         self._append_review_rationale(ctx, review)
@@ -531,6 +579,52 @@ class ReviewerRole(AgentRole):
                 log.warning("reviewer.branch_discovery_failed", exc_info=True)
 
         return None  # success -- ctx is populated
+
+    async def _load_addressed_findings(self, ctx: ExecutionContext) -> list[dict]:
+        """Load addressed external findings from the developer's handoff.
+
+        Two sources (tried in order):
+        1. File-based handoff for this issue
+        2. Most recent developer TaskRun for this issue (DB fallback)
+        """
+        # Source 1: file handoff
+        try:
+            handoff = read_handoff_file(ctx.project_dir, issue=ctx.issue_number or None)
+            if handoff and handoff.details.get("addressed_findings"):
+                return handoff.details["addressed_findings"]
+        except Exception:
+            log.debug("reviewer.addressed_findings_file_failed", exc_info=True)
+
+        # Source 2: DB fallback -- most recent developer run for this issue
+        issue = (ctx.issue_number or "").lstrip("#").strip()
+        if not issue:
+            return []
+        try:
+            from sqlalchemy import select
+
+            async with await get_session() as session:
+                stmt = (
+                    select(TaskRun)
+                    .where(
+                        TaskRun.issue_number == issue,
+                        TaskRun.role == "developer",
+                        TaskRun.status.in_(["done", "failed", "interrupted"]),
+                        TaskRun.handoff_json.isnot(None),
+                    )
+                    .order_by(TaskRun.started_at.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                run_record = result.scalar_one_or_none()
+                if run_record and run_record.handoff_json:
+                    findings = run_record.handoff_json.get("addressed_findings", [])
+                    if findings:
+                        log.info("reviewer.addressed_findings_from_db", run_id=run_record.id, count=len(findings))
+                        return findings
+        except Exception:
+            log.debug("reviewer.addressed_findings_db_failed", exc_info=True)
+
+        return []
 
     async def _extract_review_memories(self, ctx: ExecutionContext, task: Task, review: ReviewResult) -> None:
         """Extract learnings from this review into memory (non-fatal)."""
@@ -611,7 +705,14 @@ class ReviewerRole(AgentRole):
         fallback = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
         await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
 
-    async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
+    async def _run_review(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        diff: str,
+        files: list[str],
+        addressed_findings: list[dict] | None = None,
+    ) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
         # Load spec for intent-anchored review (spec-mediated context compression)
         spec_sections = self._load_spec_sections(ctx)
@@ -628,9 +729,17 @@ class ReviewerRole(AgentRole):
 
         # Panel review: parallel focused dimension reviewers
         if ctx.config.review.panel.enabled:
+            # TODO: thread addressed_findings into panel review when panel_review.py supports it
             return await self._run_panel_review(ctx, task, diff, files, spec_sections)
 
-        return await self._run_single_review(ctx, task, diff, files, spec_sections)
+        return await self._run_single_review(
+            ctx,
+            task,
+            diff,
+            files,
+            spec_sections,
+            addressed_findings=addressed_findings,
+        )
 
     async def _run_panel_review(
         self,
@@ -665,6 +774,7 @@ class ReviewerRole(AgentRole):
         diff: str,
         files: list[str],
         spec_sections: dict[str, str] | None,
+        addressed_findings: list[dict] | None = None,
     ) -> ReviewResult:
         """Original single-reviewer path."""
         chunks = _chunk_diff(diff)
@@ -674,8 +784,17 @@ class ReviewerRole(AgentRole):
             try:
                 # Send full spec only for first chunk; subsequent chunks get a compact reference
                 chunk_spec = spec_sections if i == 0 else _compact_spec_ref(spec_sections)
+                # Include addressed findings only in first chunk prompt
+                chunk_addressed = addressed_findings if i == 0 else None
+                prompt = _build_review_prompt(
+                    task,
+                    chunk,
+                    files,
+                    spec_sections=chunk_spec,
+                    addressed_findings=chunk_addressed,
+                )
                 llm_result = await invoke(
-                    _build_review_prompt(task, chunk, files, spec_sections=chunk_spec),
+                    prompt,
                     model="sonnet",
                     cwd=ctx.working_dir,
                 )

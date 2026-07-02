@@ -1250,6 +1250,76 @@ class TestSpecAnchoredReview:
         # 8 categories present, no 9th
         assert "8. **Docs**" in prompt
 
+    def test_build_review_prompt_with_addressed_findings(self) -> None:
+        from sova.roles.reviewer import _build_review_prompt
+
+        task = Task(id="1", title="Test", body="desc", state=TaskState.BACKLOG)
+        addressed = [
+            {
+                "source": "sonarcloud",
+                "severity": "MAJOR",
+                "file_path": "sova/app.py",
+                "tool_id": "S1192",
+                "message": "Unused import",
+            },
+            {
+                "source": "sonarcloud",
+                "severity": "coverage",
+                "file_path": "project-wide",
+                "tool_id": "",
+                "message": "Coverage gap remediation applied",
+            },
+            {
+                "source": "coderabbit",
+                "severity": "MAJOR",
+                "file_path": "sova/cli.py",
+                "tool_id": "",
+                "message": "Bug found",
+            },
+        ]
+        prompt = _build_review_prompt(task, "diff", ["a.py"], addressed_findings=addressed)
+
+        assert "## Already Addressed by Static Tools" in prompt
+        assert "sonarcloud (2 findings)" in prompt
+        assert "coderabbit (1 finding)" in prompt
+        assert "[S1192]" in prompt
+        assert "Unused import" in prompt
+        assert "Coverage gap remediation applied" in prompt
+        assert "complementary dimensions" in prompt
+
+    def test_build_review_prompt_without_addressed_findings(self) -> None:
+        from sova.roles.reviewer import _build_review_prompt
+
+        task = Task(id="1", title="Test", body="desc", state=TaskState.BACKLOG)
+        prompt = _build_review_prompt(task, "diff", ["a.py"], addressed_findings=[])
+
+        assert "Already Addressed" not in prompt
+
+    def test_format_addressed_findings_empty(self) -> None:
+        from sova.roles.reviewer import _format_addressed_findings
+
+        assert _format_addressed_findings([]) == ""
+        assert _format_addressed_findings(None) == ""
+
+    def test_format_addressed_findings_groups_by_source(self) -> None:
+        from sova.roles.reviewer import _format_addressed_findings
+
+        findings = [
+            {"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "Issue A"},
+            {"source": "coderabbit", "severity": "HIGH", "file_path": "b.py", "tool_id": "", "message": "Issue B"},
+            {"source": "sonarcloud", "severity": "MINOR", "file_path": "c.py", "tool_id": "S2", "message": "Issue C"},
+        ]
+        result = _format_addressed_findings(findings)
+        assert "coderabbit (1 finding)" in result
+        assert "sonarcloud (2 findings)" in result
+        assert "[S1]" in result
+        assert "[S2]" in result
+        # No tool_id tag for coderabbit entry with empty tool_id
+        assert "[HIGH]" in result
+        assert "Issue B" in result
+        assert "`a.py`" in result
+        assert "`b.py`" in result
+
     def test_spec_alignment_finding_parses(self) -> None:
         import json
 
@@ -2466,22 +2536,23 @@ class TestReviewerLLMReview:
             cost_usd=Decimal("0.01"),
         )
 
-        mock_get_session = AsyncMock()
+        mock_clear_step = AsyncMock()
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file"),
-            patch("sova.roles.reviewer.get_session", mock_get_session),
+            patch("sova.roles.reviewer.read_handoff_file", return_value=None),
+            patch("sova.roles.reviewer.get_session", new_callable=AsyncMock),
+            patch.object(ReviewerRole, "_clear_current_step", mock_clear_step),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
 
         assert result.success
-        # get_session should not have been called for clearing sentinel
-        # (it may be called for handoff, but handoff is also guarded by task_run_id)
-        mock_get_session.assert_not_awaited()
+        # _clear_current_step should not have been called when task_run_id is None
+        mock_clear_step.assert_not_awaited()
 
     async def test_sentinel_cleared_on_precondition_failure(self) -> None:
         """Sentinel is cleared even when preconditions fail (try/finally)."""

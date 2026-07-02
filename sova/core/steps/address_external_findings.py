@@ -78,6 +78,29 @@ class AddressExternalFindingsStep(BaseStep):
             sources=list({f.source for f in all_findings}),
         )
 
+        # Capture findings on ctx BEFORE applying fixes so the handoff
+        # records what was *found*, regardless of whether fixes succeed.
+        ctx.addressed_external_findings = [
+            {
+                "source": f.source,
+                "severity": f.severity,
+                "file_path": f.file_path,
+                "tool_id": f.tool_id,
+                "message": f.message,
+            }
+            for f in all_findings
+        ]
+        if coverage_prompt:
+            ctx.addressed_external_findings.append(
+                {
+                    "source": "sonarcloud",
+                    "severity": "coverage",
+                    "file_path": "project-wide",
+                    "tool_id": "",
+                    "message": "Coverage gap remediation applied",
+                }
+            )
+
         prompt = format_findings_for_prompt(all_findings)
         if coverage_prompt:
             prompt = f"{prompt}\n\n---\n\n{coverage_prompt}" if prompt else coverage_prompt

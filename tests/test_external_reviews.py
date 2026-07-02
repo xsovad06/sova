@@ -404,6 +404,112 @@ class TestAddressExternalFindingsStep:
         assert "2 external finding" in result.summary
         mock_resolve.assert_awaited_once()
 
+    async def test_execute_captures_addressed_findings_on_ctx(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused import", "AZ123")]
+        cr = _ThreadsResult(
+            findings=[ExternalFinding("coderabbit", "sova/cli.py", 20, "MAJOR", "Bug", "PRRT_abc")],
+            thread_ids=["PRRT_abc"],
+        )
+        coverage_report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
+        mock_llm = AsyncMock()
+        mock_llm.cost_usd = Decimal("0.05")
+        with (
+            patch("sova.adapters.external_reviews.fetch_sonarcloud_issues", new_callable=AsyncMock, return_value=sonar),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=coverage_report,
+            ),
+            patch("sova.adapters.external_reviews._fetch_coderabbit_threads", new_callable=AsyncMock, return_value=cr),
+            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch("sova.git.operations.push", new_callable=AsyncMock),
+            patch("sova.adapters.external_reviews.resolve_coderabbit_threads", new_callable=AsyncMock),
+        ):
+            await AddressExternalFindingsStep().execute(ctx)
+
+        assert len(ctx.addressed_external_findings) == 2
+        sources = {f["source"] for f in ctx.addressed_external_findings}
+        assert sources == {"sonarcloud", "coderabbit"}
+        sonar_f = [f for f in ctx.addressed_external_findings if f["source"] == "sonarcloud"][0]
+        assert sonar_f["severity"] == "MAJOR"
+        assert sonar_f["tool_id"] == "AZ123"
+        assert sonar_f["file_path"] == "sova/app.py"
+
+    async def test_execute_captures_coverage_synthetic_finding(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94, branch_name="feat/test")
+        sonar = [ExternalFinding("sonarcloud", "sova/app.py", 10, "MAJOR", "Unused", "X1")]
+        report = CoverageReport(
+            coverage_pct=Decimal("50.0"),
+            required_pct=Decimal("80.0"),
+            findings=[ExternalFinding("sonarcloud", "sova/app.py", None, "coverage", "Low coverage", "")],
+        )
+        mock_llm = AsyncMock()
+        mock_llm.cost_usd = Decimal("0.01")
+        with (
+            patch("sova.adapters.external_reviews.fetch_sonarcloud_issues", new_callable=AsyncMock, return_value=sonar),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=_ThreadsResult(),
+            ),
+            patch("sova.llm.client.invoke", new_callable=AsyncMock, return_value=mock_llm),
+            patch(
+                "sova.core.steps.address_external_findings.run",
+                new_callable=AsyncMock,
+                return_value=_shell_result(),
+            ),
+            patch("sova.git.operations.commit", new_callable=AsyncMock),
+            patch("sova.git.operations.push", new_callable=AsyncMock),
+        ):
+            await AddressExternalFindingsStep().execute(ctx)
+
+        # Should have the sonar finding + synthetic coverage finding
+        coverage_entries = [f for f in ctx.addressed_external_findings if f["severity"] == "coverage"]
+        assert len(coverage_entries) == 1
+        assert coverage_entries[0]["file_path"] == "project-wide"
+        assert coverage_entries[0]["message"] == "Coverage gap remediation applied"
+
+    async def test_no_findings_leaves_ctx_empty(self) -> None:
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        cfg = ProjectConfig(external_reviews=_ext_config())
+        ctx = _make_ctx(config=cfg, pr_number=94)
+        report = CoverageReport(coverage_pct=Decimal("85.0"), required_pct=Decimal("80.0"), findings=[])
+        with (
+            patch("sova.adapters.external_reviews.fetch_sonarcloud_issues", new_callable=AsyncMock, return_value=[]),
+            patch(
+                "sova.adapters.external_reviews.fetch_sonarcloud_coverage_issues",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=_ThreadsResult(),
+            ),
+        ):
+            await AddressExternalFindingsStep().execute(ctx)
+
+        assert ctx.addressed_external_findings == []
+
     async def test_execute_fails_without_pr(self) -> None:
         from sova.core.steps.address_external_findings import AddressExternalFindingsStep
 
