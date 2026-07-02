@@ -74,6 +74,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         from sova.commands.distribution import install_guidelines as install_guides
         from sova.commands.distribution import update_commands as update_cmds
         from sova.commands.distribution import update_guidelines as update_guides
+
         canonical_dir = get_canonical_dir()
         guidelines_dir = get_guidelines_dir()
         commands_dir = claude_dir / "commands"
