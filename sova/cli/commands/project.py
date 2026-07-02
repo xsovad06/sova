@@ -6,7 +6,10 @@ import asyncio
 import re
 import shutil
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import TYPE_CHECKING, Annotated, Optional
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 import typer
 from rich.console import Console
@@ -61,6 +64,9 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         console.print(f"[red]Database initialization failed: {exc}[/red]")
         failed_stages.append("database")
 
+    # Load config once -- used by Stage 4 (commands) and Stage 5 (RTK)
+    cfg = load_config(project_dir)
+
     # Stage 4: Commands and guidelines
     try:
         from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
@@ -68,9 +74,6 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         from sova.commands.distribution import install_guidelines as install_guides
         from sova.commands.distribution import update_commands as update_cmds
         from sova.commands.distribution import update_guidelines as update_guides
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
         canonical_dir = get_canonical_dir()
         guidelines_dir = get_guidelines_dir()
         commands_dir = claude_dir / "commands"
@@ -102,7 +105,7 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     # Stage 5: RTK hook injection (non-fatal)
     try:
-        _configure_rtk(project_dir, claude_dir)
+        _configure_rtk(cfg, claude_dir)
     except Exception as exc:
         console.print(f"[yellow]Warning: RTK setup failed: {exc}[/yellow]")
 
@@ -151,12 +154,10 @@ async def _configure_git_hooks(project_dir: Path) -> None:
             console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
 
 
-def _configure_rtk(project_dir: Path, claude_dir: Path) -> None:
+def _configure_rtk(cfg: ProjectConfig, claude_dir: Path) -> None:
     """Inject RTK PreToolUse hook if RTK is available and config allows it."""
-    from sova.config.loader import load_config
     from sova.utils.rtk import inject_rtk_hook, is_rtk_available
 
-    cfg = load_config(project_dir)
     if not cfg.rtk.enabled:
         return
 

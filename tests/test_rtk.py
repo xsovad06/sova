@@ -181,13 +181,14 @@ def test_rtk_config_disabled_via_toml(tmp_path: Path) -> None:
 def test_configure_rtk_injects_when_available(tmp_path: Path) -> None:
     """_configure_rtk injects hook when RTK is available and enabled."""
     from sova.cli.commands.project import _configure_rtk
+    from sova.config.models import ProjectConfig
 
-    (tmp_path / "sova.toml").write_text("")
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
+    cfg = ProjectConfig()  # rtk.enabled defaults to True
 
     with patch("sova.utils.rtk.shutil.which", return_value="/usr/local/bin/rtk"):
-        _configure_rtk(tmp_path, claude_dir)
+        _configure_rtk(cfg, claude_dir)
 
     settings = json.loads((claude_dir / "settings.json").read_text())
     assert any(h.get("command") == "rtk" for h in settings["hooks"]["PreToolUse"])
@@ -196,13 +197,14 @@ def test_configure_rtk_injects_when_available(tmp_path: Path) -> None:
 def test_configure_rtk_skips_when_disabled(tmp_path: Path) -> None:
     """_configure_rtk skips when rtk.enabled is false."""
     from sova.cli.commands.project import _configure_rtk
+    from sova.config.models import ProjectConfig, RTKConfig
 
-    (tmp_path / "sova.toml").write_text("[rtk]\nenabled = false\n")
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
+    cfg = ProjectConfig(rtk=RTKConfig(enabled=False))
 
     with patch("sova.utils.rtk.shutil.which", return_value="/usr/local/bin/rtk"):
-        _configure_rtk(tmp_path, claude_dir)
+        _configure_rtk(cfg, claude_dir)
 
     assert not (claude_dir / "settings.json").exists()
 
@@ -210,13 +212,14 @@ def test_configure_rtk_skips_when_disabled(tmp_path: Path) -> None:
 def test_configure_rtk_skips_when_binary_missing(tmp_path: Path) -> None:
     """_configure_rtk skips when RTK binary is not installed."""
     from sova.cli.commands.project import _configure_rtk
+    from sova.config.models import ProjectConfig
 
-    (tmp_path / "sova.toml").write_text("")
     claude_dir = tmp_path / ".claude"
     claude_dir.mkdir()
+    cfg = ProjectConfig()
 
     with patch("sova.utils.rtk.shutil.which", return_value=None):
-        _configure_rtk(tmp_path, claude_dir)
+        _configure_rtk(cfg, claude_dir)
 
     assert not (claude_dir / "settings.json").exists()
 
@@ -246,3 +249,60 @@ def test_doctor_check_rtk_missing() -> None:
     assert name == "rtk"
     assert passed is False
     assert required is False
+
+
+# -- Non-dict JSON guards --
+
+
+def test_inject_skips_non_dict_json(tmp_path: Path) -> None:
+    """Inject returns False when settings.json is valid JSON but not a dict."""
+    (tmp_path / "settings.json").write_text("[1, 2, 3]")
+    result = inject_rtk_hook(tmp_path)
+    assert result is False
+    # File should be untouched
+    assert json.loads((tmp_path / "settings.json").read_text()) == [1, 2, 3]
+
+
+def test_remove_skips_non_dict_json(tmp_path: Path) -> None:
+    """Remove returns False when settings.json is valid JSON but not a dict."""
+    (tmp_path / "settings.json").write_text('"just a string"')
+    result = remove_rtk_hook(tmp_path)
+    assert result is False
+
+
+# -- OSError handling --
+
+
+def test_inject_handles_oserror(tmp_path: Path) -> None:
+    """Inject returns False on OSError during write."""
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text("{}")
+
+    with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+        result = inject_rtk_hook(tmp_path)
+    assert result is False
+
+
+def test_remove_handles_oserror(tmp_path: Path) -> None:
+    """Remove returns False on OSError during write."""
+    existing = {"hooks": {"PreToolUse": [{"type": "command", "command": "rtk"}]}}
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(json.dumps(existing))
+
+    with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+        result = remove_rtk_hook(tmp_path)
+    assert result is False
+
+
+# -- _is_rtk_entry edge cases --
+
+
+def test_is_rtk_entry_non_dict() -> None:
+    """_is_rtk_entry returns False for non-dict entries."""
+    from sova.utils.rtk import _is_rtk_entry
+
+    assert _is_rtk_entry("not a dict") is False
+    assert _is_rtk_entry(42) is False
+    assert _is_rtk_entry(None) is False
+    assert _is_rtk_entry({"command": "other"}) is False
+    assert _is_rtk_entry({"command": "rtk"}) is True
