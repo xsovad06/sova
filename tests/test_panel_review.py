@@ -330,9 +330,7 @@ class TestRunPanelReview:
             return LLMResult(text=_llm_response(critical), model="sonnet", cost_usd=Decimal("0.01"))
 
         with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
-            result = await run_panel_review(
-                task=_task(), diff="small diff", files=["a.py"], panel_config=panel_config
-            )
+            result = await run_panel_review(task=_task(), diff="small diff", files=["a.py"], panel_config=panel_config)
 
         assert len(result.findings) >= 1
         assert result.findings[0].severity == 10
