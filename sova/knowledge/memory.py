@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import or_, select
 
 from sova.db.models import Memory, MemoryEdge
@@ -12,7 +14,21 @@ from sova.utils.logging import get_logger
 log = get_logger(component="knowledge.memory")
 
 _MUTABLE_FIELDS = frozenset(
-    {"title", "content", "category", "tags", "tier", "repo", "issue_number", "superseded_by", "embedding"}
+    {
+        "title",
+        "content",
+        "category",
+        "tags",
+        "tier",
+        "repo",
+        "issue_number",
+        "superseded_by",
+        "embedding",
+        "retrieval_count",
+        "last_retrieved_at",
+        "archived",
+        "health_score",
+    }
 )
 
 
@@ -138,6 +154,7 @@ async def search(
     tags: list[str] | None = None,
     tier: str | None = None,
     include_superseded: bool = False,
+    include_archived: bool = False,
     expand: bool = False,
     limit: int | None = None,
 ) -> list[Memory]:
@@ -149,6 +166,7 @@ async def search(
         tags: Filter by tags (any match).
         tier: Filter by knowledge tier.
         include_superseded: If False (default), exclude superseded entries.
+        include_archived: If False (default), exclude archived entries.
         expand: If True, include 1-hop graph neighbors of matching results.
         limit: Maximum number of results to return (None = unlimited).
 
@@ -159,6 +177,9 @@ async def search(
 
     if not include_superseded:
         stmt = stmt.where(Memory.superseded_by.is_(None))
+
+    if not include_archived:
+        stmt = stmt.where(Memory.archived.is_(False))
 
     if category is not None:
         stmt = stmt.where(Memory.category == category)
@@ -240,6 +261,7 @@ async def semantic_search(
     threshold: float = 0.0,
     query_embedding: list[float] | None = None,
     expand: bool = False,
+    include_archived: bool = False,
 ) -> list[tuple[Memory, float]]:
     """Search memories by semantic similarity using embeddings.
 
@@ -252,17 +274,19 @@ async def semantic_search(
         List of (Memory, similarity_score) tuples, sorted by score descending.
     """
     if not query.strip():
-        results = await search(category=category, tier=tier)
+        results = await search(category=category, tier=tier, include_archived=include_archived)
         return [(m, 0.0) for m in results[:limit]]
 
     if query_embedding is None:
         query_embedding = embed_text(query)
     if query_embedding is None:
         log.warning("semantic_search.fallback", reason="embedding unavailable")
-        results = await search(query=query, category=category, tier=tier)
+        results = await search(query=query, category=category, tier=tier, include_archived=include_archived)
         return [(m, 0.0) for m in results[:limit]]
 
     stmt = select(Memory).where(Memory.superseded_by.is_(None))
+    if not include_archived:
+        stmt = stmt.where(Memory.archived.is_(False))
     if category is not None:
         stmt = stmt.where(Memory.category == category)
     if tier is not None:
@@ -334,6 +358,7 @@ async def _expand_with_neighbors(memories: list[Memory]) -> list[Memory]:
                 select(Memory).where(
                     Memory.id.in_(neighbor_ids),
                     Memory.superseded_by.is_(None),
+                    Memory.archived.is_(False),
                 )
             )
             neighbors = list(mem_result.scalars().all())
@@ -371,3 +396,28 @@ async def find_similar(
         limit=5,
         query_embedding=query_embedding,
     )
+
+
+async def increment_retrieval(memory_ids: list[int]) -> None:
+    """Bump retrieval_count and last_retrieved_at for the given memory IDs.
+
+    Called by retrieve_relevant() after results are selected for prompt injection.
+    Uses a single bulk UPDATE for efficiency (hot path).
+    """
+    if not memory_ids:
+        return
+
+    from sqlalchemy import update as sql_update
+
+    now = datetime.now(timezone.utc)
+    async with await get_session() as session:
+        async with session.begin():
+            stmt = (
+                sql_update(Memory)
+                .where(Memory.id.in_(memory_ids))
+                .values(
+                    retrieval_count=Memory.retrieval_count + 1,
+                    last_retrieved_at=now,
+                )
+            )
+            await session.execute(stmt)

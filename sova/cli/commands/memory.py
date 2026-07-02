@@ -253,6 +253,138 @@ async def _backfill_embeddings(*, project_dir: Path | None) -> None:
 
 
 @app.command()
+def health(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Compute and display health scores for all active memories."""
+    asyncio.run(_health(project_dir=project))
+
+
+async def _health(*, project_dir: Path | None) -> None:
+    from sova.db.session import init_db
+    from sova.knowledge.lifecycle import compute_health_scores
+
+    resolved_dir = project_dir or Path.cwd()
+    await init_db(resolved_dir)
+
+    result = await compute_health_scores()
+    console.print(f"[green]Computed health scores for {result.updated}/{result.total} memories.[/green]")
+
+    # Show top/bottom memories by score
+    from sqlalchemy import select
+
+    from sova.db.models import Memory
+    from sova.db.session import get_session
+
+    async with await get_session() as session:
+        async with session.begin():
+            stmt = (
+                select(Memory)
+                .where(Memory.superseded_by.is_(None), Memory.archived.is_(False), Memory.health_score.isnot(None))
+                .order_by(Memory.health_score.desc())
+            )
+            rows = await session.execute(stmt)
+            memories = list(rows.scalars().all())
+
+    if not memories:
+        console.print("[yellow]No scored memories found.[/yellow]")
+        return
+
+    table = Table(title="Memory Health Scores", show_header=True)
+    table.add_column("ID", style="cyan", width=5)
+    table.add_column("Score", style="yellow", width=7)
+    table.add_column("Category", style="green")
+    table.add_column("Title", style="white")
+    table.add_column("Retrievals", style="magenta", width=10)
+
+    for mem in memories[:20]:
+        score_str = f"{float(mem.health_score):.4f}" if mem.health_score is not None else "N/A"
+        table.add_row(str(mem.id), score_str, mem.category, mem.title[:50], str(mem.retrieval_count or 0))
+
+    console.print(table)
+    console.print(f"\n[bold]{len(memories)} total scored memories.[/bold]")
+
+
+@app.command()
+def consolidate(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show candidates without merging.")] = False,
+) -> None:
+    """Find and merge duplicate memory clusters."""
+    asyncio.run(_consolidate(project_dir=project, dry_run=dry_run))
+
+
+async def _consolidate(*, project_dir: Path | None, dry_run: bool) -> None:
+    from sova.db.session import init_db
+    from sova.knowledge.lifecycle import consolidate_cluster, find_consolidation_candidates
+
+    resolved_dir = project_dir or Path.cwd()
+    await init_db(resolved_dir)
+
+    clusters = await find_consolidation_candidates()
+
+    if not clusters:
+        console.print("[green]No consolidation candidates found.[/green]")
+        return
+
+    if dry_run:
+        console.print(f"[yellow]Found {len(clusters)} cluster(s) to consolidate:[/yellow]")
+        for i, cluster in enumerate(clusters, 1):
+            console.print(f"\n  Cluster {i} ({len(cluster.member_ids)} members):")
+            for title in cluster.titles:
+                console.print(f"    - {title[:70]}")
+        return
+
+    merged = 0
+    for cluster in clusters:
+        new_id = await consolidate_cluster(cluster, cwd=resolved_dir)
+        if new_id is not None:
+            console.print(f"[green]Merged {len(cluster.member_ids)} memories into #{new_id}[/green]")
+            merged += 1
+
+    console.print(f"\n[bold]Consolidated {merged}/{len(clusters)} clusters.[/bold]")
+
+
+@app.command()
+def archive(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    days: Annotated[
+        int, typer.Option("--days", "-d", help="Archive memories older than N days with 0 confirmations.")
+    ] = 30,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be archived.")] = False,
+) -> None:
+    """Archive low-value memories (soft-delete)."""
+    asyncio.run(_archive(project_dir=project, archive_days=days, dry_run=dry_run))
+
+
+async def _archive(*, project_dir: Path | None, archive_days: int, dry_run: bool) -> None:
+    from sova.db.session import init_db
+    from sova.knowledge.lifecycle import auto_archive, find_archive_candidates, flag_stale_memories
+
+    resolved_dir = project_dir or Path.cwd()
+    await init_db(resolved_dir)
+
+    stale_ids = await flag_stale_memories()
+
+    if dry_run:
+        console.print(f"[yellow]Found {len(stale_ids)} stale memories (unretrieved for 60+ days).[/yellow]")
+
+        candidates = await find_archive_candidates(archive_days=archive_days)
+        msg = f"Would archive {len(candidates)} memories (0 confirmations, >{archive_days} days old):"
+        console.print(f"[yellow]{msg}[/yellow]")
+        for mem in candidates[:20]:
+            console.print(f"  - [{mem.id}] {mem.title[:60]}")
+        if len(candidates) > 20:
+            console.print(f"  ... and {len(candidates) - 20} more")
+        return
+
+    archived = await auto_archive(archive_days=archive_days)
+    console.print(f"[green]Archived {archived} low-value memories.[/green]")
+    if stale_ids:
+        console.print(f"[dim]{len(stale_ids)} stale memories detected (use --dry-run to inspect).[/dim]")
+
+
+@app.command()
 def shared(
     category: Annotated[Optional[str], typer.Option("--category", "-c", help="Filter by category.")] = None,
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,

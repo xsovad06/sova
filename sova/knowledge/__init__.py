@@ -6,16 +6,43 @@ tier promotion, supersession tracking, persona detection, and review patterns.
 
 from sova.knowledge.extraction import extract_memories
 from sova.knowledge.graph import auto_link, create_edge, delete_edge, discover_edges, get_edges, get_neighbors
-from sova.knowledge.memory import delete, find_similar, get, promote, search, semantic_search, store, supersede, update
+from sova.knowledge.lifecycle import (
+    archive_memories,
+    auto_archive,
+    auto_cleanup,
+    compute_health_scores,
+    consolidate_cluster,
+    find_archive_candidates,
+    find_consolidation_candidates,
+    flag_stale_memories,
+)
+from sova.knowledge.memory import (
+    delete,
+    find_similar,
+    get,
+    increment_retrieval,
+    promote,
+    search,
+    semantic_search,
+    store,
+    supersede,
+    update,
+)
 from sova.knowledge.personas import detect_persona, load_persona
 from sova.knowledge.retrieval import build_context_query, format_relevant_context, retrieve_relevant
 from sova.knowledge.review_patterns import get_common_patterns, record_review_finding
 from sova.knowledge.sharing import export_memories, import_memories, parse_shared_file, render_shared_file
+from sova.knowledge.similarity import parse_confirmation_counter, titles_match
 from sova.knowledge.tiers import format_for_prompt, load_context, load_tier
 
 __all__ = [
+    "archive_memories",
+    "auto_archive",
+    "auto_cleanup",
     "auto_link",
     "build_context_query",
+    "compute_health_scores",
+    "consolidate_cluster",
     "create_edge",
     "delete",
     "delete_edge",
@@ -23,7 +50,10 @@ __all__ = [
     "discover_edges",
     "export_memories",
     "extract_memories",
+    "find_archive_candidates",
+    "find_consolidation_candidates",
     "find_similar",
+    "flag_stale_memories",
     "format_for_prompt",
     "format_relevant_context",
     "get",
@@ -31,9 +61,11 @@ __all__ = [
     "get_edges",
     "get_neighbors",
     "import_memories",
+    "increment_retrieval",
     "load_context",
     "load_persona",
     "load_tier",
+    "parse_confirmation_counter",
     "parse_shared_file",
     "promote",
     "record_review_finding",
@@ -43,5 +75,6 @@ __all__ = [
     "semantic_search",
     "store",
     "supersede",
+    "titles_match",
     "update",
 ]

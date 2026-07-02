@@ -182,31 +182,31 @@ def test_prompt_handles_empty_inputs() -> None:
 
 
 def test_titles_exact_match() -> None:
-    from sova.knowledge.extraction import _titles_match
+    from sova.knowledge.similarity import titles_match as _titles_match
 
     assert _titles_match("Always validate inputs", "Always validate inputs") is True
 
 
 def test_titles_case_insensitive() -> None:
-    from sova.knowledge.extraction import _titles_match
+    from sova.knowledge.similarity import titles_match as _titles_match
 
     assert _titles_match("Always Validate Inputs", "always validate inputs") is True
 
 
 def test_titles_substring_match() -> None:
-    from sova.knowledge.extraction import _titles_match
+    from sova.knowledge.similarity import titles_match as _titles_match
 
     assert _titles_match("Always validate user inputs", "Always validate user inputs before processing") is True
 
 
 def test_titles_no_match() -> None:
-    from sova.knowledge.extraction import _titles_match
+    from sova.knowledge.similarity import titles_match as _titles_match
 
     assert _titles_match("Validate inputs", "Handle errors") is False
 
 
 def test_titles_short_substring_no_match() -> None:
-    from sova.knowledge.extraction import _titles_match
+    from sova.knowledge.similarity import titles_match as _titles_match
 
     assert _titles_match("Short", "Short in a longer title") is False
 
@@ -217,13 +217,13 @@ def test_titles_short_substring_no_match() -> None:
 
 
 def test_parse_counter_present() -> None:
-    from sova.knowledge.extraction import _parse_confirmation_counter
+    from sova.knowledge.similarity import parse_confirmation_counter as _parse_confirmation_counter
 
     assert _parse_confirmation_counter("Some content\n\n[confirmed: 2]") == 2
 
 
 def test_parse_counter_absent() -> None:
-    from sova.knowledge.extraction import _parse_confirmation_counter
+    from sova.knowledge.similarity import parse_confirmation_counter as _parse_confirmation_counter
 
     assert _parse_confirmation_counter("No counter here") == 0
 
