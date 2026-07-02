@@ -1320,6 +1320,113 @@ class TestSpecAnchoredReview:
         assert "`a.py`" in result
         assert "`b.py`" in result
 
+    async def test_load_addressed_findings_from_file(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, write_handoff_file
+        from sova.roles.reviewer import ReviewerRole
+
+        findings = [{"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "X"}]
+        h = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            summary="Done",
+            issue="42",
+            details={"addressed_findings": findings},
+        )
+        write_handoff_file(tmp_path, h)
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx.project_dir = tmp_path
+        ctx.issue_number = "42"
+
+        role = ReviewerRole()
+        result = await role._load_addressed_findings(ctx)
+        assert len(result) == 1
+        assert result[0]["source"] == "sonarcloud"
+
+    async def test_load_addressed_findings_from_resume_run(self) -> None:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.ipc.handoff import AgentHandoff, write_handoff
+        from sova.roles.reviewer import ReviewerRole
+
+        session = await get_session()
+        async with session.begin():
+            tr = TaskRun(issue_number="42", role="developer", status="done")
+            session.add(tr)
+            await session.flush()
+            run_id = tr.id
+
+        findings = [{"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "X"}]
+        handoff = AgentHandoff(
+            role="developer", phase="develop", summary="Done",
+            next_action="review", branch_name="feat/42",
+            addressed_findings=findings,
+        )
+        await write_handoff(run_id, handoff)
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx.resume_run_id = run_id
+        ctx.project_dir = Path("/nonexistent")  # force file source to fail
+
+        role = ReviewerRole()
+        result = await role._load_addressed_findings(ctx)
+        assert len(result) == 1
+        assert result[0]["source"] == "sonarcloud"
+
+    async def test_load_addressed_findings_from_db_skips_empty_runs(self) -> None:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+        from sova.roles.reviewer import ReviewerRole
+
+        session = await get_session()
+        async with session.begin():
+            # Older run WITH addressed_findings
+            findings_data = [
+                {"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "Found"},
+            ]
+            tr1 = TaskRun(
+                issue_number="42", role="developer", status="done",
+                handoff_json={"addressed_findings": findings_data},
+            )
+            session.add(tr1)
+            # Newer run WITHOUT addressed_findings (address-review cycle)
+            tr2 = TaskRun(
+                issue_number="42", role="developer", status="done",
+                handoff_json={"some_other_key": "value"},
+            )
+            session.add(tr2)
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx.issue_number = "42"
+        ctx.project_dir = Path("/nonexistent")
+
+        role = ReviewerRole()
+        result = await role._load_addressed_findings(ctx)
+        assert len(result) == 1
+        assert result[0]["message"] == "Found"
+
+    async def test_load_addressed_findings_empty_issue(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx.issue_number = ""
+        ctx.project_dir = Path("/nonexistent")
+
+        role = ReviewerRole()
+        result = await role._load_addressed_findings(ctx)
+        assert result == []
+
+    async def test_load_addressed_findings_all_sources_fail(self) -> None:
+        from sova.roles.reviewer import ReviewerRole
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW)
+        ctx.issue_number = "999"
+        ctx.project_dir = Path("/nonexistent")
+
+        role = ReviewerRole()
+        result = await role._load_addressed_findings(ctx)
+        assert result == []
+
     def test_spec_alignment_finding_parses(self) -> None:
         import json
 

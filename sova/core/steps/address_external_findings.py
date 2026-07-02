@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
-from typing import Any
+from typing import Any, TypedDict
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
+
+
+class ExternalFindingDict(TypedDict):
+    """Schema for serialized external findings passed through handoffs."""
+
+    source: str
+    severity: str
+    file_path: str
+    tool_id: str
+    message: str
 
 log = get_logger(component="step.address_external_findings")
 
@@ -81,24 +91,24 @@ class AddressExternalFindingsStep(BaseStep):
         # Capture findings on ctx BEFORE applying fixes so the handoff
         # records what was *found*, regardless of whether fixes succeed.
         ctx.addressed_external_findings = [
-            {
-                "source": f.source,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "tool_id": f.tool_id,
-                "message": f.message,
-            }
+            ExternalFindingDict(
+                source=f.source,
+                severity=f.severity,
+                file_path=f.file_path,
+                tool_id=f.tool_id,
+                message=f.message,
+            )
             for f in all_findings
         ]
         if coverage_prompt:
             ctx.addressed_external_findings.append(
-                {
-                    "source": "sonarcloud",
-                    "severity": "coverage",
-                    "file_path": "project-wide",
-                    "tool_id": "",
-                    "message": "Coverage gap remediation applied",
-                }
+                ExternalFindingDict(
+                    source="sonarcloud",
+                    severity="coverage",
+                    file_path="project-wide",
+                    tool_id="",
+                    message="Coverage gap remediation applied",
+                )
             )
 
         prompt = format_findings_for_prompt(all_findings)
