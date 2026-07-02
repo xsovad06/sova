@@ -4,7 +4,8 @@ Produces a .claude/specs/{issue}-{slug}.md specification document
 that guides the developer with concrete implementation plans,
 design decisions, and scope boundaries.
 
-Behavior depends on complexity threshold and open questions:
+Behavior depends on complexity threshold, research findings, and open questions:
+- Issues whose Research section indicates already implemented: skip entirely
 - Tasks below spec.threshold skip this step entirely
 - Simple specs with no open questions: auto-approve, continue pipeline
 - Complex specs or open questions: write handoff, pause for dashboard approval
@@ -28,6 +29,19 @@ log = get_logger(component="step.spec")
 
 _COMPLEXITY_ORDER = ("always", "trivial", "simple", "moderate", "complex", "never")
 
+_ALREADY_IMPLEMENTED_PATTERNS = (
+    "already fully implemented",
+    "already implemented",
+    "already complete",
+    "already been implemented",
+    "has been fully implemented",
+    "fully implemented already",
+    "implementation is complete",
+    "implementation is already complete",
+    "no remaining work",
+    "nothing left to implement",
+)
+
 
 def _complexity_rank(level: str) -> int:
     """Return numeric rank for a complexity level (lower = simpler)."""
@@ -44,6 +58,15 @@ def _extract_complexity(text: str) -> str:
 
 
 # _extract_section is imported from sova.utils.markdown above
+
+
+def _research_says_implemented(body: str) -> bool:
+    """Return True if the Research section indicates the issue is already implemented."""
+    research = _extract_section(body, "Research")
+    if not research:
+        return False
+    lower = research.lower()
+    return any(p in lower for p in _ALREADY_IMPLEMENTED_PATTERNS)
 
 
 def _text_has_open_questions(text: str) -> bool:
@@ -66,14 +89,18 @@ class SpecStep(BaseStep):
         if threshold == "never":
             return True
 
-        if threshold == "always":
-            return False
-
-        # Check task complexity from triage assessment
         task = ctx.task
         if task is None:
             task = await ctx.adapter.get_task(ctx.issue_number)
         body = task.body or ""
+
+        if _research_says_implemented(body):
+            log.info("step.spec.skip_implemented", issue=ctx.issue_number)
+            return True
+
+        if threshold == "always":
+            return False
+
         task_complexity = _extract_complexity(body)
         threshold_rank = _complexity_rank(threshold)
         task_rank = _complexity_rank(task_complexity)
