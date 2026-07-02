@@ -16,6 +16,7 @@ from sova.core.steps.spec import (
     SpecStep,
     _complexity_rank,
     _extract_complexity,
+    _research_says_implemented,
     _text_has_open_questions,
 )
 from sova.dashboard.services.spec_service import find_spec_file
@@ -98,6 +99,43 @@ class TestExtractComplexity:
         assert _extract_complexity(body) == "simple"
 
 
+class TestResearchSaysImplemented:
+    def test_detects_already_fully_implemented(self) -> None:
+        body = "## Research\n\nThe feature is already fully implemented in the codebase.\n"
+        assert _research_says_implemented(body)
+
+    def test_detects_already_implemented(self) -> None:
+        body = "## Research\n\nThis has already been implemented via PR #42.\n"
+        assert _research_says_implemented(body)
+
+    def test_detects_already_complete(self) -> None:
+        body = "## Research\n\nThe work is already complete.\n"
+        assert _research_says_implemented(body)
+
+    def test_detects_no_remaining_work(self) -> None:
+        body = "## Research\n\nThere is no remaining work for this issue.\n"
+        assert _research_says_implemented(body)
+
+    def test_returns_false_without_research_section(self) -> None:
+        body = "Some description\n\n**Complexity**: moderate\n"
+        assert not _research_says_implemented(body)
+
+    def test_returns_false_with_normal_research(self) -> None:
+        body = "## Research\n\nThis requires adding a new endpoint to the API.\n"
+        assert not _research_says_implemented(body)
+
+    def test_returns_false_with_empty_body(self) -> None:
+        assert not _research_says_implemented("")
+
+    def test_case_insensitive(self) -> None:
+        body = "## Research\n\nThe feature is ALREADY FULLY IMPLEMENTED.\n"
+        assert _research_says_implemented(body)
+
+    def test_ignores_implemented_outside_research(self) -> None:
+        body = "Already implemented in v1.\n\n## Research\n\nNeeds new endpoint.\n"
+        assert not _research_says_implemented(body)
+
+
 class TestTextHasOpenQuestions:
     def test_no_section_returns_false(self) -> None:
         assert not _text_has_open_questions("# Spec\n\n## Solution\n\nDo stuff\n")
@@ -174,6 +212,30 @@ class TestSpecStep:
             id="42", title="Test", body="**Complexity**: complex", state=TaskState.TRIAGED
         )
         ctx = _make_ctx(spec_config=SpecConfig(threshold="simple"), adapter=adapter)
+        step = SpecStep()
+        assert not await step.can_skip(ctx)
+
+    async def test_skips_when_research_says_implemented(self) -> None:
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body="## Research\n\nThis is already fully implemented.\n\n**Complexity**: moderate",
+            state=TaskState.TRIAGED,
+        )
+        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"), adapter=adapter)
+        step = SpecStep()
+        assert await step.can_skip(ctx)
+
+    async def test_does_not_skip_when_research_is_normal(self) -> None:
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body="## Research\n\nNeeds a new API endpoint.\n\n**Complexity**: moderate",
+            state=TaskState.TRIAGED,
+        )
+        ctx = _make_ctx(spec_config=SpecConfig(threshold="always"), adapter=adapter)
         step = SpecStep()
         assert not await step.can_skip(ctx)
 

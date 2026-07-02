@@ -37,6 +37,25 @@ Extract: title, description, status, linked/blocked tickets, components.
 
 Save the original description verbatim -- it will be preserved in the spec.
 
+**Early exit -- already implemented**: if the issue body contains a Research section that concludes the issue is already fully implemented (look for phrases like "already implemented", "already complete", "no remaining work"), write a minimal spec file to `.claude/specs/{issue-number}-already-implemented.md` with the following content, then stop -- do not explore the codebase or write a full spec:
+
+```markdown
+# Spec: {Issue title}
+
+**Issue**: #{number}
+**Status**: approved
+**Created**: {YYYY-MM-DD}
+**Complexity**: trivial
+
+## Problem
+
+Already implemented per research findings.
+
+## Solution
+
+No changes needed. The research step confirmed this issue is already fully implemented.
+```
+
 ### Step 2: Read Project Context
 
 Read whatever exists -- skip files that are missing:
