@@ -101,6 +101,79 @@ log = get_logger(component="dashboard.control")
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
+def _start_resource_monitoring(agent: AgentState, project_dir: Path, pid: int) -> None:
+    """Start resource collector and writer for an agent (if monitoring is enabled)."""
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        if not cfg.monitoring.enabled:
+            return
+    except Exception:
+        log.debug("resource_monitoring.config_load_failed", exc_info=True)
+        return
+
+    try:
+        from sova.monitoring.collector import ResourceCollector
+        from sova.monitoring.writer import ResourceWriter
+
+        collector = ResourceCollector(pid=pid, interval=cfg.monitoring.interval)
+        collector.start()
+        writer = ResourceWriter(project_dir, agent.run_id)
+        agent.resource_collector = collector
+        agent.resource_writer = writer
+        agent.resource_flush_task = asyncio.create_task(_resource_flush_loop(agent))
+    except Exception:
+        log.debug("resource_monitoring.start_failed", run_id=agent.run_id, exc_info=True)
+
+
+async def _finalize_resource_monitoring(agent: AgentState) -> None:
+    """Stop the collector, flush remaining samples, write summary, close writer."""
+    try:
+        # Cancel the periodic flush task
+        if agent.resource_flush_task and not agent.resource_flush_task.done():
+            agent.resource_flush_task.cancel()
+            try:
+                await agent.resource_flush_task
+            except asyncio.CancelledError:
+                pass
+
+        collector = agent.resource_collector
+        writer = agent.resource_writer
+        if collector is None or writer is None:
+            return
+
+        summary = await collector.stop()
+
+        # Drain any remaining samples from the deque
+        while collector.samples:
+            writer.add_sample(collector.samples.popleft())
+
+        await writer.write_summary(summary)
+        await writer.close()
+    except Exception:
+        log.warning("resource_monitoring.finalize_failed", run_id=agent.run_id, exc_info=True)
+
+
+async def _resource_flush_loop(agent: AgentState) -> None:
+    """Periodically flush buffered resource samples to the database."""
+    try:
+        while True:
+            await asyncio.sleep(30.0)
+            collector = agent.resource_collector
+            writer = agent.resource_writer
+            if collector is None or writer is None:
+                return
+            # Drain with popleft to avoid losing samples appended during iteration
+            while collector.samples:
+                writer.add_sample(collector.samples.popleft())
+            await writer.flush()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        log.debug("resource_flush_loop.failed", run_id=agent.run_id, exc_info=True)
+
+
 # -- Status queries -----------------------------------------------------------
 
 
@@ -346,6 +419,7 @@ async def start_agent(
 
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
+    _start_resource_monitoring(agent, cwd, pid)
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
@@ -387,6 +461,9 @@ async def stop_agent(slug: str | None = None, *, run_id: int | None = None) -> d
         if agent.stderr_task and not agent.stderr_task.done():
             agent.stderr_task.cancel()
             pending.append(agent.stderr_task)
+        if agent.resource_flush_task and not agent.resource_flush_task.done():
+            agent.resource_flush_task.cancel()
+            pending.append(agent.resource_flush_task)
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
@@ -480,6 +557,7 @@ async def start_command(
 
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
+    _start_resource_monitoring(agent, project_dir, process.pid)
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
@@ -525,6 +603,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             await agent.output_writer.close()
         except Exception:
             log.warning("output_writer.close_failed", run_id=run_id, exc_info=True)
+
+    await _finalize_resource_monitoring(agent)
 
     # Finalize the DB record BEFORE removing from pa.agents so the
     # liveness sweep (which skips managed run_ids) cannot race us and

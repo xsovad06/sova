@@ -57,6 +57,12 @@ class TaskRun(Base):
     failure_records: Mapped[list["FailureRecord"]] = relationship(back_populates="task_run")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="task_run")
     output_lines: Mapped[list["OutputLine"]] = relationship(back_populates="task_run", cascade="all, delete-orphan")
+    resource_samples: Mapped[list["ResourceSampleRecord"]] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan"
+    )
+    resource_summary: Mapped["ResourceSummaryRecord | None"] = relationship(
+        back_populates="task_run", cascade="all, delete-orphan", uselist=False
+    )
 
     @validates("issue_number")
     def _normalize_issue_number(self, _key: str, value: str | None) -> str | None:
@@ -333,3 +339,46 @@ class CommandContract(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (Index("ix_command_contracts_name", "command_name"),)
+
+
+class ResourceSampleRecord(Base):
+    """Time-series resource measurement for an agent run."""
+
+    __tablename__ = "resource_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID, ondelete="CASCADE"), nullable=False)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    memory_rss_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_vms_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    io_read_bytes: Mapped[int | None] = mapped_column(Integer)
+    io_write_bytes: Mapped[int | None] = mapped_column(Integer)
+    num_children: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    num_threads: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    task_run: Mapped["TaskRun"] = relationship(back_populates="resource_samples")
+
+    __table_args__ = (Index("ix_resource_samples_run_time", "task_run_id", "sampled_at"),)
+
+
+class ResourceSummaryRecord(Base):
+    """Aggregated resource summary for an agent run (one per TaskRun)."""
+
+    __tablename__ = "resource_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey(_FK_TASK_RUNS_ID, ondelete="CASCADE"), nullable=False, unique=True
+    )
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    peak_cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False, default=0.0)
+    avg_cpu_percent: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False, default=0.0)
+    peak_memory_rss_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    peak_memory_vms_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_io_read_bytes: Mapped[int | None] = mapped_column(Integer)
+    total_io_write_bytes: Mapped[int | None] = mapped_column(Integer)
+    peak_num_threads: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    task_run: Mapped["TaskRun"] = relationship(back_populates="resource_summary")
