@@ -95,11 +95,25 @@ class AgentConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_AGENT_")
 
 
+class ReviewPanelConfig(BaseSettings):
+    """Panel review configuration -- parallel focused dimension reviewers."""
+
+    enabled: bool = False
+    dimensions: list[str] = Field(
+        default_factory=lambda: ["correctness", "security", "error_handling", "design", "test_coverage"],
+    )
+    dimension_models: dict[str, str] = Field(default_factory=dict)
+    line_proximity: int = Field(3, ge=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_PANEL_")
+
+
 class ReviewConfig(BaseSettings):
     """Automated review configuration."""
 
     enabled: bool = True
     max_rounds: int = Field(2, gt=0)
+    panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_")
 
