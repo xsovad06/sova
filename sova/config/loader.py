@@ -77,6 +77,7 @@ _NESTED_SECTIONS = (
     "monitoring",
     "knowledge",
     "rtk",
+    "coderabbit_quota",
 )
 
 

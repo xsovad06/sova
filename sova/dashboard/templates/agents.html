@@ -43,6 +43,29 @@
   </div>
 </div>
 
+<!-- CodeRabbit Quota Widget -->
+<div id="cr-quota-widget" class="hidden bg-surface-card rounded-lg border border-gray-700/50 mb-6 px-4 py-3">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <span id="cr-quota-dot" class="w-2 h-2 rounded-full bg-accent-green"></span>
+      <span class="text-sm font-medium text-gray-300">CodeRabbit Quota</span>
+      <span id="cr-quota-usage" class="text-xs text-gray-500"></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="cr-quota-status" class="text-xs"></span>
+      <button onclick="_syncCrQuota()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Sync from GitHub">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      </button>
+    </div>
+  </div>
+  <div id="cr-quota-bar-container" class="mt-2">
+    <div class="w-full bg-surface rounded-full h-1.5">
+      <div id="cr-quota-bar" class="h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+    </div>
+  </div>
+  <div id="cr-quota-wait" class="hidden mt-1 text-xs text-accent-peach"></div>
+</div>
+
 <!-- Hidden inputs for runCommand/startAgent backward compat -->
 <input type="hidden" id="agent-issue" value="">
 <input type="hidden" id="agent-issue-number" value="">
@@ -1616,6 +1639,7 @@ window.addEventListener('beforeunload', function() {
   if (_agentWs) { _agentWs.close(); _agentWs = null; }
   if (agentPollInterval) { clearInterval(agentPollInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
+  if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
 });
 
 var _prPollInterval = setInterval(loadPrTracker, 30000);
@@ -1992,6 +2016,7 @@ document.addEventListener('visibilitychange', function() {
     if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
+    if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
   } else {
     _wsReconnectAttempts = 0;
     _wsReconnectDelay = 1000;
@@ -2007,7 +2032,63 @@ document.addEventListener('visibilitychange', function() {
       loadKanban();
       _kanbanPollInterval = setInterval(loadKanban, 5000);
     }
+    _loadCrQuota();
+    _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
   }
 });
+// -- CodeRabbit Quota Widget --
+
+async function _loadCrQuota() {
+  try {
+    var resp = await fetch(apiUrl('/quota/coderabbit'));
+    if (!resp.ok) return;
+    var data = await resp.json();
+    var widget = document.getElementById('cr-quota-widget');
+    if (!data.enabled) { widget.classList.add('hidden'); return; }
+    widget.classList.remove('hidden');
+
+    var used = data.reviews_in_window || 0;
+    var limit = data.reviews_per_hour || 0;
+    var pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+
+    document.getElementById('cr-quota-usage').textContent = used + ' / ' + limit + ' reviews';
+
+    var bar = document.getElementById('cr-quota-bar');
+    bar.style.width = pct + '%';
+
+    var dot = document.getElementById('cr-quota-dot');
+    var statusEl = document.getElementById('cr-quota-status');
+    var waitEl = document.getElementById('cr-quota-wait');
+
+    if (data.can_create_pr) {
+      dot.className = 'w-2 h-2 rounded-full bg-accent-green';
+      bar.className = 'h-1.5 rounded-full transition-all duration-300 bg-accent-green';
+      statusEl.textContent = 'Available';
+      statusEl.className = 'text-xs text-accent-green';
+      waitEl.classList.add('hidden');
+    } else {
+      dot.className = 'w-2 h-2 rounded-full bg-accent-peach';
+      bar.className = 'h-1.5 rounded-full transition-all duration-300 bg-accent-peach';
+      statusEl.textContent = 'Rate limited';
+      statusEl.className = 'text-xs text-accent-peach';
+      if (data.next_available_minutes != null) {
+        var mins = Math.ceil(data.next_available_minutes);
+        waitEl.textContent = 'Next slot in ~' + mins + ' min';
+        waitEl.classList.remove('hidden');
+      }
+    }
+  } catch (e) { /* non-fatal */ }
+}
+
+async function _syncCrQuota() {
+  try {
+    await fetch(apiUrl('/quota/coderabbit/sync'), {method: 'POST'});
+    await _loadCrQuota();
+  } catch (e) { /* non-fatal */ }
+}
+
+_loadCrQuota();
+var _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
+
 </script>
 {% endblock %}
