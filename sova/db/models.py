@@ -57,7 +57,9 @@ class TaskRun(Base):
     step_executions: Mapped[list["StepExecution"]] = relationship(back_populates="task_run")
     failure_records: Mapped[list["FailureRecord"]] = relationship(back_populates="task_run")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="task_run")
-    output_lines: Mapped[list["OutputLine"]] = relationship(back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN)
+    output_lines: Mapped[list["OutputLine"]] = relationship(
+        back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN
+    )
     resource_samples: Mapped[list["ResourceSampleRecord"]] = relationship(
         back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
