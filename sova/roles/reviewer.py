@@ -729,8 +729,7 @@ class ReviewerRole(AgentRole):
 
         # Panel review: parallel focused dimension reviewers
         if ctx.config.review.panel.enabled:
-            # TODO: thread addressed_findings into panel review when panel_review.py supports it
-            return await self._run_panel_review(ctx, task, diff, files, spec_sections)
+            return await self._run_panel_review(ctx, task, diff, files, spec_sections, addressed_findings)
 
         return await self._run_single_review(
             ctx,
@@ -748,6 +747,7 @@ class ReviewerRole(AgentRole):
         diff: str,
         files: list[str],
         spec_sections: dict[str, str] | None,
+        addressed_findings: list[dict] | None = None,
     ) -> ReviewResult:
         """Delegate to parallel panel review."""
         from sova.roles.panel_review import run_panel_review
@@ -763,6 +763,7 @@ class ReviewerRole(AgentRole):
             spec_sections=spec_sections,
             cwd=ctx.working_dir,
             budget_remaining=budget_remaining,
+            addressed_findings=addressed_findings,
         )
         ctx.add_cost(result.total_cost)
         return result

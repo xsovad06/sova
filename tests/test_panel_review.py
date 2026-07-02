@@ -179,6 +179,19 @@ class TestBuildDimensionPrompt:
         for dim in ["correctness", "security", "error_handling", "design", "test_coverage"]:
             assert dim in _DIMENSION_PROMPTS
 
+    def test_includes_addressed_findings_when_provided(self) -> None:
+        findings = [
+            {"source": "SonarCloud", "severity": "MAJOR", "file_path": "a.py", "message": "Cognitive complexity"},
+        ]
+        prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], addressed_findings=findings)
+        assert "Already Addressed" in prompt
+        assert "SonarCloud" in prompt
+        assert "Cognitive complexity" in prompt
+
+    def test_omits_addressed_block_when_none(self) -> None:
+        prompt = _build_dimension_prompt("correctness", _task(), "diff", ["a.py"], addressed_findings=None)
+        assert "Already Addressed" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # Panel review integration
@@ -366,6 +379,40 @@ class TestRunPanelReview:
 
         # Budget should cause test_coverage to be skipped; once skipped it stays skipped
         assert result.total_cost > Decimal(0)
+
+    async def test_addressed_findings_threaded_to_first_chunk_only(self) -> None:
+        """Addressed findings appear in prompts for chunk 0 but not subsequent chunks."""
+        from sova.llm.models import LLMResult
+
+        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness"])
+        llm_result = LLMResult(text=_llm_response([], "Clean"), model="sonnet", cost_usd=Decimal("0.005"))
+        addressed = [{"source": "SonarCloud", "severity": "MAJOR", "file_path": "a.py", "message": "Fix this"}]
+
+        captured_prompts: list[str] = []
+
+        async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
+            captured_prompts.append(prompt)
+            return llm_result
+
+        # Large diff with file boundaries to force chunking (each section > 100KB)
+        big_diff = ("diff --git a/a.py b/a.py\n" + "x" * 110_000 + "\n"
+                    + "diff --git a/b.py b/b.py\n" + "y" * 110_000)
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            await run_panel_review(
+                task=_task(),
+                diff=big_diff,
+                files=["a.py"],
+                panel_config=panel_config,
+                addressed_findings=addressed,
+            )
+
+        assert len(captured_prompts) >= 2
+        assert "Already Addressed" in captured_prompts[0]
+        assert "SonarCloud" in captured_prompts[0]
+        # Subsequent chunks should NOT include addressed findings
+        for prompt in captured_prompts[1:]:
+            assert "Already Addressed" not in prompt
 
     async def test_dimension_model_override(self) -> None:
         from sova.llm.models import LLMResult
