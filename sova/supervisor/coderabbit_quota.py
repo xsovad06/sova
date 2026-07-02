@@ -284,7 +284,7 @@ async def _fetch_reviews_for_pr(
 
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError:
         log.debug("fetch_reviews.bad_json", pr=pr_number)
         return []
 

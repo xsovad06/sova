@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -10,6 +11,7 @@ import pytest
 
 from sova.config.models import CodeRabbitQuotaConfig
 from sova.db.session import close_db, init_db
+from sova.utils.shell import ShellResult
 
 
 @pytest.fixture(autouse=True)
@@ -321,3 +323,222 @@ class TestConfigLoader:
         assert cfg.coderabbit_quota.enabled is True
         assert cfg.coderabbit_quota.plan == "pro"
         assert cfg.coderabbit_quota.reviews_per_hour == 5
+
+
+# ---------------------------------------------------------------------------
+# Coverage: uncovered code paths
+# ---------------------------------------------------------------------------
+
+
+class TestGetQuotaStatusUnlimited:
+    async def test_unlimited_reviews_per_hour_zero(self) -> None:
+        """Line 57: reviews_per_hour == 0 means unlimited."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import get_quota_status
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, reviews_per_hour=0)
+        # Force reviews_per_hour to 0 (validator sets plan default)
+        object.__setattr__(cfg, "reviews_per_hour", 0)
+        async with await get_session() as session:
+            status = await get_quota_status(session, cfg)
+        assert status.enabled is True
+        assert status.can_create_pr is True
+        assert status.reviews_per_hour == 0
+        assert status.next_available_minutes is None
+
+
+class TestSyncFromGitHubEmpty:
+    async def test_empty_reviews_returns_zero(self) -> None:
+        """Line 114: sync returns 0 when API returns empty list."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True)
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            async with await get_session() as session:
+                count = await sync_from_github(session, "owner/repo", cfg)
+        assert count == 0
+
+
+class TestRecordEventDefaultTimestamp:
+    async def test_default_recorded_at(self) -> None:
+        """Line 148: recorded_at defaults to now when None."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import record_event
+
+        async with await get_session() as session:
+            result = await record_event(
+                session, pr_number=99, event_type="review", review_id="auto_ts"
+            )
+        assert result is True
+
+
+class TestFetchCodeRabbitReviewsFromGitHub:
+    async def test_pr_fetch_failure(self) -> None:
+        """Lines 236-238: PR list fetch fails."""
+        from sova.supervisor.coderabbit_quota import _fetch_coderabbit_reviews_from_github
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="gh error")
+            reviews = await _fetch_coderabbit_reviews_from_github("owner/repo")
+        assert reviews == []
+
+    async def test_no_pr_numbers(self) -> None:
+        """Lines 246-247: stdout has no valid PR numbers."""
+        from sova.supervisor.coderabbit_quota import _fetch_coderabbit_reviews_from_github
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout="", stderr="")
+            reviews = await _fetch_coderabbit_reviews_from_github("owner/repo")
+        assert reviews == []
+
+    async def test_successful_fetch(self) -> None:
+        """Lines 213-264: full successful fetch with semaphore and gather."""
+        from sova.supervisor.coderabbit_quota import _fetch_coderabbit_reviews_from_github
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        review_data = json.dumps([
+            {
+                "id": 123,
+                "user": {"login": "coderabbitai[bot]"},
+                "state": "COMMENTED",
+                "submitted_at": now_iso,
+            }
+        ])
+
+        async def mock_run_side_effect(*args: object, **kwargs: object) -> ShellResult:
+            cmd_args = args
+            if "pulls" in str(cmd_args) and "reviews" not in str(cmd_args):
+                return ShellResult(returncode=0, stdout="10\n20\n", stderr="")
+            return ShellResult(returncode=0, stdout=review_data, stderr="")
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, side_effect=mock_run_side_effect):
+            with patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None):
+                reviews = await _fetch_coderabbit_reviews_from_github("owner/repo", github_user="testuser")
+        assert len(reviews) == 2  # one review per PR (10 and 20)
+
+    async def test_gather_exception_skipped(self) -> None:
+        """Lines 260-262: exceptions from gather are skipped."""
+        from sova.supervisor.coderabbit_quota import _fetch_coderabbit_reviews_from_github
+
+        call_count = 0
+
+        async def mock_run_side_effect(*args: object, **kwargs: object) -> ShellResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # PR list
+                return ShellResult(returncode=0, stdout="10\n", stderr="")
+            # Review fetch raises
+            raise RuntimeError("network timeout")
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, side_effect=mock_run_side_effect):
+            reviews = await _fetch_coderabbit_reviews_from_github("owner/repo")
+        assert reviews == []
+
+
+class TestFetchReviewsForPR:
+    async def test_fetch_failure(self) -> None:
+        """Lines 281-283: review fetch fails."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="api error")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_bad_json(self) -> None:
+        """Lines 285-289: invalid JSON response."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout="not json", stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_non_list_json(self) -> None:
+        """Lines 291-292: valid JSON but not a list."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout='{"error": "not found"}', stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_non_coderabbit_review_skipped(self) -> None:
+        """Lines 298-299: reviews from non-CodeRabbit users skipped."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{"id": 1, "user": {"login": "humanuser"}, "state": "APPROVED", "submitted_at": "2026-01-01T00:00:00Z"}])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_missing_fields_skipped(self) -> None:
+        """Lines 305-306: reviews missing state/submitted_at/review_id."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{"id": "", "user": {"login": "coderabbitai[bot]"}, "state": "", "submitted_at": ""}])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_pending_review_skipped(self) -> None:
+        """Lines 309-310: PENDING state reviews not counted."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{
+            "id": 42, "user": {"login": "coderabbitai[bot]"},
+            "state": "PENDING", "submitted_at": "2026-01-01T00:00:00Z",
+        }])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_bad_date_skipped(self) -> None:
+        """Lines 312-316: invalid submitted_at date."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{
+            "id": 42, "user": {"login": "coderabbitai[bot]"},
+            "state": "COMMENTED", "submitted_at": "not-a-date",
+        }])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
+
+    async def test_valid_coderabbit_review(self) -> None:
+        """Lines 318-326: valid CodeRabbit review returned."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{
+            "id": 42, "user": {"login": "coderabbitai[bot]"},
+            "state": "COMMENTED", "submitted_at": "2026-01-01T00:00:00Z",
+        }])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert len(result) == 1
+        assert result[0]["pr_number"] == 1
+        assert result[0]["review_id"] == "42"
+
+    async def test_null_user_login_skipped(self) -> None:
+        """Lines 296-299: user with None login skipped."""
+        from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
+
+        data = json.dumps([{
+            "id": 42, "user": {"login": None},
+            "state": "COMMENTED", "submitted_at": "2026-01-01T00:00:00Z",
+        }])
+        with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
+            result = await _fetch_reviews_for_pr("owner/repo", 1)
+        assert result == []
