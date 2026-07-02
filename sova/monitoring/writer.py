@@ -24,7 +24,7 @@ _MAX_BUFFER_SIZE = 1000  # Drop oldest samples if DB is persistently down
 class ResourceWriter:
     """Buffered writer that persists resource samples and summaries to the database."""
 
-    def __init__(self, project_dir: Path, run_id: int, *, flush_threshold: int = _DEFAULT_FLUSH_THRESHOLD) -> None:
+    def __init__(self, project_dir: Path | None, run_id: int, *, flush_threshold: int = _DEFAULT_FLUSH_THRESHOLD) -> None:
         self._project_dir = project_dir
         self._run_id = run_id
         self._flush_threshold = flush_threshold
@@ -82,10 +82,13 @@ class ResourceWriter:
             async with await get_session(project_dir=self._project_dir) as session:
                 async with session.begin():
                     session.add_all(records)
-        except Exception:
+        except BaseException as exc:
             log.warning("resource_writer.flush_failed", run_id=self._run_id, samples=len(records), exc_info=True)
-            # Re-add to buffer for retry on next flush
+            # Re-add to buffer for retry on next flush (covers CancelledError too)
             self._buffer = samples_to_flush + self._buffer
+            # Re-raise cancellation/interrupt so the task can be properly cancelled
+            if not isinstance(exc, Exception):
+                raise
 
     async def write_summary(self, summary: ResourceSummary) -> None:
         """Persist the final resource summary to the database."""
@@ -119,7 +122,7 @@ class ResourceWriter:
         await self.flush()
 
 
-async def cleanup_old_resources(project_dir: Path, retention_days: int = _DEFAULT_RETENTION_DAYS) -> int:
+async def cleanup_old_resources(project_dir: Path | None, retention_days: int = _DEFAULT_RETENTION_DAYS) -> int:
     """Delete resource samples and summaries for runs older than *retention_days*.
 
     Returns the total number of deleted rows.
