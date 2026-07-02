@@ -133,10 +133,9 @@ async def _finalize_resource_monitoring(agent: AgentState) -> None:
         # Cancel the periodic flush task
         if agent.resource_flush_task and not agent.resource_flush_task.done():
             agent.resource_flush_task.cancel()
-            try:
-                await agent.resource_flush_task
-            except asyncio.CancelledError:
-                pass
+            # gather(return_exceptions=True) suppresses the expected CancelledError
+            # from the child task without swallowing our own cancellation.
+            await asyncio.gather(agent.resource_flush_task, return_exceptions=True)
 
         collector = agent.resource_collector
         writer = agent.resource_writer
@@ -151,6 +150,8 @@ async def _finalize_resource_monitoring(agent: AgentState) -> None:
 
         await writer.write_summary(summary)
         await writer.close()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         log.warning("resource_monitoring.finalize_failed", run_id=agent.run_id, exc_info=True)
 
