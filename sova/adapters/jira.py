@@ -445,6 +445,9 @@ class JiraAdapter(TaskAdapter):
             return ""
         parts: list[str] = []
         for block in description.get("content", []):
+            if block.get("type") == "heading":
+                level = block.get("attrs", {}).get("level", 1)
+                parts.append("#" * level + " ")
             for inline in block.get("content", []):
                 if inline.get("type") == "text":
                     parts.append(inline.get("text", ""))
