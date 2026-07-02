@@ -29,12 +29,16 @@ log = get_logger(component="step.spec")
 
 _COMPLEXITY_ORDER = ("always", "trivial", "simple", "moderate", "complex", "never")
 
+# Longer patterns first -- substring matches greedily, so "already fully
+# implemented" must precede "already implemented" to avoid a short match
+# shadowing intent (ordering is cosmetic for `any()` but documents intent).
 _ALREADY_IMPLEMENTED_PATTERNS = (
     "already fully implemented",
     "already implemented",
     "already complete",
     "already been implemented",
     "has been fully implemented",
+    "has been implemented",
     "fully implemented already",
     "implementation is complete",
     "implementation is already complete",
@@ -61,7 +65,15 @@ def _extract_complexity(text: str) -> str:
 
 
 def _research_says_implemented(body: str) -> bool:
-    """Return True if the Research section indicates the issue is already implemented."""
+    """Return True if the Research section indicates the issue is already implemented.
+
+    Uses simple substring matching scoped to the Research section only.
+    Known limitation: a Research section that mentions partial implementation
+    (e.g., "Feature X is already implemented, but Feature Y is not") will
+    still match and cause a skip.  This is an acceptable trade-off because
+    the researcher agent uses specific phrasing for its verdicts, and the
+    worst case (skipping spec for a done issue) is low-impact.
+    """
     research = _extract_section(body, "Research")
     if not research:
         return False
