@@ -19,12 +19,21 @@ def _specs_dir(project_dir: Path | None = None) -> Path:
 
 
 def find_spec_file(issue_number: str, project_dir: Path | None = None) -> Path | None:
-    """Find the spec file for an issue."""
+    """Find the spec file for an issue.
+
+    Matches both ``{issue_number}-slug.md`` (GitHub) and
+    ``{PROJECT}-{issue_number}-slug.md`` (Jira key prefix).
+    """
     specs = _specs_dir(project_dir)
     if not specs.exists():
         return None
     for f in specs.iterdir():
-        if f.name.startswith(f"{issue_number}-") and f.suffix == ".md":
+        if f.suffix != ".md":
+            continue
+        if f.name.startswith(f"{issue_number}-"):
+            return f
+        parts = f.stem.split("-", 2)
+        if len(parts) >= 2 and parts[1] == issue_number:
             return f
     return None
 
@@ -160,7 +169,7 @@ def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
     for f in sorted(specs.iterdir()):
         if f.suffix != ".md":
             continue
-        issue_match = re.match(r"(\d+)-", f.name)
+        issue_match = re.match(r"(\d+)-", f.name) or re.match(r"[A-Z]+-(\d+)-", f.name)
         if not issue_match:
             continue
         try:
