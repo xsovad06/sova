@@ -1120,7 +1120,7 @@ class TestLifecycleResourceIntegration:
     @pytest.mark.asyncio
     async def test_finalize_resource_monitoring_cancels_flush_task(self) -> None:
         """Finalize cancels and awaits the flush task, catching its CancelledError."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
         from sova.dashboard.services.agent_pool import AgentState
