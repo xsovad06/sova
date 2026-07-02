@@ -211,31 +211,42 @@ async def test_format_relevant_context_with_results() -> None:
 
 
 async def test_load_context_with_ctx_uses_relevance(tmp_path: Path) -> None:
-    """load_context() uses relevance filtering when ctx is provided."""
+    """load_context() uses relevance filtering when ctx is provided.
+
+    Exercises the real retrieve_relevant() with a mocked _search_project_tier
+    that returns scored results, verifying that budget truncation actually
+    drops low-scored memories while keeping high-scored ones.
+    """
     from sova.knowledge.memory import store
-    from sova.knowledge.retrieval import retrieve_relevant as _real_retrieve
     from sova.knowledge.tiers import load_context
 
     mem_relevant = await store(
         category="learning", title="Relevant memory", content="Auth patterns.", tags=["auth"]
     )
-    await store(category="learning", title="Unrelated memory", content="CSS styling tips.", tags=["css"])
+    mem_unrelated = await store(
+        category="learning", title="Unrelated memory", content="CSS styling tips.", tags=["css"]
+    )
+
+    class _KnowledgeCfg:
+        max_context_tokens = 5  # Tiny budget: fits one memory, not both
 
     class _Cfg:
         shared_knowledge_path = str(tmp_path / "nonexistent")
+        knowledge = _KnowledgeCfg()
 
     ctx = _make_execution_context(role="developer", task_title="Fix auth bug")
 
-    # Mock retrieve_relevant to simulate semantic results returning only the relevant memory
-    async def _mock_retrieve(*, query, max_context_tokens=2000, category=None):
-        return [(mem_relevant, 0.95)]
+    # Mock _search_project_tier to return both memories with different scores
+    # so retrieve_relevant's budget truncation decides which to keep
+    async def _mock_search(*, query, category):
+        return [(mem_relevant, 0.95), (mem_unrelated, 0.1)], True
 
-    with patch("sova.knowledge.retrieval.retrieve_relevant", side_effect=_mock_retrieve):
+    with patch("sova.knowledge.retrieval._search_project_tier", side_effect=_mock_search):
         result = await load_context(None, tmp_path, _Cfg(), ctx=ctx)
-        # Relevance filtering should include auth-related memory
+        # Relevance filtering should include the higher-scored auth memory
         assert "Auth patterns" in result
         assert "Relevant memory" in result
-        # Unrelated memory should not be included
+        # Lower-scored memory excluded by budget truncation
         assert "CSS styling" not in result
 
 
