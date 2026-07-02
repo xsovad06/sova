@@ -169,7 +169,7 @@ async def _resource_flush_loop(agent: AgentState) -> None:
                 writer.add_sample(collector.samples.popleft())
             await writer.flush()
     except asyncio.CancelledError:
-        return
+        raise
     except Exception:
         log.debug("resource_flush_loop.failed", run_id=agent.run_id, exc_info=True)
 
