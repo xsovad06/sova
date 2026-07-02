@@ -395,8 +395,7 @@ class TestRunPanelReview:
             return llm_result
 
         # Large diff with file boundaries to force chunking (each section > 100KB)
-        big_diff = ("diff --git a/a.py b/a.py\n" + "x" * 110_000 + "\n"
-                    + "diff --git a/b.py b/b.py\n" + "y" * 110_000)
+        big_diff = "diff --git a/a.py b/a.py\n" + "x" * 110_000 + "\n" + "diff --git a/b.py b/b.py\n" + "y" * 110_000
 
         with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
             await run_panel_review(

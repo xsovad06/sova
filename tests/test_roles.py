@@ -1358,8 +1358,11 @@ class TestSpecAnchoredReview:
 
         findings = [{"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "X"}]
         handoff = AgentHandoff(
-            role="developer", phase="develop", summary="Done",
-            next_action="review", branch_name="feat/42",
+            role="developer",
+            phase="develop",
+            summary="Done",
+            next_action="review",
+            branch_name="feat/42",
             addressed_findings=findings,
         )
         await write_handoff(run_id, handoff)
@@ -1385,13 +1388,17 @@ class TestSpecAnchoredReview:
                 {"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "Found"},
             ]
             tr1 = TaskRun(
-                issue_number="42", role="developer", status="done",
+                issue_number="42",
+                role="developer",
+                status="done",
                 handoff_json={"addressed_findings": findings_data},
             )
             session.add(tr1)
             # Newer run WITHOUT addressed_findings (address-review cycle)
             tr2 = TaskRun(
-                issue_number="42", role="developer", status="done",
+                issue_number="42",
+                role="developer",
+                status="done",
                 handoff_json={"some_other_key": "value"},
             )
             session.add(tr2)
