@@ -172,6 +172,17 @@ class TriageRole(AgentRole):
         Uses structured signals (body length, section headings, code refs,
         labels) to produce high-confidence results, reducing LLM fallback.
         """
+        # Check labels first -- human-only takes priority regardless of body content
+        label_set = {lbl.lower() for lbl in (task.labels or [])}
+        if "agent:human-only" in label_set:
+            return TaskAssessment(
+                suitability="human_only",
+                confidence=0.95,
+                reasoning="Issue is labeled as human-only.",
+                estimated_complexity="moderate",
+                suggested_role="triage",
+            )
+
         has_body = bool(task.body and task.body.strip())
         if not has_body:
             return TaskAssessment(
@@ -183,44 +194,18 @@ class TriageRole(AgentRole):
                 suggested_role="triage",
             )
 
-        body = task.body.strip()
+        return self._assess_body_content(task.body.strip(), label_set)
+
+    def _assess_body_content(self, body: str, label_set: set[str]) -> TaskAssessment:
+        """Classify issue by body content and label signals."""
         body_lower = body.lower()
         body_len = len(body)
 
-        has_criteria = any(
-            marker in body_lower
-            for marker in [
-                "- [ ]",
-                _ACCEPTANCE_CRITERIA,
-                "expected behavior",
-                "## scope",
-                "## requirements",
-                "## solution",
-                "## steps",
-                "## design",
-            ]
-        )
-
-        has_code_refs = any(
-            marker in body_lower
-            for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def ", "import "]
-        )
-
+        has_criteria = self._has_criteria_markers(body_lower)
+        has_code_refs = self._has_code_references(body_lower)
         has_section_headings = body_lower.count("\n##") >= 1
-
-        label_set = {lbl.lower() for lbl in (task.labels or [])}
         has_type_label = any(lbl.startswith("type:") for lbl in label_set)
         is_bug = "type:bug" in label_set or "bug" in label_set
-        is_human_only = "agent:human-only" in label_set
-
-        if is_human_only:
-            return TaskAssessment(
-                suitability="human_only",
-                confidence=0.95,
-                reasoning="Issue is labeled as human-only.",
-                estimated_complexity="moderate",
-                suggested_role="triage",
-            )
 
         complexity = self._estimate_complexity(body)
 
@@ -276,6 +261,31 @@ class TriageRole(AgentRole):
             reasoning="Issue has a description but lacks structured criteria; needs research first.",
             estimated_complexity=complexity,
             suggested_role="researcher",
+        )
+
+    @staticmethod
+    def _has_criteria_markers(body_lower: str) -> bool:
+        """Check if body contains acceptance criteria markers."""
+        return any(
+            marker in body_lower
+            for marker in [
+                "- [ ]",
+                _ACCEPTANCE_CRITERIA,
+                "expected behavior",
+                "## scope",
+                "## requirements",
+                "## solution",
+                "## steps",
+                "## design",
+            ]
+        )
+
+    @staticmethod
+    def _has_code_references(body_lower: str) -> bool:
+        """Check if body contains code references."""
+        return any(
+            marker in body_lower
+            for marker in [".py", ".ts", ".js", ".sh", "`", "```", "function", "class ", "def ", "import "]
         )
 
     @staticmethod

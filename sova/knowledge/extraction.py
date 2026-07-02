@@ -46,7 +46,7 @@ class ExtractionResult:
     error: str | None = None
 
 
-async def extract_memories(
+async def extract_memories(  # noqa: RUF029 -- async retained for caller compatibility
     *,
     role: str,
     issue_number: str,
@@ -63,7 +63,11 @@ async def extract_memories(
     LLM-based extraction had low signal-to-noise. Use the human-reviewed
     ``/extract-knowledge`` command instead. The step slot is kept in
     pipelines so future rule-based extraction is a single-file change.
+
+    All parameters are retained so re-enabling extraction is a single-file change.
     """
+    # Reference params to satisfy static analysis; they're retained for future use
+    _ = (repo, task_title, files_changed, step_summaries, review_findings, spec_content, cwd)
     log.debug("extraction.skipped", role=role, issue=issue_number, reason="no-op")
     return ExtractionResult()
 
