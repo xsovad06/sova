@@ -613,9 +613,6 @@ class ReviewerRole(AgentRole):
 
     async def _run_review(self, ctx: ExecutionContext, task: Task, diff: str, files: list[str]) -> ReviewResult:
         """Send diff to LLM for review, chunking if too large."""
-        chunks = _chunk_diff(diff)
-        result = ReviewResult()
-
         # Load spec for intent-anchored review (spec-mediated context compression)
         spec_sections = self._load_spec_sections(ctx)
 
@@ -628,6 +625,50 @@ class ReviewerRole(AgentRole):
                 body_chars_omitted=body_chars,
                 sections=list(spec_sections.keys()),
             )
+
+        # Panel review: parallel focused dimension reviewers
+        if ctx.config.review.panel.enabled:
+            return await self._run_panel_review(ctx, task, diff, files, spec_sections)
+
+        return await self._run_single_review(ctx, task, diff, files, spec_sections)
+
+    async def _run_panel_review(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        diff: str,
+        files: list[str],
+        spec_sections: dict[str, str] | None,
+    ) -> ReviewResult:
+        """Delegate to parallel panel review."""
+        from sova.roles.panel_review import run_panel_review
+
+        budget_remaining = ctx.config.agent.max_budget - ctx.cost_usd
+        log.info("reviewer.panel_mode", dimensions=ctx.config.review.panel.dimensions)
+
+        result = await run_panel_review(
+            task=task,
+            diff=diff,
+            files=files,
+            panel_config=ctx.config.review.panel,
+            spec_sections=spec_sections,
+            cwd=ctx.working_dir,
+            budget_remaining=budget_remaining,
+        )
+        ctx.add_cost(result.total_cost)
+        return result
+
+    async def _run_single_review(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        diff: str,
+        files: list[str],
+        spec_sections: dict[str, str] | None,
+    ) -> ReviewResult:
+        """Original single-reviewer path."""
+        chunks = _chunk_diff(diff)
+        result = ReviewResult()
 
         for i, chunk in enumerate(chunks):
             try:

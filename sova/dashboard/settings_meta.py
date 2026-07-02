@@ -255,6 +255,34 @@ _REGISTRY: list[SettingMeta] = [
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
+    SettingMeta(
+        "review.panel.enabled",
+        "Panel review",
+        "Use parallel focused dimension reviewers instead of a single monolithic review (3-5x cost)",
+        "review",
+        "boolean",
+    ),
+    SettingMeta(
+        "review.panel.dimensions",
+        "Dimensions",
+        "Review dimensions to evaluate in parallel (correctness, security, error_handling, design, test_coverage)",
+        "review",
+        "list",
+    ),
+    SettingMeta(
+        "review.panel.dimension_models",
+        "Dimension models",
+        "Per-dimension model overrides (e.g. security=opus, test_coverage=haiku)",
+        "review",
+        "object",
+    ),
+    SettingMeta(
+        "review.panel.line_proximity",
+        "Line proximity",
+        "Lines within this distance with the same category are deduplicated",
+        "review",
+        "number",
+    ),
     # -- Develop Step --
     SettingMeta(
         "develop.max_fix_cycles",
