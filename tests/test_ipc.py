@@ -282,6 +282,34 @@ class TestHandoffDB:
         assert restored.role == "developer"
         assert restored.commit_shas == ["abc123"]
 
+    async def test_addressed_findings_round_trip(self) -> None:
+        from sova.ipc.handoff import AgentHandoff, read_handoff, write_handoff
+
+        session = await get_session()
+        async with session.begin():
+            tr = TaskRun(issue_number="42", role="developer", status="developing")
+            session.add(tr)
+            await session.flush()
+            run_id = tr.id
+
+        findings = [
+            {"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "Issue"},
+        ]
+        handoff = AgentHandoff(
+            role="developer",
+            phase="develop",
+            summary="Done",
+            next_action="review",
+            branch_name="feat/42",
+            addressed_findings=findings,
+        )
+        await write_handoff(run_id, handoff)
+
+        restored = await read_handoff(run_id)
+        assert restored is not None
+        assert len(restored.addressed_findings) == 1
+        assert restored.addressed_findings[0]["source"] == "sonarcloud"
+
     async def test_read_handoff_returns_none_when_empty(self) -> None:
         from sova.ipc.handoff import read_handoff
 

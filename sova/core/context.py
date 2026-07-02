@@ -47,6 +47,7 @@ class ExecutionContext:
     # Accumulated during the run
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
+    addressed_external_findings: list[dict] = field(default_factory=list)
 
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""
