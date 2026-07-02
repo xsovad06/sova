@@ -296,6 +296,119 @@ class TestQuotaAPI:
         data = resp.json()
         assert data["enabled"] is False
 
+    async def test_enabled_endpoint_returns_status(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+        from sova.supervisor.coderabbit_quota import QuotaStatus
+
+        mock_status = QuotaStatus(
+            enabled=True,
+            reviews_in_window=2,
+            reviews_per_hour=4,
+            can_create_pr=True,
+            next_available_minutes=None,
+            window_minutes=60,
+        )
+        cfg = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
+        app = create_app()
+        with (
+            patch("sova.dashboard.routers.quota.load_config", return_value=cfg),
+            patch("sova.dashboard.routers.quota.get_quota_status", new_callable=AsyncMock, return_value=mock_status),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/coderabbit")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["reviews_in_window"] == 2
+        assert data["can_create_pr"] is True
+
+    async def test_enabled_endpoint_error_returns_500(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+
+        cfg = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=True))
+        app = create_app()
+        with (
+            patch("sova.dashboard.routers.quota.load_config", return_value=cfg),
+            patch(
+                "sova.dashboard.routers.quota.get_quota_status",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db fail"),
+            ),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/coderabbit")
+        assert resp.status_code == 500
+
+    async def test_sync_endpoint_enabled_success(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+        )
+        app = create_app()
+        with (
+            patch("sova.dashboard.routers.quota.load_config", return_value=cfg),
+            patch("sova.dashboard.routers.quota.sync_from_github", new_callable=AsyncMock, return_value=3),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/quota/coderabbit/sync")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["synced"] == 3
+
+    async def test_sync_endpoint_no_repo(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+
+        cfg = ProjectConfig(
+            github_repo="",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+        )
+        app = create_app()
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/quota/coderabbit/sync")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["synced"] == 0
+        assert "error" in data
+
+    async def test_sync_endpoint_error_returns_500(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+        )
+        app = create_app()
+        with (
+            patch("sova.dashboard.routers.quota.load_config", return_value=cfg),
+            patch(
+                "sova.dashboard.routers.quota.sync_from_github",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("api fail"),
+            ),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/quota/coderabbit/sync")
+        assert resp.status_code == 500
+
 
 # ---------------------------------------------------------------------------
 # Config loader integration
@@ -371,9 +484,7 @@ class TestRecordEventDefaultTimestamp:
         from sova.supervisor.coderabbit_quota import record_event
 
         async with await get_session() as session:
-            result = await record_event(
-                session, pr_number=99, event_type="review", review_id="auto_ts"
-            )
+            result = await record_event(session, pr_number=99, event_type="review", review_id="auto_ts")
         assert result is True
 
 
@@ -401,14 +512,16 @@ class TestFetchCodeRabbitReviewsFromGitHub:
         from sova.supervisor.coderabbit_quota import _fetch_coderabbit_reviews_from_github
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        review_data = json.dumps([
-            {
-                "id": 123,
-                "user": {"login": "coderabbitai[bot]"},
-                "state": "COMMENTED",
-                "submitted_at": now_iso,
-            }
-        ])
+        review_data = json.dumps(
+            [
+                {
+                    "id": 123,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "state": "COMMENTED",
+                    "submitted_at": now_iso,
+                }
+            ]
+        )
 
         async def mock_run_side_effect(*args: object, **kwargs: object) -> ShellResult:
             cmd_args = args
@@ -473,7 +586,8 @@ class TestFetchReviewsForPR:
         """Lines 298-299: reviews from non-CodeRabbit users skipped."""
         from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
 
-        data = json.dumps([{"id": 1, "user": {"login": "humanuser"}, "state": "APPROVED", "submitted_at": "2026-01-01T00:00:00Z"}])
+        review = {"id": 1, "user": {"login": "humanuser"}, "state": "APPROVED", "submitted_at": "2026-01-01T00:00:00Z"}
+        data = json.dumps([review])
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
@@ -493,10 +607,16 @@ class TestFetchReviewsForPR:
         """Lines 309-310: PENDING state reviews not counted."""
         from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
 
-        data = json.dumps([{
-            "id": 42, "user": {"login": "coderabbitai[bot]"},
-            "state": "PENDING", "submitted_at": "2026-01-01T00:00:00Z",
-        }])
+        data = json.dumps(
+            [
+                {
+                    "id": 42,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "state": "PENDING",
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        )
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
@@ -506,10 +626,16 @@ class TestFetchReviewsForPR:
         """Lines 312-316: invalid submitted_at date."""
         from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
 
-        data = json.dumps([{
-            "id": 42, "user": {"login": "coderabbitai[bot]"},
-            "state": "COMMENTED", "submitted_at": "not-a-date",
-        }])
+        data = json.dumps(
+            [
+                {
+                    "id": 42,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "state": "COMMENTED",
+                    "submitted_at": "not-a-date",
+                }
+            ]
+        )
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
@@ -519,10 +645,16 @@ class TestFetchReviewsForPR:
         """Lines 318-326: valid CodeRabbit review returned."""
         from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
 
-        data = json.dumps([{
-            "id": 42, "user": {"login": "coderabbitai[bot]"},
-            "state": "COMMENTED", "submitted_at": "2026-01-01T00:00:00Z",
-        }])
+        data = json.dumps(
+            [
+                {
+                    "id": 42,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "state": "COMMENTED",
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        )
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
@@ -534,10 +666,16 @@ class TestFetchReviewsForPR:
         """Lines 296-299: user with None login skipped."""
         from sova.supervisor.coderabbit_quota import _fetch_reviews_for_pr
 
-        data = json.dumps([{
-            "id": 42, "user": {"login": None},
-            "state": "COMMENTED", "submitted_at": "2026-01-01T00:00:00Z",
-        }])
+        data = json.dumps(
+            [
+                {
+                    "id": 42,
+                    "user": {"login": None},
+                    "state": "COMMENTED",
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        )
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=0, stdout=data, stderr="")
             result = await _fetch_reviews_for_pr("owner/repo", 1)
