@@ -76,6 +76,7 @@ _NESTED_SECTIONS = (
     "output",
     "monitoring",
     "knowledge",
+    "rtk",
 )
 
 

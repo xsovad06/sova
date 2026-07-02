@@ -39,6 +39,7 @@ GROUPS: dict[str, str] = {
     "output": "Output Storage",
     "monitoring": "Resource Monitoring",
     "knowledge": "Knowledge Retrieval",
+    "rtk": "RTK Compression",
 }
 
 GROUP_ORDER: list[str] = [
@@ -66,6 +67,7 @@ GROUP_ORDER: list[str] = [
     "output",
     "monitoring",
     "knowledge",
+    "rtk",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -610,6 +612,14 @@ _REGISTRY: list[SettingMeta] = [
         "Token budget for relevance-filtered memory injection into agent prompts",
         "knowledge",
         "number",
+    ),
+    # -- RTK Compression --
+    SettingMeta(
+        "rtk.enabled",
+        "Enabled",
+        "Inject RTK PreToolUse hook into .claude/settings.json during install (no-op when RTK is not installed)",
+        "rtk",
+        "boolean",
     ),
 ]
 

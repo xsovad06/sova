@@ -100,7 +100,13 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         console.print(f"[red]Command installation failed: {exc}[/red]")
         failed_stages.append("commands")
 
-    # Stage 5: Agent memory (non-fatal)
+    # Stage 5: RTK hook injection (non-fatal)
+    try:
+        _configure_rtk(project_dir, claude_dir)
+    except Exception as exc:
+        console.print(f"[yellow]Warning: RTK setup failed: {exc}[/yellow]")
+
+    # Stage 6: Agent memory (non-fatal)
     if not update:
         try:
             _create_agent_memory(claude_dir)
@@ -143,6 +149,22 @@ async def _configure_git_hooks(project_dir: Path) -> None:
             console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
         else:
             console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
+
+
+def _configure_rtk(project_dir: Path, claude_dir: Path) -> None:
+    """Inject RTK PreToolUse hook if RTK is available and config allows it."""
+    from sova.config.loader import load_config
+    from sova.utils.rtk import inject_rtk_hook, is_rtk_available
+
+    cfg = load_config(project_dir)
+    if not cfg.rtk.enabled:
+        return
+
+    if not is_rtk_available():
+        return
+
+    if inject_rtk_hook(claude_dir):
+        console.print("[green]RTK compression hook configured.[/green]")
 
 
 def _create_agent_memory(claude_dir: Path) -> None:
@@ -270,7 +292,16 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f".claude/{dir_name}/: {exc}")
 
-    # 5. Agent memory (opt-in removal)
+    # 5. RTK hook (always removed -- SOVA-managed)
+    try:
+        from sova.utils.rtk import remove_rtk_hook
+
+        if remove_rtk_hook(claude_dir):
+            removed.append("RTK hook from .claude/settings.json")
+    except Exception as exc:
+        failed.append(f"RTK hook: {exc}")
+
+    # 6. Agent memory (opt-in removal)
     if remove_memory:
         try:
             memory_dir = claude_dir / "agent-memory"
@@ -280,7 +311,7 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f"agent memory: {exc}")
 
-    # 6. Config file (opt-in removal)
+    # 7. Config file (opt-in removal)
     if remove_config:
         try:
             toml_file = project_dir / "sova.toml"
@@ -290,7 +321,7 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f"config: {exc}")
 
-    # 7. Remove .claude/ if empty
+    # 8. Remove .claude/ if empty
     try:
         if claude_dir.is_dir() and not any(claude_dir.iterdir()):
             claude_dir.rmdir()
@@ -298,7 +329,7 @@ async def _uninstall(
     except OSError:
         pass
 
-    # 8. Unregister from project registry
+    # 9. Unregister from project registry
     try:
         from sova.config.registry import list_projects, unregister_project
 
