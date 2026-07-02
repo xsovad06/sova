@@ -136,6 +136,22 @@ Return ONLY a JSON object (no markdown fences, no extra text):
 }}"""
 
 
+def _is_duplicate(candidate: ReviewFinding, kept: list[ReviewFinding], line_proximity: int) -> bool:
+    """Check if *candidate* duplicates any finding already in *kept*."""
+    for existing in kept:
+        if existing.file != candidate.file:
+            continue
+        if existing.category != candidate.category:
+            continue
+        if (
+            existing.line is not None
+            and candidate.line is not None
+            and abs(existing.line - candidate.line) <= line_proximity
+        ):
+            return True
+    return False
+
+
 def deduplicate_findings(
     findings: list[ReviewFinding],
     line_proximity: int = 3,
@@ -153,20 +169,65 @@ def deduplicate_findings(
     kept: list[ReviewFinding] = []
 
     for candidate in sorted_findings:
-        is_dup = False
-        for existing in kept:
-            if existing.file != candidate.file:
-                continue
-            if existing.category != candidate.category:
-                continue
-            if existing.line is not None and candidate.line is not None:
-                if abs(existing.line - candidate.line) <= line_proximity:
-                    is_dup = True
-                    break
-        if not is_dup:
+        if not _is_duplicate(candidate, kept, line_proximity):
             kept.append(candidate)
 
     return kept
+
+
+def _collect_dimension_coros(
+    dimensions: list[str],
+    skipped_dimensions: set[str],
+    budget_remaining: Decimal | None,
+    panel_config: ReviewPanelConfig,
+    task: Task,
+    chunk: str,
+    files: list[str],
+    chunk_spec: dict[str, str] | None,
+    cwd: Path | str | None,
+) -> tuple[list, list[str]]:
+    """Build coroutines for each dimension, applying budget guards."""
+    coros: list = []
+    names: list[str] = []
+    for dim in dimensions:
+        if dim in skipped_dimensions:
+            continue
+        if budget_remaining is not None and budget_remaining < Decimal("0.005"):
+            skipped_dimensions.add(dim)
+            log.warning("panel_review.budget_skip", dimension=dim, budget_remaining=str(budget_remaining))
+            continue
+        model = panel_config.dimension_models.get(dim, "sonnet")
+        prompt = _build_dimension_prompt(dim, task, chunk, files, spec_sections=chunk_spec)
+        coros.append(_run_dimension(dim, prompt, model=model, cwd=cwd))
+        names.append(dim)
+    return coros, names
+
+
+def _process_dimension_result(
+    dim_name: str,
+    dim_result: tuple[list[ReviewFinding], str, Decimal] | BaseException,
+    result: ReviewResult,
+    all_findings: list[ReviewFinding],
+    chunk_idx: int,
+) -> Decimal:
+    """Process one dimension result. Returns the cost to subtract from budget."""
+    if isinstance(dim_result, BaseException):
+        log.warning("panel_review.dimension_failed", dimension=dim_name, error=str(dim_result))
+        return Decimal(0)
+
+    dim_findings, dim_summary, dim_cost = dim_result
+    result.total_cost += dim_cost
+    all_findings.extend(dim_findings)
+
+    if any(f.severity >= 9 for f in dim_findings):
+        log.info("panel_review.critical_found", dimension=dim_name)
+
+    if chunk_idx == 0 and dim_summary:
+        result.summary = (
+            f"{result.summary} | {dim_name}: {dim_summary}" if result.summary else f"{dim_name}: {dim_summary}"
+        )
+
+    return dim_cost
 
 
 async def run_panel_review(
@@ -186,8 +247,6 @@ async def run_panel_review(
     result = ReviewResult()
     chunks = _chunk_diff(diff)
     dimensions = list(panel_config.dimensions)
-
-    # Sort by priority (lowest priority number = highest importance)
     dimensions.sort(key=lambda d: _DIMENSION_PRIORITY.get(d, 99))
 
     skipped_dimensions: set[str] = set()
@@ -195,57 +254,22 @@ async def run_panel_review(
 
     for chunk_idx, chunk in enumerate(chunks):
         chunk_spec = spec_sections if chunk_idx == 0 else _compact_spec_ref(spec_sections)
-
-        # Build tasks for each dimension, checking budget
-        dimension_coros = []
-        dimension_names = []
-        for dim in dimensions:
-            if dim in skipped_dimensions:
-                continue
-
-            # Budget guard: estimate ~$0.01 per dimension call
-            if budget_remaining is not None and budget_remaining < Decimal("0.005"):
-                skipped_dimensions.add(dim)
-                log.warning("panel_review.budget_skip", dimension=dim, budget_remaining=str(budget_remaining))
-                continue
-
-            model = panel_config.dimension_models.get(dim, "sonnet")
-            prompt = _build_dimension_prompt(dim, task, chunk, files, spec_sections=chunk_spec)
-            dimension_coros.append(_run_dimension(dim, prompt, model=model, cwd=cwd))
-            dimension_names.append(dim)
-
+        dimension_coros, dimension_names = _collect_dimension_coros(
+            dimensions, skipped_dimensions, budget_remaining, panel_config, task, chunk, files, chunk_spec, cwd
+        )
         if not dimension_coros:
             log.warning("panel_review.no_dimensions", chunk=chunk_idx + 1)
             continue
 
-        # Run all dimensions in parallel
         results = await asyncio.gather(*dimension_coros, return_exceptions=True)
-
         for dim_name, dim_result in zip(dimension_names, results):
-            if isinstance(dim_result, BaseException):
-                log.warning("panel_review.dimension_failed", dimension=dim_name, error=str(dim_result))
-                continue
-
-            dim_findings, dim_summary, dim_cost = dim_result
-            result.total_cost += dim_cost
+            cost = _process_dimension_result(dim_name, dim_result, result, all_findings, chunk_idx)
             if budget_remaining is not None:
-                budget_remaining -= dim_cost
-
-            all_findings.extend(dim_findings)
-
-            if any(f.severity >= 9 for f in dim_findings):
-                log.info("panel_review.critical_found", dimension=dim_name)
-
-            if chunk_idx == 0 and dim_summary:
-                if result.summary:
-                    result.summary += f" | {dim_name}: {dim_summary}"
-                else:
-                    result.summary = f"{dim_name}: {dim_summary}"
+                budget_remaining -= cost
 
     if skipped_dimensions:
         log.info("panel_review.skipped_dimensions", dimensions=sorted(skipped_dimensions))
 
-    # Deduplicate across dimensions
     result.findings = deduplicate_findings(all_findings, line_proximity=panel_config.line_proximity)
 
     if not result.findings and not result.summary:
