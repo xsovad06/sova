@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -96,7 +96,11 @@ class AgentConfig(BaseSettings):
 
 
 class ReviewPanelConfig(BaseSettings):
-    """Panel review configuration -- parallel focused dimension reviewers."""
+    """Panel review configuration -- sequential focused dimension reviewers."""
+
+    KNOWN_DIMENSIONS: ClassVar[frozenset[str]] = frozenset(
+        {"correctness", "security", "error_handling", "design", "test_coverage"}
+    )
 
     enabled: bool = False
     dimensions: list[str] = Field(
@@ -106,6 +110,21 @@ class ReviewPanelConfig(BaseSettings):
     line_proximity: int = Field(3, ge=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_PANEL_")
+
+    @model_validator(mode="after")
+    def _validate_dimensions(self) -> ReviewPanelConfig:
+        unknown = set(self.dimensions) - self.KNOWN_DIMENSIONS
+        if unknown:
+            import warnings
+
+            warnings.warn(
+                f"Unknown review panel dimensions: {sorted(unknown)}. "
+                f"Known: {sorted(self.KNOWN_DIMENSIONS)}. "
+                "Unknown dimensions will use a generic prompt.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self
 
 
 class ReviewConfig(BaseSettings):

@@ -1,6 +1,6 @@
-"""Panel review -- parallel focused dimension reviewers.
+"""Panel review -- sequential focused dimension reviewers.
 
-Runs multiple LLM calls in parallel, each focused on a single review
+Runs multiple LLM calls sequentially, each focused on a single review
 dimension (correctness, security, error_handling, design, test_coverage).
 Findings are deduplicated by (file, line proximity, category) and aggregated
 into the same ReviewResult shape used by the single-reviewer path.
@@ -8,7 +8,6 @@ into the same ReviewResult shape used by the single-reviewer path.
 
 from __future__ import annotations
 
-import asyncio
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -175,59 +174,13 @@ def deduplicate_findings(
     return kept
 
 
-def _collect_dimension_coros(
-    dimensions: list[str],
-    skipped_dimensions: set[str],
-    budget_remaining: Decimal | None,
-    panel_config: ReviewPanelConfig,
-    task: Task,
-    chunk: str,
-    files: list[str],
-    chunk_spec: dict[str, str] | None,
-    cwd: Path | str | None,
-) -> tuple[list, list[str]]:
-    """Build coroutines for each dimension, applying budget guards."""
-    coros: list = []
-    names: list[str] = []
-    for dim in dimensions:
-        if dim in skipped_dimensions:
-            continue
-        if budget_remaining is not None and budget_remaining < Decimal("0.005"):
-            skipped_dimensions.add(dim)
-            log.warning("panel_review.budget_skip", dimension=dim, budget_remaining=str(budget_remaining))
-            continue
-        model = panel_config.dimension_models.get(dim, "sonnet")
-        prompt = _build_dimension_prompt(dim, task, chunk, files, spec_sections=chunk_spec)
-        coros.append(_run_dimension(dim, prompt, model=model, cwd=cwd))
-        names.append(dim)
-    return coros, names
-
-
-def _process_dimension_result(
-    dim_name: str,
-    dim_result: tuple[list[ReviewFinding], str, Decimal] | BaseException,
-    result: ReviewResult,
-    all_findings: list[ReviewFinding],
-    chunk_idx: int,
-) -> Decimal:
-    """Process one dimension result. Returns the cost to subtract from budget."""
-    if isinstance(dim_result, BaseException):
-        log.warning("panel_review.dimension_failed", dimension=dim_name, error=str(dim_result))
-        return Decimal(0)
-
-    dim_findings, dim_summary, dim_cost = dim_result
-    result.total_cost += dim_cost
-    all_findings.extend(dim_findings)
-
-    if any(f.severity >= 9 for f in dim_findings):
-        log.info("panel_review.critical_found", dimension=dim_name)
-
-    if chunk_idx == 0 and dim_summary:
-        result.summary = (
-            f"{result.summary} | {dim_name}: {dim_summary}" if result.summary else f"{dim_name}: {dim_summary}"
-        )
-
-    return dim_cost
+def _estimate_dimension_cost(model: str) -> Decimal:
+    """Estimate minimum cost for a dimension call based on model tier."""
+    return {
+        "opus": Decimal("0.05"),
+        "sonnet": Decimal("0.01"),
+        "haiku": Decimal("0.002"),
+    }.get(model, Decimal("0.01"))
 
 
 async def run_panel_review(
@@ -239,9 +192,10 @@ async def run_panel_review(
     cwd: Path | str | None = None,
     budget_remaining: Decimal | None = None,
 ) -> ReviewResult:
-    """Run parallel dimension reviewers and aggregate results.
+    """Run dimension reviewers sequentially and aggregate results.
 
-    Each dimension gets its own LLM call. Findings are deduplicated and
+    Each dimension gets its own LLM call in priority order
+    (correctness > security > ...). Findings are deduplicated and
     merged into a single ReviewResult.
     """
     result = ReviewResult()
@@ -251,21 +205,50 @@ async def run_panel_review(
 
     skipped_dimensions: set[str] = set()
     all_findings: list[ReviewFinding] = []
+    critical_exit = False
 
     for chunk_idx, chunk in enumerate(chunks):
+        if critical_exit:
+            break
         chunk_spec = spec_sections if chunk_idx == 0 else _compact_spec_ref(spec_sections)
-        dimension_coros, dimension_names = _collect_dimension_coros(
-            dimensions, skipped_dimensions, budget_remaining, panel_config, task, chunk, files, chunk_spec, cwd
-        )
-        if not dimension_coros:
-            log.warning("panel_review.no_dimensions", chunk=chunk_idx + 1)
-            continue
 
-        results = await asyncio.gather(*dimension_coros, return_exceptions=True)
-        for dim_name, dim_result in zip(dimension_names, results):
-            cost = _process_dimension_result(dim_name, dim_result, result, all_findings, chunk_idx)
+        for dim in dimensions:
+            if dim in skipped_dimensions:
+                continue
+
+            model = panel_config.dimension_models.get(dim, "sonnet")
+            estimated_cost = _estimate_dimension_cost(model)
+            if budget_remaining is not None and budget_remaining < estimated_cost:
+                skipped_dimensions.add(dim)
+                log.warning(
+                    "panel_review.budget_skip",
+                    dimension=dim,
+                    budget_remaining=str(budget_remaining),
+                    estimated_cost=str(estimated_cost),
+                )
+                continue
+
+            prompt = _build_dimension_prompt(dim, task, chunk, files, spec_sections=chunk_spec)
+            try:
+                dim_findings, dim_summary, dim_cost = await _run_dimension(dim, prompt, model=model, cwd=cwd)
+            except Exception as exc:
+                log.warning("panel_review.dimension_failed", dimension=dim, error=str(exc))
+                continue
+
+            result.total_cost += dim_cost
+            all_findings.extend(dim_findings)
             if budget_remaining is not None:
-                budget_remaining -= cost
+                budget_remaining -= dim_cost
+
+            if chunk_idx == 0 and dim_summary:
+                result.summary = (
+                    f"{result.summary} | {dim}: {dim_summary}" if result.summary else f"{dim}: {dim_summary}"
+                )
+
+            if any(f.severity >= 9 for f in dim_findings):
+                log.info("panel_review.critical_exit", dimension=dim, chunk=chunk_idx + 1)
+                critical_exit = True
+                break
 
     if skipped_dimensions:
         log.info("panel_review.skipped_dimensions", dimensions=sorted(skipped_dimensions))
