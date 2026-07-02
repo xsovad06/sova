@@ -211,10 +211,10 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     return None
 
 
-async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
+async def list_open_prs(*, repo: str, github_user: str = "", author: str | None = None) -> list[dict]:
     """List open PRs (up to 100) with metadata via a single gh CLI call."""
     env = await resolve_gh_env(github_user)
-    result = await run(
+    cmd: list[str] = [
         "gh",
         "pr",
         "list",
@@ -227,8 +227,10 @@ async def list_open_prs(*, repo: str, github_user: str = "") -> list[dict]:
         "labels,createdAt,body,state,statusCheckRollup,mergeable,latestReviews",
         "--limit",
         "100",
-        env=env,
-    )
+    ]
+    if author:
+        cmd.extend(["--author", author])
+    result = await run(*cmd, env=env)
     if not result.success:
         log.warning("git.list_open_prs.failed", stderr=result.stderr[:200])
         return []

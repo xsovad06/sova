@@ -569,6 +569,13 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "string",
     ),
+    SettingMeta(
+        "dashboard.pr_author_filter",
+        "PR author filter",
+        "Filter PRs on the Agents page: mine (only your PRs) or all (entire repo)",
+        "dashboard",
+        "string",
+    ),
     # -- Testing --
     SettingMeta(
         "testing.baseline_enabled",

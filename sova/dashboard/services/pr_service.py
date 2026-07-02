@@ -211,7 +211,8 @@ async def list_open_prs_with_state() -> list[dict]:
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
 
-    raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user)
+    author = cfg.github_user if cfg.dashboard.pr_author_filter == "mine" else None
+    raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user, author=author)
 
     pr_numbers = [p["number"] for p in raw_prs]
     try:
