@@ -1183,8 +1183,259 @@ class TestLifecycleResourceIntegration:
         with patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", side_effect=_sleep_then_raise):
             await _resource_flush_loop(agent)  # should return via except branch, not raise
 
+    @pytest.mark.asyncio
+    async def test_start_resource_monitoring_enabled(self) -> None:
+        """When monitoring is enabled, collector, writer, and flush task are created."""
+        from collections import deque
+
+        from sova.dashboard.services.agent_lifecycle import _start_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        mock_collector = MagicMock()
+        mock_collector.samples = deque()
+        mock_writer = MagicMock()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.monitoring.writer.ResourceWriter",
+                return_value=mock_writer,
+            ),
+            patch(
+                "sova.monitoring.collector.ResourceCollector",
+                return_value=mock_collector,
+            ),
+        ):
+            mock_cfg.return_value.monitoring.enabled = True
+            mock_cfg.return_value.monitoring.interval = 5.0
+            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+
+        assert agent.resource_collector is mock_collector
+        assert agent.resource_writer is mock_writer
+        assert agent.resource_flush_task is not None
+        mock_collector.start.assert_called_once()
+        # Cleanup the background task
+        agent.resource_flush_task.cancel()
+        await asyncio.gather(agent.resource_flush_task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_start_resource_monitoring_import_error(self) -> None:
+        """When collector import fails, no collector is created (graceful degradation)."""
+        from sova.dashboard.services.agent_lifecycle import _start_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.monitoring.collector.ResourceCollector",
+                side_effect=ImportError("no psutil"),
+            ),
+        ):
+            mock_cfg.return_value.monitoring.enabled = True
+            mock_cfg.return_value.monitoring.interval = 5.0
+            _start_resource_monitoring(agent, Path("/tmp/test"), 999)
+
+        assert agent.resource_collector is None
+
+    @pytest.mark.asyncio
+    async def test_finalize_resource_monitoring_drains_remaining_samples(self, session: AsyncSession) -> None:
+        """Finalize drains leftover samples from the collector deque."""
+        from collections import deque
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.monitoring.writer import ResourceWriter
+
+        await _create_run(session, 31)
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=31, issue="1", role="developer", process=mock_process)
+
+        mock_collector = MagicMock()
+        remaining = deque(
+            [
+                ResourceSample(
+                    timestamp=1.0,
+                    cpu_percent=10.0,
+                    memory_rss_bytes=100,
+                    memory_vms_bytes=200,
+                    io_read_bytes=0,
+                    io_write_bytes=0,
+                    num_children=0,
+                ),
+                ResourceSample(
+                    timestamp=2.0,
+                    cpu_percent=20.0,
+                    memory_rss_bytes=200,
+                    memory_vms_bytes=400,
+                    io_read_bytes=0,
+                    io_write_bytes=0,
+                    num_children=0,
+                ),
+            ]
+        )
+        mock_collector.stop = AsyncMock(return_value=ResourceSummary.empty())
+        mock_collector.samples = remaining
+
+        writer = ResourceWriter(project_dir=None, run_id=31)
+        agent.resource_collector = mock_collector
+        agent.resource_writer = writer
+
+        await _finalize_resource_monitoring(agent)
+
+        assert len(remaining) == 0  # all drained
+
+    @pytest.mark.asyncio
+    async def test_finalize_resource_monitoring_exception_caught(self) -> None:
+        """Finalize catches exceptions and does not propagate them."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        mock_collector = MagicMock()
+        mock_collector.stop = AsyncMock(side_effect=RuntimeError("collector crash"))
+        mock_collector.samples = []
+        agent.resource_collector = mock_collector
+        agent.resource_writer = MagicMock()
+
+        # Should not raise
+        await _finalize_resource_monitoring(agent)
+
+    @pytest.mark.asyncio
+    async def test_resource_flush_loop_drains_and_flushes(self) -> None:
+        """_resource_flush_loop drains samples from collector and flushes writer."""
+        from collections import deque
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _resource_flush_loop
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        sample = ResourceSample(
+            timestamp=1.0,
+            cpu_percent=10.0,
+            memory_rss_bytes=100,
+            memory_vms_bytes=200,
+            io_read_bytes=0,
+            io_write_bytes=0,
+            num_children=0,
+        )
+
+        mock_writer = MagicMock()
+        mock_writer.flush = AsyncMock()
+        agent.resource_writer = mock_writer
+
+        mock_collector = MagicMock()
+        samples_deque = deque([sample])
+        mock_collector.samples = samples_deque
+        agent.resource_collector = mock_collector
+
+        call_count = 0
+
+        async def _controlled_sleep(_delay: float) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                # Exit the loop after first flush by setting collector to None
+                agent.resource_collector = None
+
+        with patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", side_effect=_controlled_sleep):
+            await _resource_flush_loop(agent)
+
+        mock_writer.add_sample.assert_called_once_with(sample)
+        mock_writer.flush.assert_awaited_once()
+
     def test_cascade_constant_used_in_models(self) -> None:
         """_CASCADE_ALL_DELETE_ORPHAN constant replaces duplicated literals."""
         from sova.db.models import _CASCADE_ALL_DELETE_ORPHAN
 
         assert _CASCADE_ALL_DELETE_ORPHAN == "all, delete-orphan"
+
+
+# ---------------------------------------------------------------------------
+# Writer error-path tests
+# ---------------------------------------------------------------------------
+
+
+class TestResourceWriterErrorPaths:
+    def test_buffer_overflow_drops_oldest(self) -> None:
+        """When buffer exceeds MAX_BUFFER_SIZE, oldest samples are dropped."""
+        from sova.monitoring.writer import _MAX_BUFFER_SIZE, ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1, flush_threshold=9999)
+        # Fill buffer to max + extra
+        for i in range(_MAX_BUFFER_SIZE + 5):
+            writer.add_sample(
+                ResourceSample(
+                    timestamp=float(i),
+                    cpu_percent=1.0,
+                    memory_rss_bytes=100,
+                    memory_vms_bytes=200,
+                    io_read_bytes=0,
+                    io_write_bytes=0,
+                    num_children=0,
+                )
+            )
+        assert len(writer._buffer) == _MAX_BUFFER_SIZE
+
+    @pytest.mark.asyncio
+    async def test_flush_failure_requeues_samples(self) -> None:
+        """When DB insert fails, samples are re-added to the buffer for retry."""
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        sample = ResourceSample(
+            timestamp=writer._base_monotonic,
+            cpu_percent=10.0,
+            memory_rss_bytes=100,
+            memory_vms_bytes=200,
+            io_read_bytes=0,
+            io_write_bytes=0,
+            num_children=0,
+        )
+        writer.add_sample(sample)
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+            await writer.flush()
+
+        # Sample should be re-added to buffer
+        assert len(writer._buffer) == 1
+
+    @pytest.mark.asyncio
+    async def test_write_summary_failure_caught(self) -> None:
+        """write_summary catches DB errors gracefully."""
+        from sova.monitoring.writer import ResourceWriter
+
+        writer = ResourceWriter(project_dir=None, run_id=1)
+        summary = ResourceSummary.empty()
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+            await writer.write_summary(summary)  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_returns_zero(self) -> None:
+        """cleanup_old_resources returns 0 on exception."""
+        from sova.monitoring.writer import cleanup_old_resources
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("db down")):
+            result = await cleanup_old_resources(project_dir=None, retention_days=30)
+
+        assert result == 0
