@@ -96,7 +96,7 @@ async def load_context(
 
     # Tier 2: DB-backed memories
     if ctx is not None:
-        formatted_db = await _load_relevant_memories(ctx, category=category)
+        formatted_db = await _load_relevant_memories(ctx, category=category, config=config)
     else:
         db_memories = await search(tier=tier or "project", category=category)
         formatted_db = format_for_prompt(db_memories)
@@ -107,16 +107,27 @@ async def load_context(
     return "\n\n---\n\n".join(sections)
 
 
-async def _load_relevant_memories(ctx: object, category: str | None = None) -> str:
+async def _load_relevant_memories(
+    ctx: object, category: str | None = None, config: object | None = None
+) -> str:
     """Load memories using relevance filtering from an execution context."""
-    from sova.knowledge.retrieval import build_context_query, format_relevant_context, retrieve_relevant
+    from sova.knowledge.retrieval import (
+        DEFAULT_MAX_CONTEXT_TOKENS,
+        build_context_query,
+        format_relevant_context,
+        retrieve_relevant,
+    )
 
     role = getattr(ctx, "role", "")
     task = getattr(ctx, "task", None)
     files_changed = getattr(ctx, "files_changed", [])
 
+    # Read max_context_tokens from config.knowledge if available
+    knowledge_cfg = getattr(config, "knowledge", None)
+    max_tokens = getattr(knowledge_cfg, "max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+
     query = build_context_query(role=role, task=task, files_changed=files_changed)
-    results = await retrieve_relevant(query=query, category=category)
+    results = await retrieve_relevant(query=query, max_context_tokens=max_tokens, category=category)
     return format_relevant_context(results)
 
 

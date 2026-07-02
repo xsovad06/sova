@@ -306,6 +306,14 @@ class SecurityConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_SECURITY_")
 
 
+class KnowledgeConfig(BaseSettings):
+    """Knowledge retrieval configuration."""
+
+    max_context_tokens: int = Field(2000, ge=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_KNOWLEDGE_")
+
+
 class DashboardConfig(BaseSettings):
     """Dashboard UI configuration."""
 
@@ -386,6 +394,7 @@ class ProjectConfig(BaseSettings):
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

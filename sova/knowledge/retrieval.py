@@ -16,7 +16,7 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.retrieval")
 
-DEFAULT_MAX_CONTEXT_TOKENS = 4000
+DEFAULT_MAX_CONTEXT_TOKENS = 2000
 
 
 def estimate_tokens(text: str) -> int:
@@ -92,10 +92,11 @@ async def retrieve_relevant(
     results: list[tuple[Memory, float]] = []
 
     # Steps 1+3: fetch shared and project tiers concurrently
-    shared_memories, project_results = await asyncio.gather(
-        search(tier="shared", category=category),
+    shared_memories, project_result = await asyncio.gather(
+        search(tier="shared", category=category, limit=20),
         _search_project_tier(query=query, category=category),
     )
+    project_results, used_semantic = project_result
 
     # Process shared-tier memories (always included)
     shared_tokens = 0
@@ -111,13 +112,22 @@ async def retrieve_relevant(
             budget=max_context_tokens,
         )
 
-    # Calculate remaining budget for project-tier memories
-    remaining_budget = max(0, max_context_tokens - shared_tokens)
-
     if not project_results:
         return results
 
-    # Step 4: fill remaining budget with highest-scored project memories
+    # When semantic search was not used, include all project memories
+    # (exhaustive fallback -- no relevance ranking to filter by)
+    if not used_semantic:
+        shared_ids = {m.id for m, _ in results}
+        for mem, score in project_results:
+            if mem.id not in shared_ids:
+                results.append((mem, score))
+        return results
+
+    # Calculate remaining budget for project-tier memories
+    remaining_budget = max(0, max_context_tokens - shared_tokens)
+
+    # Fill remaining budget with highest-scored project memories
     shared_ids = {m.id for m, _ in results}
     used_tokens = 0
     for mem, score in project_results:
@@ -136,8 +146,13 @@ async def _search_project_tier(
     *,
     query: str,
     category: str | None,
-) -> list[tuple[Memory, float]]:
-    """Search project-tier memories, with semantic-to-lexical fallback."""
+) -> tuple[list[tuple[Memory, float]], bool]:
+    """Search project-tier memories, with semantic-to-lexical fallback.
+
+    Returns:
+        Tuple of (results, used_semantic). When used_semantic is False,
+        callers should bypass the token budget (exhaustive fallback).
+    """
     stripped = query.strip()
     if is_available() and stripped:
         semantic_results = await semantic_search(
@@ -148,12 +163,12 @@ async def _search_project_tier(
             expand=True,
         )
         if semantic_results:
-            return semantic_results
+            return semantic_results, True
         # Semantic returned empty (no embeddings on stored memories) -- fall through
 
     # Lexical fallback
-    lexical = await search(query=query if stripped else None, tier="project", category=category)
-    return [(m, 0.0) for m in lexical]
+    lexical = await search(query=query if stripped else None, tier="project", category=category, limit=20)
+    return [(m, 0.0) for m in lexical], False
 
 
 def format_relevant_context(results: list[tuple[Memory, float]]) -> str:

@@ -37,6 +37,7 @@ GROUPS: dict[str, str] = {
     "dashboard": "Dashboard",
     "output": "Output Storage",
     "monitoring": "Resource Monitoring",
+    "knowledge": "Knowledge Retrieval",
 }
 
 GROUP_ORDER: list[str] = [
@@ -62,6 +63,7 @@ GROUP_ORDER: list[str] = [
     "dashboard",
     "output",
     "monitoring",
+    "knowledge",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -582,6 +584,14 @@ _REGISTRY: list[SettingMeta] = [
         "Sample interval (s)",
         "Seconds between resource samples (must be > 0)",
         "monitoring",
+        "number",
+    ),
+    # -- Knowledge Retrieval --
+    SettingMeta(
+        "knowledge.max_context_tokens",
+        "Max context tokens",
+        "Token budget for relevance-filtered memory injection into agent prompts",
+        "knowledge",
         "number",
     ),
 ]
