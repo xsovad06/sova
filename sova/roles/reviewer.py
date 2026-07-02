@@ -583,9 +583,12 @@ class ReviewerRole(AgentRole):
     async def _load_addressed_findings(self, ctx: ExecutionContext) -> list[dict]:
         """Load addressed external findings from the developer's handoff.
 
-        Two sources (tried in order):
+        Three sources (tried in order):
         1. File-based handoff for this issue
-        2. Most recent developer TaskRun for this issue (DB fallback)
+        2. Resume run's DB handoff (when spawned with --resume)
+        3. Recent developer TaskRuns for this issue (DB fallback, loops
+           through up to 10 runs to skip address-review cycles that don't
+           populate addressed_findings)
         """
         # Source 1: file handoff
         try:
@@ -595,7 +598,23 @@ class ReviewerRole(AgentRole):
         except Exception:
             log.debug("reviewer.addressed_findings_file_failed", exc_info=True)
 
-        # Source 2: DB fallback -- most recent developer run for this issue
+        # Source 2: resume_run_id DB handoff
+        if ctx.resume_run_id:
+            try:
+                from sova.ipc.handoff import read_handoff as read_db_handoff
+
+                db_handoff = await read_db_handoff(ctx.resume_run_id)
+                if db_handoff and db_handoff.addressed_findings:
+                    log.info(
+                        "reviewer.addressed_findings_from_resume",
+                        run_id=ctx.resume_run_id,
+                        count=len(db_handoff.addressed_findings),
+                    )
+                    return db_handoff.addressed_findings
+            except Exception:
+                log.debug("reviewer.addressed_findings_resume_failed", exc_info=True)
+
+        # Source 3: DB fallback -- loop through recent developer runs
         issue = (ctx.issue_number or "").lstrip("#").strip()
         if not issue:
             return []
@@ -612,15 +631,15 @@ class ReviewerRole(AgentRole):
                         TaskRun.handoff_json.isnot(None),
                     )
                     .order_by(TaskRun.started_at.desc())
-                    .limit(1)
+                    .limit(10)
                 )
                 result = await session.execute(stmt)
-                run_record = result.scalar_one_or_none()
-                if run_record and run_record.handoff_json:
-                    findings = run_record.handoff_json.get("addressed_findings", [])
-                    if findings:
-                        log.info("reviewer.addressed_findings_from_db", run_id=run_record.id, count=len(findings))
-                        return findings
+                for run_record in result.scalars():
+                    if run_record.handoff_json:
+                        findings = run_record.handoff_json.get("addressed_findings", [])
+                        if findings:
+                            log.info("reviewer.addressed_findings_from_db", run_id=run_record.id, count=len(findings))
+                            return findings
         except Exception:
             log.debug("reviewer.addressed_findings_db_failed", exc_info=True)
 

@@ -145,6 +145,44 @@ class TestHandoffFile:
         path = write_handoff_file(tmp_path, h)
         assert path.parent.exists()
 
+    def test_addressed_findings_round_trip(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        findings = [
+            {"source": "sonarcloud", "severity": "MAJOR", "file_path": "a.py", "tool_id": "S1", "message": "Issue"},
+            {"source": "coderabbit", "severity": "HIGH", "file_path": "b.py", "tool_id": "", "message": "Bug"},
+        ]
+        h = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            summary="Done",
+            issue="42",
+            details={"addressed_findings": findings},
+        )
+        write_handoff_file(tmp_path, h)
+
+        restored = read_handoff_file(tmp_path, issue="42")
+        assert restored is not None
+        assert len(restored.details["addressed_findings"]) == 2
+        assert restored.details["addressed_findings"][0]["source"] == "sonarcloud"
+        assert restored.details["addressed_findings"][1]["source"] == "coderabbit"
+
+    def test_addressed_findings_round_trip_empty(self, tmp_path: Path) -> None:
+        from sova.ipc.handoff import DashboardHandoff, read_handoff_file, write_handoff_file
+
+        h = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            summary="Done",
+            issue="43",
+            details={"addressed_findings": []},
+        )
+        write_handoff_file(tmp_path, h)
+
+        restored = read_handoff_file(tmp_path, issue="43")
+        assert restored is not None
+        assert restored.details["addressed_findings"] == []
+
 
 class TestAgentHandoff:
     def test_create_minimal(self) -> None:
