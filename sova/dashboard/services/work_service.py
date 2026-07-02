@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.core.state import STEP_DONE_STATUSES, TASK_RUN_TERMINAL
-from sova.dashboard.services.control_service import (
+from sova.dashboard.services.agent_progress import (
     _ADDRESS_REVIEW_ONLY,
     _RESEARCHER_ONLY,
     ADDRESS_REVIEW_PIPELINE,

@@ -1451,6 +1451,7 @@ class TestStepRegistry:
             "sync",
             "assess",
             "create_worktree",
+            "capture_baseline",
             "develop",
             "simplify",
             "self_review",

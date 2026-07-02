@@ -330,6 +330,15 @@ class OutputConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_OUTPUT_")
 
 
+class TestingConfig(BaseSettings):
+    """Test baseline and regression detection configuration."""
+
+    baseline_enabled: bool = True
+    baseline_timeout: int = Field(300, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_TESTING_")
+
+
 class MonitoringConfig(BaseSettings):
     """Resource monitoring configuration for agent processes."""
 
@@ -393,6 +402,7 @@ class ProjectConfig(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     dashboard: DashboardConfig = Field(default_factory=DashboardConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 

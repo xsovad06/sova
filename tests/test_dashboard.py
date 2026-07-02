@@ -4453,7 +4453,7 @@ class TestWorkServiceDirect:
         result = await get_work_history(session)
         tasks_by_issue = {t["issue_number"]: t for t in result["tasks"]}
         assert tasks_by_issue["50"]["total_steps_possible"] is None
-        assert tasks_by_issue["51"]["total_steps_possible"] == 15
+        assert tasks_by_issue["51"]["total_steps_possible"] == 16
 
     async def test_work_history_endpoint_pagination(self, client: AsyncClient) -> None:
         resp = await client.get("/api/work/history?limit=15&offset=0")
@@ -5831,7 +5831,7 @@ class TestStepProgress:
 
         result = get_step_progress("develop")
         assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 3
+        assert result["step_index"] == 4
 
     def test_address_review_from_step(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -5869,14 +5869,14 @@ class TestStepProgress:
 
         result = get_step_progress("commit", role="developer", pr_number=147)
         assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 6
+        assert result["step_index"] == 7
 
     def test_shared_step_without_pr_number_is_developer(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
 
         result = get_step_progress("commit")
         assert result["pipeline_variant"] == "developer"
-        assert result["step_index"] == 6
+        assert result["step_index"] == 7
 
     def test_workflow_engine_post_create_pr_is_developer(self) -> None:
         """WorkflowEngine TaskRun after CreatePRStep must not be mislabeled."""

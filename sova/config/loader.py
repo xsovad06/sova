@@ -72,6 +72,7 @@ _NESTED_SECTIONS = (
     "egress",
     "security",
     "dashboard",
+    "testing",
     "output",
     "monitoring",
     "knowledge",
