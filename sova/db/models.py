@@ -26,6 +26,7 @@ class Base(DeclarativeBase):
 
 
 _FK_TASK_RUNS_ID = "task_runs.id"
+_CASCADE_ALL_DELETE_ORPHAN = "all, delete-orphan"
 
 
 class TaskRun(Base):
@@ -56,12 +57,12 @@ class TaskRun(Base):
     step_executions: Mapped[list["StepExecution"]] = relationship(back_populates="task_run")
     failure_records: Mapped[list["FailureRecord"]] = relationship(back_populates="task_run")
     cost_records: Mapped[list["CostRecord"]] = relationship(back_populates="task_run")
-    output_lines: Mapped[list["OutputLine"]] = relationship(back_populates="task_run", cascade="all, delete-orphan")
+    output_lines: Mapped[list["OutputLine"]] = relationship(back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN)
     resource_samples: Mapped[list["ResourceSampleRecord"]] = relationship(
-        back_populates="task_run", cascade="all, delete-orphan"
+        back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     resource_summary: Mapped["ResourceSummaryRecord | None"] = relationship(
-        back_populates="task_run", cascade="all, delete-orphan", uselist=False
+        back_populates="task_run", cascade=_CASCADE_ALL_DELETE_ORPHAN, uselist=False
     )
 
     @validates("issue_number")

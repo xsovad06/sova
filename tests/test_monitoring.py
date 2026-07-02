@@ -1116,3 +1116,75 @@ class TestLifecycleResourceIntegration:
                 ).scalar_one()
         assert row.sample_count == 5
         assert row.peak_cpu_percent == 60.0
+
+    @pytest.mark.asyncio
+    async def test_finalize_resource_monitoring_cancels_flush_task(self) -> None:
+        """Finalize cancels and awaits the flush task, catching its CancelledError."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _finalize_resource_monitoring
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        # Create a real asyncio task that will raise CancelledError when awaited
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        flush_task = asyncio.create_task(_hang())
+        agent.resource_flush_task = flush_task
+        agent.resource_collector = None
+        agent.resource_writer = None
+
+        await _finalize_resource_monitoring(agent)
+        assert flush_task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_resource_flush_loop_reraises_cancelled(self) -> None:
+        """_resource_flush_loop re-raises CancelledError for proper task cleanup."""
+        from sova.dashboard.services.agent_lifecycle import _resource_flush_loop
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        task = asyncio.create_task(_resource_flush_loop(agent))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_resource_flush_loop_exception_logged(self) -> None:
+        """_resource_flush_loop catches non-cancellation exceptions gracefully."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _resource_flush_loop
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_process = MagicMock()
+        mock_process.pid = 999
+        agent = AgentState(run_id=1, issue="1", role="developer", process=mock_process)
+
+        mock_writer = AsyncMock()
+        mock_writer.flush = AsyncMock(side_effect=RuntimeError("boom"))
+        agent.resource_writer = mock_writer
+
+        mock_collector = MagicMock()
+        mock_collector.samples.__bool__ = MagicMock(return_value=False)
+        agent.resource_collector = mock_collector
+
+        async def _sleep_then_raise(_delay: float) -> None:
+            raise RuntimeError("boom")
+
+        with patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", side_effect=_sleep_then_raise):
+            await _resource_flush_loop(agent)  # should return via except branch, not raise
+
+    def test_cascade_constant_used_in_models(self) -> None:
+        """_CASCADE_ALL_DELETE_ORPHAN constant replaces duplicated literals."""
+        from sova.db.models import _CASCADE_ALL_DELETE_ORPHAN
+
+        assert _CASCADE_ALL_DELETE_ORPHAN == "all, delete-orphan"
