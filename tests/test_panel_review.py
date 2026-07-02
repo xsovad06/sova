@@ -1,4 +1,4 @@
-"""Tests for sova.roles.panel_review -- parallel dimension review panel."""
+"""Tests for sova.roles.panel_review -- sequential dimension review panel."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from sova.db.session import close_db, init_db
 from sova.roles.panel_review import (
     _DIMENSION_PROMPTS,
     _build_dimension_prompt,
-    _collect_dimension_coros,
     deduplicate_findings,
     run_panel_review,
 )
@@ -101,23 +100,34 @@ class TestDeduplicateFindings:
         result = deduplicate_findings(findings)
         assert len(result) == 2
 
-    def test_already_skipped_dimension_skipped_again(self) -> None:
-        """Cover the 'dim in skipped_dimensions' continue branch in _collect_dimension_coros."""
+    async def test_budget_skipped_dimension_stays_skipped_across_chunks(self) -> None:
+        """A dimension skipped for budget in chunk 1 stays skipped in chunk 2."""
+        from sova.llm.models import LLMResult
+
         panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness", "security"])
-        skipped: set[str] = {"security"}  # pre-populate as if already skipped
-        coros, names = _collect_dimension_coros(
-            dimensions=["correctness", "security"],
-            skipped_dimensions=skipped,
-            budget_remaining=Decimal("1.0"),
-            panel_config=panel_config,
-            task=_task(),
-            chunk="diff",
-            files=["a.py"],
-            chunk_spec=None,
-            cwd=None,
-        )
-        assert names == ["correctness"]
-        assert len(coros) == 1
+        findings = [{"file": "a.py", "line": 5, "severity": 5, "category": "correctness", "description": "Issue"}]
+        llm_result = LLMResult(text=_llm_response(findings), model="sonnet", cost_usd=Decimal("0.01"))
+
+        invoked_types: list[str] = []
+
+        async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
+            invoked_types.append(task_type or "")
+            return llm_result
+
+        # Large diff that will be chunked (> 100KB), budget only enough for correctness
+        big_diff = "x" * 150_000
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
+            await run_panel_review(
+                task=_task(),
+                diff=big_diff,
+                files=["a.py"],
+                panel_config=panel_config,
+                budget_remaining=Decimal("0.015"),
+            )
+
+        # Security should never be invoked (budget too low after correctness)
+        assert all("security" not in t for t in invoked_types)
 
     def test_custom_proximity_window(self) -> None:
         findings = [
@@ -176,7 +186,7 @@ class TestBuildDimensionPrompt:
 
 
 class TestRunPanelReview:
-    async def test_parallel_dimensions_aggregate_findings(self) -> None:
+    async def test_sequential_dimensions_aggregate_findings(self) -> None:
         from sova.llm.models import LLMResult
 
         panel_config = ReviewPanelConfig(
@@ -305,21 +315,29 @@ class TestRunPanelReview:
         assert len(result.findings) == 1
         assert result.findings[0].severity == 8
 
-    async def test_critical_finding_logged(self) -> None:
-        """Cover the severity >= 9 log path."""
+    async def test_critical_finding_exits_early(self) -> None:
+        """Severity >= 9 triggers early exit, skipping remaining dimensions."""
         from sova.llm.models import LLMResult
 
-        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness"])
-        findings = [{"file": "a.py", "line": 1, "severity": 10, "category": "correctness", "description": "Critical"}]
-        llm_result = LLMResult(text=_llm_response(findings), model="sonnet", cost_usd=Decimal("0.01"))
+        panel_config = ReviewPanelConfig(enabled=True, dimensions=["correctness", "security", "design"])
+        critical = [{"file": "a.py", "line": 1, "severity": 10, "category": "correctness", "description": "Critical"}]
 
-        with patch("sova.roles.panel_review.invoke", new_callable=AsyncMock, return_value=llm_result):
+        call_count = 0
+
+        async def mock_invoke(prompt, *, model=None, task_type=None, cwd=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return LLMResult(text=_llm_response(critical), model="sonnet", cost_usd=Decimal("0.01"))
+
+        with patch("sova.roles.panel_review.invoke", side_effect=mock_invoke):
             result = await run_panel_review(
                 task=_task(), diff="small diff", files=["a.py"], panel_config=panel_config
             )
 
-        assert len(result.findings) == 1
+        assert len(result.findings) >= 1
         assert result.findings[0].severity == 10
+        # Should stop after first dimension due to critical finding
+        assert call_count == 1
 
     async def test_skipped_dimension_not_retried_in_later_chunks(self) -> None:
         """Cover the 'dim in skipped_dimensions' continue path across chunks."""
@@ -479,3 +497,20 @@ class TestReviewPanelConfig:
     def test_custom_dimensions(self) -> None:
         config = ReviewPanelConfig(dimensions=["security", "correctness"])
         assert config.dimensions == ["security", "correctness"]
+
+    def test_unknown_dimension_warns(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ReviewPanelConfig(dimensions=["correctness", "typo_dim"])
+            assert len(w) == 1
+            assert "typo_dim" in str(w[0].message)
+
+    def test_all_known_dimensions_no_warning(self) -> None:
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ReviewPanelConfig(dimensions=["correctness", "security"])
+            assert len(w) == 0
