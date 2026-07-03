@@ -114,6 +114,7 @@ async def create_worktree(
     if copy_files:
         _copy_worktree_files(project_dir, worktree_path, copy_files)
 
+    _copy_claude_artifacts(project_dir, worktree_path)
     _ensure_compose_project_name(project_dir, worktree_path)
 
     return WorktreeInfo(
@@ -344,6 +345,49 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
         separator = "\n" if existing and not existing.endswith("\n") else ""
         env_file.write_text(f"{existing}{separator}COMPOSE_PROJECT_NAME={project_name}\n")
         log.info("worktree.compose_project_name", project_name=project_name)
+
+
+_CLAUDE_DIRS = ("commands", "rules", "agent-memory")
+_CLAUDE_FILES = ("CLAUDE.md", "settings.local.json")
+
+
+def _copy_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
+    """Copy .claude/ artifacts that are gitignored but needed by agents.
+
+    Projects that gitignore ``.claude/`` (the standard pattern for SOVA-installed
+    projects) end up with worktrees missing slash commands, rules, and config.
+    This copies the essential subset -- never the database, worktrees dir, or
+    ephemeral agent state.
+    """
+    root_claude_md = project_dir / "CLAUDE.md"
+    if root_claude_md.is_file():
+        try:
+            shutil.copy2(root_claude_md, worktree_path / "CLAUDE.md")
+        except OSError:
+            log.warning("worktree.copy_claude_md.failed", exc_info=True)
+
+    claude_src = project_dir / ".claude"
+    if not claude_src.is_dir():
+        return
+
+    claude_dst = worktree_path / ".claude"
+    claude_dst.mkdir(exist_ok=True)
+
+    for dirname in _CLAUDE_DIRS:
+        src = claude_src / dirname
+        if src.is_dir():
+            try:
+                shutil.copytree(src, claude_dst / dirname, dirs_exist_ok=True)
+            except OSError:
+                log.warning("worktree.copy_claude_dir.failed", dir=dirname, exc_info=True)
+
+    for filename in _CLAUDE_FILES:
+        src = claude_src / filename
+        if src.is_file():
+            try:
+                shutil.copy2(src, claude_dst / filename)
+            except OSError:
+                log.warning("worktree.copy_claude_file.failed", file=filename, exc_info=True)
 
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
