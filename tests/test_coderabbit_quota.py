@@ -43,11 +43,11 @@ class TestCodeRabbitQuotaConfig:
 
     def test_pro_plan_default(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="pro")
-        assert cfg.reviews_per_hour == 5
+        assert cfg.reviews_per_hour == 0  # unlimited -- adaptive rate limiting
 
     def test_pro_plus_plan_default(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="pro_plus")
-        assert cfg.reviews_per_hour == 10
+        assert cfg.reviews_per_hour == 0  # unlimited -- adaptive rate limiting
 
     def test_explicit_override(self) -> None:
         cfg = CodeRabbitQuotaConfig(plan="free", reviews_per_hour=8)
@@ -435,7 +435,7 @@ class TestConfigLoader:
         cfg = load_config(p)
         assert cfg.coderabbit_quota.enabled is True
         assert cfg.coderabbit_quota.plan == "pro"
-        assert cfg.coderabbit_quota.reviews_per_hour == 5
+        assert cfg.coderabbit_quota.reviews_per_hour == 0  # pro = unlimited
 
 
 # ---------------------------------------------------------------------------

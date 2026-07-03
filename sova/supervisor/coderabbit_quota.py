@@ -105,7 +105,9 @@ async def sync_from_github(
         return 0
 
     try:
-        reviews = await _fetch_coderabbit_reviews_from_github(repo, github_user=github_user)
+        reviews = await _fetch_coderabbit_reviews_from_github(
+            repo, github_user=github_user, window_minutes=config.window_minutes
+        )
     except Exception:
         log.warning("sync_from_github.api_failed", repo=repo, exc_info=True)
         return 0
@@ -205,16 +207,21 @@ async def _fetch_coderabbit_reviews_from_github(
     repo: str,
     *,
     github_user: str = "",
+    window_minutes: int = 60,
 ) -> list[dict]:
     """Fetch recent PRs and their CodeRabbit reviews from GitHub API.
 
-    Returns a list of dicts with keys: pr_number, review_id, submitted_at.
+    Only fetches PRs updated within ``window_minutes`` (default 60) to
+    minimise API calls.  Returns dicts with: pr_number, review_id, submitted_at.
     """
     from sova.utils.gh import resolve_gh_env
 
     env = await resolve_gh_env(github_user) if github_user else None
 
-    # Fetch recent PRs (last 30)
+    # Only fetch PRs updated within the quota window -- reduces API calls
+    # from up to 30+20 to typically <10 for low-traffic repos.
+    since = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     pr_result = await run(
         "gh",
         "api",
@@ -231,6 +238,8 @@ async def _fetch_coderabbit_reviews_from_github(
         "sort=updated",
         "-f",
         "direction=desc",
+        "-f",
+        f"since={since}",
         env=env,
     )
     if not pr_result.success:
@@ -253,7 +262,7 @@ async def _fetch_coderabbit_reviews_from_github(
             return await _fetch_reviews_for_pr(repo, pr_num, env=env)
 
     results = await asyncio.gather(
-        *[_fetch_limited(pr_num) for pr_num in pr_numbers[:20]],
+        *[_fetch_limited(pr_num) for pr_num in pr_numbers],
         return_exceptions=True,
     )
     reviews: list[dict] = []
