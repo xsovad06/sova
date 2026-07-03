@@ -365,7 +365,7 @@ class CodeRabbitQuotaConfig(BaseSettings):
         Explicit 0 means unlimited (no quota enforcement).
         """
         if self.reviews_per_hour is None:
-            _plan_defaults = {"free": 4, "pro": 5, "pro_plus": 10}
+            _plan_defaults = {"free": 4, "pro": 0, "pro_plus": 0}
             self.reviews_per_hour = _plan_defaults.get(self.plan, 4)
         return self
 

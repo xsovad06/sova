@@ -627,7 +627,8 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "coderabbit_quota.enabled",
         "Enabled",
-        "Track CodeRabbit review rate limits for PR throttling",
+        "Track CodeRabbit review rate limits for PR throttling."
+        " Separate from external_reviews.coderabbit (review-tool integration).",
         "coderabbit_quota",
         "boolean",
     ),
