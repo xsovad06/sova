@@ -34,6 +34,7 @@ from sova.git.pr import _parse_run_id
 from sova.git.worktree import (
     WorktreeInfo,
     _check_worktree_active_agent,
+    _copy_claude_artifacts,
     _copy_worktree_files,
     _ensure_compose_project_name,
     cleanup_worktree,
@@ -714,19 +715,20 @@ class TestCreateWorktree:
             with patch("sova.git.worktree.Path.mkdir"):
                 with patch("sova.git.worktree.Path.exists", return_value=False):
                     with patch("sova.git.worktree._copy_worktree_files"):
-                        with patch("sova.git.worktree._ensure_compose_project_name"):
-                            info = await create_worktree(
-                                issue_id="42",
-                                branch="feat/login",
-                                base_branch="main",
-                                project_dir=Path("/repo"),
-                            )
+                        with patch("sova.git.worktree._copy_claude_artifacts"):
+                            with patch("sova.git.worktree._ensure_compose_project_name"):
+                                info = await create_worktree(
+                                    issue_id="42",
+                                    branch="feat/login",
+                                    base_branch="main",
+                                    project_dir=Path("/repo"),
+                                )
 
-                            assert isinstance(info, WorktreeInfo)
-                            assert info.issue_id == "42"
-                            assert info.branch == "feat/login"
-                            assert ".claude/worktrees" in str(info.path)
-                            mock_run.assert_called()
+                                assert isinstance(info, WorktreeInfo)
+                                assert info.issue_id == "42"
+                                assert info.branch == "feat/login"
+                                assert ".claude/worktrees" in str(info.path)
+                                mock_run.assert_called()
 
     async def test_worktree_path_includes_issue_id(self) -> None:
         with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
@@ -734,15 +736,16 @@ class TestCreateWorktree:
             with patch("sova.git.worktree.Path.mkdir"):
                 with patch("sova.git.worktree.Path.exists", return_value=False):
                     with patch("sova.git.worktree._copy_worktree_files"):
-                        with patch("sova.git.worktree._ensure_compose_project_name"):
-                            info = await create_worktree(
-                                issue_id="42",
-                                branch="feat/login",
-                                base_branch="main",
-                                project_dir=Path("/repo"),
-                            )
+                        with patch("sova.git.worktree._copy_claude_artifacts"):
+                            with patch("sova.git.worktree._ensure_compose_project_name"):
+                                info = await create_worktree(
+                                    issue_id="42",
+                                    branch="feat/login",
+                                    base_branch="main",
+                                    project_dir=Path("/repo"),
+                                )
 
-                            assert "42" in str(info.path)
+                                assert "42" in str(info.path)
 
     async def test_reuses_existing_branch(self) -> None:
         with (
@@ -755,18 +758,19 @@ class TestCreateWorktree:
             with patch("sova.git.worktree.Path.mkdir"):
                 with patch("sova.git.worktree.Path.exists", return_value=False):
                     with patch("sova.git.worktree._copy_worktree_files"):
-                        with patch("sova.git.worktree._ensure_compose_project_name"):
-                            info = await create_worktree(
-                                issue_id="42",
-                                branch="feat/login",
-                                base_branch="main",
-                                project_dir=Path("/repo"),
-                            )
+                        with patch("sova.git.worktree._copy_claude_artifacts"):
+                            with patch("sova.git.worktree._ensure_compose_project_name"):
+                                info = await create_worktree(
+                                    issue_id="42",
+                                    branch="feat/login",
+                                    base_branch="main",
+                                    project_dir=Path("/repo"),
+                                )
 
-                            assert isinstance(info, WorktreeInfo)
-                            assert info.branch == "feat/login"
-                            # run_checked should have been called for the fallback (without -b)
-                            mock_run_checked.assert_called_once()
+                                assert isinstance(info, WorktreeInfo)
+                                assert info.branch == "feat/login"
+                                # run_checked should have been called for the fallback (without -b)
+                                mock_run_checked.assert_called_once()
 
 
 class TestCreateWorktreePathValidation:
@@ -823,6 +827,76 @@ class TestCopyWorktreeFilesValidation:
         _copy_worktree_files(project, worktree, ["safe.txt"])
 
         assert (worktree / "safe.txt").exists()
+
+
+class TestCopyClaudeArtifacts:
+    def test_copies_commands_and_rules(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        claude = project / ".claude"
+        (claude / "commands").mkdir(parents=True)
+        (claude / "commands" / "develop.md").write_text("# dev")
+        (claude / "rules").mkdir()
+        (claude / "rules" / "arch.md").write_text("# arch")
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "commands" / "develop.md").read_text() == "# dev"
+        assert (worktree / ".claude" / "rules" / "arch.md").read_text() == "# arch"
+
+    def test_copies_claude_files(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        claude = project / ".claude"
+        claude.mkdir(parents=True)
+        (claude / "CLAUDE.md").write_text("project instructions")
+        (claude / "settings.local.json").write_text("{}")
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "CLAUDE.md").read_text() == "project instructions"
+        assert (worktree / ".claude" / "settings.local.json").read_text() == "{}"
+
+    def test_copies_root_claude_md(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        (project / "CLAUDE.md").write_text("root instructions")
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert (worktree / "CLAUDE.md").read_text() == "root instructions"
+
+    def test_noop_when_no_claude_dir(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert not (worktree / ".claude").exists()
+
+    def test_skips_missing_subdirs(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        claude = project / ".claude"
+        (claude / "commands").mkdir(parents=True)
+        (claude / "commands" / "test.md").write_text("# test")
+
+        _copy_claude_artifacts(project, worktree)
+
+        assert (worktree / ".claude" / "commands" / "test.md").exists()
+        assert not (worktree / ".claude" / "rules").exists()
+        assert not (worktree / ".claude" / "agent-memory").exists()
 
 
 class TestCleanupWorktree:
