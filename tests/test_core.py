@@ -1314,50 +1314,55 @@ class TestCreatePRStep:
         adapter.transition_state.assert_awaited_once_with("42", TaskState.IN_REVIEW)
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_whitespace_only_body_omits_context(self, mock_create_pr, mock_run, _find) -> None:
-        """Whitespace-only issue body should not produce a Context section."""
+    async def test_execute_adopts_pr_from_already_exists_error(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
-
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
-        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
-
-        adapter = _mock_adapter()
-        ctx = _make_ctx(
-            adapter=adapter,
-            task=Task(id="42", title="Add widget", body="   "),
-            branch_name="feat/issue-42",
-        )
-        step = CreatePRStep()
-        result = await step.execute(ctx)
-
-        assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "## Context" not in body_arg
-
-    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
-    @patch("sova.core.steps.create_pr.run")
-    @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_none_body_omits_context(self, mock_create_pr, mock_run, _find) -> None:
-        """None issue body should not produce a Context section."""
-        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.side_effect = RuntimeError(
+            'a pull request for branch "feat/issue-48809" into branch "master" '
+            "already exists: https://github.com/org/repo/pull/3148"
+        )
 
         adapter = _mock_adapter()
-        ctx = _make_ctx(
-            adapter=adapter,
-            task=Task(id="42", title="Add widget", body=None),
-            branch_name="feat/issue-42",
-        )
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-48809")
         step = CreatePRStep()
         result = await step.execute(ctx)
 
         assert result.success
-        body_arg = mock_create_pr.call_args.kwargs["body"]
-        assert "## Context" not in body_arg
+        assert "Adopted existing PR #3148" in result.summary
+        assert ctx.pr_number == 3148
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_execute_fails_on_non_duplicate_runtime_error(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.side_effect = RuntimeError("permission denied")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert not result.success
+        assert "permission denied" in result.error
 
 
 class TestHandoffToReviewerStep:
