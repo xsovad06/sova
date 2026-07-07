@@ -278,6 +278,71 @@ class TestDependencyGraph:
         graph = DependencyGraph(tasks)
         assert graph.get_dependencies(5) == {10}
 
+    def test_parallel_groups_with_cycle(self) -> None:
+        # Cycle between 1 and 2; node 3 depends on 1
+        tasks = [
+            _task(1, body="## Dependencies\n- #2\n"),
+            _task(2, body="## Dependencies\n- #1\n"),
+            _task(3),
+        ]
+        graph = DependencyGraph(tasks)
+        groups = graph.get_parallel_groups()
+        # Only node 3 (no deps) should appear; cycle nodes are skipped
+        assert len(groups) == 1
+        assert groups[0].task_ids == [3]
+
+    def test_build_in_degree(self) -> None:
+        tasks = [
+            _task(1),
+            _task(2, body="## Dependencies\n- #1\n"),
+        ]
+        graph = DependencyGraph(tasks)
+        in_deg = graph._build_in_degree({1, 2})
+        assert in_deg[1] == 0
+        assert in_deg[2] == 1
+
+    def test_collect_transitive_deps(self) -> None:
+        tasks = [
+            _task(1),
+            _task(2, body="## Dependencies\n- #1\n"),
+            _task(3, body="## Dependencies\n- #2\n"),
+            _task(4),  # unrelated
+        ]
+        graph = DependencyGraph(tasks)
+        visited = graph._collect_transitive_deps(3)
+        assert visited == {1, 2, 3}
+
+    def test_topo_sort(self) -> None:
+        tasks = [
+            _task(1),
+            _task(2, body="## Dependencies\n- #1\n"),
+        ]
+        graph = DependencyGraph(tasks)
+        node_ids = {1, 2}
+        in_deg = graph._build_in_degree(node_ids)
+        order = graph._topo_sort(node_ids, in_deg)
+        assert order == [1, 2]
+
+    def test_get_ready_tasks_partial_deps_done(self) -> None:
+        # Task 3 depends on 1 (done) and 2 (not done) -- not ready
+        tasks = [
+            _task(1, state=TaskState.DONE),
+            _task(2, state=TaskState.BACKLOG),
+            _task(3, body="## Dependencies\n- #1\n- #2\n", state=TaskState.BACKLOG),
+        ]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == [2]
+
+    def test_has_task(self) -> None:
+        graph = DependencyGraph([_task(42)])
+        assert graph.has_task(42) is True
+        assert graph.has_task(99) is False
+
+    def test_get_task_none(self) -> None:
+        graph = DependencyGraph([_task(1)])
+        assert graph.get_task(1) is not None
+        assert graph.get_task(99) is None
+
 
 # ---------------------------------------------------------------------------
 # build_dependency_graph (async)
@@ -417,3 +482,30 @@ class TestDependencyAPI:
         with p1, p2, p3:
             resp = await client.get("/api/dependencies/chain/999")
         assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_graph_endpoint_error(self, client: AsyncClient) -> None:
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_ready_endpoint_error(self, client: AsyncClient) -> None:
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = await client.get("/api/dependencies/ready")
+        assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_chain_endpoint_error(self, client: AsyncClient) -> None:
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=RuntimeError("boom"),
+        ):
+            resp = await client.get("/api/dependencies/chain/1")
+        assert resp.status_code == 500
