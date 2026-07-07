@@ -25,7 +25,7 @@ async def _build_graph(milestone: str = ""):
     return await build_dependency_graph(adapter, milestone=milestone)
 
 
-@router.get("/graph")
+@router.get("/graph", responses={500: {"description": "Failed to build dependency graph"}})
 async def get_graph(milestone: str = ""):
     """Build and return the full dependency graph.
 
@@ -40,7 +40,7 @@ async def get_graph(milestone: str = ""):
         raise HTTPException(status_code=500, detail="Failed to build dependency graph")
 
 
-@router.get("/ready")
+@router.get("/ready", responses={500: {"description": "Failed to get ready tasks"}})
 async def get_ready(milestone: str = ""):
     """Return issues whose dependencies are all satisfied (ready to work on)."""
     try:
@@ -65,7 +65,13 @@ async def get_ready(milestone: str = ""):
     return {"ready": ready_tasks}
 
 
-@router.get("/chain/{issue_number}")
+@router.get(
+    "/chain/{issue_number}",
+    responses={
+        404: {"description": "Issue not found in graph"},
+        500: {"description": "Failed to get chain"},
+    },
+)
 async def get_chain(issue_number: int, milestone: str = ""):
     """Return the transitive dependency chain for a specific issue."""
     try:
