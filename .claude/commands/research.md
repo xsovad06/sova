@@ -117,7 +117,7 @@ Similar work was done in {ticket/PR reference if found}.
 {UI implications, or omit this section if none.}
 ```
 
-Write the updated body back to the tracker (use file-based input for multi-line content):
+Write the updated body back to the tracker. You MUST append the research to the issue description/body, NOT as a comment. Use file-based input for reliability with long content:
 
 **GitHub**:
 ```bash
@@ -127,8 +127,11 @@ gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
 
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
-jira issue edit $ARGUMENTS -b "<original body + research section>" --no-input
+echo "<original body + research section>" > /tmp/issue_body.md
+jira issue edit $ARGUMENTS --body "$(cat /tmp/issue_body.md)" --no-input
 ```
+
+After writing, verify the research was saved to the description (not as a comment). If verification fails, retry the body edit.
 
 ### Step 6: Report
 
