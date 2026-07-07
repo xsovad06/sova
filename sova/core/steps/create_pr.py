@@ -73,6 +73,9 @@ class CreatePRStep(BaseStep):
             await self._post_create_side_effects(ctx, pr_info.number)
             return StepResult(success=True, summary=f"Created PR #{pr_info.number}")
         except RuntimeError as exc:
+            adopted = self._try_adopt_from_error(ctx, str(exc))
+            if adopted:
+                return adopted
             return StepResult(success=False, summary="Failed to create PR", error=str(exc))
 
     async def _try_adopt_existing_pr(self, ctx: ExecutionContext) -> StepResult | None:
@@ -93,6 +96,21 @@ class CreatePRStep(BaseStep):
         except Exception:
             log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
+
+    @staticmethod
+    def _try_adopt_from_error(ctx: ExecutionContext, error_msg: str) -> StepResult | None:
+        """Parse 'already exists' error from gh CLI and adopt the existing PR."""
+        if "already exists" not in error_msg:
+            return None
+        match = re.search(r"/pull/(\d+)", error_msg)
+        if not match:
+            return None
+        pr_number = int(match.group(1))
+        log.info("step.create_pr.adopted_from_error", pr=pr_number)
+        ctx.pr_number = pr_number
+        url_match = re.search(r"(https://github\.com/\S+/pull/\d+)", error_msg)
+        ctx.pr_url = url_match.group(1) if url_match else ""
+        return StepResult(success=True, summary=f"Adopted existing PR #{pr_number}")
 
     async def _post_create_side_effects(self, ctx: ExecutionContext, pr_number: int) -> None:
         if ctx.config.github_user:
