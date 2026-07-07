@@ -96,25 +96,8 @@ class DependencyGraph:
             missing |= deps - all_ids
 
         # Cycle detection via Kahn's algorithm (only on known nodes)
-        in_degree: dict[int, int] = {tid: 0 for tid in all_ids}
-        for tid in all_ids:
-            for dep in self._deps.get(tid, set()):
-                if dep in all_ids:
-                    in_degree[tid] += 1  # tid depends on dep -> incoming edge to tid
-
-        queue: deque[int] = deque(tid for tid, deg in in_degree.items() if deg == 0)
-        visited: list[int] = []
-
-        while queue:
-            nid = queue.popleft()
-            visited.append(nid)
-            for dependent in self._rdeps.get(nid, set()):
-                if dependent in all_ids:
-                    in_degree[dependent] -= 1
-                    if in_degree[dependent] == 0:
-                        queue.append(dependent)
-
-        cycle_members = sorted(all_ids - set(visited))
+        in_degree = self._build_in_degree(all_ids)
+        cycle_members = sorted(all_ids - set(self._topo_sort(all_ids, in_degree)))
 
         return ValidationResult(
             valid=len(cycle_members) == 0 and len(missing) == 0,
@@ -159,7 +142,63 @@ class DependencyGraph:
         Returns all transitive dependencies ordered so that a dependency
         always appears before its dependents.  The issue itself is last.
         """
-        # BFS to collect all transitive deps
+        visited = self._collect_transitive_deps(issue)
+        sub_in_degree = self._build_in_degree(visited)
+        return self._topo_sort(visited, sub_in_degree)
+
+    def get_parallel_groups(self) -> list[ParallelGroup]:
+        """Group tasks into tiers that can execute in parallel.
+
+        Tier 0 has no dependencies, tier 1 depends only on tier 0, etc.
+        """
+        all_ids = set(self._tasks.keys())
+        in_degree = self._build_in_degree(all_ids)
+
+        remaining = set(all_ids)
+        groups: list[ParallelGroup] = []
+        tier = 0
+
+        while remaining:
+            tier_nodes = sorted(tid for tid in remaining if in_degree[tid] == 0)
+            if not tier_nodes:
+                break
+            groups.append(ParallelGroup(tier=tier, task_ids=tier_nodes))
+            remaining -= set(tier_nodes)
+            for nid in tier_nodes:
+                for dependent in self._rdeps.get(nid, set()):
+                    if dependent in remaining:
+                        in_degree[dependent] -= 1
+            tier += 1
+
+        return groups
+
+    # -- Internal helpers ------------------------------------------------------
+
+    def _build_in_degree(self, node_ids: set[int]) -> dict[int, int]:
+        """Build in-degree map for a subset of nodes."""
+        in_degree = dict.fromkeys(node_ids, 0)
+        for tid in node_ids:
+            for dep in self._deps.get(tid, set()):
+                if dep in node_ids:
+                    in_degree[tid] += 1
+        return in_degree
+
+    def _topo_sort(self, node_ids: set[int], in_degree: dict[int, int]) -> list[int]:
+        """Kahn's algorithm topological sort over a node subset."""
+        queue: deque[int] = deque(sorted(nid for nid, deg in in_degree.items() if deg == 0))
+        result: list[int] = []
+        while queue:
+            nid = queue.popleft()
+            result.append(nid)
+            for dependent in self._rdeps.get(nid, set()):
+                if dependent in node_ids:
+                    in_degree[dependent] -= 1
+                    if in_degree[dependent] == 0:
+                        queue.append(dependent)
+        return result
+
+    def _collect_transitive_deps(self, issue: int) -> set[int]:
+        """BFS to collect all transitive dependencies including the issue itself."""
         visited: set[int] = set()
         to_visit: deque[int] = deque([issue])
         while to_visit:
@@ -170,61 +209,7 @@ class DependencyGraph:
             for dep in self._deps.get(nid, set()):
                 if dep in self._tasks:
                     to_visit.append(dep)
-
-        # Topological sort of the subgraph
-        sub_in_degree: dict[int, int] = {nid: 0 for nid in visited}
-        for nid in visited:
-            for dep in self._deps.get(nid, set()):
-                if dep in visited:
-                    sub_in_degree[nid] += 1
-
-        queue: deque[int] = deque(sorted(nid for nid, deg in sub_in_degree.items() if deg == 0))
-        result: list[int] = []
-        while queue:
-            nid = queue.popleft()
-            result.append(nid)
-            for dependent in self._rdeps.get(nid, set()):
-                if dependent in visited:
-                    sub_in_degree[dependent] -= 1
-                    if sub_in_degree[dependent] == 0:
-                        queue.append(dependent)
-
-        return result
-
-    def get_parallel_groups(self) -> list[ParallelGroup]:
-        """Group tasks into tiers that can execute in parallel.
-
-        Tier 0 has no dependencies, tier 1 depends only on tier 0, etc.
-        """
-        all_ids = set(self._tasks.keys())
-
-        # Build in-degree considering only known nodes
-        in_degree: dict[int, int] = {tid: 0 for tid in all_ids}
-        for tid in all_ids:
-            for dep in self._deps.get(tid, set()):
-                if dep in all_ids:
-                    in_degree[tid] += 1
-
-        remaining = set(all_ids)
-        groups: list[ParallelGroup] = []
-        tier = 0
-
-        while remaining:
-            # Nodes with zero in-degree in remaining set
-            tier_nodes = sorted(tid for tid in remaining if in_degree[tid] == 0)
-            if not tier_nodes:
-                # Remaining nodes are in a cycle -- stop
-                break
-            groups.append(ParallelGroup(tier=tier, task_ids=tier_nodes))
-            remaining -= set(tier_nodes)
-            # Reduce in-degree for dependents
-            for nid in tier_nodes:
-                for dependent in self._rdeps.get(nid, set()):
-                    if dependent in remaining:
-                        in_degree[dependent] -= 1
-            tier += 1
-
-        return groups
+        return visited
 
     def to_dict(self) -> dict:
         """Serialize the graph for API responses."""
