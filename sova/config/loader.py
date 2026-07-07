@@ -99,10 +99,10 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
         if section in data:
             result[section] = data[section]
 
-    # Root-level keys that don't belong to a section
-    for key in ("github_repo", "github_user", "base_branch", "test_cmd", "lint_cmd", "format_cmd", "check_cmd"):
-        if key in data and key not in result:
-            result[key] = data[key]
+    # Root-level keys that don't belong to a [section] map to ProjectConfig fields
+    for key, value in data.items():
+        if key not in result and key not in _NESTED_SECTIONS and key != "project":
+            result[key] = value
 
     return result
 
