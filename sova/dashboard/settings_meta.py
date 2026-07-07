@@ -229,6 +229,13 @@ _REGISTRY: list[SettingMeta] = [
         "task_source",
         "number",
     ),
+    SettingMeta(
+        "task_source.jira_api_token",
+        "JIRA API token",
+        "API token for JIRA authentication (Atlassian account settings)",
+        "task_source",
+        "secret",
+    ),
     SettingMeta("task_source.jira_base_url", "JIRA base URL", "Base URL for JIRA API calls", "task_source"),
     SettingMeta("task_source.jira_email", "JIRA email", "Email for JIRA authentication", "task_source"),
     SettingMeta("task_source.jira_project_key", "JIRA project key", "Jira project key (e.g. RHCLOUD)", "task_source"),
@@ -478,6 +485,7 @@ _REGISTRY: list[SettingMeta] = [
         "Slack webhook URL",
         "Incoming webhook URL for Slack notifications",
         "notification",
+        "secret",
     ),
     # -- Server --
     SettingMeta("server.host", "Host", "IP address or hostname to bind the dashboard server to", "server"),

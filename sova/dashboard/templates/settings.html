@@ -44,10 +44,30 @@ function formatValue(val, type, key) {
     }
     return '<span class="text-gray-300 text-xs">' + escapeHtml(String(val)) + '</span>';
   }
+  if (type === 'secret') {
+    var masked = '•'.repeat(Math.min(String(val).length, 20));
+    var uid = 'secret-' + key.replace(/\./g, '-');
+    return '<span id="' + uid + '-masked" class="text-gray-300 text-xs font-mono">' + masked + '</span>' +
+      '<span id="' + uid + '-plain" class="text-gray-300 text-xs font-mono" style="display:none">' + escapeHtml(String(val)) + '</span>' +
+      '<button onclick="event.stopPropagation(); toggleSecret(\'' + uid + '\')" ' +
+        'class="text-xs text-gray-600 hover:text-gray-300 ml-2">' +
+        '<span id="' + uid + '-toggle">show</span></button>';
+  }
   if (type === 'number') {
     return '<span class="text-gray-300 text-xs font-mono">' + escapeHtml(String(val)) + '</span>';
   }
   return '<span class="text-gray-300 text-xs">' + escapeHtml(String(val)) + '</span>';
+}
+
+function toggleSecret(uid) {
+  var masked = document.getElementById(uid + '-masked');
+  var plain = document.getElementById(uid + '-plain');
+  var toggle = document.getElementById(uid + '-toggle');
+  if (!masked || !plain || !toggle) return;
+  var showing = plain.style.display !== 'none';
+  masked.style.display = showing ? '' : 'none';
+  plain.style.display = showing ? 'none' : '';
+  toggle.textContent = showing ? 'show' : 'hide';
 }
 
 function renderSettingRow(s) {
@@ -75,7 +95,7 @@ function renderSettingRow(s) {
     '</td>' +
     '<td class="px-4 py-3 align-top text-right">' +
       '<div class="flex items-center gap-2 justify-end"' + clickAttr + '>' +
-        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
+        '<span class="config-val" data-key="' + escapeHtml(s.key) + '" data-type="' + escapeHtml(s.value_type) + '" data-raw="' + escapeHtml(JSON.stringify(s.value)) + '">' + valHtml + '</span>' +
         editBtn +
       '</div>' +
     '</td>' +
@@ -169,9 +189,19 @@ async function loadConfig() {
 
     container.innerHTML = html;
 
-    // Restore previously expanded groups, or auto-expand first on initial load
+    // Restore previously expanded groups without animation, or auto-expand first on initial load
     var toExpand = expanded.length > 0 ? expanded : (groups.length > 0 ? [groups[0].id] : []);
-    toExpand.forEach(function(id) { toggleGroup(id); });
+    toExpand.forEach(function(id) {
+      var body = document.getElementById('group-body-' + id);
+      if (body) {
+        body.style.transition = 'none';
+        body.style.maxHeight = body.scrollHeight + 'px';
+        body.offsetHeight;
+        body.style.transition = '';
+      }
+      var chevron = document.getElementById('group-chevron-' + id);
+      if (chevron) chevron.style.transform = 'rotate(0deg)';
+    });
 
     // Load invariants, personas, and installation status into their containers
     loadInvariants();
@@ -216,7 +246,7 @@ function editConfig(key) {
   if (currentVal === 'null' || currentVal === 'not set') currentVal = '';
 
   var input = document.createElement('input');
-  input.type = 'text';
+  input.type = (span.dataset.type === 'secret') ? 'password' : 'text';
   input.value = currentVal;
   input.className = 'sova-input text-xs py-1';
   var saving = false;
