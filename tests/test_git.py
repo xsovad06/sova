@@ -351,7 +351,12 @@ class TestFindPRForIssue:
             ]
         )
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = _shell_ok(stdout=pr_json)
+            mock_run.side_effect = [
+                _shell_ok(stdout=pr_json),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+            ]
 
             result = await find_pr_for_issue("73", repo="user/repo")
 
@@ -364,10 +369,16 @@ class TestFindPRForIssue:
             result = await find_pr_for_issue("73", repo="user/repo")
 
             assert result is None
+            assert mock_run.call_count >= 2
 
-    async def test_returns_none_on_failure(self) -> None:
+    async def test_returns_none_on_body_search_failure(self) -> None:
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
-            mock_run.return_value = _shell_fail(stderr="error")
+            mock_run.side_effect = [
+                _shell_fail(stderr="error"),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
+            ]
 
             result = await find_pr_for_issue("73", repo="user/repo")
 
@@ -416,6 +427,61 @@ class TestFindPRForIssue:
 
             assert result is not None
             assert result.branch == "feat/issue-73"
+
+    async def test_falls_back_to_branch_search_when_body_search_empty(self) -> None:
+        """JIRA issues: body search fails (no #N), branch search finds the PR."""
+        branch_pr_json = json.dumps(
+            [
+                {
+                    "number": 3148,
+                    "url": "https://github.com/org/repo/pull/3148",
+                    "body": "## JIRA\n\n[RHCLOUD-48809](https://issues.redhat.com/browse/RHCLOUD-48809)",
+                    "headRefName": "feat/issue-48809",
+                }
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout=branch_pr_json),
+            ]
+
+            result = await find_pr_for_issue("48809", repo="org/repo")
+
+            assert result is not None
+            assert result.number == 3148
+            assert mock_run.call_count == 2
+            second_call = mock_run.call_args_list[1][0]
+            assert "--head" in second_call
+
+    async def test_branch_fallback_skipped_when_body_search_finds_match(self) -> None:
+        pr_json = json.dumps(
+            [
+                {
+                    "number": 82,
+                    "url": "https://github.com/user/repo/pull/82",
+                    "body": "Closes #73",
+                    "headRefName": "feat/issue-73",
+                }
+            ]
+        )
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=pr_json)
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is not None
+            assert result.number == 82
+            assert mock_run.call_count == 1
+
+    async def test_branch_fallback_returns_none_when_both_empty(self) -> None:
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="[]")
+
+            result = await find_pr_for_issue("73", repo="user/repo")
+
+            assert result is None
+            assert mock_run.call_count == 4
 
 
 class TestGetPRStatus:

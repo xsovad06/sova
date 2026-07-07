@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import urlparse
@@ -168,36 +169,66 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
 
     Searches for PRs whose body contains 'Closes #N' (or variants) and
     verifies the match to avoid false positives from free-text search.
+    Falls back to branch name search for JIRA issues where the body
+    contains 'RHCLOUD-N' instead of '#N'.
     """
     log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
     issue_num = issue_id.lstrip("#").strip()
     env = await resolve_gh_env(github_user)
+
+    found = await _search_prs_by_body(issue_num, repo=repo, env=env)
+    if found:
+        return found
+
+    return await _search_prs_by_branch(issue_num, repo=repo, env=env)
+
+
+async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
     result = await run(
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--search",
-        f"#{issue_num} in:body",
-        "--json",
-        "number,url,body,headRefName",
-        "--limit",
-        "5",
+        "gh", "pr", "list",
+        "--repo", repo,
+        "--state", "open",
+        "--search", f"#{issue_num} in:body",
+        "--json", "number,url,body,headRefName",
+        "--limit", "5",
         env=env,
     )
     if not result.success:
-        log.warning("git.find_pr_for_issue.failed", stderr=result.stderr[:200])
+        log.warning("git.find_pr_for_issue.body_search_failed", stderr=result.stderr[:200])
         return None
 
+    return _match_pr_results(result.stdout, issue_num)
+
+
+async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
+    for prefix in ("feat/issue-", "fix/issue-", "issue-"):
+        result = await run(
+            "gh", "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--head", f"{prefix}{issue_num}",
+            "--json", "number,url,body,headRefName",
+            "--limit", "1",
+            env=env,
+        )
+        if not result.success:
+            continue
+        try:
+            prs = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            continue
+        if prs:
+            pr = prs[0]
+            return PRInfo(number=pr["number"], url=pr.get("url", ""), branch=pr.get("headRefName", ""))
+
+    return None
+
+
+def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None:
     try:
-        prs = json.loads(result.stdout)
+        prs = json.loads(stdout)
     except json.JSONDecodeError:
         return None
-
-    import re
 
     link_pattern = re.compile(rf"(?:closes|fixes|resolves)\s+#?{re.escape(issue_num)}\b", re.IGNORECASE)
     branch_pattern = f"issue-{issue_num}"
