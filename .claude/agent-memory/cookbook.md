@@ -86,6 +86,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## GitHub API
 
+- **GitHub REST API `/pulls` does not support `since` query parameter** -- unlike Issues and Comments endpoints, the List Pull Requests endpoint has no time-based filter. To get PRs from a time window, fetch all and filter client-side, or use GraphQL with `search` query and `created:>YYYY-MM-DD` qualifier. PR #303 CodeRabbit. [confirmed: 0]
 - **Label names use `area: X` format (space after colon)** -- `gh issue create --label "type:fix"` fails because the actual label is `"type: fix"`. Always check `gh label list` for exact names. Available type labels: `type: feature`, `type: task`, `type: infra`, `bug`. Area labels: `area: dashboard`, `area: orchestrator`, `area: sova-db`, `area: sova-cli`, `area: adapters`, `area: commands`, `area: knowledge`, `area: sova`, `area: security`. Priority labels: `priority: critical/high/medium/low`. [confirmed: 1]
 - **`pull_request_target` reads workflow from base branch, not PR branch** -- [promoted] to `.claude/rules/architecture.md`. Full entry with `author_association` gating and security model.
 - **Required status checks with `integration_id` reject user-posted statuses** -- workaround: temporarily remove check from ruleset via API, merge, re-add. Needs OAuth keyring token. [confirmed: 1]
