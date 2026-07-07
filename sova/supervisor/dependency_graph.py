@@ -15,6 +15,12 @@ log = get_logger(component="supervisor.dependency_graph")
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
 
+# States that should be excluded from "ready to work on" -- either already
+# being worked on, already completed, or explicitly rejected/blocked.
+_EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
+    {TaskState.DONE, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.HUMAN_ONLY}
+)
+
 
 @dataclass
 class ValidationResult:
@@ -87,7 +93,12 @@ class DependencyGraph:
         return set(self._rdeps.get(issue, set()))
 
     def validate(self) -> ValidationResult:
-        """Validate the DAG: detect cycles and missing references."""
+        """Validate the DAG: detect cycles and missing references.
+
+        Always performs both checks for completeness -- callers get the full
+        picture in one call.  Not short-circuited on missing_refs because
+        cycle information is independently valuable.
+        """
         all_ids = set(self._tasks.keys())
 
         # Find missing references (deps pointing outside the task set)
@@ -109,13 +120,13 @@ class DependencyGraph:
         """Issues whose dependencies are all DONE (ready to work on).
 
         Missing deps are treated as blocking (fail-closed).
-        Issues already DONE are excluded.
+        Issues already in progress, in review, done, or human-only are excluded.
         """
         all_ids = set(self._tasks.keys())
         ready: list[int] = []
 
         for tid, task in sorted(self._tasks.items()):
-            if task.state == TaskState.DONE:
+            if task.state in _EXCLUDED_FROM_READY:
                 continue
             deps = self._deps.get(tid, set())
             if not deps:
@@ -212,7 +223,12 @@ class DependencyGraph:
         return visited
 
     def to_dict(self) -> dict:
-        """Serialize the graph for API responses."""
+        """Serialize the graph for API responses.
+
+        Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
+        on every call.  Avoid calling repeatedly on the same graph instance;
+        cache the result if multiple reads are needed.
+        """
         nodes = []
         for tid, task in sorted(self._tasks.items()):
             nodes.append(
@@ -255,6 +271,11 @@ def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int
     section = extract_section(body, heading_match.group(1)) if heading_match else ""
     if not section:
         return set()
+
+    # Warn if there are multiple ## Dependencies sections
+    dep_heading_count = len(re.findall(r"^## dependencies\s*$", body, re.MULTILINE | re.IGNORECASE))
+    if dep_heading_count > 1:
+        log.warning("Multiple '## Dependencies' sections found; using the first one")
 
     deps: set[int] = set()
     for ref in _DEP_PATTERN.findall(section):

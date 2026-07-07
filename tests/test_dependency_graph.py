@@ -90,6 +90,13 @@ class TestParseDependencies:
         body = "## Dependencies\n- #100 (blocker)\n- see issue 200\n- #300\n"
         assert parse_dependencies(body) == {100, 300}
 
+    def test_multiple_sections_logs_warning(self, capsys) -> None:
+        body = "## Dependencies\n- #10\n## Other\ntext\n## Dependencies\n- #20\n"
+        result = parse_dependencies(body)
+        assert result == {10}
+        captured = capsys.readouterr()
+        assert "Multiple" in captured.out
+
 
 # ---------------------------------------------------------------------------
 # DependencyGraph
@@ -157,6 +164,37 @@ class TestDependencyGraph:
         tasks = [_task(1, state=TaskState.DONE)]
         graph = DependencyGraph(tasks)
         assert graph.get_ready_tasks() == []
+
+    def test_in_progress_excluded_from_ready(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_PROGRESS)]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == []
+
+    def test_in_review_excluded_from_ready(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_REVIEW)]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == []
+
+    def test_human_only_excluded_from_ready(self) -> None:
+        tasks = [_task(1, state=TaskState.HUMAN_ONLY)]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == []
+
+    def test_triaged_included_in_ready(self) -> None:
+        tasks = [_task(1, state=TaskState.TRIAGED)]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == [1]
+
+    def test_mixed_states_ready_filtering(self) -> None:
+        tasks = [
+            _task(1, state=TaskState.DONE),
+            _task(2, state=TaskState.IN_PROGRESS),
+            _task(3, state=TaskState.BACKLOG),
+            _task(4, state=TaskState.IN_REVIEW),
+            _task(5, state=TaskState.TRIAGED),
+        ]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == [3, 5]
 
     def test_cycle_detection(self) -> None:
         tasks = [
