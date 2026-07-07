@@ -41,11 +41,12 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 17 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, settings, setup, agents, work, roles, spec, prs)
+      routers/                     # 18 API routers (overview, runs, costs, control, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs)
       services/                    # 28 services (run, cost, memory, control, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
+    supervisor/                    # Supervisor-level services (CodeRabbit quota tracking)
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     monitoring/                     # Resource monitoring (psutil-based CPU, memory, I/O tracking)
@@ -60,7 +61,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (2900+ tests)
+  tests/                           # pytest suite (2900+ tests, 2986 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

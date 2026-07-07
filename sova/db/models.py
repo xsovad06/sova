@@ -345,10 +345,7 @@ class CommandContract(Base):
 
 
 class CodeRabbitEvent(Base):
-    """Tracks CodeRabbit review events for rate-limit quota tracking.
-
-    TODO(#291): Alembic migration needed before enabling coderabbit_quota.
-    """
+    """Tracks CodeRabbit review events for rate-limit quota tracking."""
 
     __tablename__ = "coderabbit_events"
 

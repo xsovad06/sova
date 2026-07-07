@@ -53,21 +53,22 @@ async def get_quota_status(
             window_minutes=config.window_minutes,
         )
 
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=config.window_minutes)
+
+    events = await _get_review_events_in_window(session, window_start, project_slug)
+    count = len(events)
+
     if config.reviews_per_hour == 0:
         return QuotaStatus(
             enabled=True,
-            reviews_in_window=0,
+            reviews_in_window=count,
             reviews_per_hour=0,
             can_create_pr=True,
             next_available_minutes=None,
             window_minutes=config.window_minutes,
         )
 
-    now = datetime.now(timezone.utc)
-    window_start = now - timedelta(minutes=config.window_minutes)
-
-    events = await _get_review_events_in_window(session, window_start, project_slug)
-    count = len(events)
     can_create = count < config.reviews_per_hour
 
     next_available: float | None = None
@@ -218,16 +219,15 @@ async def _fetch_coderabbit_reviews_from_github(
 
     env = await resolve_gh_env(github_user) if github_user else None
 
-    # Only fetch PRs updated within the quota window -- reduces API calls
-    # from up to 30+20 to typically <10 for low-traffic repos.
-    since = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
+    # The GitHub "List pull requests" API does NOT support a `since`
+    # parameter.  We fetch the most recently updated PRs and filter
+    # review timestamps client-side in _fetch_reviews_for_pr.
     pr_result = await run(
         "gh",
         "api",
         f"repos/{repo}/pulls",
         "-q",
-        ".[].number",
+        r'.[] | "\(.number) \(.updated_at)"',
         "--method",
         "GET",
         "-f",
@@ -238,19 +238,27 @@ async def _fetch_coderabbit_reviews_from_github(
         "sort=updated",
         "-f",
         "direction=desc",
-        "-f",
-        f"since={since}",
         env=env,
     )
     if not pr_result.success:
         log.warning("fetch_prs.failed", repo=repo, stderr=pr_result.stderr[:200])
         return []
 
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
     pr_numbers: list[int] = []
     for line in pr_result.stdout.strip().splitlines():
-        line = line.strip()
-        if line.isdigit():
-            pr_numbers.append(int(line))
+        parts = line.strip().split(None, 1)
+        if not parts or not parts[0].isdigit():
+            continue
+        # Filter PRs not updated within the window
+        if len(parts) == 2:
+            try:
+                updated = datetime.fromisoformat(parts[1].replace("Z", "+00:00"))
+                if updated < cutoff:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        pr_numbers.append(int(parts[0]))
 
     if not pr_numbers:
         return []

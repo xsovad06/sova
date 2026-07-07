@@ -526,7 +526,8 @@ class TestFetchCodeRabbitReviewsFromGitHub:
         async def mock_run_side_effect(*args: object, **kwargs: object) -> ShellResult:
             cmd_args = args
             if "pulls" in str(cmd_args) and "reviews" not in str(cmd_args):
-                return ShellResult(returncode=0, stdout="10\n20\n", stderr="")
+                recent = datetime.now(timezone.utc).isoformat()
+                return ShellResult(returncode=0, stdout=f"10 {recent}\n20 {recent}\n", stderr="")
             return ShellResult(returncode=0, stdout=review_data, stderr="")
 
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock, side_effect=mock_run_side_effect):
@@ -545,7 +546,8 @@ class TestFetchCodeRabbitReviewsFromGitHub:
             call_count += 1
             if call_count == 1:
                 # PR list
-                return ShellResult(returncode=0, stdout="10\n", stderr="")
+                recent = datetime.now(timezone.utc).isoformat()
+                return ShellResult(returncode=0, stdout=f"10 {recent}\n", stderr="")
             # Review fetch raises
             raise RuntimeError("network timeout")
 
