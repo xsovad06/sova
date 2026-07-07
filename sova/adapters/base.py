@@ -254,6 +254,10 @@ class TaskAdapter(ABC):
         """Create a new issue/task on the tracker (implementation)."""
 
     @abstractmethod
+    async def get_comments(self, task_id: str) -> list[str]:
+        """Fetch comment bodies for a task, newest first."""
+
+    @abstractmethod
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
         """Discover valid workflow transitions for a task.
 

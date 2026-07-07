@@ -40,11 +40,17 @@ class ResearchStep(BaseStep):
             return StepResult(success=False, summary="Research failed", error=str(exc))
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: issue body must contain a research section after this step."""
+        """Gate: research section must exist in issue body or comments."""
         task = await ctx.adapter.get_task(ctx.issue_number)
         if "## Research" in (task.body or ""):
             return GateCheckResult(passed=True)
+        try:
+            comments = await ctx.adapter.get_comments(ctx.issue_number)
+            if any("## Research" in c for c in comments):
+                return GateCheckResult(passed=True)
+        except Exception:
+            log.warning("step.research.comments_check_failed", issue=ctx.issue_number, exc_info=True)
         return GateCheckResult(
             passed=False,
-            reason="Research section not found in issue body",
+            reason="Research section not found in issue body or comments",
         )

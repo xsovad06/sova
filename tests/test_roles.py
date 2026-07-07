@@ -361,16 +361,30 @@ class TestResearchStep:
         gate = await step.validate_output(ctx)
         assert gate.passed
 
-    async def test_validate_output_fails_without_research_section(self) -> None:
+    async def test_validate_output_passes_with_research_in_comments(self) -> None:
         from sova.core.steps.research import ResearchStep
 
         adapter = _mock_adapter(TaskState.TRIAGED)
         adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
+        adapter.get_comments.return_value = ["Some comment", "## Research\n\nFindings here"]
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        step = ResearchStep()
+
+        gate = await step.validate_output(ctx)
+        assert gate.passed
+
+    async def test_validate_output_fails_without_research_anywhere(self) -> None:
+        from sova.core.steps.research import ResearchStep
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        adapter.get_task.return_value = Task(id="42", title="Test", body="No research here", state=TaskState.TRIAGED)
+        adapter.get_comments.return_value = ["Some unrelated comment"]
         ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
         step = ResearchStep()
 
         gate = await step.validate_output(ctx)
         assert not gate.passed
+        assert "comments" in gate.reason
 
 
 # ---------------------------------------------------------------------------

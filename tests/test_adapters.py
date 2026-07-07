@@ -785,6 +785,44 @@ class TestGitHubAdapter:
         reviews = await self.adapter.get_pr_reviews(99)
         assert reviews == []
 
+    # -- get_comments --
+
+    async def test_get_comments_success(self, mock_run: AsyncMock) -> None:
+        comments_json = json.dumps(
+            {
+                "comments": [
+                    {"body": "First comment"},
+                    {"body": "## Research\n\nFindings here"},
+                    {"body": ""},
+                ]
+            }
+        )
+        mock_run.return_value = _shell_result(stdout=comments_json)
+
+        comments = await self.adapter.get_comments("42")
+
+        assert len(comments) == 2
+        assert comments[0] == "## Research\n\nFindings here"
+        assert comments[1] == "First comment"
+
+    async def test_get_comments_empty(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout=json.dumps({"comments": []}))
+
+        comments = await self.adapter.get_comments("42")
+        assert comments == []
+
+    async def test_get_comments_failure_returns_empty(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(returncode=1, stderr="API error")
+
+        comments = await self.adapter.get_comments("42")
+        assert comments == []
+
+    async def test_get_comments_bad_json_returns_empty(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="not json")
+
+        comments = await self.adapter.get_comments("42")
+        assert comments == []
+
 
 # ---------------------------------------------------------------------------
 # GitHub auth threading

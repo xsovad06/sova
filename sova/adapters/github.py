@@ -299,6 +299,26 @@ class GitHubAdapter(TaskAdapter):
             )
         return parsed
 
+    async def get_comments(self, task_id: str) -> list[str]:
+        result = await self._gh(
+            "issue",
+            "view",
+            task_id,
+            "--repo",
+            self.repo,
+            "--json",
+            "comments",
+        )
+        if not result.success:
+            log.warning("get_comments.failed", issue=task_id, stderr=result.stderr[:200])
+            return []
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
+        comments = data.get("comments") or []
+        return [c.get("body", "") for c in reversed(comments) if c.get("body")]
+
     async def _do_create_issue(
         self,
         title: str,
