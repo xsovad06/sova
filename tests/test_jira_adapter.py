@@ -512,6 +512,60 @@ class TestEditBody:
             await adapter.edit_body("1", "bad")
 
 
+class TestGetComments:
+    @respx.mock
+    async def test_get_comments_success(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/comment").mock(
+            return_value=Response(
+                200,
+                json={
+                    "comments": [
+                        {
+                            "body": {
+                                "type": "doc",
+                                "version": 1,
+                                "content": [
+                                    {"type": "paragraph", "content": [{"type": "text", "text": "## Research"}]},
+                                ],
+                            }
+                        },
+                        {
+                            "body": {
+                                "type": "doc",
+                                "version": 1,
+                                "content": [
+                                    {"type": "paragraph", "content": [{"type": "text", "text": "Just a note"}]},
+                                ],
+                            }
+                        },
+                    ]
+                },
+            ),
+        )
+        comments = await adapter.get_comments("1")
+        assert len(comments) == 2
+        assert "## Research" in comments[0]
+
+    @respx.mock
+    async def test_get_comments_empty(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/comment").mock(
+            return_value=Response(200, json={"comments": []}),
+        )
+        comments = await adapter.get_comments("1")
+        assert comments == []
+
+    @respx.mock
+    async def test_get_comments_failure_returns_empty(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/comment").mock(
+            return_value=Response(500, text="Server error"),
+        )
+        comments = await adapter.get_comments("1")
+        assert comments == []
+
+
 class TestLinkPR:
     @respx.mock
     async def test_link_pr(self) -> None:

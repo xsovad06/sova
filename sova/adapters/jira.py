@@ -282,6 +282,19 @@ class JiraAdapter(TaskAdapter):
         log.info("get_pr_reviews.no_op_for_jira", pr=pr_number)
         return []
 
+    async def get_comments(self, task_id: str) -> list[str]:
+        issue_key = self._resolve_key(task_id)
+        response = await self._http.get(f"/issue/{issue_key}/comment", params={"orderBy": "-created"})
+        if response.status_code != 200:
+            log.warning("get_comments.failed", issue=issue_key, status=response.status_code)
+            return []
+        bodies: list[str] = []
+        for comment in response.json().get("comments", []):
+            text = self._extract_text(comment.get("body"))
+            if text:
+                bodies.append(text)
+        return bodies
+
     async def link_pr(self, task_id: str, pr_url: str) -> None:
         issue_key = self._resolve_key(task_id)
         pr_id = pr_url.rstrip("/").split("/")[-1]
