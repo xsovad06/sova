@@ -76,6 +76,7 @@ async def create_worktree(
                     commits_ahead=ahead.stdout.strip(),
                 )
             log.info("worktree.reuse", path=str(worktree_path), branch=branch)
+            _copy_claude_artifacts(project_dir, worktree_path)
             return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
         # Stale or wrong-branch worktree -- remove and recreate
         log.info("worktree.stale_remove", path=str(worktree_path))
