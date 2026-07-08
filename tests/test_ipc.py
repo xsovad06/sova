@@ -1063,6 +1063,14 @@ class TestClaudeCodeRuntime:
         pm_idx = args.index("--permission-mode")
         assert args[pm_idx + 1] == "auto"
 
+    def test_headless_preamble_forbids_pipeline_actions(self) -> None:
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE
+
+        preamble_lower = _HEADLESS_PREAMBLE.lower()
+        assert "do not create pull requests" in preamble_lower or "never create pull request" in preamble_lower
+        assert "do not push" in preamble_lower or "never push" in preamble_lower
+        assert "do not commit" in preamble_lower or "never commit" in preamble_lower
+
 
 class TestAiderRuntime:
     async def test_spawn_builds_correct_args(self) -> None:
