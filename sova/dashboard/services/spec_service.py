@@ -33,7 +33,7 @@ def find_spec_file(issue_number: str, project_dir: Path | None = None) -> Path |
         if f.name.startswith(f"{issue_number}-"):
             return f
         parts = f.stem.split("-", 2)
-        if len(parts) >= 2 and parts[1] == issue_number:
+        if len(parts) >= 2 and parts[1] == issue_number and re.match(r"[A-Z][A-Z0-9_]*$", parts[0]):
             return f
     return None
 
@@ -169,7 +169,7 @@ def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
     for f in sorted(specs.iterdir()):
         if f.suffix != ".md":
             continue
-        issue_match = re.match(r"(\d+)-", f.name) or re.match(r"[A-Z]+-(\d+)-", f.name)
+        issue_match = re.match(r"(\d+)-", f.name) or re.match(r"[A-Z][A-Z0-9_]*-(\d+)-", f.name)
         if not issue_match:
             continue
         try:

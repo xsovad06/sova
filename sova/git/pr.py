@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -208,7 +209,7 @@ async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str])
 
 
 async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
-    for prefix in ("feat/issue-", "fix/issue-", "issue-"):
+    async def _lookup(prefix: str) -> PRInfo | None:
         result = await run(
             "gh",
             "pr",
@@ -226,16 +227,18 @@ async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str
             env=env,
         )
         if not result.success:
-            continue
+            return None
         try:
             prs = json.loads(result.stdout)
         except json.JSONDecodeError:
-            continue
+            return None
         if prs:
             pr = prs[0]
             return PRInfo(number=pr["number"], url=pr.get("url", ""), branch=pr.get("headRefName", ""))
+        return None
 
-    return None
+    results = await asyncio.gather(*(_lookup(prefix) for prefix in ("feat/issue-", "fix/issue-", "issue-")))
+    return next((r for r in results if r), None)
 
 
 def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None:

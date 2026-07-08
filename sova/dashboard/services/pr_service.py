@@ -206,12 +206,12 @@ async def list_open_prs_with_state() -> list[dict]:
         return []
 
     repo = cfg.github_repo
+    author = cfg.github_user if cfg.dashboard.pr_author_filter == "mine" else None
+    cache_key = f"{repo}:{author or ''}"
     now = time.monotonic()
-    cached = _pr_cache.get(repo)
+    cached = _pr_cache.get(cache_key)
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
-
-    author = cfg.github_user if cfg.dashboard.pr_author_filter == "mine" else None
     raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user, author=author)
 
     pr_numbers = [p["number"] for p in raw_prs]
@@ -227,6 +227,6 @@ async def list_open_prs_with_state() -> list[dict]:
     result = [_enrich_pr(pr, wall_now) for pr in raw_prs]
     result.sort(key=lambda p: p["number"], reverse=True)
 
-    _pr_cache[repo] = (now, result)
+    _pr_cache[cache_key] = (now, result)
     log.info("pr_service.refreshed", repo=repo, count=len(result))
     return result

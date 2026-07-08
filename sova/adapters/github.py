@@ -315,6 +315,7 @@ class GitHubAdapter(TaskAdapter):
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
+            log.warning("get_comments.json_decode_error", issue=task_id)
             return []
         comments = data.get("comments") or []
         return [c.get("body", "") for c in reversed(comments) if c.get("body")]

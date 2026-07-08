@@ -605,6 +605,8 @@ function issueLink(issueNumber, url) {
   var jiraKey = window.SOVA_JIRA_PROJECT_KEY;
 
   if (url) {
+    if (!/^https?:\/\//i.test(url)) url = '';
+    if (!url) return safe;
     return '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener" ' +
       'class="text-accent hover:underline" onclick="event.stopPropagation()">' + safe + '</a>';
   }

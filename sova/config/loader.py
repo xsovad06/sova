@@ -99,10 +99,13 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
         if section in data:
             result[section] = data[section]
 
-    # Root-level keys that don't belong to a [section] map to ProjectConfig fields
+    # Root-level keys that don't belong to a [section] map to ProjectConfig fields.
+    # Filter to known fields to avoid validation errors from typos or custom keys.
+    known_fields = ProjectConfig.model_fields
     for key, value in data.items():
         if key not in result and key not in _NESTED_SECTIONS and key != "project":
-            result[key] = value
+            if key in known_fields:
+                result[key] = value
 
     return result
 

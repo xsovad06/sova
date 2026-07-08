@@ -133,7 +133,7 @@ class CreatePRStep(BaseStep):
             await self._post_create_side_effects(ctx, pr_info.number)
             return StepResult(success=True, summary=f"Created PR #{pr_info.number}")
         except RuntimeError as exc:
-            adopted = self._try_adopt_from_error(ctx, str(exc))
+            adopted = await self._try_adopt_from_error(ctx, str(exc))
             if adopted:
                 return adopted
             return StepResult(success=False, summary="Failed to create PR", error=str(exc))
@@ -157,8 +157,7 @@ class CreatePRStep(BaseStep):
             log.warning("step.create_pr.tracker_update_failed", exc_info=True)
         return StepResult(success=True, summary=f"Adopted existing PR #{existing.number}")
 
-    @staticmethod
-    def _try_adopt_from_error(ctx: ExecutionContext, error_msg: str) -> StepResult | None:
+    async def _try_adopt_from_error(self, ctx: ExecutionContext, error_msg: str) -> StepResult | None:
         """Parse 'already exists' error from gh CLI and adopt the existing PR."""
         if "already exists" not in error_msg:
             return None
@@ -170,6 +169,7 @@ class CreatePRStep(BaseStep):
         ctx.pr_number = pr_number
         url_match = re.search(r"(https://github\.com/\S+/pull/\d+)", error_msg)
         ctx.pr_url = url_match.group(1) if url_match else ""
+        await self._post_create_side_effects(ctx, pr_number)
         return StepResult(success=True, summary=f"Adopted existing PR #{pr_number}")
 
     async def _post_create_side_effects(self, ctx: ExecutionContext, pr_number: int) -> None:
@@ -234,21 +234,25 @@ class CreatePRStep(BaseStep):
 
         try:
             result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
-            ctx.add_cost(result.cost_usd)
-            body = result.text
-            if ctx.has_issue:
-                if ts.is_jira:
-                    for verb in ("Closes", "Fixes", "Resolves"):
-                        body = body.replace(f"{verb} #{ctx.issue_number}", "")
-                    jira_link = _jira_ticket_link(ts, ctx.issue_number)
-                    if jira_link not in body:
-                        body += f"\n\n{jira_link}"
-                elif f"#{ctx.issue_number}" not in body:
-                    body += f"\n\nCloses #{ctx.issue_number}"
-            return body
         except RuntimeError:
             log.warning("step.create_pr.body_generation_failed", fallback="structured")
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
+
+        ctx.add_cost(result.cost_usd)
+        body = result.text
+        if ctx.has_issue:
+            if ts.is_jira:
+                close_re = re.compile(
+                    rf"(?:closes|fixes|resolves)\s+#{re.escape(ctx.issue_number)}\b",
+                    re.IGNORECASE,
+                )
+                body = close_re.sub("", body)
+                jira_link = _jira_ticket_link(ts, ctx.issue_number)
+                if jira_link not in body:
+                    body += f"\n\n{jira_link}"
+            elif f"#{ctx.issue_number}" not in body:
+                body += f"\n\nCloses #{ctx.issue_number}"
+        return body
 
     @staticmethod
     def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:

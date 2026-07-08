@@ -441,18 +441,22 @@ class TestFindPRForIssue:
             ]
         )
         with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            # Body search returns empty, then 3 concurrent branch lookups
+            # (feat/issue-, fix/issue-, issue-) via asyncio.gather
             mock_run.side_effect = [
                 _shell_ok(stdout="[]"),
                 _shell_ok(stdout=branch_pr_json),
+                _shell_ok(stdout="[]"),
+                _shell_ok(stdout="[]"),
             ]
 
             result = await find_pr_for_issue("48809", repo="org/repo")
 
             assert result is not None
             assert result.number == 3148
-            assert mock_run.call_count == 2
-            second_call = mock_run.call_args_list[1][0]
-            assert "--head" in second_call
+            assert mock_run.call_count == 4
+            branch_calls = [c for c in mock_run.call_args_list if "--head" in c[0]]
+            assert len(branch_calls) == 3
 
     async def test_branch_fallback_skipped_when_body_search_finds_match(self) -> None:
         pr_json = json.dumps(

@@ -399,7 +399,7 @@ function renderTaskCard(item) {
     : '';
 
   var issueDisplay = item.jira_key || item.issue_number;
-  var issueRef = item.issue_number
+  var issueRef = (item.issue_number || item.jira_key)
     ? '<span class="text-xs font-medium shrink-0">' + issueLink(issueDisplay, item.url) + '</span>'
     : '<span class="text-xs font-medium shrink-0 text-gray-500">PR #' + escapeHtml(String(item.pr_number)) + '</span>';
 
