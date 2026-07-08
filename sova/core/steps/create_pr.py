@@ -6,9 +6,11 @@ import asyncio
 import re
 
 from sova.adapters.base import TaskState
+from sova.config.models import TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
+from sova.llm.client import invoke
 from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
@@ -25,13 +27,57 @@ _CONVENTIONAL_RE = re.compile(
     r":\s*",
 )
 
+_PR_BODY_PROMPT_BASE = """\
+Generate a pull request description for the changes below. Output ONLY the \
+markdown body (no fences, no commentary). Use this structure:
 
-def _build_pr_title(task_title: str, issue_number: str | None) -> str:
+## Summary
+1-3 bullet points: WHAT changed and WHY.
+
+## Changes
+Brief description of each logical change grouped by area.
+
+## Review guidance
+What should a reviewer focus on? Any trade-offs or shortcuts?
+
+## Test plan
+How were these changes verified?
+"""
+
+_PR_BODY_ISSUE_SECTION = """
+Closes #{issue_number}
+
+---
+Issue #{issue_number}: {issue_title}
+
+{issue_body}
+
+"""
+
+_PR_BODY_NO_ISSUE_SECTION = """
+---
+Task: {issue_title}
+
+"""
+
+_PR_BODY_CONTEXT = """\
+Commits on this branch:
+{commit_log}
+
+Files changed:
+{diff_stat}
+"""
+
+
+def _build_pr_title(
+    task_title: str,
+    issue_number: str | None,
+    task_source: TaskSourceConfig | None = None,
+) -> str:
     """Build a PR title from the task title, avoiding double conventional prefixes.
 
-    If the task title already has a conventional commit prefix (e.g. "feat(llm): ..."),
-    strip it and re-wrap with the issue-scoped prefix to produce a clean title like
-    "feat(#117): add local model support via Ollama".
+    For JIRA projects, prepends ``[PROJECT_KEY-NUMBER]`` so JIRA's GitHub
+    integration auto-links the PR to the ticket.
     """
     match = _CONVENTIONAL_RE.match(task_title)
     if match:
@@ -41,9 +87,19 @@ def _build_pr_title(task_title: str, issue_number: str | None) -> str:
         commit_type = "feat"
         description = task_title
 
+    if task_source and task_source.is_jira and issue_number:
+        jira_key = f"[{task_source.jira_project_key}-{issue_number}]"
+        return f"{jira_key} {commit_type}: {description}"
+
     if issue_number:
         return f"{commit_type}(#{issue_number}): {description}"
     return f"{commit_type}: {description}"
+
+
+def _jira_ticket_link(task_source: TaskSourceConfig, issue_number: str) -> str:
+    """Return a markdown JIRA ticket link for the PR body."""
+    base = task_source.jira_base_url.rstrip("/")
+    return f"JIRA: {base}/browse/{task_source.jira_project_key}-{issue_number}"
 
 
 class CreatePRStep(BaseStep):
@@ -57,7 +113,11 @@ class CreatePRStep(BaseStep):
             return adopted
 
         task_title = ctx.task.title if ctx.task else ctx.branch_name
-        title = _build_pr_title(task_title, ctx.issue_number if ctx.has_issue else None)
+        title = _build_pr_title(
+            task_title,
+            ctx.issue_number if ctx.has_issue else None,
+            task_source=ctx.config.task_source,
+        )
         body = await self._generate_pr_body(ctx, task_title)
 
         try:
@@ -148,12 +208,51 @@ class CreatePRStep(BaseStep):
             ),
         )
 
+        issue_body = ctx.task.body if ctx.task else ""
         commit_log = log_result.stdout.strip() if log_result.success else "(unavailable)"
         diff_stat = diff_result.stdout.strip() if diff_result.success else "(unavailable)"
-        return self._build_pr_body(ctx, task_title, commit_log, diff_stat)
+
+        ts = ctx.config.task_source
+
+        if ctx.has_issue:
+            middle = _PR_BODY_ISSUE_SECTION.format(
+                issue_number=ctx.issue_number,
+                issue_title=task_title,
+                issue_body=issue_body or "(no description)",
+            )
+        else:
+            middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
+
+        prompt = (
+            _PR_BODY_PROMPT_BASE
+            + middle
+            + _PR_BODY_CONTEXT.format(
+                commit_log=commit_log,
+                diff_stat=diff_stat,
+            )
+        )
+
+        try:
+            result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
+            ctx.add_cost(result.cost_usd)
+            body = result.text
+            if ctx.has_issue:
+                if ts.is_jira:
+                    for verb in ("Closes", "Fixes", "Resolves"):
+                        body = body.replace(f"{verb} #{ctx.issue_number}", "")
+                    jira_link = _jira_ticket_link(ts, ctx.issue_number)
+                    if jira_link not in body:
+                        body += f"\n\n{jira_link}"
+                elif f"#{ctx.issue_number}" not in body:
+                    body += f"\n\nCloses #{ctx.issue_number}"
+            return body
+        except RuntimeError:
+            log.warning("step.create_pr.body_generation_failed", fallback="structured")
+            return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
 
     @staticmethod
-    def _build_pr_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
+    def _build_fallback_body(ctx: ExecutionContext, task_title: str, commit_log: str, diff_stat: str) -> str:
+        ts = ctx.config.task_source
         lines = [
             "## Summary",
             "",
@@ -161,7 +260,10 @@ class CreatePRStep(BaseStep):
             "",
         ]
         if ctx.has_issue:
-            lines.append(f"Closes #{ctx.issue_number}")
+            if ts.is_jira:
+                lines.append(_jira_ticket_link(ts, ctx.issue_number))
+            else:
+                lines.append(f"Closes #{ctx.issue_number}")
             lines.append("")
 
         issue_body = (ctx.task.body if ctx.task else "") or ""

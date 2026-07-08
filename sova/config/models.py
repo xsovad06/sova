@@ -47,6 +47,10 @@ class TaskSourceConfig(BaseSettings):
     jira_status_mapping: dict[str, str] = Field(default_factory=dict)
     jira_track_agent_work: bool = False
 
+    @property
+    def is_jira(self) -> bool:
+        return self.type == "jira" and bool(self.jira_project_key) and bool(self.jira_base_url)
+
     @field_validator("jira_status_mapping")
     @classmethod
     def _validate_status_mapping(cls, v: dict[str, str]) -> dict[str, str]:
