@@ -838,6 +838,34 @@ class TestCreateWorktree:
                                 # run_checked should have been called for the fallback (without -b)
                                 mock_run_checked.assert_called_once()
 
+    async def test_reuse_copies_claude_artifacts(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        worktree_path = project / ".claude" / "worktrees" / "42"
+        worktree_path.mkdir(parents=True)
+
+        # Set up .claude/commands in project (simulating post-creation install)
+        (project / ".claude" / "commands").mkdir(parents=True)
+        (project / ".claude" / "commands" / "simplify.md").write_text("# simplify")
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            # First call: git rev-parse HEAD -> correct branch
+            # Second call: git rev-list count -> 0 (not ahead)
+            mock_run.side_effect = [
+                _shell_ok(stdout="feat/login\n"),
+                _shell_ok(stdout="0\n"),
+            ]
+
+            info = await create_worktree(
+                issue_id="42",
+                branch="feat/login",
+                base_branch="main",
+                project_dir=project,
+            )
+
+        assert info.branch == "feat/login"
+        assert (worktree_path / ".claude" / "commands" / "simplify.md").read_text() == "# simplify"
+
 
 class TestCreateWorktreePathValidation:
     async def test_rejects_dotdot_in_issue_id(self) -> None:
