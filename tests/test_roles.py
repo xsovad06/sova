@@ -3277,6 +3277,31 @@ class TestReviewerExceptionPaths:
             # Should not raise
             await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
 
+    async def test_extract_review_memories_is_noop(self) -> None:
+        """_extract_review_memories is a no-op (extraction disabled for reviewer)."""
+        from unittest.mock import patch
+
+        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+        role = ReviewerRole()
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, pr_number=10)
+        finding = ReviewFinding(
+            file="src/app.py",
+            line=10,
+            severity=5,
+            category="bug",
+            description="Null check missing",
+            suggestion="Add check",
+        )
+        review = ReviewResult(findings=[finding], summary="Found issue", total_cost=0)
+
+        with patch(
+            "sova.knowledge.extraction.extract_memories",
+            new_callable=AsyncMock,
+        ) as mock_extract:
+            await role._extract_review_memories(ctx, ctx.adapter.get_task.return_value, review)
+            mock_extract.assert_not_awaited()
+
     async def test_append_review_rationale_exception_non_fatal(self) -> None:
         """_append_review_rationale handles spec write failure gracefully (lines 699-700)."""
         from unittest.mock import patch

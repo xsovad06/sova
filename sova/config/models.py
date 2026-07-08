@@ -375,6 +375,17 @@ class CodeRabbitQuotaConfig(BaseSettings):
         return self
 
 
+class IntegrationGatesConfig(BaseSettings):
+    """Configurable gates that must pass before PR integration is allowed."""
+
+    ci_passed: bool = False
+    sova_reviewed: bool = False
+    coderabbit_reviewed: bool = False
+    threads_resolved: bool = False
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_GATES_")
+
+
 class RTKConfig(BaseSettings):
     """RTK (context compression) integration configuration."""
 
@@ -440,6 +451,7 @@ class ProjectConfig(BaseSettings):
     testing: TestingConfig = Field(default_factory=TestingConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    integration_gates: IntegrationGatesConfig = Field(default_factory=IntegrationGatesConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
 

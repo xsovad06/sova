@@ -6,8 +6,12 @@ import re
 import time
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.pr_service")
 
@@ -135,6 +139,27 @@ def compute_pr_state(
     return ComputedPRState.AWAITING_REVIEW
 
 
+def _age_seconds(created: str, now: float) -> int:
+    """Compute age in seconds from an ISO 8601 timestamp."""
+    if not created:
+        return 0
+    try:
+        dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        return int(now - dt.timestamp())
+    except (ValueError, TypeError):
+        return 0
+
+
+def _extract_review_logins(latest_reviews: list[dict] | None) -> list[str]:
+    """Extract unique reviewer logins from latest reviews."""
+    logins: set[str] = set()
+    for rev in latest_reviews or []:
+        login = (rev.get("author") or {}).get("login") or ""
+        if login:
+            logins.add(login)
+    return sorted(logins)
+
+
 def _enrich_pr(raw: dict, now: float) -> dict:
     """Transform a raw gh pr list entry into a PR tracker dict."""
     body = raw.get("body") or ""
@@ -145,15 +170,6 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     latest_reviews = raw.get("latestReviews") or None
     thread_total, thread_resolved = raw.get("_thread_counts", (0, 0))
     all_threads_resolved = thread_total > 0 and thread_resolved >= thread_total
-
-    created = raw.get("createdAt") or ""
-    age_seconds = 0
-    if created:
-        try:
-            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
-            age_seconds = int(now - dt.timestamp())
-        except (ValueError, TypeError):
-            pass
 
     computed = compute_pr_state(
         is_draft=is_draft,
@@ -181,9 +197,109 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "is_draft": is_draft,
         "author": author.get("login", ""),
         "linked_issue": parse_linked_issue(body),
-        "age_seconds": age_seconds,
+        "age_seconds": _age_seconds(raw.get("createdAt") or "", now),
         "labels": labels,
+        "thread_total": thread_total,
+        "thread_resolved": thread_resolved,
+        "review_logins": _extract_review_logins(latest_reviews),
     }
+
+
+def _gate(name: str, *, enabled: bool, passed: bool, reason: str = "") -> dict:
+    return {"name": name, "enabled": enabled, "passed": passed, "reason": reason}
+
+
+def _check_ci_gate(enabled: bool, ci_status: str) -> dict:
+    if not enabled:
+        return _gate("ci_passed", enabled=False, passed=True)
+    passed = ci_status == "passed"
+    return _gate("ci_passed", enabled=True, passed=passed, reason="" if passed else f"CI status is '{ci_status}'")
+
+
+def _check_coderabbit_from_pr_data(pr_data: dict) -> bool:
+    """Check if CodeRabbit reviewed using pre-fetched review_logins from enriched PR data."""
+    from sova.adapters.external_reviews import DEFAULT_CODERABBIT_AUTHORS
+
+    review_logins = set(pr_data.get("review_logins") or [])
+    return bool(review_logins & DEFAULT_CODERABBIT_AUTHORS)
+
+
+def _check_threads_from_pr_data(pr_data: dict) -> dict:
+    """Check thread resolution using pre-fetched thread counts from enriched PR data."""
+    total = pr_data.get("thread_total", 0)
+    resolved = pr_data.get("thread_resolved", 0)
+    if total == 0 or resolved >= total:
+        return _gate("threads_resolved", enabled=True, passed=True)
+    return _gate(
+        "threads_resolved",
+        enabled=True,
+        passed=False,
+        reason=f"{total - resolved} of {total} threads unresolved",
+    )
+
+
+async def check_integration_gates(
+    *,
+    pr_data: dict,
+    issue_number: str | None,
+    config: ProjectConfig,
+) -> dict:
+    """Check all configured integration gates for a PR.
+
+    Uses pre-fetched data from enriched PR dicts (review_logins, thread_total,
+    thread_resolved) when available, falling back to API calls only when needed.
+
+    Returns a dict with:
+      - passed: bool (all enabled gates passed)
+      - gates: list of {name, enabled, passed, reason}
+    """
+    gates_cfg = config.integration_gates
+
+    # CI gate is synchronous -- no API call needed
+    ci_gate = _check_ci_gate(gates_cfg.ci_passed, pr_data.get("ci_status", "none"))
+
+    # SOVA review gate -- requires async DB query
+    async def check_sova_review() -> dict:
+        if not gates_cfg.sova_reviewed:
+            return _gate("sova_reviewed", enabled=False, passed=True)
+        if not issue_number:
+            return _gate("sova_reviewed", enabled=True, passed=True, reason="No linked issue (skipped)")
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        verdict = await get_sova_review_verdict(issue_number)
+        if not verdict.get("has_sova_review"):
+            return _gate("sova_reviewed", enabled=True, passed=False, reason="No SOVA review found")
+        v = verdict.get("verdict", "")
+        if v == "approve":
+            return _gate("sova_reviewed", enabled=True, passed=True)
+        return _gate(
+            "sova_reviewed",
+            enabled=True,
+            passed=False,
+            reason=f"SOVA review verdict: {v} ({verdict.get('finding_count', 0)} findings)",
+        )
+
+    # CodeRabbit gate -- use pre-fetched review_logins when available
+    def check_coderabbit() -> dict:
+        if not gates_cfg.coderabbit_reviewed:
+            return _gate("coderabbit_reviewed", enabled=False, passed=True)
+        if _check_coderabbit_from_pr_data(pr_data):
+            return _gate("coderabbit_reviewed", enabled=True, passed=True)
+        return _gate("coderabbit_reviewed", enabled=True, passed=False, reason="No CodeRabbit review found")
+
+    # Threads gate -- use pre-fetched thread counts when available
+    def check_threads() -> dict:
+        if not gates_cfg.threads_resolved:
+            return _gate("threads_resolved", enabled=False, passed=True)
+        return _check_threads_from_pr_data(pr_data)
+
+    # Only SOVA review needs async; rest are synchronous using pre-fetched data
+    sova_gate = await check_sova_review()
+    cr_gate = check_coderabbit()
+    thr_gate = check_threads()
+
+    gates = [ci_gate, sova_gate, cr_gate, thr_gate]
+    return {"passed": all(g["passed"] for g in gates), "gates": gates}
 
 
 async def list_open_prs_with_state() -> list[dict]:

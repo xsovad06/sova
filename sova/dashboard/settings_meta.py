@@ -39,6 +39,7 @@ GROUPS: dict[str, str] = {
     "output": "Output Storage",
     "monitoring": "Resource Monitoring",
     "knowledge": "Knowledge Retrieval",
+    "integration_gates": "Integration Gates",
     "rtk": "RTK Compression",
     "coderabbit_quota": "CodeRabbit Quota",
 }
@@ -68,6 +69,7 @@ GROUP_ORDER: list[str] = [
     "output",
     "monitoring",
     "knowledge",
+    "integration_gates",
     "rtk",
     "coderabbit_quota",
 ]
@@ -629,6 +631,35 @@ _REGISTRY: list[SettingMeta] = [
         "Token budget for relevance-filtered memory injection into agent prompts",
         "knowledge",
         "number",
+    ),
+    # -- Integration Gates --
+    SettingMeta(
+        "integration_gates.ci_passed",
+        "Require CI passed",
+        "Block PR integration unless all CI checks have passed",
+        "integration_gates",
+        "boolean",
+    ),
+    SettingMeta(
+        "integration_gates.sova_reviewed",
+        "Require SOVA review",
+        "Block PR integration unless SOVA reviewer has approved",
+        "integration_gates",
+        "boolean",
+    ),
+    SettingMeta(
+        "integration_gates.coderabbit_reviewed",
+        "Require CodeRabbit review",
+        "Block PR integration unless CodeRabbit has reviewed (approved or commented)",
+        "integration_gates",
+        "boolean",
+    ),
+    SettingMeta(
+        "integration_gates.threads_resolved",
+        "Require threads resolved",
+        "Block PR integration unless all review conversation threads are resolved",
+        "integration_gates",
+        "boolean",
     ),
     # -- RTK Compression --
     SettingMeta(

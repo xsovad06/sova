@@ -26,6 +26,21 @@ class TestSettingMeta:
     def test_get_meta_unknown_key(self) -> None:
         assert get_meta("nonexistent.key.here") is None
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "integration_gates.ci_passed",
+            "integration_gates.sova_reviewed",
+            "integration_gates.coderabbit_reviewed",
+            "integration_gates.threads_resolved",
+        ],
+    )
+    def test_integration_gates_meta_registered(self, key: str) -> None:
+        meta = get_meta(key)
+        assert meta is not None
+        assert meta.group == "integration_gates"
+        assert meta.value_type == "boolean"
+
     def test_all_groups_in_order(self) -> None:
         for gid in GROUP_ORDER:
             assert gid in GROUPS, f"GROUP_ORDER contains '{gid}' not in GROUPS"
@@ -78,6 +93,22 @@ class TestGetGroupedConfig:
         setting = groups[0]["settings"][0]
         assert setting["key"] == "github_repo"
         assert setting["label"] == "GitHub repository"
+
+    def test_integration_gates_grouped(self) -> None:
+        flat = {
+            "integration_gates.ci_passed": True,
+            "integration_gates.sova_reviewed": False,
+            "integration_gates.coderabbit_reviewed": False,
+            "integration_gates.threads_resolved": True,
+        }
+        groups = get_grouped_config(flat)
+        gate_group = next((g for g in groups if g["id"] == "integration_gates"), None)
+        assert gate_group is not None
+        assert gate_group["label"] == "Integration Gates"
+        assert len(gate_group["settings"]) == 4
+        ci_setting = next(s for s in gate_group["settings"] if s["key"] == "integration_gates.ci_passed")
+        assert ci_setting["value"] is True
+        assert ci_setting["value_type"] == "boolean"
 
     def test_group_order_respected(self) -> None:
         flat = {

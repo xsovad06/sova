@@ -8,10 +8,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from sova.config.models import IntegrationGatesConfig, ProjectConfig
 from sova.dashboard.services.pr_service import (
     ComputedPRState,
+    _age_seconds,
+    _check_coderabbit_from_pr_data,
+    _check_threads_from_pr_data,
     _enrich_pr,
+    _extract_review_logins,
     _summarize_ci,
+    check_integration_gates,
     compute_pr_state,
     parse_linked_issue,
 )
@@ -427,3 +433,396 @@ class TestGetReviewThreadCounts:
 
         result = await get_review_thread_counts([10], repo="owner/repo")
         assert result[10] == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# check_integration_gates
+# ---------------------------------------------------------------------------
+
+
+def _make_config(**gate_overrides: bool) -> ProjectConfig:
+    gates = IntegrationGatesConfig(**gate_overrides)
+    return ProjectConfig(
+        github_repo="owner/repo",
+        github_user="testuser",
+        integration_gates=gates,
+    )
+
+
+def _pr_data(**overrides: object) -> dict:
+    base: dict = {
+        "number": 42,
+        "ci_status": "passed",
+        "mergeable": "MERGEABLE",
+        "computed_state": "approved_ci_green",
+        "state_label": "Ready to Merge",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestCheckIntegrationGates:
+    """Tests for configurable integration gates."""
+
+    @pytest.mark.asyncio
+    async def test_all_gates_disabled_passes(self) -> None:
+        cfg = _make_config()
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
+        assert result["passed"] is True
+        assert all(g["passed"] for g in result["gates"])
+        assert all(not g["enabled"] for g in result["gates"])
+
+    @pytest.mark.asyncio
+    async def test_ci_gate_passes_when_ci_green(self) -> None:
+        cfg = _make_config(ci_passed=True)
+        result = await check_integration_gates(pr_data=_pr_data(ci_status="passed"), issue_number="10", config=cfg)
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        assert ci_gate["enabled"] is True
+        assert ci_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_ci_gate_fails_when_ci_pending(self) -> None:
+        cfg = _make_config(ci_passed=True)
+        result = await check_integration_gates(pr_data=_pr_data(ci_status="pending"), issue_number="10", config=cfg)
+        assert result["passed"] is False
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        assert ci_gate["passed"] is False
+        assert "pending" in ci_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_ci_gate_fails_when_ci_failed(self) -> None:
+        cfg = _make_config(ci_passed=True)
+        result = await check_integration_gates(pr_data=_pr_data(ci_status="failed"), issue_number="10", config=cfg)
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        assert ci_gate["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_skipped_without_issue(self) -> None:
+        cfg = _make_config(sova_reviewed=True)
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number=None, config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is True
+        assert "skipped" in sova_gate["reason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_fails_no_review(self, monkeypatch) -> None:
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(return_value={"has_sova_review": False, "verdict": None, "finding_count": 0})
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is False
+        assert "No SOVA review" in sova_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_passes_approved(self, monkeypatch) -> None:
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+            }
+        )
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_fails_revise(self, monkeypatch) -> None:
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+            }
+        )
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is False
+        assert "revise" in sova_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_gate_passes(self) -> None:
+        cfg = _make_config(coderabbit_reviewed=True)
+        result = await check_integration_gates(
+            pr_data=_pr_data(review_logins=["coderabbitai"]),
+            issue_number="10",
+            config=cfg,
+        )
+        cr_gate = next(g for g in result["gates"] if g["name"] == "coderabbit_reviewed")
+        assert cr_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_coderabbit_gate_fails_no_review(self) -> None:
+        cfg = _make_config(coderabbit_reviewed=True)
+        result = await check_integration_gates(
+            pr_data=_pr_data(review_logins=["someuser"]),
+            issue_number="10",
+            config=cfg,
+        )
+        cr_gate = next(g for g in result["gates"] if g["name"] == "coderabbit_reviewed")
+        assert cr_gate["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_threads_gate_passes_all_resolved(self) -> None:
+        cfg = _make_config(threads_resolved=True)
+        result = await check_integration_gates(
+            pr_data=_pr_data(thread_total=5, thread_resolved=5),
+            issue_number="10",
+            config=cfg,
+        )
+        thr_gate = next(g for g in result["gates"] if g["name"] == "threads_resolved")
+        assert thr_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_threads_gate_fails_unresolved(self) -> None:
+        cfg = _make_config(threads_resolved=True)
+        result = await check_integration_gates(
+            pr_data=_pr_data(thread_total=5, thread_resolved=3),
+            issue_number="10",
+            config=cfg,
+        )
+        thr_gate = next(g for g in result["gates"] if g["name"] == "threads_resolved")
+        assert thr_gate["passed"] is False
+        assert "2 of 5" in thr_gate["reason"]
+
+    @pytest.mark.asyncio
+    async def test_threads_gate_passes_no_threads(self) -> None:
+        cfg = _make_config(threads_resolved=True)
+        result = await check_integration_gates(
+            pr_data=_pr_data(thread_total=0, thread_resolved=0),
+            issue_number="10",
+            config=cfg,
+        )
+        thr_gate = next(g for g in result["gates"] if g["name"] == "threads_resolved")
+        assert thr_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_multiple_gates_one_fails(self, monkeypatch) -> None:
+        cfg = _make_config(ci_passed=True, sova_reviewed=True)
+        mock_verdict = AsyncMock(
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+            }
+        )
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+
+        result = await check_integration_gates(
+            pr_data=_pr_data(ci_status="failed"),
+            issue_number="10",
+            config=cfg,
+        )
+        assert result["passed"] is False
+        ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert ci_gate["passed"] is False
+        assert sova_gate["passed"] is True
+
+    @pytest.mark.asyncio
+    async def test_all_enabled_gates_pass(self, monkeypatch) -> None:
+        cfg = _make_config(ci_passed=True, sova_reviewed=True, coderabbit_reviewed=True, threads_resolved=True)
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            AsyncMock(return_value={"has_sova_review": True, "verdict": "approve", "finding_count": 0}),
+        )
+        result = await check_integration_gates(
+            pr_data=_pr_data(review_logins=["coderabbitai"], thread_total=3, thread_resolved=3),
+            issue_number="10",
+            config=cfg,
+        )
+        assert result["passed"] is True
+        assert all(g["passed"] for g in result["gates"])
+
+
+# ---------------------------------------------------------------------------
+# _age_seconds / _extract_review_logins helpers
+# ---------------------------------------------------------------------------
+
+
+class TestAgeSeconds:
+    def test_valid_timestamp(self) -> None:
+        from datetime import datetime, timezone
+
+        dt = datetime(2025, 6, 15, 6, 0, 0, tzinfo=timezone.utc)
+        now = dt.timestamp() + 100
+        assert _age_seconds("2025-06-15T06:00:00Z", now) == 100
+
+    def test_empty_string(self) -> None:
+        assert _age_seconds("", 1_750_000_000.0) == 0
+
+    def test_invalid_date(self) -> None:
+        assert _age_seconds("not-a-date", 1_750_000_000.0) == 0
+
+    def test_zulu_suffix(self) -> None:
+        result = _age_seconds("2026-01-01T00:00:00Z", time.time())
+        assert result > 0
+
+
+class TestExtractReviewLogins:
+    def test_extracts_unique_logins(self) -> None:
+        reviews = [
+            {"author": {"login": "alice"}},
+            {"author": {"login": "bob"}},
+            {"author": {"login": "alice"}},
+        ]
+        assert _extract_review_logins(reviews) == ["alice", "bob"]
+
+    def test_none_reviews(self) -> None:
+        assert _extract_review_logins(None) == []
+
+    def test_empty_reviews(self) -> None:
+        assert _extract_review_logins([]) == []
+
+    def test_missing_author(self) -> None:
+        reviews = [{"author": None}, {"author": {"login": "bob"}}]
+        assert _extract_review_logins(reviews) == ["bob"]
+
+    def test_empty_login(self) -> None:
+        reviews = [{"author": {"login": ""}}, {"author": {"login": "bob"}}]
+        assert _extract_review_logins(reviews) == ["bob"]
+
+
+# ---------------------------------------------------------------------------
+# _check_coderabbit_from_pr_data / _check_threads_from_pr_data helpers
+# ---------------------------------------------------------------------------
+
+
+class TestCheckCoderabbitFromPrData:
+    def test_detects_coderabbit_login(self) -> None:
+        assert _check_coderabbit_from_pr_data({"review_logins": ["coderabbitai", "alice"]}) is True
+
+    def test_detects_coderabbit_bot(self) -> None:
+        assert _check_coderabbit_from_pr_data({"review_logins": ["coderabbitai[bot]"]}) is True
+
+    def test_no_coderabbit(self) -> None:
+        assert _check_coderabbit_from_pr_data({"review_logins": ["alice", "bob"]}) is False
+
+    def test_empty_logins(self) -> None:
+        assert _check_coderabbit_from_pr_data({"review_logins": []}) is False
+
+    def test_none_logins(self) -> None:
+        assert _check_coderabbit_from_pr_data({}) is False
+
+
+class TestCheckThreadsFromPrData:
+    def test_all_resolved(self) -> None:
+        gate = _check_threads_from_pr_data({"thread_total": 5, "thread_resolved": 5})
+        assert gate["passed"] is True
+
+    def test_some_unresolved(self) -> None:
+        gate = _check_threads_from_pr_data({"thread_total": 5, "thread_resolved": 3})
+        assert gate["passed"] is False
+        assert "2 of 5" in gate["reason"]
+
+    def test_no_threads(self) -> None:
+        gate = _check_threads_from_pr_data({"thread_total": 0, "thread_resolved": 0})
+        assert gate["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# PR router endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestPRGatesRouter:
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_no_project(self, monkeypatch) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: None)
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/42/gates")
+            assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_config_load_failure(self, monkeypatch, tmp_path) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: tmp_path)
+
+        def _bad_config(_path):
+            raise RuntimeError("bad config")
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", _bad_config)
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/42/gates")
+            assert resp.status_code == 400
+            assert "configuration" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_pr_not_found(self, monkeypatch, tmp_path) -> None:
+        from unittest.mock import MagicMock
+
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", lambda _: mock_cfg)
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[]),
+        )
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/99/gates")
+            assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_gates_endpoint_success(self, monkeypatch, tmp_path) -> None:
+        from unittest.mock import MagicMock
+
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.integration_gates.ci_passed = True
+        mock_cfg.integration_gates.sova_reviewed = False
+        mock_cfg.integration_gates.coderabbit_reviewed = False
+        mock_cfg.integration_gates.threads_resolved = False
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", lambda _: mock_cfg)
+
+        pr_data = {
+            "number": 42,
+            "linked_issue": 10,
+            "ci_status": "passed",
+            "review_logins": [],
+            "thread_total": 0,
+            "thread_resolved": 0,
+        }
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=[pr_data]),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.check_integration_gates",
+            AsyncMock(return_value={"passed": True, "gates": []}),
+        )
+        app = create_app(multi_project=False)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/prs/42/gates")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["passed"] is True

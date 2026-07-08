@@ -9,11 +9,16 @@ Priority cascade: running agent > handoff action > PR state > GitHub label.
 
 from __future__ import annotations
 
+import asyncio
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.core.state import TaskStatus
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.work_item")
 
@@ -380,6 +385,59 @@ def _append_standalone_pr_items(
         items.append(_build_pr_item(pr, running, handoff, issue_num))
 
 
+def _find_integrate_action(item: dict) -> dict | None:
+    """Find the integrate action in primary or secondary actions."""
+    primary = item.get("primary_action")
+    if primary and primary.get("id") == "integrate":
+        return primary
+    for sa in item.get("secondary_actions", []):
+        if sa.get("id") == "integrate":
+            return sa
+    return None
+
+
+async def _attach_integration_gates(
+    items: list[dict],
+    prs_by_issue: dict[str, dict],
+    config: ProjectConfig | None,
+) -> None:
+    """Check integration gates for items with integrate actions and attach results."""
+    if config is None:
+        return
+
+    gates_cfg = config.integration_gates
+    if not (
+        gates_cfg.ci_passed or gates_cfg.sova_reviewed or gates_cfg.coderabbit_reviewed or gates_cfg.threads_resolved
+    ):
+        return
+
+    from sova.dashboard.services.pr_service import check_integration_gates
+
+    async def check_item(item: dict) -> None:
+        action = _find_integrate_action(item)
+        if not action:
+            return
+        pr_data = prs_by_issue.get(item.get("issue_number") or "")
+        if not pr_data and item.get("pr_details"):
+            pr_data = item["pr_details"]
+        if not pr_data:
+            return
+        try:
+            result = await check_integration_gates(
+                pr_data=pr_data,
+                issue_number=item.get("issue_number"),
+                config=config,
+            )
+            action["gate_result"] = result
+        except Exception:
+            log.warning("work_items.gate_check_failed", issue=item.get("issue_number"), exc_info=True)
+            action["gate_result"] = {"passed": False, "gates": [], "error": "Gate check failed"}
+
+    tasks = [check_item(item) for item in items if _find_integrate_action(item)]
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
@@ -425,6 +483,15 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     )
 
     _sort_items(items)
+
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+    except Exception:
+        log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
+        cfg = None
+    await _attach_integration_gates(items, prs_by_issue, cfg)
 
     pa = _get_project_agents(slug)
     max_concurrent = pa.max_concurrent if pa else 3

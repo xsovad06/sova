@@ -308,6 +308,16 @@ var _actionStyles = {
   neutral: 'bg-gray-600/30 text-gray-400 hover:bg-gray-600/50',
 };
 
+function _renderGateBlockedBtn(gateResult, label, cssClass) {
+  if (!gateResult || gateResult.passed) return null;
+  var reasons = (gateResult.gates || [])
+    .filter(function(g) { return g.enabled && !g.passed; })
+    .map(function(g) { return g.reason || g.name; });
+  var tooltip = 'Blocked: ' + reasons.join('; ');
+  return '<button disabled class="' + cssClass + '" data-tooltip="' + escapeHtml(tooltip) + '">' +
+    escapeHtml(label) + '</button>';
+}
+
 function _renderActionBtn(action, issueKey) {
   if (!action) return '';
   var cls = _actionStyles[action.style] || _actionStyles.primary;
@@ -329,6 +339,9 @@ function _renderActionBtn(action, issueKey) {
   } else {
     return '';
   }
+  var blocked = _renderGateBlockedBtn(action.gate_result, action.label,
+    'text-xs px-3 py-1 rounded whitespace-nowrap bg-gray-600/30 text-gray-500 cursor-not-allowed');
+  if (blocked) return blocked;
   return '<button onclick="' + onclick + '" ' +
     'class="text-xs px-3 py-1 rounded transition-colors whitespace-nowrap ' + cls + '">' +
     escapeHtml(action.label) + '</button>';
@@ -444,6 +457,9 @@ function renderTaskCard(item) {
             var sep = item.issue_number ? '<hr class="border-gray-700/50 my-1">' : '';
             return sep + (item.secondary_actions || []).map(function(sa) {
               if (/run_command/.test(sa.handler)) {
+                var saBlocked = _renderGateBlockedBtn(sa.gate_result, sa.label,
+                  'w-full text-left px-3 py-1.5 text-xs text-gray-500 cursor-not-allowed');
+                if (saBlocked) return saBlocked;
                 var cmd = (sa.handler_args || {}).command || '';
                 var cmdArgs = '{' +
                   (sa.handler_args.issue ? 'issue: \'' + escapeJsStr(sa.handler_args.issue) + '\', ' : '') +
