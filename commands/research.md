@@ -128,7 +128,7 @@ gh issue edit $ARGUMENTS --body-file /tmp/issue_body.md
 **JIRA** (requires `jira-cli` by ankitpokhrel):
 ```bash
 echo "<original body + research section>" > /tmp/issue_body.md
-jira issue edit $ARGUMENTS --body "$(cat /tmp/issue_body.md)" --no-input
+cat /tmp/issue_body.md | jira issue edit $ARGUMENTS --no-input
 ```
 
 After writing, verify the research was saved to the description (not as a comment). If verification fails, retry the body edit.
