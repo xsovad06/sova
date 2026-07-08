@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from sova.adapters.base import Task, TaskState
-from sova.config.models import ProjectConfig
+from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transitions
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
@@ -1170,12 +1170,17 @@ class TestCreatePRStep:
         assert gate.passed
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_generates_structured_body(self, mock_create_pr, mock_run, _find) -> None:
+    async def test_execute_generates_structured_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- Add widget\n\nCloses #42", model="sonnet", cost_usd=Decimal("0.01")
+        )
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
@@ -1191,18 +1196,18 @@ class TestCreatePRStep:
         assert ctx.pr_number == 10
         body_arg = mock_create_pr.call_args.kwargs["body"]
         assert "## Summary" in body_arg
-        assert "Add widget" in body_arg
         assert "Closes #42" in body_arg
-        assert "## Context" in body_arg
-        assert "We need a widget" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_includes_closes_for_issue(self, mock_create_pr, mock_run, _find) -> None:
+    async def test_execute_includes_closes_for_issue(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=12, url="https://github.com/x/y/pull/12")
 
         ctx = _make_ctx(branch_name="feat/issue-42")
@@ -1213,15 +1218,24 @@ class TestCreatePRStep:
         assert "Closes #42" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, _find) -> None:
+    async def test_execute_body_includes_commits_and_diff(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.side_effect = [
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
         ]
+        mock_invoke.return_value = LLMResult(
+            text=(
+                "## Summary\n- widget\n\n## Commits\nabc123 feat: add widget\n\n## Files changed\nsrc/app.py | 10 ++++"
+            ),
+            model="sonnet",
+            cost_usd=Decimal("0.01"),
+        )
         mock_create_pr.return_value = MagicMock(number=11, url="https://github.com/x/y/pull/11")
 
         ctx = _make_ctx(
@@ -1240,12 +1254,15 @@ class TestCreatePRStep:
         assert "src/app.py" in body_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
-    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, _find) -> None:
+    async def test_execute_assigns_pr_to_user(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         adapter = _mock_adapter()
@@ -1260,17 +1277,21 @@ class TestCreatePRStep:
         mock_assign.assert_awaited_once_with(10, assignee="xsovad06", repo="", github_user="xsovad06")
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
     @patch("sova.core.steps.create_pr.run")
     @patch("sova.core.steps.create_pr.git_ops.create_pr")
     async def test_execute_skips_assignment_when_no_github_user(
         self,
         mock_create_pr,
         mock_run,
+        mock_invoke,
         _find,
     ) -> None:
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
         ctx = _make_ctx(branch_name="feat/issue-42")
@@ -1324,9 +1345,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01")
-        )
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.side_effect = RuntimeError(
             'a pull request for branch "feat/issue-48809" into branch "master" '
             "already exists: https://github.com/org/repo/pull/3148"
@@ -1352,9 +1371,7 @@ class TestCreatePRStep:
         from sova.llm.models import LLMResult
 
         mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
-        mock_invoke.return_value = LLMResult(
-            text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01")
-        )
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.side_effect = RuntimeError("permission denied")
 
         ctx = _make_ctx(branch_name="feat/issue-42")
@@ -1363,6 +1380,133 @@ class TestCreatePRStep:
 
         assert not result.success
         assert "permission denied" in result.error
+
+
+class TestCreatePRStepJira:
+    """PR creation with JIRA task source -- title prefix and body link."""
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_jira_pr_title_has_ticket_prefix(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="48928", title="Improve parity check log output"),
+            issue_number="48928",
+            branch_name="feat/issue-48928",
+        )
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "[RHCLOUD-48928]" in title_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_jira_pr_body_has_ticket_link(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="48928", title="Improve parity check log output"),
+            issue_number="48928",
+            branch_name="feat/issue-48928",
+        )
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
+        assert "Closes #48928" not in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_jira_fallback_body_has_ticket_link(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.side_effect = RuntimeError("LLM unavailable")
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            task=Task(id="48928", title="Improve parity check log output"),
+            issue_number="48928",
+            branch_name="feat/issue-48928",
+        )
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        body_arg = mock_create_pr.call_args.kwargs["body"]
+        assert "https://issues.redhat.com/browse/RHCLOUD-48928" in body_arg
+        assert "Closes #48928" not in body_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_github_pr_title_unchanged(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """GitHub-backed projects should NOT get a JIRA prefix."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(
+            text="## Summary\n- stuff\n\nCloses #42", model="sonnet", cost_usd=Decimal("0.01")
+        )
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "[" not in title_arg
+        assert "feat(#42)" in title_arg
 
 
 class TestHandoffToReviewerStep:
@@ -2789,6 +2933,7 @@ class TestCreatePRStepIssueless:
     async def test_issueless_pr_title_has_no_issue_ref(self) -> None:
         """Issueless PRs should not include '#(none)' in the title."""
         from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
 
         ctx = _make_ctx(
             issue_number="",
@@ -2803,12 +2948,16 @@ class TestCreatePRStepIssueless:
 
         with (
             patch("sova.core.steps.create_pr.run") as mock_run,
+            patch("sova.core.steps.create_pr.invoke", new_callable=AsyncMock) as mock_invoke,
             patch("sova.core.steps.create_pr.git_ops.create_pr", new_callable=AsyncMock, return_value=pr_info),
         ):
             mock_run.side_effect = [
                 MagicMock(success=True, stdout="abc123 feat: plan\n"),
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
             ]
+            mock_invoke.return_value = LLMResult(
+                text="## Summary\n- Sprint planning", model="sonnet", cost_usd=Decimal("0.01")
+            )
             result = await step.execute(ctx)
 
         assert result.success
@@ -2821,7 +2970,7 @@ class TestCreatePRStepIssueless:
 
         ctx = _make_ctx(issue_number="", run_label="sprint-planning")
         ctx.task = None
-        body = CreatePRStep._build_pr_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
+        body = CreatePRStep._build_fallback_body(ctx, "sprint plan", "abc123 feat: plan", "plan.py | 3 +++")
         assert "Closes" not in body
         assert "sprint plan" in body
 
@@ -2830,7 +2979,7 @@ class TestCreatePRStepIssueless:
         from sova.core.steps.create_pr import CreatePRStep
 
         ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Widget", body="Add widget support"))
-        body = CreatePRStep._build_pr_body(ctx, "Widget", "abc feat", "x.py | 3 +++")
+        body = CreatePRStep._build_fallback_body(ctx, "Widget", "abc feat", "x.py | 3 +++")
         assert "## Context" in body
         assert "Add widget support" in body
         assert "Closes #42" in body
@@ -2841,7 +2990,7 @@ class TestCreatePRStepIssueless:
 
         long_body = "x" * 600
         ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Big", body=long_body))
-        body = CreatePRStep._build_pr_body(ctx, "Big", "abc feat", "x.py | 3 +++")
+        body = CreatePRStep._build_fallback_body(ctx, "Big", "abc feat", "x.py | 3 +++")
         assert "## Context" in body
         assert "..." in body
         assert long_body not in body  # should be truncated
@@ -2851,7 +3000,7 @@ class TestCreatePRStepIssueless:
         from sova.core.steps.create_pr import CreatePRStep
 
         ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body=""))
-        body = CreatePRStep._build_pr_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
+        body = CreatePRStep._build_fallback_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
         assert "## Context" not in body
         assert "Closes #42" in body
 
@@ -2860,7 +3009,7 @@ class TestCreatePRStepIssueless:
         from sova.core.steps.create_pr import CreatePRStep
 
         ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Fix", body="   "))
-        body = CreatePRStep._build_pr_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
+        body = CreatePRStep._build_fallback_body(ctx, "Fix", "abc feat", "x.py | 3 +++")
         assert "## Context" not in body
         assert "Closes #42" in body
 

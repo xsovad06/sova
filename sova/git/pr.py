@@ -185,12 +185,19 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
 
 async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
     result = await run(
-        "gh", "pr", "list",
-        "--repo", repo,
-        "--state", "open",
-        "--search", f"#{issue_num} in:body",
-        "--json", "number,url,body,headRefName",
-        "--limit", "5",
+        "gh",
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "open",
+        "--search",
+        f"#{issue_num} in:body",
+        "--json",
+        "number,url,body,headRefName",
+        "--limit",
+        "5",
         env=env,
     )
     if not result.success:
@@ -203,12 +210,19 @@ async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str])
 async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
     for prefix in ("feat/issue-", "fix/issue-", "issue-"):
         result = await run(
-            "gh", "pr", "list",
-            "--repo", repo,
-            "--state", "open",
-            "--head", f"{prefix}{issue_num}",
-            "--json", "number,url,body,headRefName",
-            "--limit", "1",
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--head",
+            f"{prefix}{issue_num}",
+            "--json",
+            "number,url,body,headRefName",
+            "--limit",
+            "1",
             env=env,
         )
         if not result.success:
