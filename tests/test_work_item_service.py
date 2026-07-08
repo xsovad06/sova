@@ -9,9 +9,11 @@ import pytest
 from sova.dashboard.services.work_item_service import (
     WorkItemState,
     _append_standalone_pr_items,
+    _attach_integration_gates,
     _build_pr_item,
     _build_task_item,
     _extract_handoff_summary,
+    _find_integrate_action,
     _format_pr_details,
     _format_running_agent,
     _get_actions,
@@ -683,3 +685,103 @@ class TestAppendStandalonePrItems:
         _append_standalone_pr_items(items, prs, set(), {}, {})
         assert len(items) == 1
         assert items[0]["issue_number"] == "42"
+
+
+class TestFindIntegrateAction:
+    def test_finds_in_primary(self) -> None:
+        item = {"primary_action": {"id": "integrate", "label": "Integrate"}, "secondary_actions": []}
+        assert _find_integrate_action(item) is not None
+        assert _find_integrate_action(item)["id"] == "integrate"
+
+    def test_finds_in_secondary(self) -> None:
+        item = {
+            "primary_action": {"id": "review_pr", "label": "Review"},
+            "secondary_actions": [{"id": "integrate", "label": "Integrate"}],
+        }
+        assert _find_integrate_action(item) is not None
+        assert _find_integrate_action(item)["id"] == "integrate"
+
+    def test_returns_none_when_absent(self) -> None:
+        item = {
+            "primary_action": {"id": "review_pr", "label": "Review"},
+            "secondary_actions": [{"id": "address_pr", "label": "Address"}],
+        }
+        assert _find_integrate_action(item) is None
+
+    def test_returns_none_for_no_actions(self) -> None:
+        item = {"primary_action": None, "secondary_actions": []}
+        assert _find_integrate_action(item) is None
+
+
+# ---------------------------------------------------------------------------
+# _attach_integration_gates
+# ---------------------------------------------------------------------------
+
+
+class TestAttachIntegrationGates:
+    @pytest.mark.asyncio
+    async def test_gate_check_failure_sets_failed_result(self, monkeypatch) -> None:
+        """When check_integration_gates raises, gate_result should fail-closed."""
+        from sova.config.models import IntegrationGatesConfig, ProjectConfig
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            github_user="testuser",
+            integration_gates=IntegrationGatesConfig(ci_passed=True),
+        )
+        item = {
+            "issue_number": "42",
+            "pr_details": {"number": 1, "ci_status": "passed"},
+            "primary_action": {"id": "integrate", "label": "Integrate PR"},
+            "secondary_actions": [],
+        }
+
+        async def _boom(**kwargs):
+            raise RuntimeError("gate explosion")
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service.check_integration_gates",
+            _boom,
+        )
+        await _attach_integration_gates([item], {}, cfg)
+        action = _find_integrate_action(item)
+        assert action is not None
+        assert action["gate_result"]["passed"] is False
+
+    @pytest.mark.asyncio
+    async def test_skips_when_config_none(self) -> None:
+        """When config is None, gates are not attached."""
+        item = {
+            "issue_number": "42",
+            "primary_action": {"id": "integrate", "label": "Integrate PR"},
+            "secondary_actions": [],
+        }
+        await _attach_integration_gates([item], {}, None)
+        action = _find_integrate_action(item)
+        assert "gate_result" not in action
+
+
+class TestGetWorkItemsConfigLoadFailure:
+    @pytest.mark.asyncio
+    async def test_config_load_failure_logs_warning(self, monkeypatch, tmp_path) -> None:
+        """Config load failure should log a warning, not silently swallow."""
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=None),
+        )
+
+        def _boom(_path):
+            raise RuntimeError("config broken")
+
+        monkeypatch.setattr("sova.config.loader.load_config", _boom)
+
+        with patch("sova.dashboard.services.work_item_service.log") as mock_log:
+            result = await get_work_items(project_dir=tmp_path)
+            mock_log.warning.assert_called_once()
+            assert "config_load_failed" in str(mock_log.warning.call_args)
+
+        assert result["items"] == []

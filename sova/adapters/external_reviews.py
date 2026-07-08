@@ -322,6 +322,7 @@ class _ThreadsResult:
 
 
 _DEFAULT_CODERABBIT_AUTHORS = frozenset({"coderabbitai", "coderabbitai[bot]", "coderabbit[bot]"})
+DEFAULT_CODERABBIT_AUTHORS = _DEFAULT_CODERABBIT_AUTHORS
 
 
 async def _fetch_coderabbit_threads(
