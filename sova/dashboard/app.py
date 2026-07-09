@@ -26,6 +26,7 @@ from sova.dashboard.routers import (
     control,
     costs,
     dependencies,
+    feed,
     handoff,
     lifecycle,
     logs,
@@ -553,3 +554,4 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(prs.router, prefix=prefix)
     app.include_router(quota.router, prefix=prefix)
     app.include_router(dependencies.router, prefix=prefix)
+    app.include_router(feed.router, prefix=prefix)

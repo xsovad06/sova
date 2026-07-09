@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sova.dashboard.services.feed_service import emit_safe
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -166,6 +167,13 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 action_id=action.id,
                 mode=action.mode,
                 issue=handoff.issue,
+            )
+
+            issue_label = f"#{handoff.issue}" if handoff.issue else "Agent"
+            emit_safe(
+                f"{issue_label}: auto-handoff to {action.id}",
+                category="handoff",
+                metadata={"action_id": action.id, "issue": handoff.issue, "run_id": agent.run_id},
             )
 
             handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)

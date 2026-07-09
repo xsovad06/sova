@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
+from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.agent_db")
@@ -158,6 +159,24 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     _apply_file_handoff(task_run, file_handoff, run_id)
 
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
+
+        issue = agent.issue
+        label = f"#{issue}" if issue else "Agent"
+        role_label = (agent.role or "agent").capitalize()
+        sev = (
+            FeedEventSeverity.error
+            if status == "failed"
+            else FeedEventSeverity.warning
+            if status in ("interrupted", "paused")
+            else FeedEventSeverity.success
+        )
+        emit_safe(
+            f"{label} {role_label} {status}",
+            severity=sev,
+            detail=f"Exit code: {exit_code}" if exit_code != 0 else None,
+            category="agent",
+            metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": float(cost)},
+        )
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
 
