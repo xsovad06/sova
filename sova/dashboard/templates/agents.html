@@ -996,7 +996,7 @@ function renderCompletedCard(agent) {
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
   var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role));
 
-  var rerunBtn = '<button onclick="event.stopPropagation(); rerunAgent(\'' + escapeHtml(agent.issue) + '\', \'' + escapeHtml(agent.role) + '\', ' + (agent.pr_number || 'null') + ')" ' +
+  var rerunBtn = '<button onclick="event.stopPropagation(); rerunAgent(\'' + escapeJsStr(String(agent.issue)) + '\', \'' + escapeJsStr(agent.role || '') + '\', ' + (parseInt(agent.pr_number, 10) || 'null') + ')" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>';
 
   var isPlanner = agent.role === 'planner';
@@ -1327,7 +1327,7 @@ async function checkInterrupted() {
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {
-        return '<button onclick="restartInterrupted(\'' + escapeHtml(r.issue_number) + '\', \'' + escapeHtml(formatRole(r.role)) + '\')" ' +
+        return '<button onclick="restartInterrupted(\'' + escapeJsStr(String(r.issue_number)) + '\', \'' + escapeJsStr(formatRole(r.role)) + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">' +
           '#' + escapeHtml(r.issue_number) + ' ' + escapeHtml(formatRole(r.role)) +
         '</button>';
@@ -1834,7 +1834,7 @@ async function loadKanban() {
           var issueText = run.issue_number ? '#' + escapeHtml(String(run.issue_number)) : escapeHtml(run.role || 'command');
 
           var rerunHtml = run.issue_number
-            ? '<button onclick="event.preventDefault(); event.stopPropagation(); rerunAgent(\'' + escapeHtml(String(run.issue_number)) + '\', \'' + escapeHtml(run.role || '') + '\', ' + (run.pr_number || 'null') + ')" ' +
+            ? '<button onclick="event.preventDefault(); event.stopPropagation(); rerunAgent(\'' + escapeJsStr(String(run.issue_number)) + '\', \'' + escapeJsStr(run.role || '') + '\', ' + (parseInt(run.pr_number, 10) || 'null') + ')" ' +
               'class="px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors flex-shrink-0">Re-run</button>'
             : '';
 

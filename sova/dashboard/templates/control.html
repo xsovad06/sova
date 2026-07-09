@@ -367,7 +367,7 @@ function renderActionButtons(actions, targetEl, variant) {
   targetEl.innerHTML = actions.map(function(action) {
     var style = actionStyles[action.style] || actionStyles.neutral;
     if (variant === 'full') {
-      return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+      return '<button onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
         'class="flex flex-col items-start px-4 py-3 rounded-lg transition-colors ' + style.btn + ' min-w-[140px]" ' +
         'data-tooltip="' + escapeHtml(action.description) + '">' +
         '<div class="flex items-center gap-2 mb-1">' +
@@ -377,7 +377,7 @@ function renderActionButtons(actions, targetEl, variant) {
         '<span class="text-xs opacity-70 text-left">' + escapeHtml(action.description) + '</span>' +
         '</button>';
     }
-    return '<button onclick="executeHandoffAction(\'' + escapeHtml(action.id) + '\')" ' +
+    return '<button onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
       'class="px-3 py-1.5 rounded text-xs transition-colors ' + style.btn + '" ' +
       'data-tooltip="' + escapeHtml(action.description) + '">' +
       escapeHtml(action.label) + '</button>';
