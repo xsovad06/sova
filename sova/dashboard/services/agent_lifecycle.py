@@ -91,6 +91,7 @@ from sova.dashboard.services.agent_validation import (
 from sova.dashboard.services.agent_validation import (
     _transition_to_in_progress as _transition_to_in_progress,
 )
+from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
 from sova.ipc.runtime import get_runtime
 from sova.utils.formatting import decimal_to_json
@@ -430,6 +431,15 @@ async def start_agent(
         transition_task.add_done_callback(_background_tasks.discard)
 
     log.info("agent.started", issue=issue, pid=pid, run_id=run_id, cwd=str(cwd))
+
+    label = f"#{issue}" if issue else "Agent"
+    role_label = (role or "developer").capitalize()
+    emit_safe(
+        f"{label} {role_label} started",
+        category="agent",
+        metadata={"run_id": run_id, "issue": issue, "role": role or "developer"},
+    )
+
     return {"status": "started", "pid": pid, "run_id": run_id}
 
 

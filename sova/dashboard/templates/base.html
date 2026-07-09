@@ -36,21 +36,11 @@
           {% endif %}
         </div>
       </a>
-      <!-- Notification bell -->
-      <button id="notif-bell" onclick="toggleNotifPanel()" class="notif-bell absolute top-4 right-3" aria-label="Notifications" data-tooltip="Notifications">
+      <!-- Activity feed toggle -->
+      <button id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" data-tooltip="Activity Feed">
         {{ icon("bell", "w-5 h-5 text-gray-500 hover:text-gray-300 transition-colors") }}
-        <span id="notif-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-[9px] text-white flex items-center justify-center font-bold">0</span>
+        <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-[9px] text-white flex items-center justify-center font-bold">0</span>
       </button>
-      <!-- Notification panel -->
-      <div id="notif-panel" class="hidden absolute left-full top-0 ml-1 w-80 bg-surface-card border border-gray-700/50 rounded-lg shadow-xl z-[60] overflow-hidden">
-        <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
-          <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Notifications</span>
-          <button onclick="clearNotifBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Clear all</button>
-        </div>
-        <div id="notif-list" class="max-h-80 overflow-y-auto">
-          <p class="text-xs text-gray-500 text-center py-6">No notifications</p>
-        </div>
-      </div>
       {% if project_slug is defined and project_slug %}
       <a href="/" class="sidebar-hide text-xs text-gray-500 hover:text-gray-300 transition-colors mt-1 inline-block">&larr; Switch project</a>
       {% endif %}
@@ -112,8 +102,19 @@
     </div>
   </nav>
 
+  <!-- Activity feed panel (outside sidebar to avoid overflow clipping) -->
+  <aside id="feed-panel" class="feed-panel hidden">
+    <div class="feed-panel-header">
+      <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Activity Feed</span>
+      <button onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Mark read</button>
+    </div>
+    <div id="feed-list" class="feed-panel-body">
+      <p class="text-xs text-gray-500 text-center py-6">No activity yet</p>
+    </div>
+  </aside>
+
   <!-- Main content -->
-  <main class="sidebar-main flex-1 p-8 min-h-screen">
+  <main id="main-content" class="sidebar-main flex-1 p-8 min-h-screen">
     <!-- Browser notification permission banner -->
     <div id="notif-permission-banner" class="hidden bg-accent/10 border border-accent/30 rounded-lg px-4 py-3 mb-6 flex items-center justify-between">
       <div class="flex items-center gap-2 text-sm text-accent">

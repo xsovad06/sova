@@ -333,39 +333,7 @@ function visibilityAwarePoll(fn, intervalMs) {
    7. SIDEBAR POLLING & NOTIFICATIONS
    ============================================================ */
 
-var _notifItems = [];
 var _lastHandoffState = null;
-var _notifiedHandoffIds = {};
-var _notifiedRunIds = {};
-var _dismissedTimestamps = {};
-var _DISMISSED_STORAGE_KEY = 'sova_dismissed_runs';
-var _NOTIFIED_HANDOFFS_KEY = 'sova_notified_handoffs';
-var _DISMISSED_TTL_MS = 120000;
-
-function _loadDismissedRuns() {
-  try {
-    var raw = localStorage.getItem(_DISMISSED_STORAGE_KEY);
-    if (!raw) return;
-    var map = JSON.parse(raw);
-    var now = Date.now();
-    Object.keys(map).forEach(function(k) {
-      if (now - map[k] < _DISMISSED_TTL_MS) {
-        _notifiedRunIds[k] = true;
-        _dismissedTimestamps[k] = map[k];
-      }
-    });
-  } catch (e) { /* ignore corrupt data */ }
-}
-
-function _saveDismissedRuns() {
-  try {
-    var now = Date.now();
-    Object.keys(_notifiedRunIds).forEach(function(k) {
-      if (!_dismissedTimestamps[k]) _dismissedTimestamps[k] = now;
-    });
-    localStorage.setItem(_DISMISSED_STORAGE_KEY, JSON.stringify(_dismissedTimestamps));
-  } catch (e) { /* ignore */ }
-}
 
 function _dotClass(color, animate) {
   return 'absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ' + color + ' border-2 border-sidebar' + (animate ? ' animate-pulse' : '');
@@ -375,12 +343,11 @@ var _activityPollInterval = null;
 var _handoffPollInterval = null;
 
 function startSidebarPolling() {
-  _loadDismissedRuns();
-  _loadNotifiedHandoffs();
   _pollActivity();
   _pollHandoff();
   _activityPollInterval = setInterval(_pollActivity, 3000);
   _handoffPollInterval = setInterval(_pollHandoff, 5000);
+  _initFeedSSE();
 }
 
 document.addEventListener('visibilitychange', function() {
@@ -410,27 +377,6 @@ async function _pollActivity() {
     dot.className = running
       ? _dotClass('bg-accent', true)
       : _dotClass('bg-accent-green', false);
-
-    var completed = data.completed || [];
-    var hadNew = false;
-    completed.forEach(function(agent) {
-      if (_notifiedRunIds[agent.run_id]) return;
-      _notifiedRunIds[agent.run_id] = true;
-      hadNew = true;
-
-      var label = agent.issue ? '#' + agent.issue : 'Agent';
-      var role = agent.role ? ' ' + agent.role.charAt(0).toUpperCase() + agent.role.slice(1) : '';
-      var pr = agent.pr_number ? ' (PR #' + agent.pr_number + ')' : '';
-
-      if (agent.status === 'failed' || agent.status === 'paused') {
-        var hint = agent.status === 'paused' ? 'needs attention' : 'check logs';
-        _addNotification(label + role + ' ' + agent.status + pr + ' -- ' + hint, 'warning');
-      } else {
-        var cost = agent.cost_usd ? ' $' + parseFloat(agent.cost_usd).toFixed(2) : '';
-        _addNotification(label + role + ' completed' + pr + cost, 'info');
-      }
-    });
-    if (hadNew) _saveDismissedRuns();
   } catch (e) {
     var dot = document.getElementById('activity-dot');
     if (dot) dot.className = _dotClass('bg-gray-500', false);
@@ -454,64 +400,100 @@ async function _pollHandoff() {
       var dot = document.getElementById('activity-dot');
       if (dot) dot.className = _dotClass('bg-accent-yellow', true);
       _lastHandoffState = 'awaiting';
-
-      var hadNew = false;
-      handoffs.forEach(function(h) {
-        var hid = h.id || ('issue-' + (h.issue || 'unknown'));
-        if (_notifiedHandoffIds[hid]) return;
-        _notifiedHandoffIds[hid] = true;
-        hadNew = true;
-        var label = h.issue ? '#' + h.issue : 'Agent';
-        _addNotification(label + ': action required', 'warning');
-      });
-      if (hadNew) _saveNotifiedHandoffs();
     } else {
       banner.classList.add('hidden');
       if (!data.has_handoff) {
         _lastHandoffState = null;
-        _notifiedHandoffIds = {};
-        _saveNotifiedHandoffs();
       }
     }
   } catch (e) { /* ignore */ }
 }
 
-function _loadNotifiedHandoffs() {
-  try {
-    var raw = localStorage.getItem(_NOTIFIED_HANDOFFS_KEY);
-    if (!raw) return;
-    _notifiedHandoffIds = JSON.parse(raw);
-  } catch (e) { /* ignore */ }
+/* ============================================================
+   7b. ACTIVITY FEED (SSE)
+   ============================================================ */
+
+var _feedEvents = [];
+var _feedUnread = 0;
+var _feedLastId = 0;
+var _feedSeenIds = {};
+var _feedEventSource = null;
+var _feedPanelOpen = false;
+var _feedRenderPending = false;
+var _FEED_MAX_EVENTS = 500;
+
+function _initFeedSSE() {
+  var url = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/api/feed/stream';
+  _feedEventSource = new EventSource(url);
+
+  _feedEventSource.addEventListener('feed', function(e) {
+    try {
+      var event = JSON.parse(e.data);
+      _feedAddEvent(event);
+    } catch (err) { /* ignore parse errors */ }
+  });
+
+  _feedEventSource.addEventListener('open', function() {
+    if (_feedLastId > 0) {
+      _feedGapFill();
+    }
+  });
+
+  _feedEventSource.addEventListener('error', function() {
+    // EventSource auto-reconnects; no action needed
+  });
 }
 
-function _saveNotifiedHandoffs() {
-  try {
-    localStorage.setItem(_NOTIFIED_HANDOFFS_KEY, JSON.stringify(_notifiedHandoffIds));
-  } catch (e) { /* ignore */ }
+function _feedGapFill() {
+  var url = apiUrl('/feed/history?since_id=' + _feedLastId);
+  fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    var events = data.events || [];
+    events.forEach(function(event) {
+      if (event.id > _feedLastId) {
+        _feedAddEvent(event);
+      }
+    });
+  }).catch(function() { /* ignore */ });
 }
 
-function _addNotification(message, type, details) {
-  var item = { message: message, type: type, time: new Date() };
-  if (details && details.length > 0) item.details = details;
-  _notifItems.unshift(item);
-  if (_notifItems.length > 20) _notifItems.pop();
-  _updateNotifBadge();
-  _renderNotifList();
-  showToast(message, type);
-  var browserTitle = type === 'warning' ? 'SOVA -- Action Required' : 'SOVA';
-  var browserBody = message;
-  if (details && details.length > 0) {
-    browserBody += '\n' + details.map(function(d) { return d.text; }).join('\n');
+function _feedAddEvent(event) {
+  // Dedup by ID (set handles out-of-order gap-fill events)
+  if (_feedSeenIds[event.id]) return;
+  _feedSeenIds[event.id] = true;
+  if (event.id > _feedLastId) _feedLastId = event.id;
+  _feedEvents.push(event);
+  if (_feedEvents.length > _FEED_MAX_EVENTS) {
+    _feedEvents.shift();
   }
-  sendBrowserNotification(browserTitle, browserBody);
+
+  if (!_feedPanelOpen) {
+    _feedUnread++;
+    _updateFeedBadge();
+  }
+
+  // Toast + browser notification for non-info events
+  if (event.severity !== 'info') {
+    showToast(event.title, event.severity);
+    var browserTitle = event.severity === 'error' ? 'SOVA -- Error' :
+                       event.severity === 'warning' ? 'SOVA -- Warning' : 'SOVA';
+    sendBrowserNotification(browserTitle, event.title);
+  }
+
+  // Coalesce DOM updates with rAF
+  if (!_feedRenderPending) {
+    _feedRenderPending = true;
+    requestAnimationFrame(function() {
+      _feedRenderPending = false;
+      _renderFeedList();
+    });
+  }
 }
 
-function _updateNotifBadge() {
-  var badge = document.getElementById('notif-badge');
+function _updateFeedBadge() {
+  var badge = document.getElementById('feed-badge');
   if (!badge) return;
-  var count = _notifItems.length;
-  if (count > 0) {
-    badge.textContent = count > 9 ? '9+' : String(count);
+  if (_feedUnread > 0) {
+    badge.textContent = _feedUnread > 9 ? '9+' : String(_feedUnread);
     badge.classList.remove('hidden');
     badge.classList.add('flex');
   } else {
@@ -520,55 +502,66 @@ function _updateNotifBadge() {
   }
 }
 
-function _renderNotifList() {
-  var list = document.getElementById('notif-list');
+function _renderFeedList() {
+  var list = document.getElementById('feed-list');
   if (!list) return;
-  if (_notifItems.length === 0) {
-    list.innerHTML = '<p class="text-xs text-gray-500 text-center py-6">No notifications</p>';
+  if (_feedEvents.length === 0) {
+    list.innerHTML = '<p class="text-xs text-gray-500 text-center py-6">No activity yet</p>';
     return;
   }
-  list.innerHTML = _notifItems.map(function(n) {
-    var borderColor = n.type === 'warning' ? 'border-l-accent-yellow' :
-                      n.type === 'error'   ? 'border-l-accent-red' :
-                                              'border-l-accent';
-    var timeStr = n.time.toLocaleTimeString();
-    var detailsHtml = '';
-    if (n.details && n.details.length > 0) {
-      detailsHtml = '<div class="mt-1.5 space-y-0.5">' +
-        n.details.map(function(d) {
-          var color = d.failed ? 'text-accent-red' : 'text-gray-400';
-          return '<p class="text-xs ' + color + '">' + escapeHtml(d.text) + '</p>';
-        }).join('') +
-      '</div>';
+  list.innerHTML = _feedEvents.map(function(e) {
+    var borderColor = e.severity === 'error'   ? 'border-l-accent-red' :
+                      e.severity === 'warning' ? 'border-l-accent-yellow' :
+                      e.severity === 'success' ? 'border-l-accent-green' :
+                                                  'border-l-accent';
+    var timeStr = new Date(e.timestamp * 1000).toLocaleTimeString();
+    var categoryBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-gray-500">' + escapeHtml(e.category) + '</span>';
+    var detailHtml = '';
+    if (e.detail) {
+      detailHtml = '<details class="mt-1"><summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Details</summary>' +
+        '<p class="text-xs text-gray-400 mt-1 whitespace-pre-wrap">' + escapeHtml(e.detail) + '</p></details>';
+    }
+    var metaHtml = '';
+    if (e.metadata && e.metadata.cost_usd != null) {
+      metaHtml = '<span class="text-xs text-accent-green ml-2">$' + parseFloat(e.metadata.cost_usd || 0).toFixed(2) + '</span>';
     }
     return '<div class="px-4 py-3 border-b border-gray-700/30 last:border-0 border-l-2 ' + borderColor + ' hover:bg-surface-hover/50 transition-colors">' +
-      '<p class="text-sm text-gray-200">' + escapeHtml(n.message) + '</p>' +
-      detailsHtml +
+      '<div class="flex items-center justify-between gap-2">' +
+        '<p class="text-sm text-gray-200 flex-1 min-w-0">' + escapeHtml(e.title) + metaHtml + '</p>' +
+        categoryBadge +
+      '</div>' +
+      detailHtml +
       '<p class="text-xs text-gray-500 mt-1">' + timeStr + '</p>' +
     '</div>';
   }).join('');
+
+  // Auto-scroll to bottom (newest)
+  list.scrollTop = list.scrollHeight;
 }
 
-function toggleNotifPanel() {
-  var panel = document.getElementById('notif-panel');
-  if (panel) panel.classList.toggle('hidden');
-}
+function toggleFeedPanel() {
+  var panel = document.getElementById('feed-panel');
+  var main = document.getElementById('main-content');
+  if (!panel) return;
 
-function clearNotifBadge() {
-  _notifItems = [];
-  _saveDismissedRuns();
-  _updateNotifBadge();
-  _renderNotifList();
-}
+  _feedPanelOpen = !_feedPanelOpen;
 
-// Click-outside to close notification panel
-document.addEventListener('click', function(e) {
-  var panel = document.getElementById('notif-panel');
-  var bell = document.getElementById('notif-bell');
-  if (panel && !panel.classList.contains('hidden') && !panel.contains(e.target) && bell && !bell.contains(e.target)) {
+  if (_feedPanelOpen) {
+    panel.classList.remove('hidden');
+    if (main) main.classList.add('feed-panel-push');
+    _feedUnread = 0;
+    _updateFeedBadge();
+    _renderFeedList();
+  } else {
     panel.classList.add('hidden');
+    if (main) main.classList.remove('feed-panel-push');
   }
-});
+}
+
+function clearFeedBadge() {
+  _feedUnread = 0;
+  _updateFeedBadge();
+}
 
 /* ============================================================
    8. PR & ISSUE LINK HELPERS
@@ -732,20 +725,7 @@ async function _pollGlobalBatch() {
         progressBar.classList.add('bg-accent-green');
       }
 
-      var details = data.results
-        .filter(function(r) { return r.status !== 'pending' && r.status !== 'running'; })
-        .map(function(r) {
-          var prefix = '#' + r.issue_id;
-          if (r.status === 'failed') {
-            return { text: prefix + ' failed' + (r.detail ? ' -- ' + r.detail : ''), failed: true };
-          } else if (r.status === 'skipped') {
-            return { text: prefix + ' skipped' + (r.detail ? ' -- ' + r.detail : ''), failed: false };
-          } else {
-            return { text: prefix + (r.detail ? ' -- ' + r.detail : ' done'), failed: false };
-          }
-        });
-
-      _addNotification(summary, failed > 0 ? 'warning' : 'info', details);
+      showToast(summary, failed > 0 ? 'warning' : 'info');
 
       setTimeout(function() {
         _clearGlobalBatch();

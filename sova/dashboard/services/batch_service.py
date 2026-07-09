@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION
 from sova.utils.logging import get_logger
 
@@ -129,6 +130,13 @@ def start_batch(
             r.detail = f"Unknown action: {action}"
 
     log.info("batch.started", batch_id=batch_id, action=action, count=len(issue_ids), concurrency=concurrency)
+
+    emit_safe(
+        f"Batch {action} started ({len(issue_ids)} issues)",
+        category="batch",
+        metadata={"batch_id": batch_id, "action": action, "count": len(issue_ids)},
+    )
+
     return batch_id
 
 
@@ -229,6 +237,16 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         job.completed_at = datetime.now(timezone.utc)
         _prune_completed()
         log.info("batch.completed", batch_id=job.batch_id, status=job.status)
+
+        failed = sum(1 for r in job.results if r.status == "failed")
+        sev = FeedEventSeverity.warning if failed else FeedEventSeverity.success
+        total = len(job.results)
+        emit_safe(
+            f"Batch triage completed: {total - failed}/{total} succeeded",
+            severity=sev,
+            category="batch",
+            metadata={"batch_id": job.batch_id, "failed": failed, "total": total},
+        )
 
 
 async def _run_batch_harden(
@@ -332,3 +350,13 @@ async def _run_batch_harden(
         job.completed_at = datetime.now(timezone.utc)
         _prune_completed()
         log.info("batch.completed", batch_id=job.batch_id, status=job.status)
+
+        failed = sum(1 for r in job.results if r.status == "failed")
+        sev = FeedEventSeverity.warning if failed else FeedEventSeverity.success
+        total = len(job.results)
+        emit_safe(
+            f"Batch harden completed: {total - failed}/{total} succeeded",
+            severity=sev,
+            category="batch",
+            metadata={"batch_id": job.batch_id, "failed": failed, "total": total},
+        )
