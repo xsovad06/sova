@@ -447,6 +447,9 @@ function _initFeedSSE() {
 function _feedGapFill() {
   var url = apiUrl('/feed/history?since_id=' + _feedLastId);
   fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.gap_detected) {
+      showToast('Activity feed gap detected -- some events were missed', 'warning');
+    }
     var events = data.events || [];
     events.forEach(function(event) {
       if (event.id > _feedLastId) {
@@ -515,7 +518,7 @@ function _renderFeedList() {
                       e.severity === 'warning' ? 'border-l-accent-yellow' :
                       e.severity === 'success' ? 'border-l-accent-green' :
                                                   'border-l-accent';
-    var timeStr = new Date(e.timestamp * 1000).toLocaleTimeString();
+    var timeStr = (typeof e.timestamp === 'number') ? new Date(e.timestamp * 1000).toLocaleTimeString() : 'Unknown time';
     var categoryBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-hover text-gray-500">' + escapeHtml(e.category) + '</span>';
     var detailHtml = '';
     if (e.detail) {

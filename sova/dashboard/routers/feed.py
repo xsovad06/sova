@@ -52,5 +52,8 @@ async def feed_history(
     since_id: int = Query(0, ge=0),
 ) -> dict:
     """Return buffered events after the given ID (for reconnection gap-fill)."""
-    events = feed.history(since_id=since_id)
-    return {"events": [e.to_dict() for e in events]}
+    events, gap = feed.history(since_id=since_id)
+    result: dict = {"events": [e.to_dict() for e in events]}
+    if gap:
+        result["gap_detected"] = True
+    return result
