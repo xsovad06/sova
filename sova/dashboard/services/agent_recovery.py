@@ -94,9 +94,11 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
         interrupted = []
 
+        _SKIP_RECOVERY = _TERMINAL | {"paused"}
+
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
-                stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL))
+                stmt = select(TaskRun).where(TaskRun.status.notin_(_SKIP_RECOVERY))
                 result = await session.execute(stmt)
                 stale_runs = result.scalars().all()
 
