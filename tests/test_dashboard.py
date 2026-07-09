@@ -3506,6 +3506,40 @@ class TestGetRecentFailedRunsDirect:
         assert result[0]["run_label"] == "review-pr #55"
 
 
+class TestCalculateDurationMs:
+    """Unit tests for _calculate_duration_ms helper."""
+
+    def test_both_none(self) -> None:
+        from sova.dashboard.services.work_service import _calculate_duration_ms
+
+        assert _calculate_duration_ms(None, None) is None
+
+    def test_started_none(self) -> None:
+        from sova.dashboard.services.work_service import _calculate_duration_ms
+
+        assert _calculate_duration_ms(None, datetime.now(timezone.utc)) is None
+
+    def test_ended_none(self) -> None:
+        from sova.dashboard.services.work_service import _calculate_duration_ms
+
+        assert _calculate_duration_ms(datetime.now(timezone.utc), None) is None
+
+    def test_naive_datetimes(self) -> None:
+        from sova.dashboard.services.work_service import _calculate_duration_ms
+
+        start = datetime(2026, 1, 1, 12, 0, 0)
+        end = datetime(2026, 1, 1, 12, 0, 10)
+        assert _calculate_duration_ms(start, end) == 10_000
+
+    def test_aware_datetimes(self) -> None:
+        from sova.dashboard.services.work_service import _calculate_duration_ms
+
+        start = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
+        assert _calculate_duration_ms(start, end) == 300_000
+
+
+
 class TestGetKanbanColumnsDirect:
     """Direct unit tests for get_kanban_columns (bypasses API router)."""
 
