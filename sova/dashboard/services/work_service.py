@@ -594,10 +594,12 @@ async def get_recent_failed_runs(
 ) -> list[dict]:
     """Get recently failed runs for the kanban 'Recently Failed' column."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    # Use COALESCE so crashed runs with NULL ended_at fall back to started_at
+    effective_time = func.coalesce(TaskRun.ended_at, TaskRun.started_at)
     stmt = (
         select(TaskRun)
-        .where(TaskRun.status == "failed", TaskRun.ended_at >= cutoff)
-        .order_by(TaskRun.ended_at.desc())
+        .where(TaskRun.status == "failed", effective_time >= cutoff)
+        .order_by(effective_time.desc())
         .limit(limit)
     )
     result = await session.execute(stmt)
