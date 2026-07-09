@@ -173,6 +173,17 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 if not task_run.handoff_json:
                     _apply_file_handoff(task_run, file_handoff, run_id)
 
+                # Cancel pending PR queue entry on any terminal transition.
+                # A "done" run may still have a PENDING entry if the queue
+                # processor hasn't reached it yet; leaving it would cause
+                # a duplicate PR creation attempt.
+                try:
+                    from sova.supervisor.pr_throttle import dequeue as pr_dequeue
+
+                    await pr_dequeue(session, task_run_id=run_id)
+                except Exception:
+                    log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
+
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
         _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
     except Exception:
