@@ -83,7 +83,7 @@ class FeedService:
         self._next_id += 1
         self._buffer.append(event)
 
-        for queue in list(self._subscribers.values()):
+        for queue in self._subscribers.values():
             try:
                 queue.put_nowait(event)
             except asyncio.QueueFull:
@@ -138,4 +138,4 @@ def emit_safe(
             metadata=metadata,
         )
     except Exception:
-        pass
+        log.debug("feed.emit_safe_failed", exc_info=True)

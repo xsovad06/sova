@@ -37,7 +37,7 @@
         </div>
       </a>
       <!-- Activity feed toggle -->
-      <button id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" data-tooltip="Activity Feed">
+      <button type="button" id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" data-tooltip="Activity Feed">
         {{ icon("bell", "w-5 h-5 text-gray-500 hover:text-gray-300 transition-colors") }}
         <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-[9px] text-white flex items-center justify-center font-bold">0</span>
       </button>
@@ -106,7 +106,7 @@
   <aside id="feed-panel" class="feed-panel hidden">
     <div class="feed-panel-header">
       <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Activity Feed</span>
-      <button onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Mark read</button>
+      <button type="button" onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Mark read</button>
     </div>
     <div id="feed-list" class="feed-panel-body">
       <p class="text-xs text-gray-500 text-center py-6">No activity yet</p>
