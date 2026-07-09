@@ -96,8 +96,6 @@ async def _resolve_command_context(safe_args: dict, command: str, project_dir: P
     if not issue:
         if raw_pr is not None:
             issue = await _resolve_issue_from_pr(raw_pr, project_dir)
-        if not issue:
-            issue = command
     return pr_number, issue
 
 
