@@ -409,6 +409,82 @@ class TestQuotaAPI:
                 resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 500
 
+    async def test_pr_queue_disabled(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/quota/pr-queue")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is False
+        assert data["pending"] == 0
+        assert data["entries"] == []
+
+    async def test_pr_queue_error_returns_500(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+        )
+        app = create_app()
+        with (
+            patch("sova.dashboard.routers.quota.load_config", return_value=cfg),
+            patch("sova.dashboard.routers.quota.get_session", new_callable=AsyncMock, side_effect=RuntimeError("db")),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/pr-queue")
+        assert resp.status_code == 500
+
+    async def test_pr_queue_enabled_with_entries(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.config.models import ProjectConfig
+        from sova.dashboard.app import create_app
+        from sova.db.models import PRCreationQueue, PRQueueStatus, TaskRun
+        from sova.db.session import get_session
+
+        # Seed a TaskRun and a PR queue entry
+        async with await get_session() as session:
+            async with session.begin():
+                tr = TaskRun(issue_number="42", role="developer", status="running")
+                session.add(tr)
+                await session.flush()
+                entry = PRCreationQueue(
+                    task_run_id=tr.id,
+                    issue_number="42",
+                    title="test PR",
+                    body="body",
+                    base_branch="main",
+                    head_branch="feat/test",
+                    repo="owner/repo",
+                    status=PRQueueStatus.PENDING,
+                    project_slug="owner/repo",
+                )
+                session.add(entry)
+
+        cfg = ProjectConfig(
+            github_repo="owner/repo",
+            coderabbit_quota=CodeRabbitQuotaConfig(enabled=True),
+        )
+        app = create_app()
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/pr-queue")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled"] is True
+        assert data["pending"] == 1
+        assert len(data["entries"]) == 1
+        assert data["entries"][0]["issue_number"] == "42"
+        assert data["entries"][0]["status"] == PRQueueStatus.PENDING
+
 
 # ---------------------------------------------------------------------------
 # Config loader integration

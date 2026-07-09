@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from typing import TYPE_CHECKING
 
 from sova.adapters.base import TaskState
 from sova.config.models import TaskSourceConfig
@@ -14,6 +15,9 @@ from sova.llm.client import invoke
 from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 log = get_logger(component="step.create_pr")
 
@@ -108,6 +112,7 @@ class CreatePRStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.create_pr", label=ctx.display_label, branch=ctx.branch_name)
 
+        # Adopted PR skips throttle (edge case 5)
         adopted = await self._try_adopt_existing_pr(ctx)
         if adopted:
             return adopted
@@ -120,6 +125,13 @@ class CreatePRStep(BaseStep):
         )
         body = await self._generate_pr_body(ctx, task_title)
 
+        if ctx.config.coderabbit_quota.enabled:
+            return await self._create_pr_throttled(ctx, title, body)
+
+        return await self._create_pr_immediate(ctx, title, body)
+
+    async def _create_pr_immediate(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
+        """Create PR directly (no throttle)."""
         try:
             pr_info = await git_ops.create_pr(
                 title=title,
@@ -137,6 +149,54 @@ class CreatePRStep(BaseStep):
             if adopted:
                 return adopted
             return StepResult(success=False, summary="Failed to create PR", error=str(exc))
+
+    async def _create_pr_throttled(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
+        """Enqueue PR creation and poll until the background processor creates it."""
+        from sova.db.session import get_session
+        from sova.supervisor.pr_throttle import enqueue, poll_until_created
+
+        if ctx.task_run_id is None:
+            log.warning("step.create_pr.no_task_run_id_for_throttle")
+            return await self._create_pr_immediate(ctx, title, body)
+
+        try:
+            async with await get_session(project_dir=ctx.project_dir) as session:
+                async with session.begin():
+                    entry_id = await enqueue(
+                        session,
+                        task_run_id=ctx.task_run_id,
+                        issue_number=ctx.issue_number if ctx.has_issue else None,
+                        title=title,
+                        body=body,
+                        base_branch=ctx.base_branch,
+                        head_branch=ctx.branch_name,
+                        repo=ctx.repo,
+                        github_user=ctx.config.github_user,
+                        project_slug=ctx.config.github_repo,
+                    )
+        except Exception as exc:
+            log.warning("step.create_pr.enqueue_failed", error=str(exc), exc_info=True)
+            return await self._create_pr_immediate(ctx, title, body)
+
+        log.info("step.create_pr.queued", entry_id=entry_id, label=ctx.display_label)
+
+        # Session factory for polling
+        async def _session_factory() -> AsyncSession:
+            return await get_session(project_dir=ctx.project_dir)
+
+        result = await poll_until_created(_session_factory, entry_id)
+        if result is None:
+            return StepResult(success=False, summary="PR creation timed out in queue")
+
+        from sova.db.models import PRQueueStatus
+
+        if result["status"] == PRQueueStatus.CREATED and result["pr_number"]:
+            ctx.pr_number = result["pr_number"]
+            ctx.pr_url = result.get("pr_url", "")
+            return StepResult(success=True, summary=f"Created PR #{result['pr_number']} (throttled)")
+
+        error = result.get("error_message", "Unknown error")
+        return StepResult(success=False, summary=f"PR creation failed in queue: {error}")
 
     async def _try_adopt_existing_pr(self, ctx: ExecutionContext) -> StepResult | None:
         if not ctx.has_issue:

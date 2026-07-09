@@ -217,6 +217,11 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Regex optional groups need atomic structure to prevent backtracking** -- `(?:your|the|all)?\s*` allows polynomial backtracking because the optional word and trailing whitespace can match independently. Use `(?:(?:your|the|all)\s+)?` so the word and its trailing space form a single optional unit. SonarCloud security hotspot. File: `sova/llm/guard.py`. PR #248. [confirmed: 0]
 - **DB-backed writers must seed sequence from existing records on re-adoption** -- `OutputWriter._next_line_number` starts at 0, but re-adopted runs may already have persisted rows. Query `MAX(line_number)` on first flush and continue from there. Without this, duplicate composite key violations occur. File: `sova/core/output.py`. PR #243. [confirmed: 1]
+## Background Workers / Queue Processing
+
+- **Background queue workers must start in both single-project and multi-project modes** -- `process_queue_loop()` for PR throttle was only started in the single-project `create_app()` path. In multi-project mode, `poll_until_created()` waited indefinitely because no consumer was running. Either start a per-project worker in the multi-project path, or skip throttling when no consumer is guaranteed. PR #306 CodeRabbit. [confirmed: 0]
+- **Persist state transitions before network calls in queue processors** -- `process_queue` must flush `CREATING` status to DB before calling `create_pr()`. A crash during the network call rolls back to `PENDING`, causing duplicate PR creation on restart. Separate the state transition commit from the post-operation updates. PR #306 CodeRabbit. [confirmed: 0]
+
 ## Common Mistakes (tracked by occurrence)
 
 - **`except X as exc:` + `log.warning(..., exc_info=True)` leaves `exc` unused** -- remove `as exc` or ruff F841 fires. (occurrences: 2) [confirmed: 1]

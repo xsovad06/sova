@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import (
     JSON,
@@ -404,3 +405,43 @@ class ResourceSummaryRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     task_run: Mapped["TaskRun"] = relationship(back_populates="resource_summary")
+
+
+class PRQueueStatus(StrEnum):
+    """Status values for PR creation queue entries."""
+
+    PENDING = "pending"
+    CREATING = "creating"
+    CREATED = "created"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class PRCreationQueue(Base):
+    """Queue for throttled PR creation behind CodeRabbit quota."""
+
+    __tablename__ = "pr_creation_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_run_id: Mapped[int] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    base_branch: Mapped[str] = mapped_column(String(200), nullable=False)
+    head_branch: Mapped[str] = mapped_column(String(200), nullable=False)
+    repo: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    github_user: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    pr_number: Mapped[int | None] = mapped_column(Integer)
+    pr_url: Mapped[str | None] = mapped_column(String(500))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_pr_queue_status", "status"),
+        Index("ix_pr_queue_task_run", "task_run_id"),
+        Index("ix_pr_queue_enqueued", "enqueued_at"),
+        Index("ix_pr_queue_project_status_enqueued", "project_slug", "status", "enqueued_at"),
+    )
