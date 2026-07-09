@@ -3289,6 +3289,222 @@ class TestKanbanAPI:
         assert data["mode"] in ("step_based", "role_based")
         assert "columns" in data
 
+    async def test_kanban_includes_run_label(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="200",
+                role="developer",
+                status="developing",
+                current_step="develop",
+                run_label="feat: add kanban labels",
+                started_at=now - timedelta(minutes=2),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        run_obj = data["columns"][0]["runs"][0]
+        assert run_obj["run_label"] == "feat: add kanban labels"
+
+    async def test_kanban_run_label_empty_for_issue_runs(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="201",
+                role="developer",
+                status="developing",
+                current_step="develop",
+                started_at=now - timedelta(minutes=1),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        run_obj = resp.json()["columns"][0]["runs"][0]
+        assert run_obj["run_label"] == ""
+
+    async def test_kanban_includes_failed_runs(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="300",
+                role="developer",
+                status="failed",
+                error_message="CI failed",
+                started_at=now - timedelta(hours=1),
+                ended_at=now - timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "failed_runs" in data
+        assert len(data["failed_runs"]) == 1
+        assert data["failed_runs"][0]["issue_number"] == "300"
+        assert data["failed_runs"][0]["error_message"] == "CI failed"
+
+    async def test_kanban_failed_runs_empty_when_none(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "failed_runs" in data
+        assert data["failed_runs"] == []
+
+    async def test_kanban_failed_runs_excludes_old(self, client: AsyncClient, session: AsyncSession) -> None:
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="301",
+                role="developer",
+                status="failed",
+                started_at=now - timedelta(hours=48),
+                ended_at=now - timedelta(hours=47),
+            )
+        )
+        await session.commit()
+
+        resp = await client.get("/api/agents/kanban")
+        assert resp.status_code == 200
+        assert resp.json()["failed_runs"] == []
+
+
+class TestGetRecentFailedRunsDirect:
+    """Direct unit tests for get_recent_failed_runs."""
+
+    async def test_empty_db(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        result = await get_recent_failed_runs(session)
+        assert result == []
+
+    async def test_returns_recent_failures(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="50",
+                role="developer",
+                status="failed",
+                run_label="fix: broken test",
+                error_message="test timeout",
+                pr_number=42,
+                total_cost_usd=Decimal("1.23"),
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert len(result) == 1
+        r = result[0]
+        assert r["issue_number"] == "50"
+        assert r["role"] == "developer"
+        assert r["status"] == "failed"
+        assert r["run_label"] == "fix: broken test"
+        assert r["error_message"] == "test timeout"
+        assert r["pr_number"] == 42
+        assert r["duration_ms"] is not None
+
+    async def test_excludes_non_failed(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(issue_number="60", role="developer", status="done", started_at=now, ended_at=now),
+                TaskRun(issue_number="61", role="developer", status="running", started_at=now),
+                TaskRun(issue_number="62", role="developer", status="interrupted", started_at=now, ended_at=now),
+            ]
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert result == []
+
+    async def test_excludes_old_failures(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="70",
+                role="developer",
+                status="failed",
+                started_at=now - timedelta(hours=48),
+                ended_at=now - timedelta(hours=47),
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert result == []
+
+    async def test_run_label_empty_default(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="80",
+                role="developer",
+                status="failed",
+                started_at=now - timedelta(hours=1),
+                ended_at=now,
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert result[0]["run_label"] == ""
+
+    async def test_respects_limit(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        for i in range(5):
+            session.add(
+                TaskRun(
+                    issue_number=str(90 + i),
+                    role="developer",
+                    status="failed",
+                    started_at=now - timedelta(hours=1),
+                    ended_at=now - timedelta(minutes=i),
+                )
+            )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session, limit=3)
+        assert len(result) == 3
+
+    async def test_command_run_no_issue_number(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number=None,
+                role="command:review-pr",
+                status="failed",
+                run_label="review-pr #55",
+                started_at=now - timedelta(hours=1),
+                ended_at=now,
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert len(result) == 1
+        assert result[0]["issue_number"] is None
+        assert result[0]["run_label"] == "review-pr #55"
+
 
 class TestGetKanbanColumnsDirect:
     """Direct unit tests for get_kanban_columns (bypasses API router)."""

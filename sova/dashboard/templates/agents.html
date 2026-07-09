@@ -1756,6 +1756,11 @@ function _insertPlaceholder(targetCard, clientY) {
   }
 }
 
+function _buildLabelHtml(runLabel) {
+  if (!runLabel) return '';
+  return '<div class="text-xs text-gray-400 truncate mb-1" style="max-width:12rem" title="' + escapeHtml(runLabel) + '">' + escapeHtml(runLabel) + '</div>';
+}
+
 async function loadKanban() {
   if (_agentView !== 'kanban') return;
   if (_kanbanDragging) return;
@@ -1772,7 +1777,7 @@ async function loadKanban() {
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
     var savedOrder = _getKanbanOrder();
 
-    container.innerHTML = data.columns.map(function(col) {
+    var columnsHtml = data.columns.map(function(col) {
       var colKey = _columnKey(col);
       var pipelineBadge = col.pipeline && col.pipeline !== 'pending' && col.pipeline !== 'unknown'
         ? '<span class="text-xs text-gray-600 font-normal ml-1">' + escapeHtml(_pipelineLabel(col.pipeline)) + '</span>'
@@ -1788,6 +1793,7 @@ async function loadKanban() {
             '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(String(run.issue_number)) + '</span>' +
             '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + statusDot(run.status) + '"></span>' +
           '</div>' +
+          _buildLabelHtml(run.run_label) +
           '<div class="flex items-center gap-1.5 mb-1.5">' +
             '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(run.role, run.pipeline_variant)) + '</span>' +
             '<span class="text-xs text-gray-500">' + escapeHtml(run.status) + '</span>' +
@@ -1816,6 +1822,56 @@ async function loadKanban() {
         '</div>' +
       '</div>';
     }).join('');
+
+    // Recently Failed column
+    var failedRuns = data.failed_runs || [];
+    var failedColHtml = '';
+    var failedCount = failedRuns.length;
+    var failedCountBadge = '<span class="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 text-xs rounded-full bg-accent-red/20 text-accent-red">' + failedCount + '</span>';
+    var failedCardsHtml = failedRuns.length
+      ? failedRuns.map(function(run) {
+          var rc = roleColor(run.role);
+          var issueText = run.issue_number ? '#' + escapeHtml(String(run.issue_number)) : escapeHtml(run.role || 'command');
+
+          var rerunHtml = run.issue_number
+            ? '<button onclick="event.preventDefault(); event.stopPropagation(); rerunAgent(\'' + escapeHtml(String(run.issue_number)) + '\', \'' + escapeHtml(run.role || '') + '\', ' + (run.pr_number || 'null') + ')" ' +
+              'class="px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors flex-shrink-0">Re-run</button>'
+            : '';
+
+          var errorHtml = run.error_message
+            ? '<div class="text-xs text-accent-red/70 truncate mt-1" style="max-width:12rem" title="' + escapeHtml(run.error_message) + '">' + escapeHtml(run.error_message) + '</div>'
+            : '';
+
+          return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block border-accent-red/30">' +
+            '<div class="flex items-center justify-between mb-1.5">' +
+              '<span class="text-sm font-medium text-gray-200">' + issueText + '</span>' +
+              '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + statusDot('failed') + '"></span>' +
+            '</div>' +
+            _buildLabelHtml(run.run_label) +
+            '<div class="flex items-center gap-1.5 mb-1.5">' +
+              '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + rc.bg + ' ' + rc.text + '">' + escapeHtml(formatRole(run.role, run.pipeline_variant)) + '</span>' +
+              rerunHtml +
+            '</div>' +
+            errorHtml +
+            '<div class="flex items-center justify-between text-xs text-gray-500 mt-1">' +
+              '<span>' + (run.duration_formatted || '') + '</span>' +
+              '<span class="text-accent-green">$' + (Number(run.total_cost_usd) || 0).toFixed(2) + '</span>' +
+            '</div>' +
+          '</a>';
+        }).join('')
+      : '<p class="text-gray-600 text-xs text-center py-4">No failures in the last 24h</p>';
+
+    failedColHtml = '<div class="kanban-column" style="border-color: rgb(var(--ctp-red-rgb) / 0.2)">' +
+      '<div class="flex items-center justify-between px-3 py-2 border-b border-accent-red/20">' +
+        '<span class="text-xs font-medium text-accent-red/70 uppercase tracking-wider">Recently Failed</span>' +
+        failedCountBadge +
+      '</div>' +
+      '<div class="kanban-card-list p-2 space-y-2">' +
+        failedCardsHtml +
+      '</div>' +
+    '</div>';
+
+    container.innerHTML = columnsHtml + failedColHtml;
   } catch (e) {
     console.error('Failed to load kanban:', e);
     var errContainer = document.getElementById('kanban-columns');
