@@ -996,8 +996,8 @@ function renderCompletedCard(agent) {
   var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
   var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role));
 
-  var rerunBtn = '<button onclick="event.stopPropagation(); rerunAgent(\'' + escapeJsStr(String(agent.issue)) + '\', \'' + escapeJsStr(agent.role || '') + '\', ' + (parseInt(agent.pr_number, 10) || 'null') + ')" ' +
-    'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task">Re-run</button>';
+  var rerunBtn = '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task" ' +
+    'data-issue="' + escapeHtml(String(agent.issue)) + '" data-role="' + escapeHtml(agent.role || '') + '" data-pr="' + escapeHtml(String(parseInt(agent.pr_number, 10) || '')) + '">Re-run</button>';
 
   var isPlanner = agent.role === 'planner';
   var plannerExtra = isPlanner ? '<div id="planner-extra-' + agent.run_id + '"></div>' : '';
@@ -1351,6 +1351,18 @@ function restartInterrupted(issue, role) {
 function rerunAgent(issue, role, prNumber) {
   _doStartAgent(issue, role === 'auto' ? null : role, false);
 }
+
+// Delegated click handler for .rerun-btn (avoids inline onclick XSS risks)
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('.rerun-btn');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  var issue = btn.getAttribute('data-issue');
+  var role = btn.getAttribute('data-role');
+  var pr = btn.getAttribute('data-pr');
+  rerunAgent(issue, role, pr ? parseInt(pr, 10) : null);
+});
 
 // -- History / Failed tabs --
 
@@ -1834,8 +1846,8 @@ async function loadKanban() {
           var issueText = run.issue_number ? '#' + escapeHtml(String(run.issue_number)) : escapeHtml(run.role || 'command');
 
           var rerunHtml = run.issue_number
-            ? '<button onclick="event.preventDefault(); event.stopPropagation(); rerunAgent(\'' + escapeJsStr(String(run.issue_number)) + '\', \'' + escapeJsStr(run.role || '') + '\', ' + (parseInt(run.pr_number, 10) || 'null') + ')" ' +
-              'class="px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors flex-shrink-0">Re-run</button>'
+            ? '<button class="rerun-btn px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors flex-shrink-0" ' +
+              'data-issue="' + escapeHtml(String(run.issue_number)) + '" data-role="' + escapeHtml(run.role || '') + '" data-pr="' + escapeHtml(String(parseInt(run.pr_number, 10) || '')) + '">Re-run</button>'
             : '';
 
           var errorHtml = run.error_message
@@ -1859,7 +1871,7 @@ async function loadKanban() {
             '</div>' +
           '</a>';
         }).join('')
-      : '<p class="text-gray-600 text-xs text-center py-4">No failures in the last 24h</p>';
+      : '<p class="text-gray-600 text-xs text-center py-4">No failures in the last 24h</p>'; // Keep in sync with get_recent_failed_runs default hours=24
 
     failedColHtml = '<div class="kanban-column" style="border-color: rgb(var(--ctp-red-rgb) / 0.2)">' +
       '<div class="flex items-center justify-between px-3 py-2 border-b border-accent-red/20">' +

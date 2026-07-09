@@ -3306,7 +3306,9 @@ class TestKanbanAPI:
         resp = await client.get("/api/agents/kanban")
         assert resp.status_code == 200
         data = resp.json()
-        run_obj = data["columns"][0]["runs"][0]
+        all_runs = [r for col in data["columns"] for r in col.get("runs", [])]
+        run_obj = next((r for r in all_runs if r["issue_number"] == "200"), None)
+        assert run_obj is not None
         assert run_obj["run_label"] == "feat: add kanban labels"
 
     async def test_kanban_run_label_empty_for_issue_runs(self, client: AsyncClient, session: AsyncSession) -> None:
@@ -3324,7 +3326,9 @@ class TestKanbanAPI:
 
         resp = await client.get("/api/agents/kanban")
         assert resp.status_code == 200
-        run_obj = resp.json()["columns"][0]["runs"][0]
+        all_runs = [r for col in resp.json()["columns"] for r in col.get("runs", [])]
+        run_obj = next((r for r in all_runs if r["issue_number"] == "201"), None)
+        assert run_obj is not None
         assert run_obj["run_label"] == ""
 
     async def test_kanban_includes_failed_runs(self, client: AsyncClient, session: AsyncSession) -> None:
@@ -3504,6 +3508,80 @@ class TestGetRecentFailedRunsDirect:
         assert len(result) == 1
         assert result[0]["issue_number"] is None
         assert result[0]["run_label"] == "review-pr #55"
+
+    async def test_failed_run_with_null_ended_at(self, session: AsyncSession) -> None:
+        """Crashed runs with NULL ended_at should still appear (falls back to started_at)."""
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="100",
+                role="developer",
+                status="failed",
+                started_at=now - timedelta(hours=1),
+                ended_at=None,
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert len(result) == 1
+        assert result[0]["issue_number"] == "100"
+        assert result[0]["duration_ms"] is None
+        assert result[0]["duration_formatted"] is None
+
+    async def test_duration_formatted_populated(self, session: AsyncSession) -> None:
+        """Verify duration_formatted is a human-readable string when both timestamps exist."""
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add(
+            TaskRun(
+                issue_number="101",
+                role="developer",
+                status="failed",
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        assert len(result) == 1
+        assert result[0]["duration_ms"] is not None
+        assert result[0]["duration_formatted"] is not None
+        assert "h" in result[0]["duration_formatted"] or "m" in result[0]["duration_formatted"]
+
+    async def test_failed_runs_boundary_24h(self, session: AsyncSession) -> None:
+        """Runs exactly outside the 24h window are excluded; those inside are included."""
+        from sova.dashboard.services.work_service import get_recent_failed_runs
+
+        now = datetime.now(timezone.utc)
+        session.add_all(
+            [
+                TaskRun(
+                    issue_number="110",
+                    role="developer",
+                    status="failed",
+                    started_at=now - timedelta(hours=25),
+                    ended_at=now - timedelta(hours=24, seconds=1),
+                ),
+                TaskRun(
+                    issue_number="111",
+                    role="developer",
+                    status="failed",
+                    started_at=now - timedelta(hours=24),
+                    ended_at=now - timedelta(hours=23, minutes=59),
+                ),
+            ]
+        )
+        await session.commit()
+
+        result = await get_recent_failed_runs(session)
+        issues = [r["issue_number"] for r in result]
+        assert "111" in issues
+        assert "110" not in issues
 
 
 class TestCalculateDurationMs:
