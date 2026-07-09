@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
-from sova.dashboard.services.feed_service import get_feed_service
+from sova.dashboard.services.feed_service import FeedService, get_feed_service
 
 router = APIRouter(tags=["feed"])
 
@@ -19,7 +21,7 @@ async def feed_stream(request: Request) -> StreamingResponse:
     feed = get_feed_service()
     sub_id, queue = feed.subscribe()
 
-    async def event_generator():  # type: ignore[return]
+    async def event_generator() -> AsyncGenerator[str, None]:
         try:
             yield "event: connected\ndata: {}\n\n"
             while True:
@@ -45,8 +47,10 @@ async def feed_stream(request: Request) -> StreamingResponse:
 
 
 @router.get("/feed/history")
-async def feed_history(since_id: int = Query(0, ge=0)) -> dict:
+async def feed_history(
+    feed: Annotated[FeedService, Depends(get_feed_service)],
+    since_id: int = Query(0, ge=0),
+) -> dict:
     """Return buffered events after the given ID (for reconnection gap-fill)."""
-    feed = get_feed_service()
     events = feed.history(since_id=since_id)
     return {"events": [e.to_dict() for e in events]}

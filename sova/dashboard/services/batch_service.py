@@ -241,8 +241,9 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         failed = sum(1 for r in job.results if r.status == "failed")
         sev = FeedEventSeverity.warning if failed else FeedEventSeverity.success
         total = len(job.results)
+        outcome = "cancelled" if job.cancelled else "completed"
         emit_safe(
-            f"Batch triage completed: {total - failed}/{total} succeeded",
+            f"Batch triage {outcome}: {total - failed}/{total} succeeded",
             severity=sev,
             category="batch",
             metadata={"batch_id": job.batch_id, "failed": failed, "total": total},

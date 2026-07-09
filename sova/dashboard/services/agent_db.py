@@ -112,6 +112,21 @@ def _apply_file_handoff(task_run: object, file_handoff: dict | None, run_id: int
         log.info("task_run.file_handoff_persisted", run_id=run_id, source=file_handoff["source"])
 
 
+def _emit_finalize_event(run_id: int, *, status: str, exit_code: int, agent: AgentState, cost: Decimal) -> None:
+    """Emit a feed event for task run finalization."""
+    issue = agent.issue
+    label = f"#{issue}" if issue else "Agent"
+    role_label = (agent.role or "agent").capitalize()
+    sev = FeedEventSeverity.error if status == "failed" else FeedEventSeverity.success
+    emit_safe(
+        f"{label} {role_label} {status}",
+        severity=sev,
+        detail=f"Exit code: {exit_code}" if exit_code != 0 else None,
+        category="agent",
+        metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": str(cost)},
+    )
+
+
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:
     """Update the TaskRun with final status and cost.
 
@@ -159,24 +174,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     _apply_file_handoff(task_run, file_handoff, run_id)
 
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
-
-        issue = agent.issue
-        label = f"#{issue}" if issue else "Agent"
-        role_label = (agent.role or "agent").capitalize()
-        sev = (
-            FeedEventSeverity.error
-            if status == "failed"
-            else FeedEventSeverity.warning
-            if status in ("interrupted", "paused")
-            else FeedEventSeverity.success
-        )
-        emit_safe(
-            f"{label} {role_label} {status}",
-            severity=sev,
-            detail=f"Exit code: {exit_code}" if exit_code != 0 else None,
-            category="agent",
-            metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": str(cost)},
-        )
+        _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
 

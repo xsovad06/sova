@@ -463,7 +463,8 @@ function _feedAddEvent(event) {
   if (event.id > _feedLastId) _feedLastId = event.id;
   _feedEvents.push(event);
   if (_feedEvents.length > _FEED_MAX_EVENTS) {
-    _feedEvents.shift();
+    var removed = _feedEvents.shift();
+    if (removed) delete _feedSeenIds[removed.id];
   }
 
   if (!_feedPanelOpen) {
@@ -535,8 +536,9 @@ function _renderFeedList() {
     '</div>';
   }).join('');
 
-  // Auto-scroll to bottom (newest)
-  list.scrollTop = list.scrollHeight;
+  // Auto-scroll to bottom only if user is already near the bottom
+  var atBottom = (list.scrollHeight - list.scrollTop - list.clientHeight) < 60;
+  if (atBottom) list.scrollTop = list.scrollHeight;
 }
 
 function toggleFeedPanel() {
