@@ -227,7 +227,7 @@ function renderStepList(steps, run) {
     // Header row
     var sid = safeStepId(s.step_name);
     var row = '<div class="sova-step-row" id="step-row-' + sid + '">' +
-      '<button class="sova-step-row-header" onclick="toggleStep(\'' + escapeHtml(s.step_name) + '\')">' +
+      '<button class="sova-step-row-header" onclick="toggleStep(\'' + escapeJsStr(s.step_name) + '\')">' +
         '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + dotCls + '"></span>' +
         '<span class="text-sm font-medium w-40 text-left truncate">' + escapeHtml(label) + '</span>' +
         '<span class="text-xs text-gray-500 w-20">' + escapeHtml(dur) + '</span>' +

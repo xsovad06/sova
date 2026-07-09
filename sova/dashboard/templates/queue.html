@@ -149,7 +149,7 @@ function renderStartButton(item) {
   }
   var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
   var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start agent for this issue';
-  return '<button onclick="startFromQueue(\'' + escapeHtml(item.issue) + '\', event)" ' +
+  return '<button onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', event)" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
     'data-tooltip="' + tooltip + '">' +
     label + '</button>';
