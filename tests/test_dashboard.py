@@ -5756,7 +5756,15 @@ class TestAgentContextHelpers:
 
         pr_number, issue = await _resolve_command_context({"pr": "abc"}, "develop", tmp_path)
         assert pr_number is None
-        assert issue == "develop"
+        assert issue == ""
+
+    async def test_resolve_command_context_no_issue_no_pr(self, tmp_path: Path) -> None:
+        """Without issue or PR, issue is empty -- never the command name."""
+        from sova.dashboard.services.agent_context import _resolve_command_context
+
+        pr_number, issue = await _resolve_command_context({}, "address-pr", tmp_path)
+        assert pr_number is None
+        assert issue == ""
 
     async def test_resolve_command_context_pr_resolves_issue(self, tmp_path: Path) -> None:
         """_resolve_command_context resolves issue from PR when issue is missing."""
