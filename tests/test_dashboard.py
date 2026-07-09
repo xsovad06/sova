@@ -642,6 +642,30 @@ class TestControlServiceRecovery:
             updated = await session2.get(TaskRun, run_id)
             assert updated.status == "interrupted"
 
+    async def test_recover_stale_runs_skips_paused(self) -> None:
+        """Paused runs (gate failures) must not be clobbered to interrupted."""
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="77",
+                role="researcher",
+                status="paused",
+                pid=999999,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        interrupted = await recover_stale_runs()
+        assert all(r["run_id"] != run_id for r in interrupted)
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "paused"
+
     async def test_is_process_alive(self) -> None:
         """Process liveness check should work for known PIDs."""
         import os
