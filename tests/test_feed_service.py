@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -13,6 +15,7 @@ from sova.dashboard.services.feed_service import (
     FeedEvent,
     FeedEventSeverity,
     FeedService,
+    emit_safe,
     get_feed_service,
 )
 from sova.db.session import close_db, init_db
@@ -218,3 +221,83 @@ def test_feed_service_to_sse_includes_all_fields() -> None:
     parsed = json.loads(lines[2][6:])
     assert parsed["severity"] == "warning"
     assert parsed["category"] == "agent"
+
+
+class TestEmitSafe:
+    def test_emit_safe_succeeds(self) -> None:
+        import sova.dashboard.services.feed_service as mod
+
+        svc = FeedService()
+        mod._feed_service = svc
+        emit_safe("safe event", severity=FeedEventSeverity.info)
+        assert svc.history()[-1].title == "safe event"
+        mod._feed_service = None
+
+    def test_emit_safe_swallows_exception(self) -> None:
+        """emit_safe should not raise even when get_feed_service().emit raises."""
+        with patch("sova.dashboard.services.feed_service.get_feed_service", side_effect=RuntimeError("boom")):
+            emit_safe("will fail")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_feed_stream_returns_sse_content_type(feed_service: FeedService) -> None:
+    """SSE stream endpoint returns event-stream content type."""
+    # Call the endpoint function directly to avoid httpx stream hang
+    from unittest.mock import AsyncMock
+
+    from sova.dashboard.routers.feed import feed_stream
+
+    mock_request = AsyncMock()
+    mock_request.is_disconnected = AsyncMock(return_value=True)
+
+    response = await feed_stream(mock_request)
+    assert response.media_type == "text/event-stream"
+    assert response.headers.get("Cache-Control") == "no-cache"
+    assert response.headers.get("X-Accel-Buffering") == "no"
+
+
+class TestEmitFinalizeEvent:
+    def test_emit_finalize_event_success(self) -> None:
+        import sova.dashboard.services.feed_service as mod
+        from sova.dashboard.services.agent_db import _emit_finalize_event
+        from sova.dashboard.services.agent_pool import AgentState
+
+        svc = FeedService()
+        mod._feed_service = svc
+
+        agent = AgentState.__new__(AgentState)
+        agent.issue = "42"
+        agent.role = "developer"
+        agent.project_dir = Path.cwd()
+        agent.last_result_cost = None
+
+        _emit_finalize_event(1, status="done", exit_code=0, agent=agent, cost=Decimal("1.50"))
+        events = svc.history()
+        assert len(events) == 1
+        assert "#42 Developer done" in events[0].title
+        assert events[0].severity == FeedEventSeverity.success
+
+        mod._feed_service = None
+
+    def test_emit_finalize_event_failure(self) -> None:
+        import sova.dashboard.services.feed_service as mod
+        from sova.dashboard.services.agent_db import _emit_finalize_event
+        from sova.dashboard.services.agent_pool import AgentState
+
+        svc = FeedService()
+        mod._feed_service = svc
+
+        agent = AgentState.__new__(AgentState)
+        agent.issue = None
+        agent.role = None
+        agent.project_dir = Path.cwd()
+        agent.last_result_cost = None
+
+        _emit_finalize_event(2, status="failed", exit_code=1, agent=agent, cost=Decimal("0"))
+        events = svc.history()
+        assert len(events) == 1
+        assert events[0].severity == FeedEventSeverity.error
+        assert "Agent" in events[0].title
+        assert events[0].detail == "Exit code: 1"
+
+        mod._feed_service = None
