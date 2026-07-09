@@ -211,7 +211,8 @@ async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> di
 
     async with await get_session() as session:
         columns = await control_service.get_kanban_columns(session, per_column=per_column, mode=mode)
-    return {"columns": columns, "mode": mode}
+        failed_runs = await control_service.get_recent_failed_runs(session)
+    return {"columns": columns, "mode": mode, "failed_runs": failed_runs}
 
 
 @router.get("/agents/{run_id}/output")

@@ -129,3 +129,4 @@ from sova.dashboard.services.agent_recovery import (
 )
 from sova.dashboard.services.output_service import OutputWriter as OutputWriter
 from sova.dashboard.services.work_service import get_kanban_columns as get_kanban_columns
+from sova.dashboard.services.work_service import get_recent_failed_runs as get_recent_failed_runs

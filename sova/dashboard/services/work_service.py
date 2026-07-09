@@ -6,7 +6,7 @@ for the Work page (Active / History / Failed tabs).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -84,6 +84,7 @@ def _build_run_summary(r: TaskRun, now: datetime) -> dict[str, Any]:
         "elapsed_seconds": int(elapsed.total_seconds()),
         "elapsed_formatted": _format_duration(elapsed),
         "total_cost_usd": decimal_to_json(r.total_cost_usd),
+        "run_label": r.run_label or "",
     }
 
 
@@ -141,15 +142,7 @@ async def get_work_history(
             )
         )
 
-        duration_ms = None
-        if r.started_at and r.ended_at:
-            started = r.started_at
-            ended = r.ended_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            if ended.tzinfo is None:
-                ended = ended.replace(tzinfo=timezone.utc)
-            duration_ms = int((ended - started).total_seconds() * 1000)
+        duration_ms = _calculate_duration_ms(r.started_at, r.ended_at)
 
         step_names = steps_by_run.get(r.id, set())
         if step_names & _RESEARCHER_ONLY:
@@ -591,6 +584,57 @@ def _group_role_based(items: list[tuple[TaskRun, dict, str]], per_column: int) -
 
     result_columns.sort(key=lambda c: c["position"])
     return result_columns
+
+
+async def get_recent_failed_runs(
+    session: AsyncSession,
+    *,
+    hours: int = 24,
+    limit: int = 10,
+) -> list[dict]:
+    """Get recently failed runs for the kanban 'Recently Failed' column."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stmt = (
+        select(TaskRun)
+        .where(TaskRun.status == "failed", TaskRun.ended_at >= cutoff)
+        .order_by(TaskRun.ended_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    runs = result.scalars().all()
+
+    items = []
+    for r in runs:
+        duration_ms = _calculate_duration_ms(r.started_at, r.ended_at)
+
+        items.append(
+            {
+                "id": r.id,
+                "issue_number": r.issue_number,
+                "role": r.role,
+                "status": r.status,
+                "pipeline_variant": _detect_variant(r.current_step, role=r.role, pr_number=r.pr_number),
+                "run_label": r.run_label or "",
+                "total_cost_usd": decimal_to_json(r.total_cost_usd),
+                "error_message": r.error_message,
+                "pr_number": r.pr_number,
+                "duration_ms": duration_ms,
+                "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
+                "ended_at": iso_utc(r.ended_at),
+            }
+        )
+    return items
+
+
+def _calculate_duration_ms(started_at: datetime | None, ended_at: datetime | None) -> int | None:
+    """Calculate duration in milliseconds between two datetimes, normalizing naive datetimes to UTC."""
+    if not started_at or not ended_at:
+        return None
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    if ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=timezone.utc)
+    return int((ended_at - started_at).total_seconds() * 1000)
 
 
 def _format_duration(td) -> str:
