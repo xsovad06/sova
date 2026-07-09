@@ -57,7 +57,7 @@ class TestFeedService:
         svc.emit("One")
         svc.emit("Two")
         svc.emit("Three")
-        events = svc.history()
+        events, _ = svc.history()
         assert len(events) == 3
 
     def test_history_since_id(self) -> None:
@@ -65,7 +65,7 @@ class TestFeedService:
         svc.emit("One")
         e2 = svc.emit("Two")
         svc.emit("Three")
-        events = svc.history(since_id=e2.id)
+        events, _ = svc.history(since_id=e2.id)
         assert len(events) == 1
         assert events[0].title == "Three"
 
@@ -73,7 +73,7 @@ class TestFeedService:
         svc = FeedService()
         for i in range(600):
             svc.emit(f"Event {i}")
-        events = svc.history()
+        events, _ = svc.history()
         assert len(events) == 500  # _BUFFER_SIZE
 
     def test_subscribe_receives_events(self) -> None:
@@ -230,7 +230,7 @@ class TestEmitSafe:
         svc = FeedService()
         mod._feed_service = svc
         emit_safe("safe event", severity=FeedEventSeverity.info)
-        assert svc.history()[-1].title == "safe event"
+        assert svc.history()[0][-1].title == "safe event"
         mod._feed_service = None
 
     def test_emit_safe_swallows_exception(self) -> None:
@@ -272,7 +272,7 @@ class TestEmitFinalizeEvent:
         agent.last_result_cost = None
 
         _emit_finalize_event(1, status="done", exit_code=0, agent=agent, cost=Decimal("1.50"))
-        events = svc.history()
+        events, _ = svc.history()
         assert len(events) == 1
         assert "#42 Developer done" in events[0].title
         assert events[0].severity == FeedEventSeverity.success
@@ -294,7 +294,7 @@ class TestEmitFinalizeEvent:
         agent.last_result_cost = None
 
         _emit_finalize_event(2, status="failed", exit_code=1, agent=agent, cost=Decimal("0"))
-        events = svc.history()
+        events, _ = svc.history()
         assert len(events) == 1
         assert events[0].severity == FeedEventSeverity.error
         assert "Agent" in events[0].title

@@ -9,6 +9,7 @@ Phase 1: in-memory ring buffer, no DB persistence.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import time
 from collections import deque
@@ -60,7 +61,7 @@ class FeedService:
     def __init__(self) -> None:
         self._buffer: deque[FeedEvent] = deque(maxlen=_BUFFER_SIZE)
         self._subscribers: dict[int, asyncio.Queue[FeedEvent]] = {}
-        self._next_id = 1
+        self._id_counter = itertools.count(1)
         self._sub_counter = 0
 
     def emit(
@@ -73,14 +74,13 @@ class FeedService:
         metadata: dict[str, Any] | None = None,
     ) -> FeedEvent:
         event = FeedEvent(
-            id=self._next_id,
+            id=next(self._id_counter),
             severity=severity,
             title=title,
             detail=detail,
             category=category,
             metadata=metadata or {},
         )
-        self._next_id += 1
         self._buffer.append(event)
 
         for queue in self._subscribers.values():
@@ -102,11 +102,19 @@ class FeedService:
     def unsubscribe(self, sub_id: int) -> None:
         self._subscribers.pop(sub_id, None)
 
-    def history(self, since_id: int = 0) -> list[FeedEvent]:
-        return [e for e in self._buffer if e.id > since_id]
+    def history(self, since_id: int = 0) -> tuple[list[FeedEvent], bool]:
+        """Return events after since_id and whether a gap was detected."""
+        oldest_id = self._buffer[0].id if self._buffer else 0
+        gap = since_id > 0 and oldest_id > 0 and since_id < oldest_id
+        return [e for e in self._buffer if e.id > since_id], gap
 
     def to_sse(self, event: FeedEvent) -> str:
-        data = json.dumps(event.to_dict())
+        try:
+            data = json.dumps(event.to_dict())
+        except (TypeError, ValueError):
+            log.error("feed.serialize_failed", event_id=event.id, exc_info=True)
+            fallback = {"id": event.id, "severity": "error", "title": "Feed serialization error", "category": "system"}
+            data = json.dumps(fallback)
         return f"id: {event.id}\nevent: feed\ndata: {data}\n\n"
 
 
