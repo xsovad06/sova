@@ -175,7 +175,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
             severity=sev,
             detail=f"Exit code: {exit_code}" if exit_code != 0 else None,
             category="agent",
-            metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": float(cost)},
+            metadata={"run_id": run_id, "issue": issue, "role": agent.role, "cost_usd": str(cost)},
         )
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
