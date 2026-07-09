@@ -3617,7 +3617,6 @@ class TestCalculateDurationMs:
         assert _calculate_duration_ms(start, end) == 300_000
 
 
-
 class TestGetKanbanColumnsDirect:
     """Direct unit tests for get_kanban_columns (bypasses API router)."""
 
