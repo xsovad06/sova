@@ -133,48 +133,81 @@ async def get_work_history(
     run_ids = [r.id for r in runs]
     steps_by_run = await _batch_step_names(session, run_ids)
 
-    items = []
-    for r in runs:
-        step_count = await session.scalar(select(func.count(StepExecution.id)).where(StepExecution.task_run_id == r.id))
-        completed_steps = await session.scalar(
-            select(func.count(StepExecution.id)).where(
-                StepExecution.task_run_id == r.id,
-                StepExecution.status.in_(STEP_DONE_STATUSES),
-            )
-        )
-
-        duration_ms = _calculate_duration_ms(r.started_at, r.ended_at)
-
-        step_names = steps_by_run.get(r.id, set())
-        if step_names & _RESEARCHER_ONLY:
-            variant = "researcher"
-        elif step_names & _ADDRESS_REVIEW_ONLY:
-            variant = "address_review"
-        else:
-            variant = _detect_variant(r.current_step, role=r.role, pr_number=r.pr_number)
-
-        items.append(
-            {
-                "id": r.id,
-                "issue_number": r.issue_number,
-                "role": r.role,
-                "status": r.status,
-                "current_step": r.current_step,
-                "pipeline_variant": variant,
-                "steps_completed": completed_steps or 0,
-                "steps_total": step_count or 0,
-                "total_steps_possible": (_PIPELINE_LENGTHS.get(variant) if r.role in _PIPELINE_ROLES else None),
-                "branch_name": r.branch_name,
-                "pr_number": r.pr_number,
-                "total_cost_usd": decimal_to_json(r.total_cost_usd),
-                "duration_ms": duration_ms,
-                "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
-                "error_message": r.error_message,
-                "started_at": iso_utc(r.started_at),
-                "ended_at": iso_utc(r.ended_at),
-            }
-        )
+    step_counts = await _batch_step_counts(session, run_ids)
+    items = [
+        _build_history_item(r, steps_by_run.get(r.id, set()), step_counts.get(r.id, (0, 0)))
+        for r in runs
+    ]
     return {"tasks": items, "total": total or 0}
+
+
+async def _batch_step_counts(session: AsyncSession, run_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """Batch-fetch (total, completed) step counts per run."""
+    if not run_ids:
+        return {}
+    total_stmt = (
+        select(StepExecution.task_run_id, func.count(StepExecution.id))
+        .where(StepExecution.task_run_id.in_(run_ids))
+        .group_by(StepExecution.task_run_id)
+    )
+    total_rows = (await session.execute(total_stmt)).all()
+    totals = {row[0]: row[1] for row in total_rows}
+
+    done_stmt = (
+        select(StepExecution.task_run_id, func.count(StepExecution.id))
+        .where(StepExecution.task_run_id.in_(run_ids), StepExecution.status.in_(STEP_DONE_STATUSES))
+        .group_by(StepExecution.task_run_id)
+    )
+    done_rows = (await session.execute(done_stmt)).all()
+    dones = {row[0]: row[1] for row in done_rows}
+
+    return {rid: (totals.get(rid, 0), dones.get(rid, 0)) for rid in run_ids}
+
+
+def _compute_duration_ms(started_at: datetime | None, ended_at: datetime | None) -> int | None:
+    """Compute duration in milliseconds between two timestamps."""
+    if not started_at or not ended_at:
+        return None
+    started = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    ended = ended_at if ended_at.tzinfo else ended_at.replace(tzinfo=timezone.utc)
+    return int((ended - started).total_seconds() * 1000)
+
+
+def _resolve_variant(step_names: set[str], current_step: str | None, role: str | None, pr_number: int | None) -> str:
+    """Determine pipeline variant from step names and run context."""
+    if step_names & _RESEARCHER_ONLY:
+        return "researcher"
+    if step_names & _ADDRESS_REVIEW_ONLY:
+        return "address_review"
+    return _detect_variant(current_step, role=role, pr_number=pr_number)
+
+
+def _build_history_item(
+    r: TaskRun, step_names: set[str], step_counts: tuple[int, int],
+) -> dict:
+    """Build a single history item dict from a run and its precomputed data."""
+    step_total, steps_completed = step_counts
+    duration_ms = _compute_duration_ms(r.started_at, r.ended_at)
+    variant = _resolve_variant(step_names, r.current_step, r.role, r.pr_number)
+    return {
+        "id": r.id,
+        "issue_number": r.issue_number,
+        "role": r.role,
+        "status": r.status,
+        "current_step": r.current_step,
+        "pipeline_variant": variant,
+        "steps_completed": steps_completed,
+        "steps_total": step_total,
+        "total_steps_possible": (_PIPELINE_LENGTHS.get(variant) if r.role in _PIPELINE_ROLES else None),
+        "branch_name": r.branch_name,
+        "pr_number": r.pr_number,
+        "total_cost_usd": decimal_to_json(r.total_cost_usd),
+        "duration_ms": duration_ms,
+        "duration_formatted": _format_duration_ms(duration_ms) if duration_ms else None,
+        "error_message": r.error_message,
+        "started_at": iso_utc(r.started_at),
+        "ended_at": iso_utc(r.ended_at),
+    }
 
 
 async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:

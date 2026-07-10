@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from sova.dashboard.services import resource_service
 from sova.db.session import get_session
@@ -12,7 +12,10 @@ router = APIRouter()
 log = get_logger(component="dashboard.resources")
 
 
-@router.get("/resources/{run_id}/summary", responses={404: {"description": "Run not found"}})
+@router.get(
+    "/resources/{run_id}/summary",
+    responses={404: {"description": "Run not found"}, 500: {"description": "Internal error"}},
+)
 async def resource_summary(run_id: int):
     try:
         async with await get_session() as session:
@@ -24,14 +27,17 @@ async def resource_summary(run_id: int):
         raise
     except Exception:
         log.warning("resources.summary.error", run_id=run_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch resource summary")
+        raise HTTPException(status_code=500, detail="Failed to fetch resource summary") from None
 
 
-@router.get("/resources/{run_id}/samples", responses={404: {"description": "Run not found"}})
-async def resource_samples(run_id: int, limit: int = 500):
+@router.get(
+    "/resources/{run_id}/samples",
+    responses={404: {"description": "Run not found"}, 500: {"description": "Internal error"}},
+)
+async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le=2000)):
     try:
         async with await get_session() as session:
-            result = await resource_service.get_resource_samples(session, run_id, limit=min(limit, 2000))
+            result = await resource_service.get_resource_samples(session, run_id, limit=limit)
         if result is None:
             raise HTTPException(status_code=404, detail="Run not found")
         return result
@@ -39,17 +45,25 @@ async def resource_samples(run_id: int, limit: int = 500):
         raise
     except Exception:
         log.warning("resources.samples.error", run_id=run_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch resource samples")
+        raise HTTPException(status_code=500, detail="Failed to fetch resource samples") from None
 
 
 @router.get("/resources/live/{run_id}")
 async def live_metrics(run_id: int):
-    result = resource_service.get_live_metrics(run_id)
-    if result is None:
-        return {"run_id": run_id, "cpu_percent": None, "memory_rss_bytes": None}
-    return result
+    try:
+        result = resource_service.get_live_metrics(run_id)
+        if result is None:
+            return {"run_id": run_id, "cpu_percent": None, "memory_rss_bytes": None}
+        return result
+    except Exception:
+        log.warning("resources.live.error", run_id=run_id, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch live metrics") from None
 
 
 @router.get("/resources/system")
 async def system_info():
-    return resource_service.get_system_info()
+    try:
+        return resource_service.get_system_info()
+    except Exception:
+        log.warning("resources.system.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch system info") from None

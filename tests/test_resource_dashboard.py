@@ -330,6 +330,98 @@ class TestResourceRouter:
         assert data["total_memory_bytes"] > 0
 
 
+class TestResourceRouterErrors:
+    @pytest.mark.asyncio
+    async def test_summary_endpoint_500_on_service_error(self, client: AsyncClient, seed_run_with_resources) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_resource_summary"
+        with patch(target, side_effect=RuntimeError("db down")):
+            resp = await client.get(f"/api/resources/{seed_run_with_resources.id}/summary")
+        assert resp.status_code == 500
+        assert "Failed to fetch resource summary" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_samples_endpoint_500_on_service_error(self, client: AsyncClient, seed_run_with_resources) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_resource_samples"
+        with patch(target, side_effect=RuntimeError("db down")):
+            resp = await client.get(f"/api/resources/{seed_run_with_resources.id}/samples")
+        assert resp.status_code == 500
+        assert "Failed to fetch resource samples" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_samples_endpoint_422_on_zero_limit(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/resources/1/samples?limit=0")
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_samples_endpoint_422_on_negative_limit(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/resources/1/samples?limit=-5")
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_live_metrics_endpoint_500_on_service_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_live_metrics"
+        with patch(target, side_effect=RuntimeError("oops")):
+            resp = await client.get("/api/resources/live/1")
+        assert resp.status_code == 500
+        assert "Failed to fetch live metrics" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_system_info_endpoint_500_on_service_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_system_info"
+        with patch(target, side_effect=RuntimeError("oops")):
+            resp = await client.get("/api/resources/system")
+        assert resp.status_code == 500
+        assert "Failed to fetch system info" in resp.json()["detail"]
+
+
+class TestWorkHistoryHelpers:
+    def test_compute_duration_ms_with_tz(self) -> None:
+        from sova.dashboard.services.work_service import _compute_duration_ms
+
+        start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        end = datetime(2024, 1, 1, 0, 1, 0, tzinfo=timezone.utc)
+        assert _compute_duration_ms(start, end) == 60_000
+
+    def test_compute_duration_ms_without_tz(self) -> None:
+        from sova.dashboard.services.work_service import _compute_duration_ms
+
+        start = datetime(2024, 1, 1, 0, 0, 0)
+        end = datetime(2024, 1, 1, 0, 0, 30)
+        assert _compute_duration_ms(start, end) == 30_000
+
+    def test_compute_duration_ms_none(self) -> None:
+        from sova.dashboard.services.work_service import _compute_duration_ms
+
+        assert _compute_duration_ms(None, datetime.now(timezone.utc)) is None
+        assert _compute_duration_ms(datetime.now(timezone.utc), None) is None
+
+    def test_resolve_variant_researcher(self) -> None:
+        from sova.dashboard.services.work_service import _resolve_variant
+
+        result = _resolve_variant({"research", "spec"}, None, "researcher", None)
+        assert result == "researcher"
+
+    def test_resolve_variant_address_review(self) -> None:
+        from sova.dashboard.services.work_service import _resolve_variant
+
+        result = _resolve_variant({"address_review", "rebase"}, None, "developer", 42)
+        assert result == "address_review"
+
+    def test_resolve_variant_developer_fallback(self) -> None:
+        from sova.dashboard.services.work_service import _resolve_variant
+
+        result = _resolve_variant({"develop", "commit"}, "develop", "developer", None)
+        assert result == "developer"
+
+
 class TestRunToDict:
     @pytest.mark.asyncio
     async def test_run_to_dict_includes_resource_fields(self, session: AsyncSession, seed_run_with_resources) -> None:
