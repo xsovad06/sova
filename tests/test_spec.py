@@ -292,6 +292,53 @@ class TestSpecStep:
         assert develop_action is not None, "Expected 'develop' action in handoff"
         assert develop_action["auto_execute"] is True, "develop action must have auto_execute=True"
 
+    async def test_execute_auto_approve_already_approved(self, tmp_path: Path) -> None:
+        """Auto-approve succeeds when spec already has Status: approved (idempotent)."""
+        from sova.llm.models import LLMResult
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec: Test\n\n**Status**: approved\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+        )
+        step = SpecStep()
+
+        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
+        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success, f"Expected success but got: {result.error}"
+        assert "auto-approved" in result.summary
+        assert spec.read_text().count("**Status**: approved") == 1
+
+    async def test_execute_auto_approve_no_status_line(self, tmp_path: Path) -> None:
+        """Auto-approve fails when spec has no Status line at all."""
+        from sova.llm.models import LLMResult
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text("# Spec: Test\n\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
+
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+        )
+        step = SpecStep()
+
+        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
+        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "status line not found" in result.summary.lower()
+
     async def test_execute_handoff_on_open_questions(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
 
