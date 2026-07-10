@@ -6,6 +6,7 @@ for the Work page (Active / History / Failed tabs).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -25,6 +26,8 @@ from sova.dashboard.services.agent_progress import (
 )
 from sova.db.models import StepExecution, TaskRun
 from sova.utils.formatting import decimal_to_json, iso_utc
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL = TASK_RUN_TERMINAL
 
@@ -135,10 +138,7 @@ async def get_work_history(
     steps_by_run = await _batch_step_names(session, run_ids)
 
     step_counts = await _batch_step_counts(session, run_ids)
-    items = [
-        _build_history_item(r, steps_by_run.get(r.id, set()), step_counts.get(r.id, (0, 0)))
-        for r in runs
-    ]
+    items = [_build_history_item(r, steps_by_run.get(r.id, set()), step_counts.get(r.id, (0, 0))) for r in runs]
     return {"tasks": items, "total": total or 0}
 
 
@@ -184,7 +184,9 @@ def _resolve_variant(step_names: set[str], current_step: str | None, role: str |
 
 
 def _build_history_item(
-    r: TaskRun, step_names: set[str], step_counts: tuple[int, int],
+    r: TaskRun,
+    step_names: set[str],
+    step_counts: tuple[int, int],
 ) -> dict:
     """Build a single history item dict from a run and its precomputed data."""
     step_total, steps_completed = step_counts
@@ -396,7 +398,7 @@ def _run_to_dict(run: TaskRun) -> dict:
             result["peak_cpu_percent"] = float(summary.peak_cpu_percent)
             result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
     except InvalidRequestError:
-        log.warning("work.run_to_dict.resource_summary_not_loaded", run_id=run.id, exc_info=True)
+        logger.warning("work.run_to_dict.resource_summary_not_loaded, run_id=%s", run.id, exc_info=True)
     return result
 
 
