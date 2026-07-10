@@ -114,6 +114,8 @@ def _sample_to_dict(s: ResourceSampleRecord) -> dict:
 
 def _downsample(samples: list, limit: int) -> list:
     """Take every Nth sample to fit within limit."""
+    if limit <= 0:
+        raise ValueError("limit must be positive")
     if len(samples) <= limit:
         return samples
     step = len(samples) / limit
