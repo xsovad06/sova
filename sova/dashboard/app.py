@@ -39,6 +39,7 @@ from sova.dashboard.routers import (
     prs,
     queue,
     quota,
+    resources,
     roles,
     runs,
     settings,
@@ -618,4 +619,5 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(prs.router, prefix=prefix)
     app.include_router(quota.router, prefix=prefix)
     app.include_router(dependencies.router, prefix=prefix)
+    app.include_router(resources.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)

@@ -204,6 +204,13 @@ async def get_all_agents(slug: str | None = None) -> dict:
         db = db_states.get(agent.run_id, {})
         current_step = db.get("current_step", "agent")
         progress = get_step_progress(current_step, role=agent.role, pr_number=db.get("pr_number"))
+        cpu_pct = None
+        mem_rss = None
+        collector = agent.resource_collector
+        if collector is not None and collector.samples:
+            latest = collector.samples[-1]
+            cpu_pct = latest.cpu_percent
+            mem_rss = latest.memory_rss_bytes
         agents.append(
             {
                 "run_id": agent.run_id,
@@ -219,6 +226,8 @@ async def get_all_agents(slug: str | None = None) -> dict:
                 "cost_usd": db.get("cost_usd", agent.last_result_cost or 0.0),
                 "output_lines": len(agent.output_lines),
                 "pr_number": db.get("pr_number"),
+                "cpu_percent": cpu_pct,
+                "memory_rss_bytes": mem_rss,
             }
         )
 
