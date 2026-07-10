@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -394,8 +395,8 @@ def _run_to_dict(run: TaskRun) -> dict:
         if summary is not None:
             result["peak_cpu_percent"] = float(summary.peak_cpu_percent)
             result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
-    except Exception:
-        pass
+    except InvalidRequestError:
+        log.warning("work.run_to_dict.resource_summary_not_loaded", run_id=run.id, exc_info=True)
     return result
 
 

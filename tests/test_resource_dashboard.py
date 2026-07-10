@@ -271,6 +271,18 @@ class TestResourceService:
         result = _downsample(items, 10)
         assert result == items
 
+    def test_downsample_zero_limit_raises(self) -> None:
+        from sova.dashboard.services.resource_service import _downsample
+
+        with pytest.raises(ValueError, match="limit must be positive"):
+            _downsample(list(range(10)), 0)
+
+    def test_downsample_negative_limit_raises(self) -> None:
+        from sova.dashboard.services.resource_service import _downsample
+
+        with pytest.raises(ValueError, match="limit must be positive"):
+            _downsample(list(range(10)), -5)
+
 
 class TestResourceRouter:
     @pytest.mark.asyncio
