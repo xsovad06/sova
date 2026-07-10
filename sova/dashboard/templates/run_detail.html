@@ -41,6 +41,21 @@
   </div>
 </div>
 
+<!-- Resource usage -->
+<div id="resource-section" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide mb-3">Resource Usage</h3>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="resource-cards"></div>
+    <div id="resource-chart-container" class="hidden">
+      <canvas id="resource-chart" width="800" height="200" class="w-full rounded" style="max-height:200px"></canvas>
+      <div class="flex justify-center gap-6 mt-2 text-xs text-gray-500">
+        <span><span class="inline-block w-3 h-0.5 rounded" style="background:var(--ctp-blue)"></span> CPU %</span>
+        <span><span class="inline-block w-3 h-0.5 rounded" style="background:var(--ctp-green)"></span> Memory MB</span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Run-level error banner -->
 <div id="run-error-banner" class="hidden mb-4 bg-accent-red/5 border border-accent-red/30 rounded-lg p-3">
   <pre class="text-sm text-accent-red whitespace-pre-wrap" id="run-error-text"></pre>
@@ -168,6 +183,9 @@ async function loadRunDetail() {
 
     // Render step list
     renderStepList(steps, run);
+
+    // Load resources
+    loadResources();
 
     // Load run chain
     loadRunChain(run.issue_number, run.id);
@@ -474,6 +492,115 @@ async function syncCommands(e) {
     if (status) { status.textContent = 'Failed: ' + ex.message; status.className = 'text-xs text-accent-red'; }
     if (btn) { btn.disabled = false; btn.textContent = 'Sync Commands'; }
   }
+}
+
+function resourceCard(label, value, cls) {
+  return '<div class="bg-[var(--color-surface)] rounded p-2">' +
+    '<p class="text-xs text-gray-500">' + escapeHtml(label) + '</p>' +
+    '<p class="text-sm font-medium ' + (cls || 'text-gray-200') + '">' + value + '</p></div>';
+}
+
+async function loadResources() {
+  try {
+    var results = await Promise.all([
+      fetchAPI(apiUrl('/resources/{{ run_id }}/summary')),
+      fetchAPI(apiUrl('/resources/{{ run_id }}/samples'))
+    ]);
+    var summaryData = results[0];
+    var samplesData = results[1];
+
+    if (!summaryData || summaryData.summary == null) return;
+    var s = summaryData.summary;
+    var section = document.getElementById('resource-section');
+    section.classList.remove('hidden');
+    document.getElementById('resource-cards').innerHTML =
+      resourceCard('Peak CPU', parseFloat(s.peak_cpu_percent).toFixed(1) + '%', 'text-accent') +
+      resourceCard('Avg CPU', parseFloat(s.avg_cpu_percent).toFixed(1) + '%', 'text-accent') +
+      resourceCard('Peak Memory', formatBytes(s.peak_memory_rss_bytes), 'text-accent-green') +
+      resourceCard('Peak Threads', s.peak_num_threads, 'text-accent-yellow') +
+      (s.total_io_read_bytes != null ? resourceCard('I/O Read', formatBytes(s.total_io_read_bytes), 'text-gray-300') : '') +
+      (s.total_io_write_bytes != null ? resourceCard('I/O Write', formatBytes(s.total_io_write_bytes), 'text-gray-300') : '') +
+      resourceCard('Samples', s.sample_count, 'text-gray-400');
+
+    if (samplesData && samplesData.samples && samplesData.samples.length >= 2) {
+      document.getElementById('resource-chart-container').classList.remove('hidden');
+      drawResourceChart(samplesData.samples);
+    }
+  } catch (e) {
+    // Resource data not available
+  }
+}
+
+function drawResourceChart(samples) {
+  var canvas = document.getElementById('resource-chart');
+  var ctx = canvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var w = canvas.clientWidth;
+  var h = canvas.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+
+  var pad = {top: 10, right: 50, bottom: 20, left: 40};
+  var cw = w - pad.left - pad.right;
+  var ch = h - pad.top - pad.bottom;
+
+  // Extract data
+  var cpuVals = samples.map(function(s) { return parseFloat(s.cpu_percent); });
+  var memVals = samples.map(function(s) { return s.memory_rss_bytes / 1048576; }); // MB
+
+  var maxCpu = Math.max(10, Math.ceil(Math.max.apply(null, cpuVals) * 1.1));
+  var maxMem = Math.max(10, Math.ceil(Math.max.apply(null, memVals) * 1.1));
+
+  // Background
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ctp-base').trim() || '#1e1e2e';
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  for (var i = 0; i <= 4; i++) {
+    var gy = pad.top + (ch * i / 4);
+    ctx.beginPath(); ctx.moveTo(pad.left, gy); ctx.lineTo(w - pad.right, gy); ctx.stroke();
+  }
+
+  // Draw line helper
+  function drawLine(vals, maxVal, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (var j = 0; j < vals.length; j++) {
+      var x = pad.left + (j / (vals.length - 1)) * cw;
+      var y = pad.top + ch - (vals[j] / maxVal) * ch;
+      if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  var blue = getComputedStyle(document.documentElement).getPropertyValue('--ctp-blue').trim() || '#89b4fa';
+  var green = getComputedStyle(document.documentElement).getPropertyValue('--ctp-green').trim() || '#a6e3a1';
+  drawLine(cpuVals, maxCpu, blue);
+  drawLine(memVals, maxMem, green);
+
+  // Y-axis labels
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(maxCpu.toFixed(0) + '%', pad.left - 4, pad.top + 10);
+  ctx.fillText('0%', pad.left - 4, pad.top + ch);
+  ctx.textAlign = 'left';
+  ctx.fillText(maxMem.toFixed(0) + 'M', w - pad.right + 4, pad.top + 10);
+  ctx.fillText('0M', w - pad.right + 4, pad.top + ch);
+
+  // X-axis time labels
+  ctx.textAlign = 'center';
+  var first = new Date(samples[0].sampled_at);
+  var last = new Date(samples[samples.length - 1].sampled_at);
+  var mid = new Date((first.getTime() + last.getTime()) / 2);
+  var fmt = function(d) { return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); };
+  ctx.fillText(fmt(first), pad.left, h - 4);
+  ctx.fillText(fmt(mid), pad.left + cw / 2, h - 4);
+  ctx.fillText(fmt(last), pad.left + cw, h - 4);
 }
 
 loadRunDetail();

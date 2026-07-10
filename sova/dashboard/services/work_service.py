@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from sova.core.state import STEP_DONE_STATUSES, TASK_RUN_TERMINAL
 from sova.dashboard.services.agent_progress import (
@@ -289,7 +290,7 @@ async def list_runs(
     status: str | None = None,
 ) -> list[dict]:
     """List task runs, most recent first. Unified replacement for run_service.list_runs."""
-    stmt = select(TaskRun).order_by(TaskRun.started_at.desc())
+    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).order_by(TaskRun.started_at.desc())
     if status:
         stmt = stmt.where(TaskRun.status == status)
     stmt = stmt.limit(min(limit, 200))
@@ -338,7 +339,7 @@ async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Man
 
 
 def _run_to_dict(run: TaskRun) -> dict:
-    return {
+    result = {
         "id": run.id,
         "issue_number": run.issue_number,
         "role": run.role,
@@ -354,6 +355,15 @@ def _run_to_dict(run: TaskRun) -> dict:
         "started_at": iso_utc(run.started_at),
         "ended_at": iso_utc(run.ended_at),
     }
+    # Include resource summary if eagerly loaded
+    try:
+        summary = run.resource_summary
+        if summary is not None:
+            result["peak_cpu_percent"] = float(summary.peak_cpu_percent)
+            result["peak_memory_rss_bytes"] = summary.peak_memory_rss_bytes
+    except Exception:
+        pass
+    return result
 
 
 async def _batch_step_names(session: AsyncSession, run_ids: list[int]) -> dict[int, set[str]]:

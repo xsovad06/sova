@@ -968,6 +968,8 @@ function renderAgentCard(agent) {
         renderStatusBadge(agent.status, agent.current_step, agent.step_index, agent.total_steps, agent.elapsed_seconds) +
       '</div>' +
       '<div class="flex items-center gap-3 text-xs">' +
+        (agent.cpu_percent != null ? '<span class="text-accent" data-field="cpu">CPU ' + agent.cpu_percent.toFixed(1) + '%</span>' : '') +
+        (agent.memory_rss_bytes != null ? '<span class="text-accent-green" data-field="mem">' + (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB</span>' : '') +
         '<span class="text-gray-500" data-field="elapsed">' + liveElapsed(agent.elapsed_seconds) + '</span>' +
         '<span class="text-accent-green">' + cost + '</span>' +
       '</div>' +
