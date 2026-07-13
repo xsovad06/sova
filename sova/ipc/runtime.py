@@ -38,6 +38,11 @@ _HEADLESS_PREAMBLE = (
     "WORKTREE CONFLICT RECOVERY: If you encounter worktree conflicts, "
     "the git operations will resolve them automatically. Do not attempt "
     "manual worktree removal.\n\n"
+    "CONTEXT MANAGEMENT: Monitor your context window usage. When "
+    "context grows large (after reading many files or long outputs), "
+    "use /compact proactively to free space. Prefer reading specific "
+    "file sections (line ranges) over entire files. Summarize long "
+    "command outputs before continuing.\n\n"
     "Execute the following instruction exactly as specified:\n\n"
 )
 

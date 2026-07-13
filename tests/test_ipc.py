@@ -1071,6 +1071,13 @@ class TestClaudeCodeRuntime:
         assert "do not push" in preamble_lower or "never push" in preamble_lower
         assert "do not commit" in preamble_lower or "never commit" in preamble_lower
 
+    def test_headless_preamble_includes_context_management(self) -> None:
+        from sova.ipc.runtime import _HEADLESS_PREAMBLE
+
+        preamble_lower = _HEADLESS_PREAMBLE.lower()
+        assert "/compact" in preamble_lower
+        assert "context" in preamble_lower
+
 
 class TestAiderRuntime:
     async def test_spawn_builds_correct_args(self) -> None:
