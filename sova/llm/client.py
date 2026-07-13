@@ -103,6 +103,10 @@ async def invoke_command(
     timeout: float | None = 600,
 ) -> LLMResult:
     """Run a slash command via the active LLM provider."""
+    if args:
+        from sova.llm.guard import sanitize_external_input
+
+        sanitize_external_input(args, source="invoke_command_args")
     return await get_provider().invoke_command(
         command, args, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
     )
