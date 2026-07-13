@@ -30,7 +30,7 @@
         <div class="sidebar-logo-text">
           <span class="text-lg font-semibold text-accent">SOVA</span>
           {% if project_name is defined and project_name %}
-            <p class="text-xs text-accent-green mt-0.5 truncate max-w-[120px]" title="{{ project_name }}">{{ project_name }}</p>
+            <p class="text-xs text-accent-green mt-0.5 truncate max-w-[120px]" data-tooltip="{{ project_name }}">{{ project_name }}</p>
           {% else %}
             <p class="text-xs text-gray-500">Dashboard</p>
           {% endif %}
@@ -39,7 +39,7 @@
       <!-- Activity feed toggle -->
       <button type="button" id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" data-tooltip="Activity Feed">
         {{ icon("bell", "w-5 h-5 text-gray-500 hover:text-gray-300 transition-colors") }}
-        <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-[9px] text-white flex items-center justify-center font-bold">0</span>
+        <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-xs text-white flex items-center justify-center font-bold leading-none">0</span>
       </button>
       {% if project_slug is defined and project_slug %}
       <a href="/" class="sidebar-hide text-xs text-gray-500 hover:text-gray-300 transition-colors mt-1 inline-block">&larr; Switch project</a>

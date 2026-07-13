@@ -11,7 +11,7 @@
     <div class="flex items-center gap-3">
       <a href="{{ prefix|default('') }}/roles" class="text-sm text-gray-400 hover:text-gray-200 transition-colors">&larr; Back</a>
       <h2 class="text-xl font-semibold" id="role-title">Loading...</h2>
-      <span id="builtin-badge" class="hidden text-[10px] px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Read-only</span>
+      <span id="builtin-badge" class="hidden text-xs px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Read-only</span>
     </div>
     <div class="flex items-center gap-2" id="action-buttons">
       <button onclick="validateDAG()" class="text-sm px-3 py-1.5 rounded bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">Validate</button>
@@ -23,12 +23,12 @@
   <div id="role-settings" class="hidden mb-4 bg-surface-card rounded-lg border border-gray-700/50 p-4">
     <div class="flex items-center gap-6 flex-wrap">
       <div>
-        <label class="text-[10px] text-gray-500 uppercase tracking-wide block mb-1.5">Accepts issues in states</label>
+        <label class="text-xs text-gray-500 uppercase tracking-wide block mb-1.5">Accepts issues in states</label>
         <div id="input-states-checkboxes" class="flex flex-wrap gap-2"></div>
-        <p class="text-[10px] text-gray-600 mt-1">Empty = accepts any state</p>
+        <p class="text-xs text-gray-600 mt-1">Empty = accepts any state</p>
       </div>
       <div class="border-l border-gray-700/50 pl-6">
-        <label class="text-[10px] text-gray-500 uppercase tracking-wide block mb-1.5">Transitions issue to</label>
+        <label class="text-xs text-gray-500 uppercase tracking-wide block mb-1.5">Transitions issue to</label>
         <select id="output-state-select" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-2 py-1 focus:border-accent focus:outline-none">
           <option value="">None (no transition)</option>
         </select>

@@ -64,14 +64,14 @@ function renderRoles(roles) {
     const nodeCount = (r.graph_json?.nodes || []).length;
     const edgeCount = (r.graph_json?.edges || []).length;
     const statesBadges = (r.input_states || []).map(s =>
-      `<span class="inline-block px-1.5 py-0.5 text-[10px] rounded bg-accent-purple/20 text-accent-purple">${esc(s)}</span>`
+      `<span class="inline-block px-1.5 py-0.5 text-xs rounded bg-accent-purple/20 text-accent-purple">${esc(s)}</span>`
     ).join(' ');
     const outputBadge = r.output_state
-      ? `<span class="inline-block px-1.5 py-0.5 text-[10px] rounded bg-accent-green/20 text-accent-green">${esc(r.output_state)}</span>`
+      ? `<span class="inline-block px-1.5 py-0.5 text-xs rounded bg-accent-green/20 text-accent-green">${esc(r.output_state)}</span>`
       : '';
     const typeBadge = isBuiltin
-      ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Built-in</span>'
-      : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">Custom</span>';
+      ? '<span class="text-xs px-1.5 py-0.5 rounded bg-gray-600/50 text-gray-400">Built-in</span>'
+      : '<span class="text-xs px-1.5 py-0.5 rounded bg-accent/20 text-accent">Custom</span>';
 
     const actions = isBuiltin
       ? `<a href="${prefix}/roles/${encodeURIComponent(r.name)}" class="text-xs text-gray-400 hover:text-gray-200 transition-colors">View</a>`

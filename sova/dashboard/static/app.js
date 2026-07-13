@@ -971,7 +971,7 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
     var dataAttr = interactive ? ' data-step="' + step + '"' : '';
 
     return '<div class="' + w + rounded + cls + interClass + bgClass +
-      '" style="' + style + '" title="' + escapeHtml(tooltip) + '"' + dataAttr +
+      '" style="' + style + '" data-tooltip="' + escapeHtml(tooltip) + '"' + dataAttr +
       '>' + labelHtml + '</div>';
   });
 

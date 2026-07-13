@@ -557,7 +557,7 @@ function drawResourceChart(samples) {
   ctx.fillRect(0, 0, w, h);
 
   // Grid lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.strokeStyle = 'rgb(' + (getComputedStyle(document.documentElement).getPropertyValue('--ctp-surface0-rgb').trim() || '49 50 68').replace(/ /g, ',') + ',0.4)';
   ctx.lineWidth = 1;
   for (var i = 0; i <= 4; i++) {
     var gy = pad.top + (ch * i / 4);
@@ -583,7 +583,7 @@ function drawResourceChart(samples) {
   drawLine(memVals, maxMem, green);
 
   // Y-axis labels
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ctp-overlay1').trim() || '#7f849c';
   ctx.font = '10px monospace';
   ctx.textAlign = 'right';
   ctx.fillText(maxCpu.toFixed(0) + '%', pad.left - 4, pad.top + 10);
