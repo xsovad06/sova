@@ -2243,6 +2243,45 @@ class TestMonitorCIStep:
         assert result.success
         assert "2 CI checks passed" in result.summary
 
+    async def test_exclude_checks_filters_matching(self) -> None:
+        """Checks matching exclude_checks patterns are ignored entirely."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["bonfire-tekton"]
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        passed = MagicMock(is_completed=True, is_passed=True, is_failed=False)
+        passed.name = "Tests"
+        excluded = MagicMock(is_completed=False, is_passed=False, is_failed=False)
+        excluded.name = "Red Hat Konflux / rbac-bonfire-tekton / insights-rbac"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [passed, excluded]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 CI checks passed" in result.summary
+
+    async def test_exclude_checks_does_not_filter_non_matching(self) -> None:
+        """Checks not matching exclude_checks patterns are still evaluated."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["bonfire-tekton"]
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(pr_number=10, config=config)
+        step = MonitorCIStep()
+
+        failed = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
+        failed.name = "lint"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [failed]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "lint" in result.summary
+
 
 # ---------------------------------------------------------------------------
 # MonitorCIStep -- CI fix loop
