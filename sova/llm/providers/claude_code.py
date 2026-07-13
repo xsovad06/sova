@@ -129,6 +129,8 @@ def _build_args(
         prompt,
         "--output-format",
         output_format,
+        "--permission-mode",
+        "auto",
     ]
 
     if model:
