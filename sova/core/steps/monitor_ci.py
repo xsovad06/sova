@@ -103,6 +103,14 @@ class MonitorCIStep(BaseStep):
                 elapsed += poll_interval
                 continue
 
+            exclude = ctx.config.ci.exclude_checks
+            if exclude:
+                before = len(checks)
+                checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
+                skipped = before - len(checks)
+                if skipped:
+                    log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
+
             if not checks:
                 if elapsed >= grace_period:
                     log.warning(
