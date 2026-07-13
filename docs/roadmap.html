@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-09</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-07</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -762,11 +762,49 @@ flowchart TD
   <!-- Standalone Features -->
   <h3 class="subsection-title">Standalone Features</h3>
   <div class="diagram-container">
-    <div class="task-row done">
+    <div class="task-row">
       <span class="task-number">#250</span>
       <span class="task-title">Activity feed: conversational notification panel with live system events</span>
-      <span class="task-badge badge-done">done</span>
+      <span class="task-badge badge-autonomous">agentic</span>
     </div>
+  </div>
+
+  <!-- Supervisor Agent (Phase 7) -->
+  <h3 class="subsection-title">Supervisor Agent (Chain L -- Phase 7: v0.2.0)</h3>
+  <div class="diagram-container">
+    <pre class="mermaid">
+    flowchart LR
+      subgraph foundations["Foundations (parallel)"]
+        I291["#291 CodeRabbit\nrate limit tracker\n(DONE)"]:::done
+        I292["#292 PR integration\nreadiness gates"]:::autonomous
+        I293["#293 Task dependency\ngraph engine"]:::autonomous
+      end
+
+      subgraph mid["Mid-tier"]
+        I294["#294 PR creation\nthrottle"]:::autonomous
+        I295["#295 PR lifecycle\nmonitor"]:::autonomous
+      end
+
+      subgraph top["Top-tier"]
+        I296["#296 Task progression\nengine"]:::autonomous
+        I297["#297 Supervisor daemon\n+ visual dashboard"]:::guided
+        I298["#298 Cross-project\nfleet manager"]:::guided
+      end
+
+      I291 --> I294
+      I291 --> I295
+      I292 --> I295
+      I292 --> I296
+      I293 --> I296
+      I295 --> I296
+      I295 --> I297
+      I296 --> I297
+      I250["#250 Activity feed"]:::autonomous -.-> I297
+      I297 --> I298
+
+      classDef autonomous fill:#166534,stroke:#22c55e,color:#f0fdf4
+      classDef guided fill:#581c87,stroke:#a855f7,color:#faf5ff
+    </pre>
   </div>
 
   <!-- Deferred -->
@@ -1273,10 +1311,10 @@ flowchart TD
       <!-- Standalone Features -->
       <div class="timeline-label">Features<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
       <div class="timeline-content">
-        <div class="task-row done">
+        <div class="task-row">
           <span class="task-number">#250</span>
           <span class="task-title">Activity feed: conversational notification panel with live system events</span>
-          <span class="task-badge badge-done">done</span>
+          <span class="task-badge badge-autonomous">agentic</span>
         </div>
       </div>
 
@@ -1409,6 +1447,17 @@ gantt
     #258 Cross-project aggregation   :t258, after t257, 2d
     #259 Capacity advisor + energy   :t259, after t258, 2d
 
+  section Supervisor Agent (Phase 7)
+    #291 CodeRabbit rate limit       :done, t291, 2026-07-07, 1d
+    #292 PR readiness gates          :t292, 2026-07-14, 2d
+    #293 Dependency graph engine     :t293, 2026-07-14, 3d
+    #294 PR creation throttle        :t294, after t291, 2d
+    #295 PR lifecycle monitor        :t295, after t292, 3d
+    #296 Task progression engine     :t296, after t295, 3d
+    #250 Activity feed               :t250, 2026-07-21, 3d
+    #297 Supervisor daemon + UI      :t297, after t296, 5d
+    #298 Fleet manager               :t298, after t297, 5d
+
   section Release Gate
     #6 Measure velocity              :t6, 2026-09-15, 14d
     #21 Blog post                    :t21, after t6, 5d
@@ -1434,20 +1483,21 @@ gantt
         <li><strong>Pipeline determinism</strong>: COMPLETE -- #277 (deterministic pipeline ops) done</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
         <li><strong>Resource monitoring (4 remaining)</strong>: dashboard metrics (#256), live widget (#257), cross-project (#258), capacity advisor (#259) -- #254, #255 done</li>
-        <li><strong>Recently completed</strong>: #277 (deterministic pipeline), #255 (resource DB model), #250 (activity feed), #232 (inner dev loop), #254 (psutil + ResourceCollector), #225 (memory relationship graph), #238 (cache + concurrency), #224 (semantic memory search), #199 (egress filter), #117 (Ollama), #235 (DB hardening), #240 (health check)</li>
+        <li><strong>Recently completed</strong>: #291 (CodeRabbit rate limit), #277 (deterministic pipeline), #255 (resource DB model), #205 (RTK compression), #227 (memory lifecycle), #241 (feed prior findings), #233 (regression tracking), #226 (memory injection), #234 (multi-perspective review), #232 (inner dev loop), #254 (psutil + ResourceCollector), #225 (memory relationship graph)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: COMPLETE -- Prompt injection guard (#198) + Egress filter (#199)</li>
-        <li><strong>Agentic (2 remaining):</strong> #256, #258, #259 -- resource monitoring dashboard + cross-project</li>
+        <li><strong>Agentic (3 remaining):</strong> #250, #256, #258, #259 -- API/service layers with clear acceptance criteria</li>
         <li><strong>Human (2 issues):</strong> #6, #21, #20 -- velocity measurement, content creation, release tagging</li>
         <li><strong>Hybrid (1 issue):</strong> #257 (live metrics widget) -- engine logic and UX decisions</li>
         <li><strong>Health audit</strong>: COMPLETE -- all 6 issues (#235-240) done</li>
-        <li><strong>Knowledge system (2 remaining):</strong> #226-227 -- injection, lifecycle (#224, #225 done)</li>
-        <li><strong>Agent quality (4 remaining):</strong> #233, #234, #241, #205 -- regression, review quality (#232 done)</li>
+        <li><strong>Knowledge system</strong>: COMPLETE -- all 4 issues (#224-227) done</li>
+        <li><strong>Agent quality</strong>: COMPLETE -- all 5 issues (#232-234, #241, #205) done</li>
         <li><strong>Resource monitoring (6 issues):</strong> #254-259 -- psutil, DB, dashboard, live widget, cross-project, capacity advisor</li>
+        <li><strong>Supervisor Agent (7 remaining, Phase 7):</strong> #292-298 -- PR readiness gates, dependency graph engine, PR throttle, PR monitor, progression engine, supervisor daemon + visual dashboard, cross-project fleet manager (#291 done)</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
         <li><strong>Deferred (10 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
       </ul>
