@@ -67,3 +67,12 @@ async def system_info():
     except Exception:
         log.warning("resources.system.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch system info") from None
+
+
+@router.get("/resources/system/metrics")
+async def system_metrics():
+    try:
+        return resource_service.get_system_metrics()
+    except Exception:
+        log.warning("resources.system_metrics.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from None

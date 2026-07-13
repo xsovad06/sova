@@ -507,3 +507,134 @@ class TestAgentLiveMetrics:
             assert agent_data["memory_rss_bytes"] is None
         finally:
             del pa.agents[801]
+
+
+class TestSystemMetricsService:
+    def test_returns_available_and_system_data(self) -> None:
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        result = get_system_metrics()
+        assert result["available"] is True
+        assert "system" in result
+        assert "agents" in result
+        assert "agent_slots" in result
+
+        sys = result["system"]
+        assert sys["cpu_count"] is not None
+        assert sys["cpu_count"] > 0
+        assert sys["memory_total_bytes"] is not None
+        assert sys["memory_used_bytes"] is not None
+        assert sys["memory_percent"] is not None
+
+    def test_agent_slots_empty(self) -> None:
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        result = get_system_metrics()
+        assert result["agent_slots"]["used"] >= 0
+        assert result["agent_slots"]["max"] > 0
+        assert isinstance(result["agents"], list)
+
+    def test_with_running_agent_and_collector(self) -> None:
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+        from sova.dashboard.services.resource_service import get_system_metrics
+        from sova.monitoring.models import ResourceSample
+
+        pa = _get_project_agents()
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        agent = AgentState(run_id=900, issue="70", role="developer", process=mock_process)
+        mock_collector = MagicMock()
+        sample = ResourceSample(
+            timestamp=1000.0,
+            cpu_percent=50.0,
+            memory_rss_bytes=100_000_000,
+            memory_vms_bytes=200_000_000,
+            io_read_bytes=None,
+            io_write_bytes=None,
+            num_children=1,
+            num_threads=3,
+        )
+        mock_collector.samples = deque([sample])
+        agent.resource_collector = mock_collector
+        pa.agents[900] = agent
+        try:
+            result = get_system_metrics()
+            assert result["agent_slots"]["used"] >= 1
+            agent_data = next(a for a in result["agents"] if a["run_id"] == 900)
+            assert agent_data["cpu_percent"] == 50.0
+            assert agent_data["memory_rss_bytes"] == 100_000_000
+            assert agent_data["issue"] == "70"
+            assert agent_data["role"] == "developer"
+        finally:
+            del pa.agents[900]
+
+    def test_with_agent_no_collector(self) -> None:
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        pa = _get_project_agents()
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        agent = AgentState(run_id=901, issue="71", role="triage", process=mock_process)
+        agent.resource_collector = None
+        pa.agents[901] = agent
+        try:
+            result = get_system_metrics()
+            agent_data = next(a for a in result["agents"] if a["run_id"] == 901)
+            assert agent_data["cpu_percent"] is None
+            assert agent_data["memory_rss_bytes"] is None
+        finally:
+            del pa.agents[901]
+
+    def test_load_avg_present_on_unix(self) -> None:
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        result = get_system_metrics()
+        # On macOS/Linux, load_avg should be a list of 3 floats
+        if hasattr(os, "getloadavg"):
+            assert result["system"]["load_avg"] is not None
+            assert len(result["system"]["load_avg"]) == 3
+
+    def test_psutil_unavailable_returns_not_available(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        target = "sova.dashboard.services.resource_service.psutil.cpu_percent"
+        with patch(target, side_effect=RuntimeError("no psutil")):
+            result = get_system_metrics()
+        assert result["available"] is False
+
+    def test_psutil_access_denied_returns_unavailable(self) -> None:
+        from unittest.mock import patch
+
+        import psutil
+
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        target = "sova.dashboard.services.resource_service.psutil.cpu_percent"
+        with patch(target, side_effect=psutil.AccessDenied(pid=1)):
+            result = get_system_metrics()
+        assert result["available"] is False
+
+
+class TestSystemMetricsRouter:
+    @pytest.mark.asyncio
+    async def test_system_metrics_endpoint(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/resources/system/metrics")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["available"] is True
+        assert "system" in data
+        assert "agents" in data
+        assert "agent_slots" in data
+
+    @pytest.mark.asyncio
+    async def test_system_metrics_endpoint_500(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_system_metrics"
+        with patch(target, side_effect=RuntimeError("oops")):
+            resp = await client.get("/api/resources/system/metrics")
+        assert resp.status_code == 500
+        assert "Failed to fetch system metrics" in resp.json()["detail"]
