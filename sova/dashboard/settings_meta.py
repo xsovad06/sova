@@ -339,6 +339,13 @@ _REGISTRY: list[SettingMeta] = [
         "ci",
         "list",
     ),
+    SettingMeta(
+        "ci.exclude_checks",
+        "Exclude checks",
+        "Substring patterns for CI checks to skip entirely during polling (e.g. 'bonfire-tekton')",
+        "ci",
+        "list",
+    ),
     # -- Watch --
     SettingMeta(
         "watch.interval_active",
