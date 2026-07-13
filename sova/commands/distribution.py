@@ -83,7 +83,9 @@ def _install_files(
         content = source_path.read_text(encoding="utf-8")
         rendered = render_command(content, variables)
 
-        (target_dir / filename).write_text(rendered, encoding="utf-8")
+        target_path = target_dir / filename
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(rendered, encoding="utf-8")
         hashes[filename] = file_hash(rendered)
         result.installed += 1
 
@@ -116,6 +118,7 @@ def _update_files(
         manifest_entry = manifest.commands.get(filename)
 
         if manifest_entry is None:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(rendered, encoding="utf-8")
             update_manifest(target_dir, filename, new_hash)
             result.updated += 1
@@ -131,6 +134,7 @@ def _update_files(
                 result.conflicts.append(filename)
                 continue
 
+        target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text(rendered, encoding="utf-8")
         update_manifest(target_dir, filename, new_hash)
         result.updated += 1
@@ -269,6 +273,59 @@ def update_guidelines(
         return UpdateResult()
 
     return _update_files(files, target_dir, build_variables(cfg), force=force)
+
+
+def _collect_skills(skills_dir: Path) -> list[tuple[str, Path]]:
+    """Collect SKILL.md files from subdirectories of a skills directory."""
+    if not skills_dir.is_dir():
+        return []
+    result: list[tuple[str, Path]] = []
+    for skill_dir in sorted(skills_dir.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        skill_file = skill_dir / "SKILL.md"
+        if skill_file.is_file():
+            rel_key = f"{skill_dir.name}/SKILL.md"
+            result.append((rel_key, skill_file))
+    return result
+
+
+def install_skills(
+    skills_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> InstallResult:
+    """Install skill templates into a target project's skills directory."""
+    files = _collect_skills(skills_dir)
+    if not files:
+        return InstallResult()
+    result = _install_files(files, target_dir, build_variables(cfg))
+    log.info("skills.installed", count=result.installed)
+    return result
+
+
+def update_skills(
+    skills_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+    *,
+    force: bool = False,
+) -> UpdateResult:
+    """Update installed skills incrementally."""
+    files = _collect_skills(skills_dir)
+    if not files:
+        return UpdateResult()
+    return _update_files(files, target_dir, build_variables(cfg), force=force)
+
+
+def diff_skills(
+    skills_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> DiffResult:
+    """Show what changed between canonical skills and installed ones."""
+    files = _collect_skills(skills_dir)
+    return _diff_files(files, target_dir, build_variables(cfg))
 
 
 def list_commands(target_dir: Path) -> ListResult:

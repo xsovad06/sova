@@ -60,6 +60,11 @@ def get_guidelines_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "guidelines"
 
 
+def get_skills_dir() -> Path:
+    """Return the path to the distributable skills directory in the SOVA repo."""
+    return Path(__file__).resolve().parent.parent.parent / "skills"
+
+
 def classify(commands: list[CommandEntry]) -> dict[str, list[CommandEntry]]:
     """Group commands by their category."""
     groups: dict[str, list[CommandEntry]] = {}

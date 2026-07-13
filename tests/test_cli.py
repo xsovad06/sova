@@ -407,18 +407,67 @@ class TestProjectCommands:
             patch("sova.db.session.init_db", new_callable=AsyncMock),
             patch("sova.commands.distribution.install_commands") as mock_install_cmds,
             patch("sova.commands.distribution.install_guidelines") as mock_install_guides,
+            patch("sova.commands.distribution.install_skills") as mock_install_sk,
             patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
             patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
             patch("sova.config.loader.load_config"),
         ):
             mock_install_cmds.side_effect = _install_cmds_side_effect
             mock_install_guides.return_value = MagicMock(installed=0)
+            mock_install_sk.return_value = MagicMock(installed=0)
             await _install(path=tmp_path, no_dashboard=True, update=False)
 
         assert (tmp_path / "sova.toml").exists()
         assert (tmp_path / ".claude" / "commands").is_dir()
         assert (tmp_path / ".claude" / "agent-memory").is_dir()
         assert (tmp_path / ".claude" / "agent-memory" / "MEMORY.md").exists()
+
+    async def test_install_update_includes_skills(self, tmp_path: Path) -> None:
+        """Install with update=True calls update_skills and prints result."""
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.update_commands") as mock_up_cmds,
+            patch("sova.commands.distribution.update_guidelines") as mock_up_guides,
+            patch("sova.commands.distribution.update_skills") as mock_up_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_up_cmds.return_value = MagicMock(updated=1, skipped=0, conflicts=[])
+            mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            mock_up_sk.return_value = MagicMock(updated=2, skipped=1, conflicts=[])
+            await _install(path=tmp_path, no_dashboard=True, update=True)
+
+        mock_up_sk.assert_called_once()
+
+    async def test_install_update_skills_with_conflicts(self, tmp_path: Path) -> None:
+        """Install update path prints skills conflict warnings."""
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.update_commands") as mock_up_cmds,
+            patch("sova.commands.distribution.update_guidelines") as mock_up_guides,
+            patch("sova.commands.distribution.update_skills") as mock_up_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_up_cmds.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            mock_up_sk.return_value = MagicMock(updated=0, skipped=0, conflicts=["testing-patterns"])
+            await _install(path=tmp_path, no_dashboard=True, update=True)
+
+        mock_up_sk.assert_called_once()
 
     def test_verify_install_all_present(self, tmp_path: Path) -> None:
         """Verification passes when all artifacts exist."""
@@ -1337,6 +1386,104 @@ class TestOfferStarterMilestones:
             ),
         ):
             await _offer_starter_milestones(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Skills CLI commands
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsCLICommands:
+    _MOD = "sova.cli.commands.commands"
+
+    def test_skills_list_no_dir(self, tmp_path: Path) -> None:
+        """skills-list prints 'No skills installed' when dir missing."""
+        from sova.cli.app import app
+
+        result = runner.invoke(app, ["commands", "skills-list", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "No skills installed" in result.output
+
+    def test_skills_list_shows_installed(self, tmp_path: Path) -> None:
+        """skills-list shows each installed skill name."""
+        from sova.cli.app import app
+
+        skills_dir = tmp_path / ".claude" / "skills"
+        (skills_dir / "testing-patterns").mkdir(parents=True)
+        (skills_dir / "testing-patterns" / "SKILL.md").write_text("# Testing")
+        (skills_dir / "design-system").mkdir(parents=True)
+        (skills_dir / "design-system" / "SKILL.md").write_text("# Design")
+        # Directory without SKILL.md should be ignored
+        (skills_dir / "empty-dir").mkdir()
+
+        result = runner.invoke(app, ["commands", "skills-list", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "design-system" in result.output
+        assert "testing-patterns" in result.output
+        assert "empty-dir" not in result.output
+
+    def test_skills_diff_up_to_date(self, tmp_path: Path) -> None:
+        """skills-diff reports 'up to date' when nothing changed."""
+        from sova.cli.app import app
+        from sova.commands.distribution import DiffResult
+
+        with (
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.diff_skills", return_value=DiffResult()),
+        ):
+            result = runner.invoke(app, ["commands", "skills-diff", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "up to date" in result.output
+
+    def test_skills_diff_shows_changes(self, tmp_path: Path) -> None:
+        """skills-diff shows new, changed, and removed skills."""
+        from sova.cli.app import app
+        from sova.commands.distribution import DiffResult
+
+        diff = DiffResult(new=["new-skill"], changed=["mod-skill"], removed=["old-skill"])
+        with (
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.diff_skills", return_value=diff),
+        ):
+            result = runner.invoke(app, ["commands", "skills-diff", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "new-skill" in result.output
+        assert "mod-skill" in result.output
+        assert "old-skill" in result.output
+
+    def test_skills_update_no_conflicts(self, tmp_path: Path) -> None:
+        """skills-update prints updated/skipped counts."""
+        from sova.cli.app import app
+        from sova.commands.distribution import UpdateResult
+
+        with (
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.update_skills", return_value=UpdateResult(updated=2, skipped=1)),
+        ):
+            result = runner.invoke(app, ["commands", "skills-update", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Updated: 2" in result.output
+        assert "Skipped (unchanged): 1" in result.output
+
+    def test_skills_update_with_conflicts(self, tmp_path: Path) -> None:
+        """skills-update shows conflict details."""
+        from sova.cli.app import app
+        from sova.commands.distribution import UpdateResult
+
+        ur = UpdateResult(updated=0, skipped=0, conflicts=["testing-patterns"])
+        with (
+            patch(f"{self._MOD}.load_config"),
+            patch(f"{self._MOD}.get_skills_dir", return_value=tmp_path),
+            patch(f"{self._MOD}.update_skills", return_value=ur),
+        ):
+            result = runner.invoke(app, ["commands", "skills-update", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Conflicts (1)" in result.output
+        assert "testing-patterns" in result.output
+        assert "--force" in result.output
 
 
 class TestSetupFunction:
