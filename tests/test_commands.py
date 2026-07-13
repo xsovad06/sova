@@ -768,3 +768,141 @@ class TestDiffGuidelines:
         assert diff.changed == []
         assert diff.new == []
         assert diff.removed == []
+
+
+# ---------------------------------------------------------------------------
+# Skills distribution
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def skills_dir(tmp_path: Path) -> Path:
+    """Create a fake skills directory with sample skill subdirectories."""
+    sd = tmp_path / "skills"
+    sd.mkdir()
+
+    alpha = sd / "alpha"
+    alpha.mkdir()
+    (alpha / "SKILL.md").write_text("# Alpha Skill\n\nRun `{{ test_cmd }}` to verify.\n")
+
+    beta = sd / "beta"
+    beta.mkdir()
+    (beta / "SKILL.md").write_text("# Beta Skill\n\nLint with `{{ lint_cmd }}`.\n")
+
+    # A directory without SKILL.md should be ignored
+    gamma = sd / "gamma"
+    gamma.mkdir()
+    (gamma / "README.md").write_text("# Not a skill\n")
+
+    return sd
+
+
+@pytest.fixture()
+def skills_target(tmp_path: Path) -> Path:
+    """Create a fake target project skills directory."""
+    st = tmp_path / "target" / ".claude" / "skills"
+    st.mkdir(parents=True)
+    return st
+
+
+class TestSkillsDistribution:
+    def test_collect_skills(self, skills_dir: Path) -> None:
+        """_collect_skills() finds only directories with SKILL.md."""
+        from sova.commands.distribution import _collect_skills
+
+        files = _collect_skills(skills_dir)
+        keys = [k for k, _ in files]
+        assert "alpha/SKILL.md" in keys
+        assert "beta/SKILL.md" in keys
+        assert not any("gamma" in k for k in keys)
+
+    def test_collect_skills_empty(self, tmp_path: Path) -> None:
+        """_collect_skills() returns empty list for missing directory."""
+        from sova.commands.distribution import _collect_skills
+
+        assert _collect_skills(tmp_path / "nonexistent") == []
+
+    def test_install_skills(self, skills_dir: Path, skills_target: Path) -> None:
+        """install_skills() copies skill files into subdirectories."""
+        from sova.commands.distribution import install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        result = install_skills(skills_dir, skills_target, cfg)
+
+        assert result.installed == 2
+        assert (skills_target / "alpha" / "SKILL.md").exists()
+        assert (skills_target / "beta" / "SKILL.md").exists()
+
+        content = (skills_target / "alpha" / "SKILL.md").read_text()
+        assert "pytest" in content
+
+    def test_install_skills_renders_variables(self, skills_dir: Path, skills_target: Path) -> None:
+        """Template variables in skills are replaced with config values."""
+        from sova.commands.distribution import install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+
+        content = (skills_target / "beta" / "SKILL.md").read_text()
+        assert "ruff check ." in content
+        assert "{{ lint_cmd }}" not in content
+
+    def test_update_skills_incremental(self, skills_dir: Path, skills_target: Path) -> None:
+        """update_skills() only updates changed skills."""
+        from sova.commands.distribution import install_skills, update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+
+        result = update_skills(skills_dir, skills_target, cfg)
+        assert result.updated == 0
+        assert result.skipped == 2
+
+        (skills_dir / "alpha" / "SKILL.md").write_text("# Updated alpha\n")
+        result = update_skills(skills_dir, skills_target, cfg)
+        assert result.updated == 1
+        assert result.skipped == 1
+
+    def test_diff_skills(self, skills_dir: Path, skills_target: Path) -> None:
+        """diff_skills() detects changed and new skills."""
+        from sova.commands.distribution import diff_skills, install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_skills(skills_dir, skills_target, cfg)
+
+        (skills_dir / "alpha" / "SKILL.md").write_text("# Changed\n")
+        diff = diff_skills(skills_dir, skills_target, cfg)
+        assert "alpha/SKILL.md" in diff.changed
+
+    def test_collect_skills_skips_non_directories(self, skills_dir: Path) -> None:
+        """_collect_skills() skips files that are not directories."""
+        from sova.commands.distribution import _collect_skills
+
+        # Add a regular file in the skills directory
+        (skills_dir / "stray-file.txt").write_text("not a skill")
+        files = _collect_skills(skills_dir)
+        keys = [k for k, _ in files]
+        assert not any("stray-file" in k for k in keys)
+        assert "alpha/SKILL.md" in keys
+
+    def test_update_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
+        """update_skills() handles missing skills directory gracefully."""
+        from sova.commands.distribution import update_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        result = update_skills(tmp_path / "nonexistent", skills_target, cfg)
+        assert result.updated == 0
+
+    def test_install_skills_empty_dir(self, tmp_path: Path, skills_target: Path) -> None:
+        """install_skills() handles missing skills directory gracefully."""
+        from sova.commands.distribution import install_skills
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        result = install_skills(tmp_path / "nonexistent", skills_target, cfg)
+        assert result.installed == 0

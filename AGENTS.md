@@ -56,12 +56,13 @@ sova/
   .githooks/                       # Git hooks (tracked, mirroring CI checks)
   invariants/                      # Pre-push constraint check scripts (bash)
   guidelines/                      # Distributable guideline templates (installed to .claude/rules/)
+  skills/                          # Distributable skill templates (installed to .claude/skills/)
   personas/                        # Tech-stack-specific guidance (markdown)
   knowledge/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 3236 at last count)
+  tests/                           # pytest suite (3200+ tests, 3298 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
