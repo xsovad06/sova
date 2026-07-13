@@ -546,6 +546,9 @@ async def link_task_run_to_lifecycle(
     Called from start_agent() after creating the TaskRun.
     Returns the lifecycle_id or None on error.
     """
+    if not run.issue_number:
+        return None
+
     phase = infer_phase_from_role(run.role)
     if not phase:
         return None
