@@ -82,6 +82,15 @@ return {"error": "No lifecycle found", "issue_number": issue_number}
 
 New endpoints should use Pattern 1.
 
+**SonarCloud S8415**: every endpoint that raises `HTTPException(status_code=N)` must declare `responses={N: {"description": "..."}}` in the route decorator. Without it, the quality gate fails.
+
+```python
+@router.get("/quota/pr-queue", responses={500: {"description": "Failed to fetch PR queue status"}})
+async def pr_queue_status():
+    ...
+    raise HTTPException(status_code=500, detail="Failed to fetch PR queue status")
+```
+
 ### HTTP Status Codes
 
 | Code | When |
