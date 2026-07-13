@@ -37,3 +37,6 @@ pr_title_format = "conventional"
 branch_naming = "conventional"
 pr_auto_link_issues = true
 ai_coauthor = false
+
+[dashboard]
+pr_author_filter = "all"
