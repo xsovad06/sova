@@ -4,11 +4,15 @@
   'use strict';
 
   var POLL_INTERVAL = 5000;
+  var MAX_BACKOFF = 30000;
+  var STALE_THRESHOLD = 30000; // 30s before showing stale indicator
   var HISTORY_MAX = 60; // 5 minutes at 5s intervals
   var STORAGE_KEY = 'sova-resource-widget-expanded';
 
   var cpuHistory = [];
   var memHistory = [];
+  var consecutiveErrors = 0;
+  var lastSuccessTime = Date.now();
 
   function init() {
     var widget = document.getElementById('resource-widget');
@@ -38,7 +42,23 @@
       }
     });
 
-    visibilityAwarePoll(poll, POLL_INTERVAL);
+    schedulePoll();
+  }
+
+  function getBackoffDelay() {
+    if (consecutiveErrors === 0) return POLL_INTERVAL;
+    return Math.min(POLL_INTERVAL * Math.pow(2, consecutiveErrors), MAX_BACKOFF);
+  }
+
+  function schedulePoll() {
+    setTimeout(async function () {
+      if (document.hidden) {
+        schedulePoll();
+        return;
+      }
+      await poll();
+      schedulePoll();
+    }, getBackoffDelay());
   }
 
   function syncToggleState(expanded) {
@@ -57,18 +77,36 @@
     try {
       var data = await fetchAPI(apiUrl('/resources/system/metrics'));
     } catch (_e) {
+      consecutiveErrors++;
+      updateStaleIndicator(widget);
       return;
     }
+
+    consecutiveErrors = 0;
+    lastSuccessTime = Date.now();
 
     if (!data.available) {
       widget.style.display = 'none';
       return;
     }
     widget.style.display = '';
+    updateStaleIndicator(widget);
 
     updateIndicator(data);
     updatePanel(data);
     updateSparklines(data);
+  }
+
+  function updateStaleIndicator(widget) {
+    var isStale = (Date.now() - lastSuccessTime) > STALE_THRESHOLD;
+    var panel = document.getElementById('resource-widget-panel');
+    if (panel) {
+      panel.classList.toggle('opacity-50', isStale);
+    }
+    var dot = document.getElementById('resource-widget-dot');
+    if (dot) {
+      dot.classList.toggle('opacity-50', isStale);
+    }
   }
 
   function updateIndicator(data) {
@@ -140,8 +178,8 @@
     var cpu = data.system.cpu_percent;
     var memPct = data.system.memory_percent;
 
-    cpuHistory.push(cpu != null ? cpu : 0);
-    memHistory.push(memPct != null ? memPct : 0);
+    cpuHistory.push(cpu);
+    memHistory.push(memPct);
     if (cpuHistory.length > HISTORY_MAX) cpuHistory.shift();
     if (memHistory.length > HISTORY_MAX) memHistory.shift();
 
@@ -181,21 +219,37 @@
     var stepX = w / (HISTORY_MAX - 1);
     var offsetX = (HISTORY_MAX - values.length) * stepX;
 
-    ctx.beginPath();
-    ctx.moveTo(offsetX, h - (values[0] / max) * h);
-    for (var i = 1; i < values.length; i++) {
-      ctx.lineTo(offsetX + i * stepX, h - (values[i] / max) * h);
+    // Build segments of non-null consecutive points
+    var segments = [];
+    var seg = [];
+    for (var i = 0; i < values.length; i++) {
+      if (values[i] != null) {
+        seg.push({ x: offsetX + i * stepX, y: h - (values[i] / max) * h });
+      } else {
+        if (seg.length >= 2) segments.push(seg);
+        seg = [];
+      }
     }
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    if (seg.length >= 2) segments.push(seg);
 
-    // Fill area
-    ctx.lineTo(offsetX + (values.length - 1) * stepX, h);
-    ctx.lineTo(offsetX, h);
-    ctx.closePath();
-    ctx.fillStyle = fillColor;
-    ctx.fill();
+    for (var s = 0; s < segments.length; s++) {
+      var pts = segments[s];
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (var j = 1; j < pts.length; j++) {
+        ctx.lineTo(pts[j].x, pts[j].y);
+      }
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Fill area
+      ctx.lineTo(pts[pts.length - 1].x, h);
+      ctx.lineTo(pts[0].x, h);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
   }
 
   function setText(id, text) {

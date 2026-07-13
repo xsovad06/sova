@@ -560,6 +560,8 @@ class TestSystemMetricsService:
         assert sys["memory_total_bytes"] is not None
         assert sys["memory_used_bytes"] is not None
         assert sys["memory_percent"] is not None
+        assert sys["cpu_percent"] is not None
+        assert isinstance(sys["cpu_percent"], (int, float))
 
     def test_agent_slots_empty(self) -> None:
         from sova.dashboard.services.resource_service import get_system_metrics
