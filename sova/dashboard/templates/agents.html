@@ -21,7 +21,7 @@
       <input type="text" id="task-search" placeholder="Search all issues..." autocomplete="off"
         class="w-full bg-surface border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-200 pl-8 focus:border-accent focus:outline-none"
         oninput="filterTaskCards()">
-      <svg class="absolute left-2.5 top-[7px] w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <svg class="absolute left-2.5 top-2 w-3.5 h-3.5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
     </div>
     <span id="slots-info" class="text-xs text-gray-600 ml-auto"></span>
   </div>
@@ -382,7 +382,7 @@ function renderTaskCard(item) {
 
   var actionBtn;
   if (isRunning && item.running_agent) {
-    actionBtn = '<span class="flex items-center gap-1.5 text-[10px] text-accent-yellow whitespace-nowrap">' +
+    actionBtn = '<span class="flex items-center gap-1.5 text-xs text-accent-yellow whitespace-nowrap">' +
       '<span class="w-1.5 h-1.5 rounded-full bg-accent-yellow animate-pulse"></span>' +
       escapeHtml(item.running_agent.role_label || 'Running') + '</span>';
   } else if (isSpecReview) {
@@ -402,8 +402,15 @@ function renderTaskCard(item) {
   var prBadge = '';
   if (item.pr_details) {
     var prStateClass = _prStateColors[item.pr_details.computed_state] || 'bg-gray-600/30 text-gray-400';
-    prBadge = '<span class="text-xs px-2 py-0.5 rounded-full ' + prStateClass + ' whitespace-nowrap shrink-0">' +
-      'PR #' + escapeHtml(String(item.pr_details.number)) + '</span>';
+    var prUrl = item.pr_details.url || '';
+    var isLink = prUrl.startsWith('https://');
+    var openTag = isLink
+      ? 'a href="' + escapeHtml(prUrl) + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" data-tooltip="Open PR on GitHub"'
+      : 'span';
+    var closeTag = isLink ? 'a' : 'span';
+    prBadge = '<' + openTag + ' class="text-xs px-2 py-0.5 rounded-full ' + prStateClass +
+      ' whitespace-nowrap shrink-0' + (isLink ? ' cursor-pointer hover:brightness-125' : '') + '">' +
+      'PR #' + escapeHtml(String(item.pr_details.number)) + '</' + closeTag + '>';
   }
 
   var needsAttention = item.state === 'handoff_pending' || item.state === 'spec_review';
@@ -1772,7 +1779,7 @@ function _insertPlaceholder(targetCard, clientY) {
 
 function _buildLabelHtml(runLabel) {
   if (!runLabel) return '';
-  return '<div class="text-xs text-gray-400 truncate mb-1" style="max-width:12rem" title="' + escapeHtml(runLabel) + '">' + escapeHtml(runLabel) + '</div>';
+  return '<div class="text-xs text-gray-400 truncate mb-1" style="max-width:12rem" data-tooltip="' + escapeHtml(runLabel) + '">' + escapeHtml(runLabel) + '</div>';
 }
 
 async function loadKanban() {
@@ -1853,7 +1860,7 @@ async function loadKanban() {
             : '';
 
           var errorHtml = run.error_message
-            ? '<div class="text-xs text-accent-red/70 truncate mt-1" style="max-width:12rem" title="' + escapeHtml(run.error_message) + '">' + escapeHtml(run.error_message) + '</div>'
+            ? '<div class="text-xs text-accent-red/70 truncate mt-1" style="max-width:12rem" data-tooltip="' + escapeHtml(run.error_message) + '">' + escapeHtml(run.error_message) + '</div>'
             : '';
 
           return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block border-accent-red/30">' +

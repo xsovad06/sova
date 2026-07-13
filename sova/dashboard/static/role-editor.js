@@ -8,6 +8,8 @@
   const prefix = (document.querySelector('[data-tooltip="Roles"]')?.closest('a')?.href || '').replace(/\/roles$/, '') || '';
   const apiBase = prefix ? `${prefix}/api` : '/api';
 
+  const _css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
   // Reuse global escapeHtml or provide fallback
   const esc = window.escapeHtml || function(str) {
     const d = document.createElement('div');
@@ -126,22 +128,22 @@
         {
           selector: 'node',
           style: {
-            'background-color': '#89b4fa',
+            'background-color': _css('--ctp-blue'),
             'label': 'data(label)',
-            'color': '#cdd6f4',
+            'color': _css('--ctp-text'),
             'text-valign': 'bottom',
             'text-margin-y': 8,
             'font-size': '11px',
             'width': 40,
             'height': 40,
             'border-width': 2,
-            'border-color': '#585b70',
+            'border-color': _css('--ctp-surface2'),
           }
         },
         {
           selector: 'node:selected',
           style: {
-            'border-color': '#cba6f7',
+            'border-color': _css('--ctp-mauve'),
             'border-width': 3,
           }
         },
@@ -149,21 +151,21 @@
           selector: 'edge',
           style: {
             'width': 2,
-            'line-color': '#585b70',
-            'target-arrow-color': '#585b70',
+            'line-color': _css('--ctp-surface2'),
+            'target-arrow-color': _css('--ctp-surface2'),
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'label': 'data(label)',
             'font-size': '9px',
-            'color': '#a6adc8',
+            'color': _css('--ctp-subtext0'),
             'text-rotation': 'autorotate',
           }
         },
         {
           selector: 'edge:selected',
           style: {
-            'line-color': '#cba6f7',
-            'target-arrow-color': '#cba6f7',
+            'line-color': _css('--ctp-mauve'),
+            'target-arrow-color': _css('--ctp-mauve'),
           }
         },
       ],

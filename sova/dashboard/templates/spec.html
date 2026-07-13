@@ -66,20 +66,21 @@
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
 if (window.mermaid) {
+  var _c = function(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); };
   mermaid.initialize({
     startOnLoad: false,
     theme: 'dark',
     themeVariables: {
       darkMode: true,
       background: 'transparent',
-      primaryColor: '#313244',
-      primaryTextColor: '#cdd6f4',
-      primaryBorderColor: '#45475a',
-      lineColor: '#585b70',
-      secondaryColor: '#1e1e2e',
-      tertiaryColor: '#181825',
-      noteBkgColor: '#313244',
-      noteTextColor: '#cdd6f4',
+      primaryColor: _c('--ctp-surface0'),
+      primaryTextColor: _c('--ctp-text'),
+      primaryBorderColor: _c('--ctp-surface1'),
+      lineColor: _c('--ctp-surface2'),
+      secondaryColor: _c('--ctp-base'),
+      tertiaryColor: _c('--ctp-mantle'),
+      noteBkgColor: _c('--ctp-surface0'),
+      noteTextColor: _c('--ctp-text'),
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
     },
   });

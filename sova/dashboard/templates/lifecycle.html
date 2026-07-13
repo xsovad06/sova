@@ -242,7 +242,7 @@ function renderPhaseHistory(data) {
       html += '<span class="text-xs text-gray-500">Attempt ' + p.attempt + '</span>';
     }
     if (p.error_message) {
-      html += '<span class="text-xs text-accent-red truncate max-w-xs ml-auto" title="' + escapeHtml(p.error_message) + '">' + escapeHtml(p.error_message) + '</span>';
+      html += '<span class="text-xs text-accent-red truncate max-w-xs ml-auto" data-tooltip="' + escapeHtml(p.error_message) + '">' + escapeHtml(p.error_message) + '</span>';
     }
     html += '</div>';
   }
