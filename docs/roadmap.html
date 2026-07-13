@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-02</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-09</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -596,8 +596,8 @@ flowchart TD
 flowchart TD
   I224["#224 Semantic memory\nsearch (embeddings)\n(DONE)"]:::done
   I225["#225 Memory relationship\ngraph\n(DONE)"]:::done
-  I226["#226 Relevance-filtered\nmemory injection"]:::autonomous
-  I227["#227 Memory lifecycle\nconsolidation + decay"]:::autonomous
+  I226["#226 Relevance-filtered\nmemory injection\n(DONE)"]:::done
+  I227["#227 Memory lifecycle\nconsolidation + decay\n(DONE)"]:::done
   I224 --> I226
   I225 -.-> I226
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
@@ -630,10 +630,10 @@ flowchart TD
       <pre class="mermaid">
 flowchart TD
   I232["#232 Inner dev loop\nbuild-check-fix\n(DONE)"]:::done
-  I233["#233 Regression tracking\ntest snapshots"]:::autonomous
-  I234["#234 Multi-perspective\nreview panel"]:::autonomous
-  I241["#241 Feed prior findings\nto reviewer"]:::autonomous
-  I205["#205 RTK token\ncompression"]:::medium
+  I233["#233 Regression tracking\ntest snapshots\n(DONE)"]:::done
+  I234["#234 Multi-perspective\nreview panel\n(DONE)"]:::done
+  I241["#241 Feed prior findings\nto reviewer\n(DONE)"]:::done
+  I205["#205 RTK token\ncompression\n(DONE)"]:::done
   classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
   classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
   classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
@@ -727,7 +727,7 @@ flowchart TD
     <pre class="mermaid">
 flowchart TD
   I254["#254 psutil + ResourceCollector\nservice\n(DONE)"]:::done
-  I255["#255 DB model + per-run\nresource persistence"]:::autonomous
+  I255["#255 DB model + per-run\nresource persistence\n(DONE)"]:::done
   I256["#256 Per-run resource\nmetrics in dashboard"]:::autonomous
   I257["#257 Live system metrics\nfloating widget"]:::guided
   I258["#258 Cross-project\nresource aggregation"]:::autonomous
@@ -752,21 +752,20 @@ flowchart TD
   <!-- Pipeline Determinism -->
   <h3 class="subsection-title">Pipeline Determinism</h3>
   <div class="diagram-container">
-    <div class="task-row">
+    <div class="task-row done">
       <span class="task-number">#277</span>
       <span class="task-title">Replace LLM calls with deterministic code in pipeline operations</span>
-      <span class="task-badge badge-autonomous">agentic</span>
-      <span class="task-badge badge-high">high</span>
+      <span class="task-badge badge-done">done</span>
     </div>
   </div>
 
   <!-- Standalone Features -->
   <h3 class="subsection-title">Standalone Features</h3>
   <div class="diagram-container">
-    <div class="task-row">
+    <div class="task-row done">
       <span class="task-number">#250</span>
       <span class="task-title">Activity feed: conversational notification panel with live system events</span>
-      <span class="task-badge badge-autonomous">agentic</span>
+      <span class="task-badge badge-done">done</span>
     </div>
   </div>
 
@@ -1173,15 +1172,15 @@ flowchart TD
           <span class="task-title">Memory relationship graph for connected retrieval</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#226</span>
           <span class="task-title">Relevance-filtered memory injection into prompts</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#227</span>
           <span class="task-title">Memory lifecycle management: consolidation + decay</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1195,25 +1194,25 @@ flowchart TD
           <span class="task-title">Inner dev loop: build-check-fix cycle within DevelopStep</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#233</span>
           <span class="task-title">Regression tracking: snapshot passing tests before changes</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#234</span>
           <span class="task-title">Multi-perspective review: panel of reviewers</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#241</span>
           <span class="task-title">Feed prior findings to reviewer context</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#205</span>
           <span class="task-title">RTK token compression for headless agent runs</span>
-          <span class="task-badge badge-guided">hybrid</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1222,11 +1221,10 @@ flowchart TD
       <!-- Pipeline Determinism -->
       <div class="timeline-label">Determinism<br><span style="font-weight:400;font-size:0.65rem;color:var(--amber)">Priority</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#277</span>
           <span class="task-title">Replace LLM calls with deterministic code in pipeline operations</span>
-          <span class="task-badge badge-autonomous">agentic</span>
-          <span class="task-badge badge-high">high</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1240,12 +1238,11 @@ flowchart TD
           <span class="task-title">psutil integration and ResourceCollector service</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#255</span>
           <span class="task-title">DB model and per-run resource persistence</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #255</div>
         <div class="task-row">
           <span class="task-number">#256</span>
           <span class="task-title">Per-run resource metrics in dashboard</span>
@@ -1276,10 +1273,10 @@ flowchart TD
       <!-- Standalone Features -->
       <div class="timeline-label">Features<br><span style="font-weight:400;font-size:0.65rem;color:var(--brand-light)">Backlog</span></div>
       <div class="timeline-content">
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#250</span>
           <span class="task-title">Activity feed: conversational notification panel with live system events</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
       </div>
 
@@ -1402,11 +1399,11 @@ gantt
     #199 LLM output egress filter    :done, t199, 2026-06-30, 1d
 
   section Pipeline Determinism
-    #277 Deterministic pipeline ops  :crit, t277, 2026-07-01, 3d
+    #277 Deterministic pipeline ops  :done, t277, 2026-07-03, 1d
 
   section Resource Monitoring
     #254 psutil + ResourceCollector  :done, t254, 2026-07-01, 1d
-    #255 DB model + persistence      :t255, after t254, 2d
+    #255 DB model + persistence      :done, t255, 2026-07-02, 1d
     #256 Per-run dashboard metrics   :t256, after t255, 2d
     #257 Live metrics widget         :t257, after t255, 2d
     #258 Cross-project aggregation   :t258, after t257, 2d
@@ -1434,17 +1431,17 @@ gantt
         <li><strong>Tier 3</strong> (Aug-Sep): Spec Pipeline (#161-163), Planner Role (#164-166), Model Routing (#155-157), Spec-Driven Pipeline (#245-247)</li>
         <li><strong>Tier 4</strong> (COMPLETE): Ollama local model support (#117)</li>
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
-        <li><strong>Pipeline determinism</strong>: #277 (top priority) -- replace LLM calls with deterministic code in PR body, memory extraction, review ingestion, triage</li>
+        <li><strong>Pipeline determinism</strong>: COMPLETE -- #277 (deterministic pipeline ops) done</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
-        <li><strong>Resource monitoring (5 remaining)</strong>: DB persistence (#255), dashboard metrics (#256), live widget (#257), cross-project (#258), capacity advisor (#259) -- #254 done</li>
-        <li><strong>Recently completed</strong>: #232 (inner dev loop), #254 (psutil + ResourceCollector), #225 (memory relationship graph), #238 (cache + concurrency), #224 (semantic memory search), #199 (egress filter), #117 (Ollama), #235 (DB hardening), #240 (health check), #236 (split agent_lifecycle), #237 (reviewer robustness), #239 (test coverage)</li>
+        <li><strong>Resource monitoring (4 remaining)</strong>: dashboard metrics (#256), live widget (#257), cross-project (#258), capacity advisor (#259) -- #254, #255 done</li>
+        <li><strong>Recently completed</strong>: #277 (deterministic pipeline), #255 (resource DB model), #250 (activity feed), #232 (inner dev loop), #254 (psutil + ResourceCollector), #225 (memory relationship graph), #238 (cache + concurrency), #224 (semantic memory search), #199 (egress filter), #117 (Ollama), #235 (DB hardening), #240 (health check)</li>
       </ul>
     </div>
     <div class="notes">
       <strong>Agent Strategy</strong>
       <ul>
         <li><strong>Security hardening</strong>: COMPLETE -- Prompt injection guard (#198) + Egress filter (#199)</li>
-        <li><strong>Agentic (5 remaining):</strong> #277 (top priority), #250, #255, #256, #258, #259 -- API/service layers with clear acceptance criteria</li>
+        <li><strong>Agentic (2 remaining):</strong> #256, #258, #259 -- resource monitoring dashboard + cross-project</li>
         <li><strong>Human (2 issues):</strong> #6, #21, #20 -- velocity measurement, content creation, release tagging</li>
         <li><strong>Hybrid (1 issue):</strong> #257 (live metrics widget) -- engine logic and UX decisions</li>
         <li><strong>Health audit</strong>: COMPLETE -- all 6 issues (#235-240) done</li>
