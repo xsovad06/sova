@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 
 from sova.dashboard.services import resource_service
@@ -72,7 +74,7 @@ async def system_info():
 @router.get("/resources/system/metrics", responses={500: {"description": "Internal error"}})
 async def system_metrics():
     try:
-        return resource_service.get_system_metrics()
+        return await asyncio.to_thread(resource_service.get_system_metrics)
     except Exception:
         log.warning("resources.system_metrics.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from None

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 from datetime import timezone
+from typing import TYPE_CHECKING
 
 import psutil
+
+if TYPE_CHECKING:
+    from sova.monitoring.collector import ResourceCollector
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -89,7 +93,8 @@ def get_system_metrics(slug: str | None = None) -> dict:
         memory_used = mem.used
         memory_percent = mem.percent
         cpu_count = psutil.cpu_count()
-    except Exception:
+    except (psutil.Error, OSError, RuntimeError) as e:
+        log.warning("system_metrics.psutil_error", error_type=type(e).__name__, exc_info=True)
         return {"available": False}
 
     load_avg: list[float] | None = None
@@ -131,7 +136,7 @@ def get_system_metrics(slug: str | None = None) -> dict:
     }
 
 
-def _extract_latest_metrics(collector: object) -> tuple[float | None, int | None]:
+def _extract_latest_metrics(collector: ResourceCollector | None) -> tuple[float | None, int | None]:
     """Extract latest CPU and memory from a resource collector."""
     if collector is None or not collector.samples:
         return None, None
