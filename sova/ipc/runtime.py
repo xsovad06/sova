@@ -23,6 +23,7 @@ log = get_logger(component="ipc.runtime")
 
 
 _VERSION_CHECK_TIMEOUT = 5.0
+_SUBPROCESS_LINE_LIMIT = 10 * 1024 * 1024  # 10 MB -- agent JSON lines can exceed 64 KB default
 
 _HEADLESS_PREAMBLE = (
     "[HEADLESS MODE] You are running as an autonomous agent with no "
@@ -38,6 +39,11 @@ _HEADLESS_PREAMBLE = (
     "WORKTREE CONFLICT RECOVERY: If you encounter worktree conflicts, "
     "the git operations will resolve them automatically. Do not attempt "
     "manual worktree removal.\n\n"
+    "CONTEXT MANAGEMENT: Monitor your context window usage. When "
+    "context grows large (after reading many files or long outputs), "
+    "use /compact proactively to free space. Prefer reading specific "
+    "file sections (line ranges) over entire files. Summarize long "
+    "command outputs before continuing.\n\n"
     "Execute the following instruction exactly as specified:\n\n"
 )
 
@@ -186,6 +192,7 @@ class ClaudeCodeRuntime(AgentRuntime):
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            limit=_SUBPROCESS_LINE_LIMIT,
         )
 
         return AgentProcess(proc)
@@ -300,6 +307,7 @@ class AiderRuntime(AgentRuntime):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
+                limit=_SUBPROCESS_LINE_LIMIT,
             )
             return AgentProcess(proc)
 
@@ -330,6 +338,7 @@ class AiderRuntime(AgentRuntime):
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
+            limit=_SUBPROCESS_LINE_LIMIT,
         )
         return AgentProcess(proc)
 
