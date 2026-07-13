@@ -334,6 +334,41 @@ class TestResourceRouter:
         assert data["memory_rss_bytes"] is None
 
     @pytest.mark.asyncio
+    async def test_live_metrics_endpoint_with_agent(self, client: AsyncClient) -> None:
+        from collections import deque
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+        from sova.monitoring.models import ResourceSample
+
+        pa = _get_project_agents()
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+        agent = AgentState(run_id=850, issue="80", role="developer", process=mock_process)
+        mock_collector = MagicMock()
+        sample = ResourceSample(
+            timestamp=1000.0,
+            cpu_percent=60.0,
+            memory_rss_bytes=120_000_000,
+            memory_vms_bytes=240_000_000,
+            io_read_bytes=None,
+            io_write_bytes=None,
+            num_children=1,
+            num_threads=4,
+        )
+        mock_collector.samples = deque([sample])
+        agent.resource_collector = mock_collector
+        pa.agents[850] = agent
+        try:
+            resp = await client.get("/api/resources/live/850")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["cpu_percent"] == 60.0
+            assert data["memory_rss_bytes"] == 120_000_000
+        finally:
+            del pa.agents[850]
+
+    @pytest.mark.asyncio
     async def test_system_info_endpoint(self, client: AsyncClient) -> None:
         resp = await client.get("/api/resources/system")
         assert resp.status_code == 200
