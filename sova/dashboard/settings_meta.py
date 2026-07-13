@@ -342,7 +342,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "ci.exclude_checks",
         "Exclude checks",
-        "Substring patterns for CI checks to skip entirely during polling (e.g. 'bonfire-tekton')",
+        "CI check names to skip entirely during monitoring (comma-separated list)",
         "ci",
         "list",
     ),
