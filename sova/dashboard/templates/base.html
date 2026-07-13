@@ -153,7 +153,66 @@
     window.SOVA_PROJECT_SLUG = "{{ project_slug if project_slug is defined else '' }}";
     window.SOVA_API_PREFIX = window.SOVA_PROJECT_SLUG ? "/p/" + window.SOVA_PROJECT_SLUG + "/api" : "/api";
   </script>
+  <!-- Resource monitoring widget -->
+  <div id="resource-widget" class="resource-widget" style="display:none">
+    <button id="resource-widget-toggle" class="resource-widget-toggle" aria-label="System resources">
+      <span class="resource-widget-dot resource-dot-green" id="resource-widget-dot"></span>
+      <span class="text-xs text-gray-400" id="resource-widget-label">0 agents</span>
+      <svg class="resource-widget-chevron w-3 h-3 text-gray-500 ml-1" viewBox="0 0 20 20" fill="currentColor" style="transition:transform 200ms ease"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+    </button>
+    <div id="resource-widget-panel" class="resource-widget-panel hidden">
+      <div class="px-3 py-2 border-b border-gray-700/50">
+        <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">System Resources</span>
+      </div>
+      <div class="px-3 py-2 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">CPU</span>
+          <span class="text-xs"><span id="rw-cpu-val" class="text-gray-300">--</span> <span id="rw-cpu-cores" class="text-gray-500 ml-1"></span></span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Memory</span>
+          <span class="text-xs"><span id="rw-mem-val" class="text-gray-300">--</span> <span id="rw-mem-pct" class="text-gray-500 ml-1"></span></span>
+        </div>
+        <div id="rw-load-row" class="flex items-center justify-between hidden">
+          <span class="text-xs text-gray-500">Load</span>
+          <span class="text-xs text-gray-300" id="rw-load-val">--</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-500">Slots</span>
+          <span class="text-xs text-gray-300" id="rw-slots-val">0 / 3</span>
+        </div>
+      </div>
+      <div class="px-3 py-2 border-t border-gray-700/50">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-[10px] text-gray-500 uppercase">CPU</span>
+          <span class="text-[10px] text-gray-500 uppercase">Memory</span>
+        </div>
+        <div class="flex gap-2">
+          <canvas id="rw-spark-cpu" width="150" height="40" class="flex-1"></canvas>
+          <canvas id="rw-spark-mem" width="150" height="40" class="flex-1"></canvas>
+        </div>
+      </div>
+      <div class="px-3 py-2 border-t border-gray-700/50">
+        <span class="text-[10px] text-gray-500 uppercase">Agents</span>
+        <table class="w-full mt-1">
+          <thead>
+            <tr class="text-[10px] text-gray-500 uppercase">
+              <th class="py-1 px-2 text-left font-normal">Issue</th>
+              <th class="py-1 px-2 text-left font-normal">Role</th>
+              <th class="py-1 px-2 text-right font-normal">CPU</th>
+              <th class="py-1 px-2 text-right font-normal">Mem</th>
+            </tr>
+          </thead>
+          <tbody id="rw-agent-tbody">
+            <tr><td colspan="4" class="text-center text-gray-500 py-2 text-xs">No agents running</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
+  <script src="/static/resource-widget.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

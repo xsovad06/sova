@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import timezone
 
 import psutil
@@ -64,15 +65,8 @@ def get_live_metrics(run_id: int, slug: str | None = None) -> dict | None:
     agent = pa.agents.get(run_id)
     if agent is None:
         return None
-    collector = agent.resource_collector
-    if collector is None or not collector.samples:
-        return {"run_id": run_id, "cpu_percent": None, "memory_rss_bytes": None}
-    latest = collector.samples[-1]
-    return {
-        "run_id": run_id,
-        "cpu_percent": latest.cpu_percent,
-        "memory_rss_bytes": latest.memory_rss_bytes,
-    }
+    cpu, mem = _extract_latest_metrics(agent.resource_collector)
+    return {"run_id": run_id, "cpu_percent": cpu, "memory_rss_bytes": mem}
 
 
 def get_system_info() -> dict:
@@ -81,6 +75,68 @@ def get_system_info() -> dict:
         "cpu_count": psutil.cpu_count(),
         "total_memory_bytes": psutil.virtual_memory().total,
     }
+
+
+def get_system_metrics(slug: str | None = None) -> dict:
+    """Get real-time system metrics and per-agent resource data.
+
+    No DB queries -- reads from psutil and the in-memory agent pool.
+    """
+    try:
+        cpu_percent: float | None = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory()
+        memory_total = mem.total
+        memory_used = mem.used
+        memory_percent = mem.percent
+        cpu_count = psutil.cpu_count()
+    except Exception:
+        return {"available": False}
+
+    load_avg: list[float] | None = None
+    if hasattr(os, "getloadavg"):
+        try:
+            load_avg = list(os.getloadavg())
+        except OSError:
+            pass
+
+    pa = _get_project_agents(slug)
+    agents = []
+    for agent in pa.agents.values():
+        agent_cpu, agent_mem = _extract_latest_metrics(agent.resource_collector)
+        agents.append(
+            {
+                "run_id": agent.run_id,
+                "issue": agent.issue,
+                "role": agent.role,
+                "cpu_percent": agent_cpu,
+                "memory_rss_bytes": agent_mem,
+            }
+        )
+
+    return {
+        "available": True,
+        "system": {
+            "cpu_percent": cpu_percent,
+            "cpu_count": cpu_count,
+            "memory_total_bytes": memory_total,
+            "memory_used_bytes": memory_used,
+            "memory_percent": memory_percent,
+            "load_avg": load_avg,
+        },
+        "agents": agents,
+        "agent_slots": {
+            "used": len(pa.agents),
+            "max": pa.max_concurrent,
+        },
+    }
+
+
+def _extract_latest_metrics(collector: object) -> tuple[float | None, int | None]:
+    """Extract latest CPU and memory from a resource collector."""
+    if collector is None or not collector.samples:
+        return None, None
+    latest = collector.samples[-1]
+    return latest.cpu_percent, latest.memory_rss_bytes
 
 
 def _summary_to_dict(s: ResourceSummaryRecord) -> dict:
