@@ -48,7 +48,7 @@ async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le
         raise HTTPException(status_code=500, detail="Failed to fetch resource samples") from None
 
 
-@router.get("/resources/live/{run_id}")
+@router.get("/resources/live/{run_id}", responses={500: {"description": "Internal error"}})
 async def live_metrics(run_id: int):
     try:
         result = resource_service.get_live_metrics(run_id)
@@ -60,7 +60,7 @@ async def live_metrics(run_id: int):
         raise HTTPException(status_code=500, detail="Failed to fetch live metrics") from None
 
 
-@router.get("/resources/system")
+@router.get("/resources/system", responses={500: {"description": "Internal error"}})
 async def system_info():
     try:
         return resource_service.get_system_info()
@@ -69,7 +69,7 @@ async def system_info():
         raise HTTPException(status_code=500, detail="Failed to fetch system info") from None
 
 
-@router.get("/resources/system/metrics")
+@router.get("/resources/system/metrics", responses={500: {"description": "Internal error"}})
 async def system_metrics():
     try:
         return resource_service.get_system_metrics()
