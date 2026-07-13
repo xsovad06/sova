@@ -9,8 +9,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sova.commands.catalog import get_canonical_dir
-from sova.commands.distribution import diff_commands, list_commands, update_commands
+from sova.commands.catalog import get_canonical_dir, get_skills_dir
+from sova.commands.distribution import diff_commands, diff_skills, list_commands, update_commands, update_skills
 from sova.config.loader import load_config
 from sova.config.registry import list_projects
 
@@ -159,3 +159,78 @@ def sync_cmd(
         console.print(f"[yellow]Conflicts ({len(all_conflicts)}):[/yellow]")
         for slug, name in all_conflicts:
             console.print(f"  ! {slug}/{name}")
+
+
+_SKILLS_SUBDIR = Path(".claude") / "skills"
+
+
+@app.command(name="skills-list")
+def skills_list_cmd(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """List installed skills."""
+    project_dir = (project or Path.cwd()).resolve()
+    target_dir = project_dir / _SKILLS_SUBDIR
+
+    if not target_dir.is_dir():
+        console.print("[yellow]No skills installed.[/yellow]")
+        return
+
+    for child in sorted(target_dir.iterdir()):
+        if child.is_dir() and (child / "SKILL.md").is_file():
+            console.print(f"  {child.name}")
+
+
+@app.command(name="skills-diff")
+def skills_diff_cmd(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+) -> None:
+    """Show what changed since last skills install."""
+    project_dir = (project or Path.cwd()).resolve()
+    target_dir = project_dir / _SKILLS_SUBDIR
+    cfg = load_config(project_dir)
+    skills_dir = get_skills_dir()
+
+    result = diff_skills(skills_dir, target_dir, cfg)
+
+    if not result.changed and not result.new and not result.removed:
+        console.print("[green]All skills are up to date.[/green]")
+        return
+
+    if result.new:
+        console.print("[bold]New skills available:[/bold]")
+        for name in result.new:
+            console.print(f"  + {name}", style="green")
+
+    if result.changed:
+        console.print("[bold]Changed skills:[/bold]")
+        for name in result.changed:
+            console.print(f"  ~ {name}", style="yellow")
+
+    if result.removed:
+        console.print("[bold]Removed from canonical:[/bold]")
+        for name in result.removed:
+            console.print(f"  - {name}", style="red")
+
+
+@app.command(name="skills-update")
+def skills_update_cmd(
+    project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite customized skills without prompting.")] = False,
+) -> None:
+    """Sync skills to latest canonical versions."""
+    project_dir = (project or Path.cwd()).resolve()
+    target_dir = project_dir / _SKILLS_SUBDIR
+    cfg = load_config(project_dir)
+    skills_dir = get_skills_dir()
+
+    result = update_skills(skills_dir, target_dir, cfg, force=force)
+
+    console.print(f"[green]Updated: {result.updated}[/green]")
+    console.print(f"[dim]Skipped (unchanged): {result.skipped}[/dim]")
+
+    if result.conflicts:
+        console.print(f"\n[yellow]Conflicts ({len(result.conflicts)}):[/yellow]")
+        for name in result.conflicts:
+            console.print(f"  ! {name} -- locally modified, source also changed")
+        console.print("[dim]Use --force to overwrite, or manually merge.[/dim]")
