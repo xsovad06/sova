@@ -375,19 +375,38 @@ class DevelopStep(BaseStep):
         return newly_modified
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: development must produce actual code changes."""
-        diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
-        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
-        has_changes = bool(
-            (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
-        )
-        # Also check commits ahead of base branch (Claude may have committed)
-        log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-        has_commits = bool(log_result.success and log_result.stdout.strip())
+        """Gate: development must produce actual code changes (not just artifacts)."""
+        from sova.core.steps.commit import is_non_code_file
 
-        if has_changes or has_commits:
+        code_changes = False
+
+        # Check unstaged + staged changes for meaningful files
+        diff_names = await run("git", "diff", "--name-only", "HEAD", cwd=ctx.working_dir)
+        staged_names = await run("git", "diff", "--cached", "--name-only", cwd=ctx.working_dir)
+        for result in (diff_names, staged_names):
+            if result.success and result.stdout.strip():
+                files = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
+                if any(not is_non_code_file(f) for f in files):
+                    code_changes = True
+                    break
+
+        # Also check commits ahead of base branch (Claude may have committed)
+        if not code_changes:
+            diff_result = await run(
+                "git",
+                "diff",
+                "--name-only",
+                f"{ctx.base_branch}..HEAD",
+                cwd=ctx.working_dir,
+            )
+            if diff_result.success and diff_result.stdout.strip():
+                files = [f.strip() for f in diff_result.stdout.strip().splitlines() if f.strip()]
+                if any(not is_non_code_file(f) for f in files):
+                    code_changes = True
+
+        if code_changes:
             return GateCheckResult(passed=True)
         return GateCheckResult(
             passed=False,
-            reason="Development produced no code changes",
+            reason="Development produced no code changes (only artifacts/lock files found)",
         )

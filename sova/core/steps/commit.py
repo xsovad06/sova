@@ -12,17 +12,25 @@ from sova.utils.shell import run
 
 log = get_logger(component="step.commit")
 
-_AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-")
-_SPEC_PREFIX = ".claude/specs/"
+AGENT_ARTIFACT_PREFIXES = (".claude/", ".agent-", ".sova-", ".sova/")
+SPEC_PREFIX = ".claude/specs/"
+NON_CODE_SUFFIXES = (".lock",)
 
 _CONVENTIONAL_COMMIT_RE = re.compile(r"^(feat|fix|refactor|test|docs|chore)\([^)]+\):\s*")
 
 
-def _is_agent_artifact(path: str) -> bool:
+def is_agent_artifact(path: str) -> bool:
     """Check if a path is an agent/tool artifact that shouldn't be committed."""
-    if path.startswith(_SPEC_PREFIX):
+    if path.startswith(SPEC_PREFIX):
         return False  # Specs are provenance records, commit them
-    return any(path.startswith(p) for p in _AGENT_ARTIFACT_PREFIXES)
+    return any(path.startswith(p) for p in AGENT_ARTIFACT_PREFIXES)
+
+
+def is_non_code_file(path: str) -> bool:
+    """Check if a path is an artifact or non-code file (lock files, tooling config)."""
+    if is_agent_artifact(path):
+        return True
+    return any(path.endswith(s) for s in NON_CODE_SUFFIXES)
 
 
 def _normalize_commit_subject(
@@ -83,7 +91,7 @@ class CommitStep(BaseStep):
         has_staged = bool(staged.success and staged.stdout.strip())
 
         untracked_files = [f for f in untracked.stdout.strip().splitlines() if f.strip()] if untracked.success else []
-        meaningful_untracked = [f for f in untracked_files if not _is_agent_artifact(f)]
+        meaningful_untracked = [f for f in untracked_files if not is_agent_artifact(f)]
 
         return has_unstaged or has_staged or bool(meaningful_untracked)
 
@@ -110,9 +118,36 @@ class CommitStep(BaseStep):
         return normalized
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: branch must have at least one commit ahead of base."""
+        """Gate: branch must have commits with meaningful code changes."""
+        unstaged = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        if unstaged.success and unstaged.stdout.strip():
+            log.warning("step.commit.leftover_unstaged", files=unstaged.stdout.strip()[:200])
+        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        if staged.success and staged.stdout.strip():
+            log.warning("step.commit.leftover_staged", files=staged.stdout.strip()[:200])
+
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
-        if has_commits:
-            return GateCheckResult(passed=True)
-        return GateCheckResult(passed=False, reason="No commits ahead of base branch after commit step")
+        if not has_commits:
+            return GateCheckResult(passed=False, reason="No commits ahead of base branch after commit step")
+
+        diff_result = await run(
+            "git",
+            "diff",
+            "--name-only",
+            f"{ctx.base_branch}..HEAD",
+            cwd=ctx.working_dir,
+        )
+        if not diff_result.success:
+            return GateCheckResult(passed=False, reason="Failed to check committed changes (git diff failed)")
+        if diff_result.stdout.strip():
+            changed = [f.strip() for f in diff_result.stdout.strip().splitlines() if f.strip()]
+            code_files = [f for f in changed if not is_non_code_file(f)]
+            if not code_files:
+                artifact_list = ", ".join(changed)
+                return GateCheckResult(
+                    passed=False,
+                    reason=f"Commit contains only non-code files ({artifact_list}), no actual code changes",
+                )
+
+        return GateCheckResult(passed=True)

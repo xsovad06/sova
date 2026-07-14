@@ -104,23 +104,23 @@ def test_read_spec_sections_no_spec(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CommitStep: _is_agent_artifact
+# CommitStep: is_agent_artifact
 # ---------------------------------------------------------------------------
 
 
 def test_spec_files_not_agent_artifact() -> None:
-    from sova.core.steps.commit import _is_agent_artifact
+    from sova.core.steps.commit import is_agent_artifact
 
-    assert _is_agent_artifact(".claude/specs/42-feature.md") is False
-    assert _is_agent_artifact(".claude/specs/100-another.md") is False
+    assert is_agent_artifact(".claude/specs/42-feature.md") is False
+    assert is_agent_artifact(".claude/specs/100-another.md") is False
 
 
 def test_other_claude_files_still_artifacts() -> None:
-    from sova.core.steps.commit import _is_agent_artifact
+    from sova.core.steps.commit import is_agent_artifact
 
-    assert _is_agent_artifact(".claude/settings.json") is True
-    assert _is_agent_artifact(".claude/agent-control/handoff.json") is True
-    assert _is_agent_artifact(".agent-summary.md") is True
+    assert is_agent_artifact(".claude/settings.json") is True
+    assert is_agent_artifact(".claude/agent-control/handoff.json") is True
+    assert is_agent_artifact(".agent-summary.md") is True
 
 
 # ---------------------------------------------------------------------------
