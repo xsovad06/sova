@@ -265,6 +265,33 @@ def _extract_handoff_summary(handoff: dict | None, state: WorkItemState) -> str:
     return ""
 
 
+def _synthesize_spec_actions(issue_number: str) -> list[dict]:
+    """Reconstruct spec handoff actions when the handoff file is missing.
+
+    The handoff file may be cleared by unrelated agent runs. Synthesize
+    the standard approve/reject/revise/skip actions so the dashboard still
+    shows actionable buttons for awaiting_approval specs.
+    """
+    return [
+        {
+            "id": "approve-spec",
+            "label": "Approve Spec",
+            "description": "Accept the spec and proceed to development",
+            "style": "approve",
+            "mode": "agent",
+            "args": {"issue": issue_number, "role": "developer"},
+        },
+        {
+            "id": "reject-spec",
+            "label": "Reject",
+            "description": "Reject spec and mark issue as needs_spec",
+            "style": "danger",
+            "mode": "shell",
+            "args": {"issue": issue_number},
+        },
+    ]
+
+
 def _build_task_item(
     task: dict,
     pr_data: dict | None,
@@ -289,6 +316,7 @@ def _build_task_item(
     # Synthesize a resume action for awaiting_approval runs without handoff
     last_run = task.get("last_run")
     last_run_status = last_run.get("status") if last_run else None
+    spec_handoff_actions: list[dict] = []
     if not handoff and not running and last_run and last_run_status == _AWAITING_APPROVAL:
         state = WorkItemState.SPEC_REVIEW
         primary = _build_action(
@@ -299,6 +327,7 @@ def _build_task_item(
             {"run_id": last_run["id"]},
         )
         secondary = []
+        spec_handoff_actions = _synthesize_spec_actions(issue_num)
     else:
         primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr_number)
 
@@ -310,7 +339,7 @@ def _build_task_item(
         state=state,
         primary_action=primary,
         secondary_actions=secondary,
-        handoff_actions=_extract_handoff_actions(handoff, state),
+        handoff_actions=spec_handoff_actions or _extract_handoff_actions(handoff, state),
         handoff_summary=_extract_handoff_summary(handoff, state),
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr_data) if pr_data else None,
