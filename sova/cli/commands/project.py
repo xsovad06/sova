@@ -67,20 +67,24 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     # Load config once -- used by Stage 4 (commands) and Stage 5 (RTK)
     cfg = load_config(project_dir)
 
-    # Stage 4: Commands and guidelines
+    # Stage 4: Commands, guidelines, and skills
     try:
-        from sova.commands.catalog import get_canonical_dir, get_guidelines_dir
+        from sova.commands.catalog import get_canonical_dir, get_guidelines_dir, get_skills_dir
         from sova.commands.distribution import install_commands as install_cmds
         from sova.commands.distribution import install_guidelines as install_guides
+        from sova.commands.distribution import install_skills as install_sk
         from sova.commands.distribution import update_commands as update_cmds
         from sova.commands.distribution import update_guidelines as update_guides
+        from sova.commands.distribution import update_skills as update_sk
 
         canonical_dir = get_canonical_dir()
         guidelines_dir = get_guidelines_dir()
+        skills_src_dir = get_skills_dir()
         commands_dir = claude_dir / "commands"
         commands_dir.mkdir(exist_ok=True)
         rules_dir = claude_dir / "rules"
         rules_dir.mkdir(exist_ok=True)
+        skills_target = claude_dir / "skills"
 
         if update:
             cmd_result = update_cmds(canonical_dir, commands_dir, cfg)
@@ -95,11 +99,18 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             if guide_result.conflicts:
                 for name in guide_result.conflicts:
                     console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
+            sk_result = update_sk(skills_src_dir, skills_target, cfg)
+            console.print(f"[green]Skills updated: {sk_result.updated}, unchanged: {sk_result.skipped}[/green]")
+            if sk_result.conflicts:
+                for name in sk_result.conflicts:
+                    console.print(f"  [yellow]! {name} -- locally modified, skipped[/yellow]")
         else:
             cmd_result = install_cmds(canonical_dir, commands_dir, cfg)
             console.print(f"[green]Commands installed: {cmd_result.installed}[/green]")
             guide_result = install_guides(guidelines_dir, rules_dir, cfg)
             console.print(f"[green]Guidelines installed: {guide_result.installed}[/green]")
+            sk_result = install_sk(skills_src_dir, skills_target, cfg)
+            console.print(f"[green]Skills installed: {sk_result.installed}[/green]")
     except Exception as exc:
         console.print(f"[red]Command installation failed: {exc}[/red]")
         failed_stages.append("commands")
