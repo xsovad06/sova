@@ -12,7 +12,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def canonical_dir(tmp_path: Path) -> Path:
     """Create a fake canonical commands directory with sample commands."""
     cmd_dir = tmp_path / "canonical"
@@ -53,7 +53,7 @@ def canonical_dir(tmp_path: Path) -> Path:
     return cmd_dir
 
 
-@pytest.fixture()
+@pytest.fixture
 def target_dir(tmp_path: Path) -> Path:
     """Create a fake target project commands directory."""
     cmd_dir = tmp_path / "target" / ".claude" / "commands"
@@ -531,7 +531,7 @@ class TestCommandsCLI:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def guidelines_dir(tmp_path: Path) -> Path:
     """Create a fake guidelines directory with sample templates."""
     guide_dir = tmp_path / "guidelines"
@@ -548,7 +548,7 @@ def guidelines_dir(tmp_path: Path) -> Path:
     return guide_dir
 
 
-@pytest.fixture()
+@pytest.fixture
 def rules_dir(tmp_path: Path) -> Path:
     """Create a fake target project rules directory."""
     rd = tmp_path / "target" / ".claude" / "rules"
@@ -775,7 +775,7 @@ class TestDiffGuidelines:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def skills_dir(tmp_path: Path) -> Path:
     """Create a fake skills directory with sample skill subdirectories."""
     sd = tmp_path / "skills"
@@ -797,7 +797,7 @@ def skills_dir(tmp_path: Path) -> Path:
     return sd
 
 
-@pytest.fixture()
+@pytest.fixture
 def skills_target(tmp_path: Path) -> Path:
     """Create a fake target project skills directory."""
     st = tmp_path / "target" / ".claude" / "skills"

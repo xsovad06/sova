@@ -66,21 +66,21 @@
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
 if (window.mermaid) {
-  var _c = function(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); };
+  var _c = function(v, fb) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim() || fb; };
   mermaid.initialize({
     startOnLoad: false,
     theme: 'dark',
     themeVariables: {
       darkMode: true,
       background: 'transparent',
-      primaryColor: _c('--ctp-surface0'),
-      primaryTextColor: _c('--ctp-text'),
-      primaryBorderColor: _c('--ctp-surface1'),
-      lineColor: _c('--ctp-surface2'),
-      secondaryColor: _c('--ctp-base'),
-      tertiaryColor: _c('--ctp-mantle'),
-      noteBkgColor: _c('--ctp-surface0'),
-      noteTextColor: _c('--ctp-text'),
+      primaryColor: _c('--ctp-surface0', '#313244'),
+      primaryTextColor: _c('--ctp-text', '#cdd6f4'),
+      primaryBorderColor: _c('--ctp-surface1', '#45475a'),
+      lineColor: _c('--ctp-surface2', '#585b70'),
+      secondaryColor: _c('--ctp-base', '#1e1e2e'),
+      tertiaryColor: _c('--ctp-mantle', '#181825'),
+      noteBkgColor: _c('--ctp-surface0', '#313244'),
+      noteTextColor: _c('--ctp-text', '#cdd6f4'),
       fontFamily: 'ui-sans-serif, system-ui, sans-serif',
     },
   });

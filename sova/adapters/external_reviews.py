@@ -384,7 +384,7 @@ async def _fetch_coderabbit_threads(
         if author not in allowed:
             continue
 
-        body = sanitize_external_input(comments[0].get("body", ""), source="coderabbit_review")
+        body = sanitize_external_input(comments[0].get("body") or "", source="coderabbit_review")
 
         out.findings.append(
             ExternalFinding(

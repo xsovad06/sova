@@ -557,7 +557,7 @@ function drawResourceChart(samples) {
   ctx.fillRect(0, 0, w, h);
 
   // Grid lines
-  ctx.strokeStyle = 'rgb(' + (getComputedStyle(document.documentElement).getPropertyValue('--ctp-surface0-rgb').trim() || '49 50 68').replace(/ /g, ',') + ',0.4)';
+  ctx.strokeStyle = 'rgba(' + (getComputedStyle(document.documentElement).getPropertyValue('--ctp-surface0-rgb').trim() || '49 50 68').replace(/ /g, ',') + ',0.4)';
   ctx.lineWidth = 1;
   for (var i = 0; i <= 4; i++) {
     var gy = pad.top + (ch * i / 4);
