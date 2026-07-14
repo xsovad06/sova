@@ -435,7 +435,7 @@ function renderTaskCard(item) {
     issueRef +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(item.title) + '</span>' +
     failedDot +
-    '<div class="flex items-center gap-2 shrink-0" style="width:' + (isSpecReview ? '460' : '340') + 'px">' +
+    '<div class="flex items-center gap-2 shrink-0" style="width:340px">' +
       '<div class="w-20 flex justify-end">' + prBadge + '</div>' +
       '<div class="flex justify-end">' + stateTag(item.state, item.state_label, item.state_color) + '</div>' +
       '<div class="flex-1 flex justify-end gap-1.5">' + actionBtn + '</div>' +
