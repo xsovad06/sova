@@ -214,7 +214,7 @@ async def _is_coderabbit_rate_limited(
 
     try:
         data = json.loads(result.stdout)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return False
 
     comments = data.get("comments") or []
