@@ -290,7 +290,11 @@ def create_app(
                 p = Path(path_str)
                 if not p.is_dir():
                     continue
-                pcfg = _load_mon_cfg(p)
+                try:
+                    pcfg = _load_mon_cfg(p)
+                except Exception:
+                    log.warning("pr_monitor.config_load_failed", project=str(p), exc_info=True)
+                    continue
                 if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
                     continue
 

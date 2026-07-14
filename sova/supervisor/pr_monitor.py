@@ -15,11 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sova.config.models import PRMonitorConfig
 from sova.dashboard.services.pr_service import _STATE_LABELS, ComputedPRState
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sova.config.models import NotificationConfig, PRMonitorConfig
+    from sova.config.models import NotificationConfig
 
 log = get_logger(component="supervisor.pr_monitor")
 
@@ -32,6 +33,14 @@ _NOTIFY_STATES: dict[str, str] = {
     ComputedPRState.CHANGES_REQUESTED: "notify_on_changes_requested",
     ComputedPRState.CI_FAILED: "notify_on_ci_failure",
 }
+
+# Validate that every config flag in _NOTIFY_STATES is a real PRMonitorConfig field
+for _flag in _NOTIFY_STATES.values():
+    if _flag not in PRMonitorConfig.model_fields:
+        raise AttributeError(
+            f"_NOTIFY_STATES references unknown PRMonitorConfig field: {_flag!r}"
+        )
+del _flag
 
 
 @dataclass
@@ -85,24 +94,32 @@ class PRMonitor:
             clear_project_context()
         current: dict[int, PRSnapshot] = {}
 
+        # Parallelize rate limit checks across all PRs
+        rate_limits: dict[int, bool] = {}
+        if self.monitor_config.auto_retry_coderabbit and prs:
+            tasks = {
+                pr["number"]: asyncio.ensure_future(
+                    _is_coderabbit_rate_limited(
+                        pr["number"], repo=self.repo, github_user=self.github_user
+                    )
+                )
+                for pr in prs
+            }
+            results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+            for number, result in zip(tasks.keys(), results):
+                if isinstance(result, BaseException):
+                    log.debug("pr_monitor.rate_limit_check_failed", pr=number, exc_info=True)
+                    rate_limits[number] = False
+                else:
+                    rate_limits[number] = result
+
         for pr in prs:
             number = pr["number"]
-            if self.monitor_config.auto_retry_coderabbit:
-                try:
-                    rate_limited = await _is_coderabbit_rate_limited(
-                        number, repo=self.repo, github_user=self.github_user
-                    )
-                except Exception:
-                    log.debug("pr_monitor.rate_limit_check_failed", pr=number, exc_info=True)
-                    rate_limited = False
-            else:
-                rate_limited = False
-
             snapshot = PRSnapshot(
                 number=number,
                 computed_state=pr["computed_state"],
                 title=pr["title"],
-                rate_limited=rate_limited,
+                rate_limited=rate_limits.get(number, False),
             )
             current[number] = snapshot
 
@@ -165,7 +182,11 @@ class PRMonitor:
         from sova.utils.shell import run
 
         log.info("pr_monitor.retry_coderabbit", pr=pr_number)
-        env = await resolve_gh_env(self.github_user) if self.github_user else None
+        try:
+            env = await resolve_gh_env(self.github_user) if self.github_user else None
+        except Exception:
+            log.warning("pr_monitor.gh_env_failed", pr=pr_number, exc_info=True)
+            return
         result = await run(
             "gh",
             "pr",
@@ -218,6 +239,7 @@ async def _is_coderabbit_rate_limited(
         return False
 
     comments = data.get("comments") or []
+    # GitHub API returns comments oldest-first; reverse to check newest first
     for comment in reversed(comments):
         author = (comment.get("author") or {}).get("login", "").lower()
         if author not in _CODERABBIT_LOGINS:
