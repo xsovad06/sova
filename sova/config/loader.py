@@ -79,6 +79,7 @@ _NESTED_SECTIONS = (
     "integration_gates",
     "rtk",
     "coderabbit_quota",
+    "pr_monitor",
 )
 
 

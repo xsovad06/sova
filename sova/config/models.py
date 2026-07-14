@@ -387,6 +387,20 @@ class IntegrationGatesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_GATES_")
 
 
+class PRMonitorConfig(BaseSettings):
+    """PR monitoring background loop configuration."""
+
+    enabled: bool = False
+    poll_interval: int = Field(120, gt=0)
+    notify_on_approval: bool = True
+    notify_on_changes_requested: bool = True
+    notify_on_ci_failure: bool = True
+    notify_on_ready_to_merge: bool = True
+    auto_retry_coderabbit: bool = True
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_PR_MONITOR_")
+
+
 class RTKConfig(BaseSettings):
     """RTK (context compression) integration configuration."""
 
@@ -455,6 +469,7 @@ class ProjectConfig(BaseSettings):
     integration_gates: IntegrationGatesConfig = Field(default_factory=IntegrationGatesConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
+    pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 
