@@ -280,11 +280,48 @@ def create_app(
                 )
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
+
+        # PR monitor background loop
+        pr_monitor_tasks: list[asyncio.Task] = []
+        if is_multi:
+            from sova.config.loader import load_config as _load_mon_cfg
+
+            for path_str in list_projects().values():
+                p = Path(path_str)
+                if not p.is_dir():
+                    continue
+                pcfg = _load_mon_cfg(p)
+                if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
+                    continue
+
+                from sova.supervisor.pr_monitor import PRMonitor
+
+                monitor = PRMonitor(
+                    project_dir=p,
+                    monitor_config=pcfg.pr_monitor,
+                    notification_config=pcfg.notification,
+                    repo=pcfg.github_repo,
+                    github_user=pcfg.github_user,
+                )
+                pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
+        elif cfg.pr_monitor.enabled and cfg.github_repo:
+            from sova.supervisor.pr_monitor import PRMonitor
+
+            monitor = PRMonitor(
+                project_dir=resolved,
+                monitor_config=cfg.pr_monitor,
+                notification_config=cfg.notification,
+                repo=cfg.github_repo,
+                github_user=cfg.github_user,
+            )
+            pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
+
         yield
-        for t in pr_throttle_tasks:
+        bg_tasks = pr_throttle_tasks + pr_monitor_tasks
+        for t in bg_tasks:
             t.cancel()
-        if pr_throttle_tasks:
-            await asyncio.gather(*pr_throttle_tasks, return_exceptions=True)
+        if bg_tasks:
+            await asyncio.gather(*bg_tasks, return_exceptions=True)
         sweep_task.cancel()
         await asyncio.gather(sweep_task, return_exceptions=True)
         await close_db()

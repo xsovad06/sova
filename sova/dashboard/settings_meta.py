@@ -42,6 +42,7 @@ GROUPS: dict[str, str] = {
     "integration_gates": "Integration Gates",
     "rtk": "RTK Compression",
     "coderabbit_quota": "CodeRabbit Quota",
+    "pr_monitor": "PR Monitor",
 }
 
 GROUP_ORDER: list[str] = [
@@ -72,6 +73,7 @@ GROUP_ORDER: list[str] = [
     "integration_gates",
     "rtk",
     "coderabbit_quota",
+    "pr_monitor",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -704,6 +706,56 @@ _REGISTRY: list[SettingMeta] = [
         "Rolling window duration in minutes for rate limit tracking",
         "coderabbit_quota",
         "number",
+    ),
+    # -- PR Monitor --
+    SettingMeta(
+        "pr_monitor.enabled",
+        "Enabled",
+        "Enable background PR monitoring with state-change notifications and CodeRabbit auto-retry",
+        "pr_monitor",
+        "boolean",
+    ),
+    SettingMeta(
+        "pr_monitor.poll_interval",
+        "Poll interval (s)",
+        "Seconds between PR state polling cycles",
+        "pr_monitor",
+        "number",
+    ),
+    SettingMeta(
+        "pr_monitor.notify_on_approval",
+        "Notify on approval",
+        "Desktop notification when a PR is approved",
+        "pr_monitor",
+        "boolean",
+    ),
+    SettingMeta(
+        "pr_monitor.notify_on_changes_requested",
+        "Notify on changes requested",
+        "Desktop notification when a reviewer requests changes",
+        "pr_monitor",
+        "boolean",
+    ),
+    SettingMeta(
+        "pr_monitor.notify_on_ci_failure",
+        "Notify on CI failure",
+        "Desktop notification when CI fails on a PR",
+        "pr_monitor",
+        "boolean",
+    ),
+    SettingMeta(
+        "pr_monitor.notify_on_ready_to_merge",
+        "Notify on ready to merge",
+        "Desktop notification when a PR is approved with green CI",
+        "pr_monitor",
+        "boolean",
+    ),
+    SettingMeta(
+        "pr_monitor.auto_retry_coderabbit",
+        "Auto-retry CodeRabbit",
+        "Automatically request CodeRabbit re-review when rate limit expires",
+        "pr_monitor",
+        "boolean",
     ),
 ]
 
