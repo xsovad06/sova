@@ -340,6 +340,8 @@ async def start_agent(
 
     issue = issue.lstrip("#").strip() if issue else ""
     pa = _get_project_agents(slug)
+    if not issue and pr_number:
+        issue = await _resolve_issue_from_pr(pr_number, pa.project_dir)
 
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:

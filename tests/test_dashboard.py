@@ -1748,6 +1748,94 @@ class TestDuplicateAgentPrevention:
         assert "error" in result
         mock_orphan.assert_awaited_once_with(8, pa.project_dir)
 
+    async def test_start_agent_resolves_issue_from_pr(self) -> None:
+        """When issue is empty but pr_number is set, derive issue from PR body."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=10) as mock_create,
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value="55",
+            ) as mock_resolve,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("", role="developer", pr_number=332)
+
+        assert result["status"] == "started"
+        mock_resolve.assert_awaited_once_with(332, pa.project_dir)
+        call_args = mock_create.call_args
+        assert call_args[0][0] == "55"
+
+    async def test_start_agent_no_issue_resolve_when_issue_provided(self) -> None:
+        """When issue is already provided, do not call _resolve_issue_from_pr."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=11),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value="99",
+            ) as mock_resolve,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("42", role="developer", pr_number=332)
+
+        assert result["status"] == "started"
+        mock_resolve.assert_not_awaited()
+
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
         from unittest.mock import MagicMock, patch
