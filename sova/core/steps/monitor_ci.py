@@ -76,6 +76,8 @@ class MonitorCIStep(BaseStep):
         poll_interval = ctx.config.ci.poll_interval
         max_wait = ctx.config.ci.max_wait
         grace_period = ctx.config.ci.no_checks_grace_period
+        excluded = set(ctx.config.ci.exclude_checks)
+        flaky = set(ctx.config.ci.flaky_checks)
         elapsed = 0
         sha_validated = not expected_sha
 
@@ -103,14 +105,6 @@ class MonitorCIStep(BaseStep):
                 elapsed += poll_interval
                 continue
 
-            exclude = ctx.config.ci.exclude_checks
-            if exclude:
-                before = len(checks)
-                checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
-                skipped = before - len(checks)
-                if skipped:
-                    log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=exclude)
-
             if not checks:
                 if elapsed >= grace_period:
                     log.warning(
@@ -130,9 +124,25 @@ class MonitorCIStep(BaseStep):
                 elapsed += poll_interval
                 continue
 
+            if excluded:
+                before = len(checks)
+                checks = [c for c in checks if c.name not in excluded and not any(pat in c.name for pat in excluded)]
+                skipped = before - len(checks)
+                if skipped:
+                    log.info("step.monitor_ci.excluded_checks", skipped=skipped, patterns=list(excluded))
+
+            if not checks:
+                return (
+                    StepResult(
+                        success=True,
+                        summary="All CI checks excluded by config, proceeding",
+                    ),
+                    [],
+                )
+
             all_completed = all(c.is_completed for c in checks)
             if all_completed:
-                failed = [c for c in checks if c.is_failed]
+                failed = [c for c in checks if c.is_failed and c.name not in flaky]
                 if failed:
                     names = ", ".join(c.name for c in failed)
                     return (
