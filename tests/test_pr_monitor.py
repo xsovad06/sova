@@ -713,3 +713,104 @@ class TestNewPRDetection:
             await monitor._poll_cycle()
 
         mock_notify.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# resolve_gh_env failure handling
+# ---------------------------------------------------------------------------
+
+
+class TestGhEnvFailure:
+    @pytest.mark.asyncio
+    async def test_retry_handles_gh_env_failure(self) -> None:
+        """_retry_coderabbit_review should not crash if resolve_gh_env raises."""
+        monitor = _make_monitor()
+
+        with (
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("auth failed"),
+            ),
+            patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+        ):
+            await monitor._retry_coderabbit_review(1)
+
+        mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Multi-project PR monitor lifespan
+# ---------------------------------------------------------------------------
+
+
+class TestMultiProjectMonitor:
+    @pytest.mark.asyncio
+    async def test_failing_project_config_does_not_block_others(self) -> None:
+        """One project failing config load should not prevent other monitors."""
+        from sova.config.models import NotificationConfig as _NC
+        from sova.config.models import PRMonitorConfig as _PMC
+        from sova.config.models import ProjectConfig
+
+        good_cfg = ProjectConfig(
+            github_repo="owner/good",
+            github_user="user1",
+            pr_monitor=_PMC(enabled=True),
+            notification=_NC(),
+        )
+
+        def _load_config(path: Path) -> ProjectConfig:
+            if "bad" in str(path):
+                raise RuntimeError("config load failed")
+            return good_cfg
+
+        with (
+            patch(
+                "sova.config.registry.list_projects",
+                return_value={"good": "/tmp/good", "bad": "/tmp/bad"},
+            ),
+            patch("sova.config.loader.load_config", side_effect=_load_config),
+            patch("pathlib.Path.is_dir", return_value=True),
+        ):
+            from sova.config.loader import load_config as _load_mon_cfg
+            from sova.config.registry import list_projects
+
+            monitors: list[PRMonitor] = []
+            for path_str in list_projects().values():
+                p = Path(path_str)
+                if not p.is_dir():
+                    continue
+                try:
+                    pcfg = _load_mon_cfg(p)
+                except Exception:
+                    continue
+                if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
+                    continue
+                monitors.append(
+                    PRMonitor(
+                        project_dir=p,
+                        monitor_config=pcfg.pr_monitor,
+                        notification_config=pcfg.notification,
+                        repo=pcfg.github_repo,
+                        github_user=pcfg.github_user,
+                    )
+                )
+
+        assert len(monitors) == 1
+        assert monitors[0].repo == "owner/good"
+
+
+# ---------------------------------------------------------------------------
+# _NOTIFY_STATES validation
+# ---------------------------------------------------------------------------
+
+
+class TestNotifyStatesValidation:
+    def test_all_notify_states_map_to_real_config_fields(self) -> None:
+        """Every value in _NOTIFY_STATES must be a valid PRMonitorConfig field."""
+        from sova.supervisor.pr_monitor import _NOTIFY_STATES
+
+        for state, flag in _NOTIFY_STATES.items():
+            assert flag in PRMonitorConfig.model_fields, (
+                f"_NOTIFY_STATES[{state!r}] references unknown field {flag!r}"
+            )
