@@ -14,6 +14,8 @@ class SettingMeta:
     value_type: str = "string"
 
 
+_LABEL_POLL_INTERVAL = "Poll interval (s)"
+
 GROUPS: dict[str, str] = {
     "project": "Project",
     "llm": "LLM Provider",
@@ -325,7 +327,7 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     # -- CI --
-    SettingMeta("ci.poll_interval", "Poll interval (s)", "Seconds between CI status checks", "ci", "number"),
+    SettingMeta("ci.poll_interval", _LABEL_POLL_INTERVAL, "Seconds between CI status checks", "ci", "number"),
     SettingMeta("ci.max_wait", "Max wait (s)", "Maximum seconds to wait for CI to complete", "ci", "number"),
     SettingMeta(
         "ci.no_checks_grace_period",
@@ -526,7 +528,7 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         "external_reviews.poll_interval",
-        "Poll interval (s)",
+        _LABEL_POLL_INTERVAL,
         "Seconds between external review status checks",
         "external_reviews",
         "number",
@@ -717,7 +719,7 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta(
         "pr_monitor.poll_interval",
-        "Poll interval (s)",
+        _LABEL_POLL_INTERVAL,
         "Seconds between PR state polling cycles",
         "pr_monitor",
         "number",
