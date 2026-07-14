@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -396,6 +397,72 @@ class TestCodeRabbitAutoRetry:
         assert "42" in args
         assert "@coderabbitai review" in args
 
+    @pytest.mark.asyncio
+    async def test_retry_logs_warning_on_failure(self) -> None:
+        monitor = _make_monitor()
+        failure = ShellResult(returncode=1, stdout="", stderr="gh: command failed")
+
+        with (
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=failure),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.supervisor.pr_monitor.log") as mock_log,
+        ):
+            await monitor._retry_coderabbit_review(7)
+
+        mock_log.warning.assert_called_once()
+        assert mock_log.warning.call_args.args[0] == "pr_monitor.retry_coderabbit_failed"
+
+
+# ---------------------------------------------------------------------------
+# run_loop
+# ---------------------------------------------------------------------------
+
+
+class TestRunLoop:
+    @pytest.mark.asyncio
+    async def test_run_loop_calls_poll_cycle_and_sleeps(self) -> None:
+        monitor = _make_monitor()
+        call_count = 0
+
+        async def _poll_then_cancel() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise asyncio.CancelledError
+
+        with (
+            patch.object(monitor, "_poll_cycle", side_effect=_poll_then_cancel),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await monitor.run_loop()
+
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_run_loop_catches_exceptions_and_continues(self) -> None:
+        monitor = _make_monitor()
+        call_count = 0
+
+        async def _error_then_cancel() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient failure")
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(monitor, "_poll_cycle", side_effect=_error_then_cancel),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.supervisor.pr_monitor.log") as mock_log,
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await monitor.run_loop()
+
+        assert call_count == 2
+        mock_log.warning.assert_called()
+        assert mock_log.warning.call_args.args[0] == "pr_monitor.cycle_error"
+
 
 # ---------------------------------------------------------------------------
 # Rate limit detection
@@ -484,6 +551,16 @@ class TestRateLimitDetection:
     @pytest.mark.asyncio
     async def test_gh_command_failure(self) -> None:
         result = ShellResult(returncode=1, stdout="", stderr="error")
+
+        with (
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=result),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            assert await _is_coderabbit_rate_limited(1, repo="o/r") is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_returns_false(self) -> None:
+        result = ShellResult(returncode=0, stdout="not valid json{", stderr="")
 
         with (
             patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=result),
