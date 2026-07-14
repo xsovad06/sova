@@ -37,9 +37,7 @@ _NOTIFY_STATES: dict[str, str] = {
 # Validate that every config flag in _NOTIFY_STATES is a real PRMonitorConfig field
 for _flag in _NOTIFY_STATES.values():
     if _flag not in PRMonitorConfig.model_fields:
-        raise AttributeError(
-            f"_NOTIFY_STATES references unknown PRMonitorConfig field: {_flag!r}"
-        )
+        raise AttributeError(f"_NOTIFY_STATES references unknown PRMonitorConfig field: {_flag!r}")
 del _flag
 
 
@@ -99,9 +97,7 @@ class PRMonitor:
         if self.monitor_config.auto_retry_coderabbit and prs:
             tasks = {
                 pr["number"]: asyncio.ensure_future(
-                    _is_coderabbit_rate_limited(
-                        pr["number"], repo=self.repo, github_user=self.github_user
-                    )
+                    _is_coderabbit_rate_limited(pr["number"], repo=self.repo, github_user=self.github_user)
                 )
                 for pr in prs
             }
