@@ -579,6 +579,101 @@ class TestDeveloperRole:
 
 
 # ---------------------------------------------------------------------------
+# Developer -- address review worktree discovery
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverAddressReviewContext:
+    async def test_branch_based_worktree_fallback(self, tmp_path: Path) -> None:
+        """When issue is missing, find worktree via branch name."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.roles.developer import DeveloperRole
+
+        ctx = _make_ctx(
+            issue_number="",
+            pr_number=100,
+            project_dir=tmp_path,
+        )
+        role = DeveloperRole()
+        wt_path = tmp_path / ".claude" / "worktrees" / "55"
+        wt_path.mkdir(parents=True)
+
+        with (
+            patch(
+                "sova.roles.developer.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-55",
+            ),
+            patch(
+                "sova.roles.developer.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=wt_path,
+            ) as mock_find,
+        ):
+            await role._discover_address_review_context(ctx)
+
+        assert ctx.branch_name == "feat/issue-55"
+        mock_find.assert_awaited_once_with("feat/issue-55", cwd=tmp_path)
+        assert ctx.worktree_dir == wt_path
+
+    async def test_issue_based_worktree_preferred(self, tmp_path: Path) -> None:
+        """When issue is present, use issue-based worktree lookup (existing behaviour)."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.roles.developer import DeveloperRole
+
+        wt_path = tmp_path / ".claude" / "worktrees" / "42"
+        wt_path.mkdir(parents=True)
+
+        ctx = _make_ctx(
+            issue_number="42",
+            pr_number=100,
+            branch_name="feat/issue-42",
+            project_dir=tmp_path,
+        )
+        role = DeveloperRole()
+
+        with patch(
+            "sova.roles.developer.find_worktree_by_branch",
+            new_callable=AsyncMock,
+        ) as mock_find:
+            await role._discover_address_review_context(ctx)
+
+        assert ctx.worktree_dir == wt_path
+        mock_find.assert_not_awaited()
+
+    async def test_branch_fallback_skips_main_repo(self, tmp_path: Path) -> None:
+        """Branch-based lookup must not set worktree_dir to the project root."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.roles.developer import DeveloperRole
+
+        ctx = _make_ctx(
+            issue_number="",
+            pr_number=200,
+            project_dir=tmp_path,
+        )
+        role = DeveloperRole()
+
+        with (
+            patch(
+                "sova.roles.developer.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="fix/bug",
+            ),
+            patch(
+                "sova.roles.developer.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=tmp_path,
+            ),
+        ):
+            await role._discover_address_review_context(ctx)
+
+        assert ctx.worktree_dir is None
+
+
+# ---------------------------------------------------------------------------
 # Reviewer role
 # ---------------------------------------------------------------------------
 

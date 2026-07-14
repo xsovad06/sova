@@ -16,6 +16,7 @@ from sova.core.steps import get_address_review_steps, get_developer_steps
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
 from sova.git.operations import get_pr_branch
+from sova.git.worktree import find_worktree_by_branch
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
 
@@ -142,3 +143,12 @@ class DeveloperRole(AgentRole):
             if candidate.exists():
                 ctx.worktree_dir = candidate
                 log.info("developer.discovered_worktree", path=str(candidate))
+
+        if ctx.worktree_dir is None and ctx.branch_name:
+            try:
+                wt_path = await find_worktree_by_branch(ctx.branch_name, cwd=ctx.project_dir)
+                if wt_path is not None and wt_path.resolve() != ctx.project_dir.resolve():
+                    ctx.worktree_dir = wt_path
+                    log.info("developer.discovered_worktree_by_branch", branch=ctx.branch_name, path=str(wt_path))
+            except Exception:
+                log.debug("developer.branch_worktree_lookup_failed", exc_info=True)
