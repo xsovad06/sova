@@ -811,6 +811,4 @@ class TestNotifyStatesValidation:
         from sova.supervisor.pr_monitor import _NOTIFY_STATES
 
         for state, flag in _NOTIFY_STATES.items():
-            assert flag in PRMonitorConfig.model_fields, (
-                f"_NOTIFY_STATES[{state!r}] references unknown field {flag!r}"
-            )
+            assert flag in PRMonitorConfig.model_fields, f"_NOTIFY_STATES[{state!r}] references unknown field {flag!r}"
