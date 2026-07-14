@@ -339,3 +339,41 @@ def guard_prompt(prompt: str) -> None:
             result.risk_score,
             result.flags,
         )
+
+
+def sanitize_external_input(text: str, *, source: str = "unknown") -> str:
+    """Scan untrusted external text for injection patterns.
+
+    Unlike guard_prompt() which raises on assembled prompts, this scans
+    raw inputs (issue bodies, review comments) and logs warnings without
+    modifying the text -- avoids corrupting legitimate security discussions.
+    """
+    if not text:
+        return text or ""
+
+    custom_deny: list[str] | None = None
+    try:
+        from sova.config.loader import load_config
+
+        config = load_config()
+        custom_deny = config.security.custom_deny_patterns or None
+    except Exception:
+        pass
+
+    result = scan_prompt(text, custom_deny_patterns=custom_deny)
+    if result.risk_score >= 0.7:
+        log.warning(
+            "external_input.injection_detected: source=%s risk=%.2f flags=%s preview=%s",
+            source,
+            result.risk_score,
+            result.flags,
+            text[:100],
+        )
+    elif result.flags:
+        log.info(
+            "external_input.low_risk_flags: source=%s risk=%.2f flags=%s",
+            source,
+            result.risk_score,
+            result.flags,
+        )
+    return text

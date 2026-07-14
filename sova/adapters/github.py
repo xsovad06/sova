@@ -278,6 +278,8 @@ class GitHubAdapter(TaskAdapter):
             log.warning("get_pr_reviews.unexpected_type", pr=pr_number, type=type(reviews).__name__)
             return []
 
+        from sova.llm.guard import sanitize_external_input
+
         parsed: list[PRReview] = []
         for r in reviews:
             if not isinstance(r, dict):
@@ -292,7 +294,7 @@ class GitHubAdapter(TaskAdapter):
                 PRReview(
                     reviewer=reviewer,
                     state=state,
-                    body=r.get("body", "") or "",
+                    body=sanitize_external_input(r.get("body", "") or "", source="github_pr_review"),
                     submitted_at=submitted_at,
                     is_bot=r.get("user", {}).get("type", "") == "Bot",
                 )
@@ -317,8 +319,14 @@ class GitHubAdapter(TaskAdapter):
         except json.JSONDecodeError:
             log.warning("get_comments.json_decode_error", issue=task_id)
             return []
+        from sova.llm.guard import sanitize_external_input
+
         comments = data.get("comments") or []
-        return [c.get("body", "") for c in reversed(comments) if c.get("body")]
+        return [
+            sanitize_external_input(c.get("body") or "", source="github_comment")
+            for c in reversed(comments)
+            if c.get("body")
+        ]
 
     async def _do_create_issue(
         self,
@@ -675,6 +683,8 @@ class GitHubAdapter(TaskAdapter):
 
 def _parse_issue(data: dict) -> Task:
     """Parse a GitHub issue JSON object into a Task."""
+    from sova.llm.guard import sanitize_external_input
+
     labels = [lbl["name"] for lbl in data.get("labels", [])]
     assignees = [a["login"] for a in data.get("assignees", [])]
 
@@ -692,10 +702,12 @@ def _parse_issue(data: dict) -> Task:
     if data.get("createdAt"):
         metadata["created_at"] = data["createdAt"]
 
+    body = sanitize_external_input(data.get("body", "") or "", source="github_issue")
+
     return Task(
         id=str(data["number"]),
         title=data.get("title", ""),
-        body=data.get("body", "") or "",
+        body=body,
         state=state,
         labels=labels,
         assignees=assignees,

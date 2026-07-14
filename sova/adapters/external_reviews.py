@@ -370,6 +370,8 @@ async def _fetch_coderabbit_threads(
         data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("reviewThreads", {}).get("nodes", [])
     )
 
+    from sova.llm.guard import sanitize_external_input
+
     allowed = authors if authors is not None else _DEFAULT_CODERABBIT_AUTHORS
     out = _ThreadsResult()
     for thread in threads:
@@ -382,7 +384,7 @@ async def _fetch_coderabbit_threads(
         if author not in allowed:
             continue
 
-        body = comments[0].get("body", "")
+        body = sanitize_external_input(comments[0].get("body") or "", source="coderabbit_review")
 
         out.findings.append(
             ExternalFinding(
