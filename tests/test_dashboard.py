@@ -10085,6 +10085,41 @@ class TestWorkItemAwaitingApprovalFallback:
         assert item["state"] == WorkItemState.SPEC_REVIEW
         assert item["primary_action"]["handler"] == "resume_from_approval"
 
+    def test_awaiting_approval_no_handoff_synthesizes_spec_actions(self) -> None:
+        """When handoff file is missing, synthesize approve/reject actions for the UI."""
+        from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
+
+        task = {
+            "issue": 258,
+            "state": "in_progress",
+            "title": "Spec review task",
+            "url": "",
+            "last_run": {"id": 572, "status": "awaiting_approval"},
+        }
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert item["state"] == WorkItemState.SPEC_REVIEW
+        action_ids = [a["id"] for a in item["handoff_actions"]]
+        assert "approve-spec" in action_ids
+        assert "reject-spec" in action_ids
+        approve = next(a for a in item["handoff_actions"] if a["id"] == "approve-spec")
+        assert approve["args"]["issue"] == "258"
+
+    def test_awaiting_approval_with_handoff_uses_handoff_actions(self) -> None:
+        """When handoff file exists, use its actions instead of synthesized ones."""
+        from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
+
+        task = {
+            "issue": 99,
+            "state": "in_progress",
+            "title": "Test task",
+            "url": "",
+            "last_run": {"id": 1, "status": "awaiting_approval"},
+        }
+        handoff = {"status": "awaiting_action", "next_actions": [{"id": "approve-spec", "label": "Custom Approve"}]}
+        item = _build_task_item(task, pr_data=None, running=None, handoff=handoff)
+        assert item["state"] == WorkItemState.SPEC_REVIEW
+        assert item["handoff_actions"][0]["label"] == "Custom Approve"
+
     def test_build_task_item_awaiting_approval_with_handoff(self) -> None:
         """When handoff is present, handoff takes priority over last_run_status."""
         from sova.dashboard.services.work_item_service import WorkItemState, _build_task_item
