@@ -4,6 +4,7 @@
   'use strict';
 
   var POLL_INTERVAL = 5000;
+  var CROSS_PROJECT_POLL_INTERVAL = 10000;
   var MAX_BACKOFF = 30000;
   var STALE_THRESHOLD = 30000; // 30s before showing stale indicator
   var HISTORY_MAX = 60; // 5 minutes at 5s intervals
@@ -13,6 +14,8 @@
   var memHistory = [];
   var consecutiveErrors = 0;
   var lastSuccessTime = Date.now();
+  var crossProjectData = null;
+  var prevCrossProjectJSON = '';
 
   function init() {
     var widget = document.getElementById('resource-widget');
@@ -43,6 +46,7 @@
     });
 
     schedulePoll();
+    scheduleCrossProjectPoll(true);
   }
 
   function getBackoffDelay() {
@@ -250,6 +254,77 @@
       ctx.fillStyle = fillColor;
       ctx.fill();
     }
+  }
+
+  function scheduleCrossProjectPoll(immediate) {
+    var delay = immediate ? 0 : CROSS_PROJECT_POLL_INTERVAL;
+    setTimeout(async function () {
+      if (!document.hidden) {
+        await pollCrossProject();
+      }
+      scheduleCrossProjectPoll(false);
+    }, delay);
+  }
+
+  async function pollCrossProject() {
+    try {
+      crossProjectData = await fetchAPI(apiUrl('/resources/cross-project'));
+    } catch (_e) {
+      crossProjectData = null;
+    }
+    updateMachineSection();
+  }
+
+  function updateMachineSection() {
+    var section = document.getElementById('rw-machine-section');
+    var content = document.getElementById('rw-machine-content');
+    if (!section || !content) return;
+
+    if (!crossProjectData || !crossProjectData.other_projects || crossProjectData.other_projects.length === 0) {
+      section.classList.add('hidden');
+      content.innerHTML = '';
+      prevCrossProjectJSON = '';
+      return;
+    }
+
+    var json = JSON.stringify(crossProjectData);
+    if (json === prevCrossProjectJSON) return;
+    prevCrossProjectJSON = json;
+
+    section.classList.remove('hidden');
+    var totals = crossProjectData.machine_totals;
+    var others = crossProjectData.other_projects;
+
+    var html = '<div class="flex items-center justify-between">' +
+      '<span class="text-xs text-gray-500">Projects</span>' +
+      '<span class="text-xs text-gray-300">' + totals.project_count + ' active</span>' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+      '<span class="text-xs text-gray-500">Total agents</span>' +
+      '<span class="text-xs text-gray-300">' + totals.total_agents_used + ' / ' + totals.total_agents_max + '</span>' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+      '<span class="text-xs text-gray-500">Agent CPU</span>' +
+      '<span class="text-xs text-gray-300">' + totals.total_agent_cpu_percent.toFixed(1) + '%</span>' +
+      '</div>' +
+      '<div class="flex items-center justify-between">' +
+      '<span class="text-xs text-gray-500">Agent memory</span>' +
+      '<span class="text-xs text-gray-300">' + fmtBytes(totals.total_agent_memory_bytes) + '</span>' +
+      '</div>';
+
+    html += '<div class="mt-1.5 pt-1.5 border-t border-gray-700/30">';
+    for (var i = 0; i < others.length; i++) {
+      var p = others[i];
+      var slots = p.agent_slots || {};
+      var agentCount = slots.used || 0;
+      html += '<div class="flex items-center justify-between py-0.5">' +
+        '<span class="text-xs text-gray-400 truncate max-w-[180px]">' + escapeHtml(p.project_name) + '</span>' +
+        '<span class="text-xs text-gray-500">' + agentCount + ' agent' + (agentCount !== 1 ? 's' : '') + '</span>' +
+        '</div>';
+    }
+    html += '</div>';
+
+    content.innerHTML = html;
   }
 
   function setText(id, text) {
