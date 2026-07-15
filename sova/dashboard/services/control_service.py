@@ -62,6 +62,9 @@ from sova.dashboard.services.agent_lifecycle import (
     get_unified_agents as get_unified_agents,
 )
 from sova.dashboard.services.agent_lifecycle import (
+    reject_spec as reject_spec,
+)
+from sova.dashboard.services.agent_lifecycle import (
     resume_from_approval as resume_from_approval,
 )
 from sova.dashboard.services.agent_lifecycle import (

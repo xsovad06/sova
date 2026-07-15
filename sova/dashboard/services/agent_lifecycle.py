@@ -703,6 +703,65 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 # -- Approval resume ----------------------------------------------------------
 
 
+async def _claim_awaiting_approval(run_id: int, target_status: str) -> tuple[dict | None, dict | None]:
+    """Validate and atomically claim an awaiting_approval TaskRun.
+
+    Loads the run, checks it exists and has status ``awaiting_approval``,
+    then performs a CAS update to ``target_status``.
+
+    Returns ``(run_data, None)`` on success where ``run_data`` contains
+    ``issue_number``, ``role``, and ``pr_number``.
+    Returns ``(None, error_dict)`` on validation or CAS failure.
+    """
+    from sqlalchemy import update
+
+    from sova.core.state import TaskStatus
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    async with await get_session() as session, session.begin():
+        task_run = await session.get(TaskRun, run_id)
+
+    if task_run is None:
+        return None, {"error": "not_found", "detail": f"TaskRun #{run_id} not found"}
+
+    if task_run.status != TaskStatus.AWAITING_APPROVAL:
+        return None, {
+            "error": "conflict",
+            "detail": f"Run #{run_id} has status '{task_run.status}', expected 'awaiting_approval'",
+        }
+
+    async with await get_session() as session, session.begin():
+        result = await session.execute(
+            update(TaskRun)
+            .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.AWAITING_APPROVAL)
+            .values(status=target_status)
+        )
+        if result.rowcount == 0:
+            return None, {
+                "error": "conflict",
+                "detail": f"Run #{run_id} was already claimed by another request",
+            }
+
+    return {
+        "issue_number": task_run.issue_number,
+        "role": task_run.role,
+        "pr_number": task_run.pr_number,
+    }, None
+
+
+def _clear_handoff_for_issue(issue: str, caller: str) -> None:
+    """Clear the handoff file for an issue, logging failures."""
+    if not issue:
+        return
+    try:
+        from sova.dashboard.services import handoff_service
+
+        handoff_service.clear_handoff(issue=issue)
+    except Exception:
+        log.debug(f"{caller}.clear_handoff_failed", issue=issue, exc_info=True)
+
+
 async def resume_from_approval(run_id: int) -> dict:
     """Resume a paused pipeline run after human approval.
 
@@ -719,36 +778,13 @@ async def resume_from_approval(run_id: int) -> dict:
     from sova.db.models import TaskRun
     from sova.db.session import get_session
 
-    async with await get_session() as session:
-        async with session.begin():
-            task_run = await session.get(TaskRun, run_id)
+    run_data, error = await _claim_awaiting_approval(run_id, TaskStatus.PENDING)
+    if error:
+        return error
 
-    if task_run is None:
-        return {"error": "not_found", "detail": f"TaskRun #{run_id} not found"}
-
-    if task_run.status != TaskStatus.AWAITING_APPROVAL:
-        return {
-            "error": "conflict",
-            "detail": f"Run #{run_id} has status '{task_run.status}', expected 'awaiting_approval'",
-        }
-
-    # Atomic CAS: claim the run so a concurrent request sees "pending" and fails
-    async with await get_session() as session:
-        async with session.begin():
-            result = await session.execute(
-                update(TaskRun)
-                .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.AWAITING_APPROVAL)
-                .values(status=TaskStatus.PENDING)
-            )
-            if result.rowcount == 0:
-                return {
-                    "error": "conflict",
-                    "detail": f"Run #{run_id} was already claimed by another request",
-                }
-
-    issue = task_run.issue_number or ""
-    role = task_run.role or "developer"
-    pr_number = task_run.pr_number
+    issue = run_data["issue_number"] or ""
+    role = run_data["role"] or "developer"
+    pr_number = run_data["pr_number"]
 
     # Spawn first, clear state second -- _skip_handoff_clear prevents start_agent
     # from clearing the approval handoff before spawn succeeds
@@ -763,23 +799,15 @@ async def resume_from_approval(run_id: int) -> dict:
 
     if "error" in result:
         # Revert the CAS so the approval button reappears on failure
-        async with await get_session() as session:
-            async with session.begin():
-                await session.execute(
-                    update(TaskRun)
-                    .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.PENDING)
-                    .values(status=TaskStatus.AWAITING_APPROVAL)
-                )
+        async with await get_session() as session, session.begin():
+            await session.execute(
+                update(TaskRun)
+                .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.PENDING)
+                .values(status=TaskStatus.AWAITING_APPROVAL)
+            )
         return result
 
-    # Clear handoff file on successful spawn
-    if issue:
-        try:
-            from sova.dashboard.services import handoff_service
-
-            handoff_service.clear_handoff(issue=issue)
-        except Exception:
-            log.debug("resume_from_approval.clear_handoff_failed", issue=issue, exc_info=True)
+    _clear_handoff_for_issue(issue, "resume_from_approval")
 
     return {
         "run_id": result["run_id"],
@@ -787,6 +815,26 @@ async def resume_from_approval(run_id: int) -> dict:
         "issue": issue,
         "role": role,
     }
+
+
+async def reject_spec(run_id: int) -> dict:
+    """Reject a spec and mark the awaiting_approval run as rejected.
+
+    Validates that the TaskRun exists and has status ``awaiting_approval``,
+    then transitions it to ``rejected``. Clears the handoff file on success.
+
+    Returns a dict with ``run_id``, ``issue``, and ``status``.
+    """
+    from sova.core.state import TaskStatus
+
+    run_data, error = await _claim_awaiting_approval(run_id, TaskStatus.REJECTED)
+    if error:
+        return error
+
+    issue = run_data["issue_number"] or ""
+    _clear_handoff_for_issue(issue, "reject_spec")
+
+    return {"run_id": run_id, "issue": issue, "status": "rejected"}
 
 
 # -- Lifecycle integration ----------------------------------------------------
