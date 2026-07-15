@@ -104,7 +104,7 @@ class PRMonitor:
             results = await asyncio.gather(*tasks.values(), return_exceptions=True)
             for number, result in zip(tasks.keys(), results):
                 if isinstance(result, BaseException):
-                    log.debug("pr_monitor.rate_limit_check_failed", pr=number, exc_info=True)
+                    log.debug("pr_monitor.rate_limit_check_failed", pr=number, exc_info=result)
                     rate_limits[number] = False
                 else:
                     rate_limits[number] = result
@@ -200,6 +200,40 @@ class PRMonitor:
                 pr=pr_number,
                 stderr=result.stderr[:200],
             )
+
+
+def create_monitors_for_projects() -> list[PRMonitor]:
+    """Create PRMonitor instances for all registered projects with monitoring enabled.
+
+    Returns monitors for projects that have valid config, pr_monitor enabled,
+    and a github_repo configured. Logs warnings for projects that fail config
+    loading and silently skips disabled/unconfigured ones.
+    """
+    from sova.config.loader import load_config
+    from sova.config.registry import list_projects
+
+    monitors: list[PRMonitor] = []
+    for path_str in list_projects().values():
+        p = Path(path_str)
+        if not p.is_dir():
+            continue
+        try:
+            pcfg = load_config(p)
+        except Exception:
+            log.warning("pr_monitor.config_load_failed", project=str(p), exc_info=True)
+            continue
+        if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
+            continue
+        monitors.append(
+            PRMonitor(
+                project_dir=p,
+                monitor_config=pcfg.pr_monitor,
+                notification_config=pcfg.notification,
+                repo=pcfg.github_repo,
+                github_user=pcfg.github_user,
+            )
+        )
+    return monitors
 
 
 async def _is_coderabbit_rate_limited(
