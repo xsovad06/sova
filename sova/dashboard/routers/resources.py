@@ -78,3 +78,15 @@ async def system_metrics():
     except Exception:
         log.warning("resources.system_metrics.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from None
+
+
+@router.get("/resources/cross-project", responses={500: {"description": "Internal error"}})
+async def cross_project_metrics() -> dict:
+    from sova.dashboard.project_context import get_project_dir
+
+    project_dir = get_project_dir()
+    try:
+        return await asyncio.to_thread(resource_service.get_cross_project_metrics, project_dir)
+    except Exception:
+        log.warning("resources.cross_project.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch cross-project metrics") from None

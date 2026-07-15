@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import psutil
@@ -171,6 +172,17 @@ def _sample_to_dict(s: ResourceSampleRecord) -> dict:
         "num_children": s.num_children,
         "num_threads": s.num_threads,
     }
+
+
+def get_cross_project_metrics(project_dir: Path | None = None) -> dict:
+    """Get aggregated metrics from all SOVA dashboards on this machine.
+
+    Reads JSON snapshots written by each dashboard's MetricsSnapshotWriter.
+    """
+    from sova.monitoring.cross_project import read_cross_project_metrics
+
+    resolved = (project_dir or Path.cwd()).resolve()
+    return read_cross_project_metrics(resolved)
 
 
 def _downsample(samples: list, limit: int) -> list:

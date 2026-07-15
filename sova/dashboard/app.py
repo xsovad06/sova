@@ -300,15 +300,32 @@ def create_app(
             )
             pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
 
-        yield
-        bg_tasks = pr_throttle_tasks + pr_monitor_tasks
-        for t in bg_tasks:
-            t.cancel()
-        if bg_tasks:
-            await asyncio.gather(*bg_tasks, return_exceptions=True)
-        sweep_task.cancel()
-        await asyncio.gather(sweep_task, return_exceptions=True)
-        await close_db()
+        # Start cross-project metrics snapshot writer
+        from sova.monitoring.cross_project import MetricsSnapshotWriter
+
+        metrics_writer: MetricsSnapshotWriter | None = None
+        if not is_multi:
+            project_name = cfg.github_repo or resolved.name
+            metrics_writer = MetricsSnapshotWriter(
+                project_dir=resolved,
+                project_name=project_name,
+                dashboard_port=cfg.dashboard.port,
+            )
+            metrics_writer.start()
+
+        try:
+            yield
+        finally:
+            if metrics_writer is not None:
+                await metrics_writer.stop()
+            bg_tasks = pr_throttle_tasks + pr_monitor_tasks
+            for t in bg_tasks:
+                t.cancel()
+            if bg_tasks:
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
+            sweep_task.cancel()
+            await asyncio.gather(sweep_task, return_exceptions=True)
+            await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
 
