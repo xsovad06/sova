@@ -36,10 +36,12 @@ from sova.dashboard.services.agent_context import (
 )
 from sova.dashboard.services.agent_db import (
     _create_task_run,
+    _downgrade_to_failed,
     _fetch_run_states,
     _finalize_orphaned_run,
     _finalize_task_run,
     _update_task_run_pid,
+    _validate_command_outcome,
 )
 from sova.dashboard.services.agent_pool import (
     AgentState,
@@ -632,6 +634,18 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # liveness sweep (which skips managed run_ids) cannot race us and
     # stamp the run "interrupted" in the window between pop and finalize.
     await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
+
+    # Validate that command runs actually produced expected outcomes.
+    # Downgrades "done" to "failed" if the command exited cleanly but
+    # didn't actually perform its core work (e.g., address-pr without
+    # pushing commits, review-pr without posting a review).
+    if exit_code == 0 and run_id:
+        failure_reason = await _validate_command_outcome(run_id, agent)
+        if failure_reason:
+            await _downgrade_to_failed(run_id, failure_reason, agent.project_dir)
+            status = "failed"
+            exit_code = 1
+            log.warning("agent.outcome_validation_failed", run_id=run_id, reason=failure_reason)
 
     async with pa._lock:
         pa.agents.pop(run_id, None)
