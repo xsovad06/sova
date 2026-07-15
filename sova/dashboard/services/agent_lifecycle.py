@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import shlex
-import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sova.dashboard.services.agent_context import (
+    _resolve_branch_name as _resolve_branch_name,
+)
 from sova.dashboard.services.agent_context import (  # re-export facade
     _resolve_command_context as _resolve_command_context,
 )
@@ -102,6 +104,20 @@ from sova.utils.logging import get_logger
 log = get_logger(component="dashboard.control")
 
 _background_tasks: set[asyncio.Task[None]] = set()
+
+
+async def cancel_background_tasks() -> None:
+    """Cancel all pending background tasks (agent wait/finalize, state transitions).
+
+    Called during lifespan shutdown to prevent in-flight DB queries from racing
+    with engine disposal during uvicorn reload.
+    """
+    tasks = list(_background_tasks)
+    for t in tasks:
+        t.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    _background_tasks.clear()
 
 
 def _start_resource_monitoring(agent: AgentState, project_dir: Path, pid: int) -> None:
@@ -358,10 +374,12 @@ async def start_agent(
                 return conflict
             _evict_completed_for_issue(pa, issue)
 
-        cwd = pa.project_dir
+        project_dir = pa.project_dir
+        branch_name = await _resolve_branch_name(pr_number, project_dir)
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
 
         if not force and issue:
-            budget_error = await _check_issue_budget(issue, cwd)
+            budget_error = await _check_issue_budget(issue, project_dir)
             if budget_error:
                 return budget_error
         elif not issue:
@@ -371,7 +389,7 @@ async def start_agent(
                 detail="Per-issue budget N/A; per-run budget still applies",
             )
 
-        run_id = await _create_task_run(issue or None, role or "developer", cwd, pr_number=pr_number)
+        run_id = await _create_task_run(issue or None, role or "developer", project_dir, pr_number=pr_number)
         if run_id is None:
             return {"error": "Failed to create task run record"}
 
@@ -380,9 +398,9 @@ async def start_agent(
                 from sova.dashboard.services import handoff_service
 
                 if issue:
-                    handoff_service.clear_handoff(cwd, issue=issue)
+                    handoff_service.clear_handoff(project_dir, issue=issue)
                 else:
-                    handoff_service.clear_handoff(cwd, issue=role or "run")
+                    handoff_service.clear_handoff(project_dir, issue=role or "run")
             except Exception:
                 log.debug("agent.clear_handoff_failed", issue=issue or role, exc_info=True)
 
@@ -406,20 +424,21 @@ async def start_agent(
             f"```bash\n{cmd}\n```"
         )
 
-        gh_env = await _resolve_project_gh_env(cwd)
+        gh_env = await _resolve_project_gh_env(project_dir)
         try:
             process = await get_runtime().spawn(prompt, cwd, env=gh_env)
         except Exception:
-            await _finalize_orphaned_run(run_id, cwd)
+            log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
+            await _finalize_orphaned_run(run_id, project_dir)
             return {"error": "Failed to spawn agent process"}
         pid = process.pid
-        await _update_task_run_pid(run_id, pid, cwd)
+        await _update_task_run_pid(run_id, pid, project_dir)
 
         # Link to lifecycle (only for issue-based runs)
         if issue:
-            await _link_run_to_lifecycle(run_id, issue, role or "developer", cwd, pr_number=pr_number)
+            await _link_run_to_lifecycle(run_id, issue, role or "developer", project_dir, pr_number=pr_number)
 
-        writer = OutputWriter(cwd, run_id)
+        writer = OutputWriter(project_dir, run_id)
 
         agent = AgentState(
             run_id=run_id,
@@ -428,13 +447,13 @@ async def start_agent(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
-            project_dir=cwd,
+            project_dir=project_dir,
         )
         pa.agents[run_id] = agent
 
     agent.reader_task = asyncio.create_task(_read_output(agent))
     agent.stderr_task = asyncio.create_task(_read_stderr(agent))
-    _start_resource_monitoring(agent, cwd, pid)
+    _start_resource_monitoring(agent, project_dir, pid)
     wait_task = asyncio.create_task(_wait_and_finalize(pa, agent))
     _background_tasks.add(wait_task)
     wait_task.add_done_callback(_background_tasks.discard)
@@ -443,7 +462,7 @@ async def start_agent(
         _background_tasks.add(transition_task)
         transition_task.add_done_callback(_background_tasks.discard)
 
-    log.info("agent.started", issue=issue, pid=pid, run_id=run_id, cwd=str(cwd))
+    log.info("agent.started", issue=issue, pid=pid, run_id=run_id, cwd=str(cwd), project_dir=str(project_dir))
 
     label = f"#{issue}" if issue else "Agent"
     role_label = (role or "developer").capitalize()
@@ -522,25 +541,7 @@ async def start_command(
             _evict_completed_for_issue(pa, issue)
 
         project_dir = pa.project_dir
-
-        branch_name = ""
-        if pr_number:
-            try:
-                from sova.config.loader import load_config
-                from sova.git.pr import get_pr_branch
-
-                cfg = load_config(project_dir)
-                if cfg.github_repo:
-                    branch_name = await get_pr_branch(
-                        pr_number,
-                        repo=cfg.github_repo,
-                        github_user=cfg.github_user,
-                    )
-                    if not branch_name:
-                        log.debug("command.pr_branch_empty", pr=pr_number)
-            except (RuntimeError, KeyError, subprocess.CalledProcessError, FileNotFoundError):
-                log.debug("command.pr_branch_lookup_failed", pr=pr_number, exc_info=True)
-
+        branch_name = await _resolve_branch_name(pr_number, project_dir)
         cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
         prompt = _resolve_command_prompt(command, args, project_dir)
 

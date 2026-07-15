@@ -316,6 +316,9 @@ def create_app(
         try:
             yield
         finally:
+            from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+
+            await cancel_background_tasks()
             if metrics_writer is not None:
                 await metrics_writer.stop()
             bg_tasks = pr_throttle_tasks + pr_monitor_tasks

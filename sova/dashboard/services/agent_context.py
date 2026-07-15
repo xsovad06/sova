@@ -17,6 +17,33 @@ log = get_logger(component="dashboard.control.context")
 _CLAUDE_DIR = ".claude"
 
 
+async def _resolve_branch_name(pr_number: int | None, project_dir: Path) -> str:
+    """Look up the head branch name for a PR via the GitHub CLI.
+
+    Returns an empty string on failure or when *pr_number* is ``None``.
+    """
+    if not pr_number:
+        return ""
+    try:
+        from sova.config.loader import load_config
+        from sova.git.pr import get_pr_branch
+
+        cfg = load_config(project_dir)
+        if cfg.github_repo:
+            branch = await get_pr_branch(
+                pr_number,
+                repo=cfg.github_repo,
+                github_user=cfg.github_user,
+            )
+            if not branch:
+                log.debug("pr_branch_empty", pr=pr_number)
+                return ""
+            return branch
+    except (RuntimeError, KeyError, subprocess.CalledProcessError, FileNotFoundError):
+        log.debug("pr_branch_lookup_failed", pr=pr_number, exc_info=True)
+    return ""
+
+
 async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name: str = "") -> Path:
     """Return the worktree path for an issue if one exists, else project_dir.
 
