@@ -6056,6 +6056,350 @@ class TestAgentRecoveryDirect:
         assert result["verdict"] is None
 
 
+# ---------------------------------------------------------------------------
+# Verdict parsing from output lines
+# ---------------------------------------------------------------------------
+
+
+class TestParseVerdictFromOutput:
+    """_parse_verdict_from_output should extract verdicts from agent text output."""
+
+    def test_approve_verdict(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = ["Some analysis...", "### Verdict", "**Approve** -- no blockers"]
+        assert _parse_verdict_from_output(lines) == "approve"
+
+    def test_request_changes_verdict(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = ["Analysis...", "**Verdict: Request changes** -- HIGH finding must be fixed"]
+        assert _parse_verdict_from_output(lines) == "revise"
+
+    def test_comment_only_verdict(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = ["Summary...", "Verdict: Comment only -- observations"]
+        assert _parse_verdict_from_output(lines) == "revise"
+
+    def test_no_verdict_found(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = ["Just some analysis", "No verdict keyword here"]
+        assert _parse_verdict_from_output(lines) is None
+
+    def test_markdown_bold_verdict(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = ["### **Verdict**", "**Approve**"]
+        assert _parse_verdict_from_output(lines) == "approve"
+
+    def test_verdict_with_parenthetical(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        lines = [
+            "**Verdict: Request changes** (posted as COMMENT since GitHub "
+            "does not allow self-reviews with formal approval state.)"
+        ]
+        assert _parse_verdict_from_output(lines) == "revise"
+
+    def test_empty_lines(self) -> None:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        assert _parse_verdict_from_output([]) is None
+
+
+class TestSovaReviewVerdictOutputFallback:
+    """get_sova_review_verdict falls back to parsing output_lines for command:review-pr."""
+
+    async def test_fallback_parses_approve_from_output(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="300",
+                role="command:review-pr",
+                status="done",
+                handoff_json=None,
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Review analysis..."))
+            session.add(OutputLine(task_run_id=run_id, line_number=2, text="**Verdict: Approve** -- looks good"))
+
+        result = await get_sova_review_verdict("300")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    async def test_fallback_parses_request_changes_from_output(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="301",
+                role="command:review-pr",
+                status="done",
+                handoff_json=None,
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Finding: [HIGH] bug"))
+            session.add(OutputLine(task_run_id=run_id, line_number=2, text="Verdict: Request changes -- fix the bug"))
+
+        result = await get_sova_review_verdict("301")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_fallback_defaults_to_revise_when_no_verdict(self) -> None:
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="302",
+                role="command:review-pr",
+                status="done",
+                handoff_json=None,
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        result = await get_sova_review_verdict("302")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_handoff_json_takes_precedence_over_output(self) -> None:
+        """When handoff_json exists, it is authoritative even if output says otherwise."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="303",
+                role="command:review-pr",
+                status="done",
+                handoff_json={"next_action": "approve", "pending_findings": []},
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Verdict: Request changes"))
+
+        result = await get_sova_review_verdict("303")
+        assert result["verdict"] == "approve"
+
+
+# ---------------------------------------------------------------------------
+# Command outcome validation
+# ---------------------------------------------------------------------------
+
+
+class TestCommandOutcomeValidation:
+    """_validate_command_outcome checks whether command runs produced expected outcomes."""
+
+    async def test_non_command_role_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        result = await _validate_command_outcome(1, agent)
+        assert result is None
+
+    async def test_unknown_command_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:some-other-command"
+        result = await _validate_command_outcome(1, agent)
+        assert result is None
+
+    async def test_address_pr_fails_without_push_evidence(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="310", role="command:address-pr", status="done", pr_number=100)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="All findings already addressed."))
+            session.add(OutputLine(task_run_id=run_id, line_number=2, text="Tests pass. Summary complete."))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.pr_number = 100
+        agent.project_dir = None
+        result = await _validate_command_outcome(run_id, agent)
+        assert result is not None
+        assert "without pushing" in result
+
+    async def test_address_pr_passes_with_push_evidence(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="311", role="command:address-pr", status="done", pr_number=101)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Fixed all findings."))
+            session.add(OutputLine(task_run_id=run_id, line_number=2, text="Committed: fix(core): address review"))
+            session.add(OutputLine(task_run_id=run_id, line_number=3, text="git push --force-with-lease"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.pr_number = 101
+        agent.project_dir = None
+        result = await _validate_command_outcome(run_id, agent)
+        assert result is None
+
+    async def test_review_pr_fails_without_post_evidence(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="312", role="command:review-pr", status="done", pr_number=102)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Reviewed the code."))
+            session.add(OutputLine(task_run_id=run_id, line_number=2, text="Verdict: Approve -- looks good"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:review-pr"
+        agent.pr_number = 102
+        agent.project_dir = None
+        result = await _validate_command_outcome(run_id, agent)
+        assert result is not None
+        assert "without posting a review" in result
+
+    async def test_review_pr_passes_with_post_evidence(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="313", role="command:review-pr", status="done", pr_number=103)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Analysis complete."))
+            session.add(
+                OutputLine(
+                    task_run_id=run_id,
+                    line_number=2,
+                    text="Review posted at: https://github.com/org/repo/pull/103#pullrequestreview-123",
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:review-pr"
+        agent.pr_number = 103
+        agent.project_dir = None
+        result = await _validate_command_outcome(run_id, agent)
+        assert result is None
+
+    async def test_no_output_lines_passes_validation(self) -> None:
+        """When no output lines exist (e.g., stream parsing failed), skip validation."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="314", role="command:address-pr", status="done", pr_number=104)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.pr_number = 104
+        agent.project_dir = None
+        result = await _validate_command_outcome(run_id, agent)
+        assert result is None
+
+
+class TestDowngradeToFailed:
+    """_downgrade_to_failed changes done runs to failed with a reason."""
+
+    async def test_downgrades_done_to_failed(self) -> None:
+        from sova.dashboard.services.agent_db import _downgrade_to_failed
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="320", role="command:address-pr", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _downgrade_to_failed(run_id, "Did not push changes", None)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "failed"
+                assert refreshed.error_message == "Did not push changes"
+
+    async def test_does_not_downgrade_non_done(self) -> None:
+        from sova.dashboard.services.agent_db import _downgrade_to_failed
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="321", role="developer", status="failed", error_message="Original error")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _downgrade_to_failed(run_id, "New reason", None)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "failed"
+                assert refreshed.error_message == "Original error"
+
+
 class TestReadFileHandoff:
     def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_db import _read_file_handoff
