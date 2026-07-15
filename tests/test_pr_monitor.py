@@ -745,12 +745,12 @@ class TestGhEnvFailure:
 
 
 class TestMultiProjectMonitor:
-    @pytest.mark.asyncio
-    async def test_failing_project_config_does_not_block_others(self) -> None:
+    def test_failing_project_config_does_not_block_others(self) -> None:
         """One project failing config load should not prevent other monitors."""
         from sova.config.models import NotificationConfig as _NC
         from sova.config.models import PRMonitorConfig as _PMC
         from sova.config.models import ProjectConfig
+        from sova.supervisor.pr_monitor import create_monitors_for_projects
 
         good_cfg = ProjectConfig(
             github_repo="owner/good",
@@ -772,32 +772,44 @@ class TestMultiProjectMonitor:
             patch("sova.config.loader.load_config", side_effect=_load_config),
             patch("pathlib.Path.is_dir", return_value=True),
         ):
-            from sova.config.loader import load_config as _load_mon_cfg
-            from sova.config.registry import list_projects
-
-            monitors: list[PRMonitor] = []
-            for path_str in list_projects().values():
-                p = Path(path_str)
-                if not p.is_dir():
-                    continue
-                try:
-                    pcfg = _load_mon_cfg(p)
-                except Exception:
-                    continue
-                if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
-                    continue
-                monitors.append(
-                    PRMonitor(
-                        project_dir=p,
-                        monitor_config=pcfg.pr_monitor,
-                        notification_config=pcfg.notification,
-                        repo=pcfg.github_repo,
-                        github_user=pcfg.github_user,
-                    )
-                )
+            monitors = create_monitors_for_projects()
 
         assert len(monitors) == 1
         assert monitors[0].repo == "owner/good"
+
+    def test_skips_disabled_and_unconfigured_projects(self) -> None:
+        """Projects with pr_monitor disabled or no github_repo are skipped."""
+        from sova.config.models import NotificationConfig as _NC
+        from sova.config.models import PRMonitorConfig as _PMC
+        from sova.config.models import ProjectConfig
+        from sova.supervisor.pr_monitor import create_monitors_for_projects
+
+        disabled_cfg = ProjectConfig(
+            github_repo="owner/disabled",
+            github_user="user1",
+            pr_monitor=_PMC(enabled=False),
+            notification=_NC(),
+        )
+        no_repo_cfg = ProjectConfig(
+            github_repo="",
+            github_user="user1",
+            pr_monitor=_PMC(enabled=True),
+            notification=_NC(),
+        )
+
+        configs = {"/tmp/disabled": disabled_cfg, "/tmp/norepo": no_repo_cfg}
+
+        with (
+            patch(
+                "sova.config.registry.list_projects",
+                return_value={"disabled": "/tmp/disabled", "norepo": "/tmp/norepo"},
+            ),
+            patch("sova.config.loader.load_config", side_effect=lambda p: configs[str(p)]),
+            patch("pathlib.Path.is_dir", return_value=True),
+        ):
+            monitors = create_monitors_for_projects()
+
+        assert len(monitors) == 0
 
 
 # ---------------------------------------------------------------------------

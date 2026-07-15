@@ -284,29 +284,9 @@ def create_app(
         # PR monitor background loop
         pr_monitor_tasks: list[asyncio.Task] = []
         if is_multi:
-            from sova.config.loader import load_config as _load_mon_cfg
+            from sova.supervisor.pr_monitor import create_monitors_for_projects
 
-            for path_str in list_projects().values():
-                p = Path(path_str)
-                if not p.is_dir():
-                    continue
-                try:
-                    pcfg = _load_mon_cfg(p)
-                except Exception:
-                    log.warning("pr_monitor.config_load_failed", project=str(p), exc_info=True)
-                    continue
-                if not pcfg.pr_monitor.enabled or not pcfg.github_repo:
-                    continue
-
-                from sova.supervisor.pr_monitor import PRMonitor
-
-                monitor = PRMonitor(
-                    project_dir=p,
-                    monitor_config=pcfg.pr_monitor,
-                    notification_config=pcfg.notification,
-                    repo=pcfg.github_repo,
-                    github_user=pcfg.github_user,
-                )
+            for monitor in create_monitors_for_projects():
                 pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
         elif cfg.pr_monitor.enabled and cfg.github_repo:
             from sova.supervisor.pr_monitor import PRMonitor
