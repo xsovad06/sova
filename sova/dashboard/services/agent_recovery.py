@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -227,6 +228,44 @@ async def dismiss_interrupted_runs() -> int:
         return 0
 
 
+_VERDICT_INLINE = [
+    (re.compile(r"\*?\*?Verdict\*?\*?\s*:?\s*\*?\*?Approve\b", re.IGNORECASE), "approve"),
+    (re.compile(r"\*?\*?Verdict\*?\*?\s*:?\s*\*?\*?Request\s+changes\b", re.IGNORECASE), "revise"),
+    (re.compile(r"\*?\*?Verdict\*?\*?\s*:?\s*\*?\*?Comment\s+only\b", re.IGNORECASE), "revise"),
+]
+_VERDICT_VALUE = [
+    (re.compile(r"^\s*[-*]*\s*\*?\*?Approve\b", re.IGNORECASE), "approve"),
+    (re.compile(r"^\s*[-*]*\s*\*?\*?Request\s+changes\b", re.IGNORECASE), "revise"),
+    (re.compile(r"^\s*[-*]*\s*\*?\*?Comment\s+only\b", re.IGNORECASE), "revise"),
+]
+_VERDICT_HEADING = re.compile(r"#{1,4}\s*\*?\*?Verdict\*?\*?\s*$", re.IGNORECASE)
+
+
+def _parse_verdict_from_output(lines: list[str]) -> str | None:
+    """Extract the review verdict from agent output text.
+
+    Handles two formats:
+    - Single-line: "Verdict: Approve", "**Verdict: Request changes**"
+    - Multi-line: "### Verdict" heading followed by "**Approve**" on a later line
+
+    Returns "approve", "revise", or None if no verdict pattern is found.
+    """
+    for line in reversed(lines):
+        for pattern, result in _VERDICT_INLINE:
+            if pattern.search(line):
+                return result
+
+    for i in range(len(lines) - 1, -1, -1):
+        if _VERDICT_HEADING.search(lines[i]):
+            for j in range(i + 1, min(i + 4, len(lines))):
+                for pattern, result in _VERDICT_VALUE:
+                    if pattern.search(lines[j]):
+                        return result
+            break
+
+    return None
+
+
 async def get_sova_review_verdict(issue_number: str) -> dict:
     """Query the DB for the most recent SOVA reviewer verdict on an issue.
 
@@ -236,8 +275,8 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
     When handoff_json is present, the verdict is derived from it (authoritative).
     When a review run completed successfully but has no handoff_json (e.g.
     command:review-pr which posts to GitHub but doesn't write handoff), the
-    verdict defaults to "revise" since a review that found nothing would have
-    been an approval.
+    verdict is parsed from the agent's output lines.  Falls back to "revise"
+    if the output contains no recognizable verdict pattern.
     """
     from sqlalchemy import func, select
 
@@ -253,9 +292,7 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
 
     try:
         async with await get_session() as session:
-            # Include non-done runs: a reviewer that posted findings but crashed
-            # on a post-review side-effect ("failed") or was killed during
-            # cleanup ("interrupted") still produced a valid verdict.
+            # First: look for runs WITH handoff_json (authoritative source).
             stmt = (
                 select(TaskRun)
                 .where(
@@ -270,33 +307,62 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
             result = await session.execute(stmt)
             run = result.scalar_one_or_none()
 
+            # Fallback: look for command:review-pr runs WITHOUT handoff_json.
+            # These runs post to GitHub but don't write structured handoff data.
+            if not run:
+                stmt = (
+                    select(TaskRun)
+                    .where(
+                        TaskRun.issue_number == issue_number.lstrip("#").strip(),
+                        TaskRun.role == "command:review-pr",
+                        TaskRun.status == "done",
+                        TaskRun.handoff_json.is_(None),
+                    )
+                    .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                run = result.scalar_one_or_none()
+
             if not run:
                 return no_review
 
             handoff = run.handoff_json
-            if handoff is None:
+            if handoff is not None:
+                next_action = handoff.get("next_action", "")
+                findings = handoff.get("pending_findings", [])
+
+                if next_action == "approve":
+                    verdict = "approve"
+                elif findings:
+                    max_sev = max((f.get("severity", 0) for f in findings), default=0)
+                    verdict = "block" if max_sev >= 7 else "revise"
+                else:
+                    verdict = "approve"
+
                 return {
                     "has_sova_review": True,
-                    "verdict": "revise",
-                    "finding_count": 0,
+                    "verdict": verdict,
+                    "finding_count": len(findings),
                     "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
                 }
 
-            next_action = handoff.get("next_action", "")
-            findings = handoff.get("pending_findings", [])
+            # No handoff_json -- parse verdict from the agent's output lines.
+            from sova.db.models import OutputLine
 
-            if next_action == "approve":
-                verdict = "approve"
-            elif findings:
-                max_sev = max((f.get("severity", 0) for f in findings), default=0)
-                verdict = "block" if max_sev >= 7 else "revise"
-            else:
-                verdict = "approve"
+            output_stmt = (
+                select(OutputLine.text).where(OutputLine.task_run_id == run.id).order_by(OutputLine.line_number)
+            )
+            output_result = await session.execute(output_stmt)
+            output_lines = [row[0] for row in output_result.fetchall()]
+
+            parsed_verdict = _parse_verdict_from_output(output_lines)
+            verdict = parsed_verdict or "revise"
 
             return {
                 "has_sova_review": True,
                 "verdict": verdict,
-                "finding_count": len(findings),
+                "finding_count": 0,
                 "reviewed_at": ts.isoformat() if (ts := run.ended_at or run.started_at) else None,
             }
     except Exception:
