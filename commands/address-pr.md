@@ -14,6 +14,12 @@ outputs:
 
 Score each review comment, address all of them (fix or acknowledge with justification), and reply on GitHub. Handles both human reviewers and automated review bots (Sourcery, CodeRabbit, etc.).
 
+## CRITICAL: Complete ALL Steps
+
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately -- so NEVER output a final summary without having completed steps 8-16 first (commit, rebase, push, reply, resolve). If you discover that all findings are already addressed, you MUST still complete steps 10-11 (rebase and push) to resolve any merge conflicts, then skip to step 16 for the summary.
+
+**Incomplete execution is worse than failure** -- a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
+
 ## Instructions
 
 1. Get the PR number from `$ARGUMENTS`.

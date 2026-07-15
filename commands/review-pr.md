@@ -14,6 +14,8 @@ outputs:
 
 Act as a senior engineer reviewing a teammate's pull request. Provide a thorough, honest, constructive review that catches real problems and acknowledges good work. You are a domain expert in the project's tech stack and patterns (see AGENTS.md).
 
+**CRITICAL: Complete ALL Steps.** This command may run as a headless agent. You MUST execute through Step 7 (posting the review on GitHub) before producing any final summary. In headless mode, a text-only response without a tool call causes the process to exit -- so always ensure the review is posted via the GitHub API before concluding. In interactive mode, Step 7's "Ask the user before posting" approval flow still applies -- present the draft, get approval, then post.
+
 PR: $ARGUMENTS
 
 ## 1. Fetch PR State
@@ -171,16 +173,23 @@ Call out 2-3 things the code does well. Reinforce good patterns.
 
 **Ask the user before posting.** Show the draft review first.
 
-When approved:
+When approved, use the event that matches your verdict:
+
+- **Approve** verdict: use `event=APPROVE`
+- **Request changes** verdict: use `event=REQUEST_CHANGES`
+- **Comment only** verdict: use `event=COMMENT`
+
 ```bash
-# Comment or approve
+# Set EVENT based on your verdict above
 gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews \
-  -f event=COMMENT \
+  -f event=$EVENT \
   -f body="$(cat <<'EOF'
 [REVIEW BODY]
 EOF
 )"
 ```
+
+**Self-review fallback**: GitHub rejects `APPROVE` and `REQUEST_CHANGES` on your own PRs (HTTP 422). If the API returns 422 with a message containing "your own pull request", retry with `event=COMMENT` and append a note: `(Posted as comment -- GitHub does not allow self-reviews with formal approval/rejection state.)` For other 422 errors, report the failure instead of silently falling back.
 
 Report the review URL after posting.
 
