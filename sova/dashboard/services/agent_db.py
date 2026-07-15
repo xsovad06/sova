@@ -190,6 +190,107 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
         log.warning("task_run.finalize_failed", exc_info=True)
 
 
+async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str] | None:
+    """Fetch output lines for a TaskRun. Returns None if no lines exist or on error."""
+    from sova.db.models import OutputLine
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                from sqlalchemy import select
+
+                stmt = select(OutputLine.text).where(OutputLine.task_run_id == run_id).order_by(OutputLine.line_number)
+                result = await session.execute(stmt)
+                rows = [row[0] for row in result.fetchall()]
+                return rows or None
+    except Exception:
+        log.debug("fetch_output_lines.failed", run_id=run_id, exc_info=True)
+        return None
+
+
+async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
+    """Check that address-pr actually committed and pushed changes."""
+    if agent.pr_number is None:
+        return None
+
+    lines = await _fetch_output_lines(run_id, agent.project_dir)
+    if lines is None:
+        return None
+
+    has_push_evidence = any("git push" in line.lower() or "force-with-lease" in line.lower() for line in lines)
+
+    if not has_push_evidence:
+        return "address-pr completed without pushing changes"
+    return None
+
+
+async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
+    """Check that review-pr actually posted a review on the PR."""
+    if agent.pr_number is None:
+        return None
+
+    lines = await _fetch_output_lines(run_id, agent.project_dir)
+    if lines is None:
+        return None
+
+    has_post_evidence = any(
+        "review posted" in line.lower()
+        or "pullrequestreview" in line.lower()
+        or ("pulls/" in line.lower() and "/reviews" in line.lower())
+        for line in lines
+    )
+
+    if not has_post_evidence:
+        return "review-pr completed without posting a review on GitHub"
+    return None
+
+
+_COMMAND_VALIDATORS = {
+    "address-pr": _validate_address_pr,
+    "review-pr": _validate_review_pr,
+}
+
+
+async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | None:
+    """Validate that a command run actually produced its expected outcome.
+
+    For known command types (address-pr, review-pr), checks evidence of
+    the expected side effects (commits pushed, review posted, etc.).
+    Returns an error message if validation fails, None if OK or unknown command.
+    """
+    if not agent.role or not agent.role.startswith("command:"):
+        return None
+
+    cmd_name = agent.role.removeprefix("command:").removeprefix("/").split()[0]
+    validator_fn = _COMMAND_VALIDATORS.get(cmd_name)
+    if not validator_fn:
+        return None
+
+    try:
+        return await validator_fn(run_id, agent)
+    except Exception:
+        log.debug("validate_command.failed", run_id=run_id, cmd=cmd_name, exc_info=True)
+        return None
+
+
+async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> None:
+    """Downgrade a 'done' TaskRun to 'failed' with the given reason."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run and task_run.status == "done":
+                    task_run.status = "failed"
+                    task_run.error_message = reason
+                    log.warning("task_run.downgraded", run_id=run_id, reason=reason)
+    except Exception:
+        log.warning("task_run.downgrade_failed", run_id=run_id, exc_info=True)
+
+
 async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:
     """Fetch current_step, status, and cost from the DB for running agents."""
     if not run_ids:
