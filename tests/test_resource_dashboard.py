@@ -563,6 +563,25 @@ class TestSystemMetricsService:
         assert sys["cpu_percent"] is not None
         assert isinstance(sys["cpu_percent"], (int, float))
 
+    def test_memory_used_consistent_with_percent(self) -> None:
+        """memory_used_bytes must equal total - available, matching percent."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.resource_service import get_system_metrics
+
+        mock_mem = MagicMock()
+        mock_mem.total = 16_000_000_000
+        mock_mem.available = 4_000_000_000
+        mock_mem.used = 5_000_000_000  # macOS "active" only -- should NOT be used
+        mock_mem.percent = 75.0
+
+        with patch("sova.dashboard.services.resource_service.psutil.virtual_memory", return_value=mock_mem):
+            result = get_system_metrics()
+
+        sys = result["system"]
+        assert sys["memory_used_bytes"] == 12_000_000_000  # total - available
+        assert sys["memory_used_bytes"] != 5_000_000_000  # not the raw .used field
+
     def test_agent_slots_empty(self) -> None:
         from sova.dashboard.services.resource_service import get_system_metrics
 
