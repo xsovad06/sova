@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -676,6 +677,46 @@ class TestControlServiceRecovery:
         assert _is_process_alive(os.getpid()) is True
         # Non-existent PID
         assert _is_process_alive(999999) is False
+
+
+# ---------------------------------------------------------------------------
+# Background task shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestCancelBackgroundTasks:
+    async def test_cancels_pending_tasks(self) -> None:
+        """cancel_background_tasks should cancel all tasks in _background_tasks."""
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+
+        finished = False
+
+        async def _long_running() -> None:
+            nonlocal finished
+            await asyncio.sleep(3600)
+            finished = True
+
+        task = asyncio.create_task(_long_running())
+        agent_lifecycle._background_tasks.add(task)
+        try:
+            await cancel_background_tasks()
+            assert task.cancelled()
+            assert not finished
+            assert len(agent_lifecycle._background_tasks) == 0
+        finally:
+            agent_lifecycle._background_tasks.discard(task)
+
+    async def test_idempotent_when_empty(self) -> None:
+        """cancel_background_tasks should be safe to call with no tasks."""
+        from sova.dashboard.services.agent_lifecycle import (
+            _background_tasks,
+            cancel_background_tasks,
+        )
+
+        _background_tasks.clear()
+        await cancel_background_tasks()
+        assert len(_background_tasks) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1835,6 +1876,65 @@ class TestDuplicateAgentPrevention:
 
         assert result["status"] == "started"
         mock_resolve.assert_not_awaited()
+
+    async def test_start_agent_resolves_worktree_from_pr(self) -> None:
+        """start_agent with pr_number should resolve worktree via branch lookup."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        worktree_path = pa.project_dir / ".claude" / "worktrees" / "55"
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ) as mock_runtime_factory,
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=10),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value="55",
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_branch_name",
+                new_callable=AsyncMock,
+                return_value="fix/issue-55",
+            ) as mock_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=worktree_path,
+            ) as mock_wt,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("", role="developer", pr_number=332)
+
+        assert result["status"] == "started"
+        mock_branch.assert_awaited_once_with(332, pa.project_dir)
+        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55")
+        spawn_call = mock_runtime_factory.return_value.spawn
+        actual_cwd = spawn_call.call_args[0][1]
+        assert actual_cwd == worktree_path
 
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""

@@ -91,7 +91,6 @@ def get_system_metrics(slug: str | None = None) -> dict:
         cpu_percent: float | None = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
         memory_total = mem.total
-        # mem.used on macOS only counts "active" memory, excluding wired/compressed.
         # (total - available) matches Activity Monitor and is consistent with mem.percent.
         memory_used = mem.total - mem.available
         memory_percent = mem.percent
