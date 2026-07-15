@@ -16,6 +16,28 @@ from sova.dashboard.services.agent_recovery import (
 router = APIRouter()
 
 
+async def _find_awaiting_approval_run(issue: str) -> int | None:
+    """Find the most recent awaiting_approval TaskRun for an issue."""
+    from sqlalchemy import select
+
+    from sova.core.state import TaskStatus
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    async with await get_session() as session, session.begin():
+        stmt = (
+            select(TaskRun.id)
+            .where(
+                TaskRun.issue_number == issue,
+                TaskRun.status == TaskStatus.AWAITING_APPROVAL,
+            )
+            .order_by(TaskRun.started_at.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
 class ExecuteActionRequest(BaseModel):
     action_id: str
     issue: str | None = None
@@ -107,6 +129,23 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
                 if match:
                     handoff = synthesized
                     action = match
+
+    # Third fallback: synthesize spec actions for awaiting_approval runs
+    if not handoff and norm_issue and req.action_id in {"approve-spec", "reject-spec"}:
+        run_id = await _find_awaiting_approval_run(norm_issue)
+        if run_id is not None:
+            if req.action_id == "approve-spec":
+                result = await control_service.resume_from_approval(run_id)
+            else:
+                result = await control_service.reject_spec(run_id)
+            if result.get("error") == "not_found":
+                raise HTTPException(status_code=404, detail=result["detail"])
+            if result.get("error") == "conflict":
+                raise HTTPException(status_code=409, detail=result["detail"])
+            if "error" in result:
+                raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
+            result["action"] = "Approve Spec" if req.action_id == "approve-spec" else "Reject"
+            return result
 
     if not handoff or not action:
         raise HTTPException(status_code=404, detail=f"Action '{req.action_id}' not found in any handoff")

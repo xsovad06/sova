@@ -269,8 +269,8 @@ def _synthesize_spec_actions(issue_number: str) -> list[dict]:
     """Reconstruct spec handoff actions when the handoff file is missing.
 
     The handoff file may be cleared by unrelated agent runs. Synthesize
-    the standard approve/reject/revise/skip actions so the dashboard still
-    shows actionable buttons for awaiting_approval specs.
+    the standard approve/reject actions so the dashboard still shows
+    actionable buttons for awaiting_approval specs.
     """
     return [
         {

@@ -8346,6 +8346,184 @@ class TestExecuteHandoffAction:
 
 
 # ---------------------------------------------------------------------------
+# Spec action execution via handoff endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteSpecActions:
+    """Test that synthesized spec actions (approve/reject) are executable."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import handoff_service
+
+        monkeypatch.setattr(handoff_service, "_resolve_project_dir", lambda: tmp_path)
+        handoff_service._handoff_caches.clear()
+
+    async def test_approve_spec_calls_resume_from_approval(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            AsyncMock(return_value=42),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.control_service.resume_from_approval",
+            AsyncMock(return_value={"run_id": 100, "resumed_from": 42, "issue": "258", "role": "researcher"}),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "approve-spec", "issue": "258"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action"] == "Approve Spec"
+        assert data["run_id"] == 100
+
+    async def test_reject_spec_calls_reject_spec(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            AsyncMock(return_value=42),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.control_service.reject_spec",
+            AsyncMock(return_value={"run_id": 42, "issue": "258", "status": "rejected"}),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "reject-spec", "issue": "258"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action"] == "Reject"
+        assert data["status"] == "rejected"
+
+    async def test_spec_action_no_awaiting_run_returns_404(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            AsyncMock(return_value=None),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "approve-spec", "issue": "258"})
+        assert resp.status_code == 404
+
+    async def test_spec_action_conflict_returns_409(self, client: AsyncClient, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff.get_synthesized_handoff",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.routers.handoff._find_awaiting_approval_run",
+            AsyncMock(return_value=42),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.control_service.resume_from_approval",
+            AsyncMock(return_value={"error": "conflict", "detail": "Already claimed"}),
+        )
+
+        resp = await client.post("/api/handoff/execute", json={"action_id": "approve-spec", "issue": "258"})
+        assert resp.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# reject_spec (DB-level)
+# ---------------------------------------------------------------------------
+
+
+class TestRejectSpec:
+    """DB-level tests for the reject_spec service function."""
+
+    async def test_reject_success(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import reject_spec
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number="80", role="researcher", status="awaiting_approval")
+            session.add(run)
+        await session.commit()
+        run_id = run.id
+
+        result = await reject_spec(run_id)
+        assert result["status"] == "rejected"
+        assert result["run_id"] == run_id
+        assert result["issue"] == "80"
+
+        async with await get_session() as session, session.begin():
+            updated = await session.get(TaskRun, run_id)
+        assert updated.status == "rejected"
+
+    async def test_reject_not_found(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import reject_spec
+
+        result = await reject_spec(999999)
+        assert result["error"] == "not_found"
+
+    async def test_reject_wrong_status(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import reject_spec
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number="81", role="researcher", status="done")
+            session.add(run)
+        await session.commit()
+        run_id = run.id
+
+        result = await reject_spec(run_id)
+        assert result["error"] == "conflict"
+        assert "done" in result["detail"]
+
+
+# ---------------------------------------------------------------------------
+# _find_awaiting_approval_run (DB-level)
+# ---------------------------------------------------------------------------
+
+
+class TestFindAwaitingApprovalRun:
+    """DB-level tests for the handoff router helper."""
+
+    async def test_finds_most_recent(self) -> None:
+        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+
+        async with await get_session() as session, session.begin():
+            older = TaskRun(issue_number="90", role="researcher", status="awaiting_approval")
+            newer = TaskRun(issue_number="90", role="researcher", status="awaiting_approval")
+            session.add_all([older, newer])
+        await session.commit()
+
+        result = await _find_awaiting_approval_run("90")
+        assert result == newer.id
+
+    async def test_returns_none_when_no_match(self) -> None:
+        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+
+        result = await _find_awaiting_approval_run("nonexistent")
+        assert result is None
+
+    async def test_ignores_non_awaiting_runs(self) -> None:
+        from sova.dashboard.routers.handoff import _find_awaiting_approval_run
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number="91", role="researcher", status="done")
+            session.add(run)
+        await session.commit()
+
+        result = await _find_awaiting_approval_run("91")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # invalidate_synthesis_cache
 # ---------------------------------------------------------------------------
 
