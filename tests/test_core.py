@@ -143,6 +143,12 @@ class TestTaskStatus:
 
         assert "awaiting_approval" in TASK_RUN_TERMINAL
 
+    def test_paused_in_task_run_terminal(self) -> None:
+        """Paused runs are terminal for DB queries (process has exited)."""
+        from sova.core.state import TASK_RUN_TERMINAL
+
+        assert "paused" in TASK_RUN_TERMINAL
+
     def test_happy_path_sequence(self) -> None:
         """The happy path through the pipeline is valid."""
         happy_path = [

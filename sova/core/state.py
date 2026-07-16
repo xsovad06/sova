@@ -132,7 +132,7 @@ class PhaseStatus(StrEnum):
 PHASE_STATUS_TERMINAL = frozenset({PhaseStatus.COMPLETED, PhaseStatus.FAILED, PhaseStatus.SKIPPED})
 
 # Terminal statuses for TaskRun records (shared across services)
-TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "awaiting_approval"})
+TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "paused", "awaiting_approval"})
 
 # Step statuses that mean "completed successfully".
 # Legacy runs used "passed"; current WorkflowEngine uses "done".
