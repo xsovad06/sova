@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from sova.monitoring.cross_project import MetricsSnapshotWriter
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -153,6 +155,27 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
             raise
         except Exception:
             log.warning("sweep.error", exc_info=True)
+
+
+async def _shutdown_tasks(
+    sweep_task: asyncio.Task,
+    pr_throttle_tasks: list[asyncio.Task],
+    pr_monitor_tasks: list[asyncio.Task],
+    metrics_writer: MetricsSnapshotWriter | None,
+) -> None:
+    """Cancel all background tasks during lifespan shutdown."""
+    from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+
+    await cancel_background_tasks()
+    if metrics_writer is not None:
+        await metrics_writer.stop()
+    bg_tasks = pr_throttle_tasks + pr_monitor_tasks
+    for t in bg_tasks:
+        t.cancel()
+    if bg_tasks:
+        await asyncio.gather(*bg_tasks, return_exceptions=True)
+    sweep_task.cancel()
+    await asyncio.gather(sweep_task, return_exceptions=True)
 
 
 def create_app(
@@ -316,18 +339,13 @@ def create_app(
         try:
             yield
         finally:
-            from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
-
-            await cancel_background_tasks()
-            if metrics_writer is not None:
-                await metrics_writer.stop()
-            bg_tasks = pr_throttle_tasks + pr_monitor_tasks
-            for t in bg_tasks:
-                t.cancel()
-            if bg_tasks:
-                await asyncio.gather(*bg_tasks, return_exceptions=True)
-            sweep_task.cancel()
-            await asyncio.gather(sweep_task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    _shutdown_tasks(sweep_task, pr_throttle_tasks, pr_monitor_tasks, metrics_writer),
+                    timeout=5.0,
+                )
+            except TimeoutError:
+                log.warning("lifespan.shutdown_timeout", exc_info=True)
             await close_db()
 
     app = FastAPI(title="SOVA Dashboard", lifespan=lifespan)
