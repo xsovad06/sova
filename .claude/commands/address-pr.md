@@ -16,7 +16,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 ## CRITICAL: Complete ALL Steps
 
-This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately -- so NEVER output a final summary without having completed steps 8-16 first (commit, rebase, push, reply, resolve). If you discover that all findings are already addressed, you MUST still complete steps 10-11 (rebase and push) to resolve any merge conflicts, then skip to step 16 for the summary.
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately -- so NEVER output a final summary without having completed steps 8-15 first (squash, rebase, push, reply, resolve). If you discover that all findings are already addressed, you MUST still complete steps 9-10 (rebase and push) to resolve any merge conflicts, then skip to step 15 for the summary.
 
 **Incomplete execution is worse than failure** -- a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
 
@@ -60,19 +60,42 @@ This command runs as a headless agent. You MUST execute every step below through
 
 7. **Scout check**: while fixing findings, scan each touched file for pre-existing issues -- failing tests, lint warnings, dead imports, obvious bugs adjacent to your changes. Fix them alongside the review findings. Keep scout fixes small and low-risk.
 
-8. **After all fixes**:
-   Run the project's linter and tests (see CLAUDE.md for commands).
-   Stage and commit with a message following the project's commit conventions (see AGENTS.md).
-   The commit type is `fix` and the description must summarize WHAT was fixed, not just reference the issue/PR.
-   ```
-   fix(<scope>): address review findings from PR #<PR_NUMBER>
-   ```
-   Example: `fix(ai): address review findings from PR #82`
-   The scope comes from the area of code changed. Do NOT use generic messages like `feat: issue #N`.
+8. **Squash fixes into original commits** (MANDATORY -- no fix-on-fix commits):
 
-9. **Rearrange commits**: run the `/rearrange-commits` workflow to squash the fix commit into the original feature commits. The PR should read as clean feature development with no review-fix artifacts.
+   The PR must read as clean feature development. Do NOT create a separate "address review findings" commit -- fold each fix into the commit that introduced the code being fixed. The final history should look as if the code was written correctly from the start.
 
-10. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
+   a. Run the project's linter and tests (see CLAUDE.md for commands). All must pass before proceeding.
+
+   b. Record the original commit messages for replay:
+      ```bash
+      git log origin/$BASE..HEAD --reverse --format="%H %s" > /tmp/pr-commits.txt
+      ```
+
+   c. Create a backup branch, then soft-reset:
+      ```bash
+      git branch backup-pre-squash
+      git reset --soft origin/$BASE
+      git reset HEAD .
+      ```
+      All changes are now unstaged in the working tree.
+
+   d. Re-commit in the original logical groups. For each original commit (from the list in step b):
+      - Stage the files that belong to that logical unit
+      - When a file (e.g., a test file) has changes belonging to multiple commits, save the final version aside, apply the intermediate version for earlier commits, then restore the final version for the last commit that touches it
+      - Use the original commit message (preserving type, scope, and description)
+      - Fold review fixes into whichever commit introduced the code being fixed
+
+   e. **Single-commit shortcut**: if the branch had only one commit before fixes, skip the reset-and-recommit flow. Instead, stage all fixes and `git commit --amend --no-edit`.
+
+   f. Verify the tree is identical to the backup:
+      ```bash
+      git diff backup-pre-squash
+      ```
+      This MUST produce no output. If it does, something was lost -- investigate before continuing.
+
+   g. Clean up: `git branch -D backup-pre-squash`
+
+9. **Rebase onto base branch** to ensure the PR is mergeable after fixes:
     ```bash
     BASE=$(gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName')
     git fetch origin
@@ -92,7 +115,7 @@ This command runs as a headless agent. You MUST execute every step below through
 
     If rebase was a no-op (already up to date), continue to the next step.
 
-11. **Push and wait for CI** (MANDATORY -- do not skip):
+10. **Push and wait for CI** (MANDATORY -- do not skip):
    ```bash
    git push --force-with-lease
    ```
@@ -108,19 +131,19 @@ This command runs as a headless agent. You MUST execute every step below through
    ```
    Common CI failures: commit-format invariant (wrong scope/type), test timeouts, lint errors, SonarCloud coverage.
 
-   **Only continue to step 12 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
+   **Only continue to step 11 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
 
-12. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
+11. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
    - Fixed: `Fixed: [what changed].` or `Added [what].`
    - Acknowledged (not fixed): `Acknowledged -- [justification: false positive / not applicable / needs human input].`
    - No filler words, no 'Great catch!', no emojis.
 
-13. **Resolve each thread** using GraphQL:
+12. **Resolve each thread** using GraphQL:
     ```bash
     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
     ```
 
-14. **Request bot re-review** (if bot comments were addressed):
+13. **Request bot re-review** (if bot comments were addressed):
     ```bash
     # Sourcery AI
     gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
@@ -129,9 +152,9 @@ This command runs as a headless agent. You MUST execute every step below through
     ```
     Only request re-review for bots whose comments were actually addressed.
 
-15. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
+14. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
-16. **Print summary**:
+15. **Print summary**:
     - Table: | Comment | Source | Score | Action |
     - Source column distinguishes human vs bot reviewers
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
@@ -139,7 +162,6 @@ This command runs as a headless agent. You MUST execute every step below through
 ## Cross-References
 
 - **Want to learn from the feedback?** Run `/ingest-review <PR_NUMBER>` after merge
-- **Need to reorganize commits after fixes?** Run `/rearrange-commits`
 
 ## Rules
 
