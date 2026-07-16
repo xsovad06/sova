@@ -910,6 +910,14 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
     return '<div class="flex gap-0.5"><div class="flex-1 ' + (compact ? 'h-1.5' : 'h-2.5') + ' rounded animate-pulse" style="background:' + colors.hex + ';opacity:0.7"></div></div>' + label;
   }
 
+  if (currentStep === 'agent') {
+    var agentLabel = '';
+    if (!compact) {
+      agentLabel = '<div class="text-xs text-gray-400 mt-1">Running...</div>';
+    }
+    return '<div class="flex gap-0.5"><div class="flex-1 ' + (compact ? 'h-1.5' : 'h-2.5') + ' rounded animate-pulse" style="background:' + colors.hex + ';opacity:0.5"></div></div>' + agentLabel;
+  }
+
   var steps = PIPELINE_STEPS;
   var labels = STEP_LABELS;
   if (pipelineVariant === 'address_review') {
