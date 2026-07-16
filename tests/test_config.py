@@ -39,6 +39,7 @@ def test_default_config() -> None:
     assert cfg.pipeline.auto_address_review is True
     assert cfg.triage.auto_label is True
     assert cfg.triage.min_confidence == 0.7
+    assert cfg.monitoring.enabled is True
 
 
 def test_load_from_toml(tmp_path: Path) -> None:

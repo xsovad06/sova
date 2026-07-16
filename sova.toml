@@ -38,5 +38,9 @@ branch_naming = "conventional"
 pr_auto_link_issues = true
 ai_coauthor = false
 
+[monitoring]
+enabled = true
+interval = 5.0
+
 [dashboard]
 pr_author_filter = "all"
