@@ -978,7 +978,7 @@ function renderAgentCard(agent) {
         (agent.cpu_percent != null ? '<span class="text-accent" data-field="cpu">CPU ' + agent.cpu_percent.toFixed(1) + '%</span>' : '') +
         (agent.memory_rss_bytes != null ? '<span class="text-accent-green" data-field="mem">' + (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB</span>' : '') +
         '<span class="text-gray-500" data-field="elapsed">' + liveElapsed(agent.elapsed_seconds) + '</span>' +
-        '<span class="text-accent-green">' + cost + '</span>' +
+        '<span class="text-accent-green" data-field="cost">' + cost + '</span>' +
       '</div>' +
     '</div>' +
     '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
@@ -1669,12 +1669,45 @@ function _startPollingFallback() {
   }
 }
 
+var _metricsInterval = null;
+var _isRefreshingMetrics = false;
+async function _refreshCardMetrics() {
+  if (!document.querySelector('[id^="agent-card-"]')) return;
+  if (_isRefreshingMetrics) return;
+  _isRefreshingMetrics = true;
+  try {
+    var data = await fetchAPI(apiUrl('/agents/active'));
+    data.agents.forEach(function(agent) {
+      var card = document.getElementById('agent-card-' + agent.run_id);
+      if (!card) return;
+      var cpuEl = card.querySelector('[data-field="cpu"]');
+      if (cpuEl && agent.cpu_percent != null) {
+        cpuEl.textContent = 'CPU ' + agent.cpu_percent.toFixed(1) + '%';
+      }
+      var memEl = card.querySelector('[data-field="mem"]');
+      if (memEl && agent.memory_rss_bytes != null) {
+        memEl.textContent = (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB';
+      }
+      var costEl = card.querySelector('[data-field="cost"]');
+      if (costEl) {
+        costEl.textContent = '$' + parseFloat(agent.cost_usd || 0).toFixed(4);
+      }
+    });
+  } catch (e) {
+    /* metrics refresh is best-effort */
+  } finally {
+    _isRefreshingMetrics = false;
+  }
+}
+_metricsInterval = setInterval(_refreshCardMetrics, 5000);
+
 _connectAgentWs();
 
 // Clean up on page navigation
 window.addEventListener('beforeunload', function() {
   if (_agentWs) { _agentWs.close(); _agentWs = null; }
   if (agentPollInterval) { clearInterval(agentPollInterval); }
+  if (_metricsInterval) { clearInterval(_metricsInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
 });
@@ -2107,6 +2140,7 @@ document.addEventListener('visibilitychange', function() {
   if (document.hidden) {
     if (_agentWs) { _agentWs.close(); _agentWs = null; }
     if (agentPollInterval) { clearInterval(agentPollInterval); agentPollInterval = null; }
+    if (_metricsInterval) { clearInterval(_metricsInterval); _metricsInterval = null; }
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
@@ -2116,6 +2150,8 @@ document.addEventListener('visibilitychange', function() {
     _wsLastRunIds = null;
     _connectAgentWs();
     loadAgents();
+    _refreshCardMetrics();
+    _metricsInterval = setInterval(_refreshCardMetrics, 5000);
     loadTaskCards();
     loadPrTracker();
     checkInterrupted();
