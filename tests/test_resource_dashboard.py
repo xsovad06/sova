@@ -694,3 +694,93 @@ class TestSystemMetricsRouter:
             resp = await client.get("/api/resources/system/metrics")
         assert resp.status_code == 500
         assert "Failed to fetch system metrics" in resp.json()["detail"]
+
+
+class TestSystemMetricsHistory:
+    def test_history_accumulates(self) -> None:
+        from sova.dashboard.services.resource_service import (
+            _system_metrics_history,
+            get_system_metrics,
+            get_system_metrics_history,
+        )
+
+        _system_metrics_history.clear()
+        get_system_metrics()
+        get_system_metrics()
+        get_system_metrics()
+
+        history = get_system_metrics_history()
+        assert len(history) == 3
+        for entry in history:
+            assert "cpu_percent" in entry
+            assert "memory_percent" in entry
+            assert "timestamp" in entry
+
+    def test_history_respects_max_size(self) -> None:
+        from sova.dashboard.services.resource_service import (
+            _SYSTEM_HISTORY_MAX,
+            _system_metrics_history,
+            get_system_metrics,
+            get_system_metrics_history,
+        )
+
+        _system_metrics_history.clear()
+        for _ in range(_SYSTEM_HISTORY_MAX + 10):
+            get_system_metrics()
+
+        history = get_system_metrics_history()
+        assert len(history) == _SYSTEM_HISTORY_MAX
+
+    def test_history_empty_initially(self) -> None:
+        from sova.dashboard.services.resource_service import (
+            _system_metrics_history,
+            get_system_metrics_history,
+        )
+
+        _system_metrics_history.clear()
+        history = get_system_metrics_history()
+        assert history == []
+
+    def test_history_not_populated_when_psutil_unavailable(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.resource_service import (
+            _system_metrics_history,
+            get_system_metrics,
+            get_system_metrics_history,
+        )
+
+        _system_metrics_history.clear()
+        target = "sova.dashboard.services.resource_service.psutil.cpu_percent"
+        with patch(target, side_effect=RuntimeError("no psutil")):
+            get_system_metrics()
+
+        history = get_system_metrics_history()
+        assert len(history) == 0
+
+    @pytest.mark.asyncio
+    async def test_history_endpoint(self, client: AsyncClient) -> None:
+        from sova.dashboard.services.resource_service import (
+            _system_metrics_history,
+            get_system_metrics,
+        )
+
+        _system_metrics_history.clear()
+        get_system_metrics()
+        get_system_metrics()
+
+        resp = await client.get("/api/resources/system/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert "cpu_percent" in data[0]
+        assert "memory_percent" in data[0]
+
+    @pytest.mark.asyncio
+    async def test_history_endpoint_500(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_system_metrics_history"
+        with patch(target, side_effect=RuntimeError("oops")):
+            resp = await client.get("/api/resources/system/history")
+        assert resp.status_code == 500

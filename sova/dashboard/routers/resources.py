@@ -80,6 +80,15 @@ async def system_metrics():
         raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from None
 
 
+@router.get("/resources/system/history", responses={500: {"description": "Internal error"}})
+async def system_metrics_history():
+    try:
+        return resource_service.get_system_metrics_history()
+    except Exception:
+        log.warning("resources.system_history.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch system metrics history") from None
+
+
 @router.get("/resources/cross-project", responses={500: {"description": "Internal error"}})
 async def cross_project_metrics() -> dict:
     from sova.dashboard.project_context import get_project_dir

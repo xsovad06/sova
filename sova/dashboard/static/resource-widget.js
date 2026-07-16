@@ -45,8 +45,32 @@
       }
     });
 
-    schedulePoll();
+    seedHistory().then(function () {
+      schedulePoll();
+    });
     scheduleCrossProjectPoll(true);
+  }
+
+  async function seedHistory() {
+    try {
+      var history = await fetchAPI(apiUrl('/resources/system/history'));
+      if (Array.isArray(history)) {
+        for (var i = 0; i < history.length; i++) {
+          cpuHistory.push(history[i].cpu_percent);
+          memHistory.push(history[i].memory_percent);
+        }
+        if (cpuHistory.length > HISTORY_MAX) cpuHistory.splice(0, cpuHistory.length - HISTORY_MAX);
+        if (memHistory.length > HISTORY_MAX) memHistory.splice(0, memHistory.length - HISTORY_MAX);
+
+        var panel = document.getElementById('resource-widget-panel');
+        if (panel && !panel.classList.contains('hidden') && cpuHistory.length >= 2) {
+          drawSparkline('rw-spark-cpu', cpuHistory, 'rgb(137, 180, 250)', 'rgba(137, 180, 250, 0.15)');
+          drawSparkline('rw-spark-mem', memHistory, 'rgb(166, 227, 161)', 'rgba(166, 227, 161, 0.15)');
+        }
+      }
+    } catch (_e) {
+      // History endpoint unavailable; start with empty charts
+    }
   }
 
   function getBackoffDelay() {

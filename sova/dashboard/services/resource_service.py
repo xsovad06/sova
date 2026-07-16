@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+from collections import deque
 from datetime import timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +22,11 @@ from sova.db.models import ResourceSampleRecord, ResourceSummaryRecord, TaskRun
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.resources")
+
+_SYSTEM_HISTORY_MAX = 60
+
+_system_metrics_history: deque[dict] = deque(maxlen=_SYSTEM_HISTORY_MAX)
+_history_lock = threading.Lock()
 
 
 async def get_resource_summary(session: AsyncSession, run_id: int) -> dict | None:
@@ -120,6 +128,15 @@ def get_system_metrics(slug: str | None = None) -> dict:
             }
         )
 
+    with _history_lock:
+        _system_metrics_history.append(
+            {
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory_percent,
+                "timestamp": time.time(),
+            }
+        )
+
     return {
         "available": True,
         "system": {
@@ -136,6 +153,12 @@ def get_system_metrics(slug: str | None = None) -> dict:
             "max": pa.max_concurrent,
         },
     }
+
+
+def get_system_metrics_history() -> list[dict]:
+    """Return the accumulated system metrics history (up to 5 minutes)."""
+    with _history_lock:
+        return list(_system_metrics_history)
 
 
 def _extract_latest_metrics(collector: ResourceCollector | None) -> tuple[float | None, int | None]:
