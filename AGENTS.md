@@ -62,7 +62,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 3426 at last count)
+  tests/                           # pytest suite (3200+ tests, 3451 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
@@ -91,7 +91,7 @@ This project uses **GitHub Issues** with a project board.
 
 ## Key Conventions
 
-### Code Patterns -- Bash (invariants)
+### Code Patterns: Bash (invariants)
 - **set -euo pipefail** at the top of every script
 - **Quoting**: always double-quote variables (`"$var"`, `"${arr[@]}"`)
 - **Functions**: use `snake_case`, declare `local` variables
@@ -99,14 +99,15 @@ This project uses **GitHub Issues** with a project board.
 - **ShellCheck**: all bash scripts must pass `shellcheck` with no warnings
 - **No bashisms in shebangs**: use `#!/usr/bin/env bash`
 
-### Code Patterns -- Python (CLI, agent, dashboard)
+### Code Patterns: Python (CLI, agent, dashboard)
 - **Type hints**: required on all function signatures
 - **f-strings**: preferred for string formatting
 - **No emojis**: not in code or documentation
+- **No double dashes**: never use `--` as a separator in prose, comments, descriptions, PR bodies, review comments, or any text output. Use a colon, period, comma, or parentheses instead. Example: `Fixed: updated type hint` not `Fixed -- updated type hint`. This applies everywhere: code comments, commit messages, PR descriptions, review findings, issue bodies, command descriptions, and documentation.
 - **Line length**: 120 max
 - **Formatter**: Ruff (lint + format) when available
 
-### Code Patterns -- Markdown (commands, personas, knowledge)
+### Code Patterns: Markdown (commands, personas, knowledge)
 - **Frontmatter**: commands use YAML frontmatter (`name`, `description`, `user-invocable`)
 - **Headings**: use ATX style (`#`, `##`, `###`)
 - **No emojis**: not in documentation

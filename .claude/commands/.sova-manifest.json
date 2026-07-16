@@ -116,6 +116,10 @@
     "update-roadmap.md": {
       "hash": "7f6d4e0e9c99f610",
       "managed": true
+    },
+    "audit-instructions.md": {
+      "hash": "21269b1b559266a5",
+      "managed": true
     }
   }
 }
