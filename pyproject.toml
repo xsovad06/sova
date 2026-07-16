@@ -86,3 +86,8 @@ known-first-party = ["sova", "app"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 timeout = 30
+markers = [
+    "runtime: tests requiring real process lifecycle (deselect with -m 'not runtime')",
+    "stress: high-concurrency stress tests (deselect with -m 'not stress')",
+    "chaos: failure injection and crash recovery tests (deselect with -m 'not chaos')",
+]

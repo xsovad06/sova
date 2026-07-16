@@ -34,8 +34,14 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 		bash "$$f" --help >/dev/null 2>&1 && echo "ok" || echo "FAIL"; \
 	done
 
-test-py: ## Run pytest suite
-	$(PYTEST) tests/ -v
+test-py: ## Run pytest suite (excludes runtime/stress/chaos)
+	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos"
+
+test-runtime: ## Run runtime, stress, and chaos tests (manual)
+	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120
+
+test-all: ## Run ALL tests including runtime/stress/chaos
+	$(PYTEST) tests/ -v --timeout=120
 
 # ── Linting ───────────────────────────────────────────────────
 
