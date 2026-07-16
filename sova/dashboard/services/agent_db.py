@@ -314,9 +314,11 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
                     return msg
 
                 if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
+                    from sova.core.state import STEP_DONE_STATUSES
+
                     done_steps_stmt = select(StepExecution.step_name).where(
                         StepExecution.task_run_id == run_id,
-                        StepExecution.status == "done",
+                        StepExecution.status.in_(STEP_DONE_STATUSES),
                     )
                     result = await session.execute(done_steps_stmt)
                     done_names = {row[0] for row in result.fetchall()}

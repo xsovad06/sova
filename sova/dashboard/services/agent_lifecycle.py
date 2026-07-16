@@ -107,6 +107,22 @@ log = get_logger(component="dashboard.control")
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
+async def _cancel_agent_io_tasks(agent: AgentState) -> list[asyncio.Task]:
+    """Cancel per-agent I/O tasks and stop the resource collector."""
+    cancelled: list[asyncio.Task] = []
+    for attr in ("reader_task", "stderr_task", "resource_flush_task"):
+        task = getattr(agent, attr, None)
+        if task is not None and not task.done():
+            task.cancel()
+            cancelled.append(task)
+    if agent.resource_collector is not None:
+        try:
+            await asyncio.wait_for(agent.resource_collector.stop(), timeout=3.0)
+        except Exception:
+            log.warning("resource_collector.stop_failed", run_id=agent.run_id, exc_info=True)
+    return cancelled
+
+
 async def cancel_background_tasks() -> None:
     """Cancel ALL background tasks (per-agent I/O readers, resource flushers,
     wait/finalize, and state transition tasks).
@@ -117,23 +133,9 @@ async def cancel_background_tasks() -> None:
     from sova.dashboard.services.agent_pool import _projects
 
     all_tasks: list[asyncio.Task] = []
-
     for pa in _projects.values():
         for agent in pa.agents.values():
-            for attr in ("reader_task", "stderr_task", "resource_flush_task"):
-                task = getattr(agent, attr, None)
-                if task is not None and not task.done():
-                    task.cancel()
-                    all_tasks.append(task)
-            if agent.resource_collector is not None:
-                try:
-                    await asyncio.wait_for(agent.resource_collector.stop(), timeout=3.0)
-                except Exception:
-                    log.warning(
-                        "resource_collector.stop_failed",
-                        run_id=agent.run_id,
-                        exc_info=True,
-                    )
+            all_tasks.extend(await _cancel_agent_io_tasks(agent))
 
     for t in _background_tasks:
         if not t.done():
