@@ -402,6 +402,10 @@ class ResourceSummaryRecord(Base):
     total_io_read_bytes: Mapped[int | None] = mapped_column(Integer)
     total_io_write_bytes: Mapped[int | None] = mapped_column(Integer)
     peak_num_threads: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    energy_wh: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    co2_grams: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    chip_name: Mapped[str | None] = mapped_column(String(128))
+    tdp_watts: Mapped[float | None] = mapped_column(Numeric(8, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     task_run: Mapped["TaskRun"] = relationship(back_populates="resource_summary")

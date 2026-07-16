@@ -14,6 +14,10 @@ import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sova.monitoring.models import ResourceSummary
 
 from sova.dashboard.services.agent_context import (
     _resolve_branch_name as _resolve_branch_name,
@@ -205,10 +209,77 @@ async def _finalize_resource_monitoring(agent: AgentState) -> None:
 
         await writer.write_summary(summary)
         await writer.close()
+
+        # Compute energy estimate and update the summary record
+        await _compute_and_store_energy(agent.run_id, summary, agent.project_dir)
     except asyncio.CancelledError:
         raise
     except Exception:
         log.warning("resource_monitoring.finalize_failed", run_id=agent.run_id, exc_info=True)
+
+
+async def _compute_and_store_energy(
+    run_id: int,
+    summary: ResourceSummary,
+    project_dir: Path | None,
+) -> None:
+    """Compute energy estimate from run duration and update the summary record."""
+    from sova.db.models import ResourceSummaryRecord, TaskRun
+    from sova.db.session import get_session
+    from sova.monitoring.energy import estimate_energy
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            if task_run is None or task_run.started_at is None:
+                return
+
+            if task_run.ended_at is not None:
+                duration = (task_run.ended_at - task_run.started_at).total_seconds()
+            else:
+                duration = (datetime.now(timezone.utc) - task_run.started_at).total_seconds()
+
+            # Get config overrides
+            tdp_override = None
+            co2_grams_per_kwh = 436.0
+            try:
+                from sova.config.loader import load_config
+
+                cfg = load_config(project_dir)
+                tdp_override = cfg.monitoring.tdp_override
+                co2_grams_per_kwh = cfg.monitoring.co2_grams_per_kwh
+            except Exception:
+                log.debug("energy.config_load_failed", run_id=run_id, exc_info=True)
+
+            estimate = estimate_energy(
+                avg_cpu_percent=summary.avg_cpu_percent,
+                duration_seconds=duration,
+                tdp_watts=tdp_override,
+                co2_grams_per_kwh=co2_grams_per_kwh,
+            )
+            if estimate is None:
+                return
+
+            from sqlalchemy import select
+
+            stmt = select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == run_id)
+            record = await session.scalar(stmt)
+            if record is None:
+                return
+
+            record.energy_wh = estimate.energy_wh
+            record.co2_grams = estimate.co2_grams
+            record.chip_name = estimate.chip_name
+            record.tdp_watts = estimate.tdp_watts
+            await session.commit()
+            log.debug(
+                "energy.computed",
+                run_id=run_id,
+                energy_wh=estimate.energy_wh,
+                chip=estimate.chip_name,
+            )
+    except Exception:
+        log.debug("energy.compute_failed", run_id=run_id, exc_info=True)
 
 
 async def _resource_flush_loop(agent: AgentState) -> None:

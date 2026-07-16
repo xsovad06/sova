@@ -350,6 +350,11 @@ class MonitoringConfig(BaseSettings):
 
     enabled: bool = True
     interval: float = Field(5.0, gt=0)
+    tdp_override: float | None = Field(None, gt=0, description="Override auto-detected TDP (watts)")
+    safety_margin: float = Field(0.2, ge=0.0, le=0.5, description="Fraction of capacity to reserve")
+    co2_grams_per_kwh: float = Field(
+        436.0, ge=0.0, description="Grid carbon intensity (g CO2/kWh) for emissions estimation"
+    )
 
     model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")
 
