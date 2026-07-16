@@ -107,16 +107,31 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 async def cancel_background_tasks() -> None:
-    """Cancel all pending background tasks (agent wait/finalize, state transitions).
+    """Cancel ALL background tasks: per-agent I/O readers, resource flushers,
+    and tracked wait/finalize + state transition tasks.
 
-    Called during lifespan shutdown to prevent in-flight DB queries from racing
-    with engine disposal during uvicorn reload.
+    Called during lifespan shutdown to prevent orphaned subprocess I/O tasks
+    and in-flight DB queries from blocking uvicorn reload.
     """
-    tasks = list(_background_tasks)
-    for t in tasks:
-        t.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    from sova.dashboard.services.agent_pool import _projects
+
+    all_tasks: list[asyncio.Task] = []
+
+    for pa in _projects.values():
+        for agent in pa.agents.values():
+            for attr in ("reader_task", "stderr_task", "resource_flush_task"):
+                task = getattr(agent, attr, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                    all_tasks.append(task)
+
+    for t in _background_tasks:
+        if not t.done():
+            t.cancel()
+            all_tasks.append(t)
+
+    if all_tasks:
+        await asyncio.gather(*all_tasks, return_exceptions=True)
     _background_tasks.clear()
 
 

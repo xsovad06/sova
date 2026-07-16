@@ -718,6 +718,103 @@ class TestCancelBackgroundTasks:
         await cancel_background_tasks()
         assert len(_background_tasks) == 0
 
+    async def test_cancels_per_agent_io_tasks(self) -> None:
+        """cancel_background_tasks must also cancel per-agent reader/stderr/resource tasks."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+
+        pa = _get_project_agents()
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+
+        agent = AgentState(run_id=9999, issue="999", role="developer", process=mock_process)
+
+        reader_done = False
+        stderr_done = False
+
+        async def _fake_reader() -> None:
+            nonlocal reader_done
+            await asyncio.sleep(3600)
+            reader_done = True
+
+        async def _fake_stderr() -> None:
+            nonlocal stderr_done
+            await asyncio.sleep(3600)
+            stderr_done = True
+
+        agent.reader_task = asyncio.create_task(_fake_reader())
+        agent.stderr_task = asyncio.create_task(_fake_stderr())
+        pa.agents[9999] = agent
+
+        try:
+            await cancel_background_tasks()
+            assert agent.reader_task.cancelled()
+            assert agent.stderr_task.cancelled()
+            assert not reader_done
+            assert not stderr_done
+        finally:
+            del pa.agents[9999]
+
+
+class TestShutdownTasks:
+    """Cover the _shutdown_tasks helper in app.py."""
+
+    async def test_cancels_all_task_types(self) -> None:
+        """_shutdown_tasks cancels sweep, pr_throttle, pr_monitor tasks and stops metrics_writer."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.app import _shutdown_tasks
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        sweep = asyncio.create_task(_hang())
+        throttle = asyncio.create_task(_hang())
+        monitor = asyncio.create_task(_hang())
+        writer = AsyncMock()
+
+        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+            await _shutdown_tasks(sweep, [throttle], [monitor], writer)
+
+        assert sweep.cancelled()
+        assert throttle.cancelled()
+        assert monitor.cancelled()
+        writer.stop.assert_awaited_once()
+
+    async def test_handles_none_metrics_writer(self) -> None:
+        """_shutdown_tasks works when metrics_writer is None."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.app import _shutdown_tasks
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        sweep = asyncio.create_task(_hang())
+
+        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+            await _shutdown_tasks(sweep, [], [], None)
+
+        assert sweep.cancelled()
+
+    async def test_handles_empty_bg_task_lists(self) -> None:
+        """_shutdown_tasks works with empty pr_throttle and pr_monitor lists."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.app import _shutdown_tasks
+
+        async def _hang() -> None:
+            await asyncio.sleep(3600)
+
+        sweep = asyncio.create_task(_hang())
+
+        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+            await _shutdown_tasks(sweep, [], [], None)
+
+        assert sweep.cancelled()
+
 
 # ---------------------------------------------------------------------------
 # Recovery -- merge-role runs check PR merged
