@@ -251,6 +251,8 @@ _COMMAND_VALIDATORS = {
     "review-pr": _validate_review_pr,
 }
 
+_PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
+
 
 async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | None:
     """Validate that a command run actually produced its expected outcome.
@@ -271,6 +273,62 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
         return await validator_fn(run_id, agent)
     except Exception:
         log.debug("validate_command.failed", run_id=run_id, cmd=cmd_name, exc_info=True)
+        return None
+
+
+async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | None:
+    """Validate that a pipeline-based role actually executed its workflow steps.
+
+    Returns an error message if the pipeline was bypassed, None if OK or
+    not a pipeline role.
+    """
+    if not agent.role or agent.role not in _PIPELINE_ROLES:
+        return None
+
+    try:
+        from sqlalchemy import func, select
+
+        from sova.db.models import StepExecution, TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=agent.project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run is None:
+                    return None
+
+                sentinel_active = task_run.current_step == "agent"
+
+                stmt = select(func.count()).where(StepExecution.task_run_id == run_id)
+                result = await session.execute(stmt)
+                step_count = result.scalar() or 0
+
+                if sentinel_active and step_count == 0:
+                    msg = (
+                        f"Pipeline bypassed: {agent.role} agent completed without "
+                        f"executing workflow steps (current_step still 'agent', "
+                        f"0 step executions)"
+                    )
+                    if agent.role == "developer" and task_run.pr_number is None:
+                        msg += " and no PR was created"
+                    return msg
+
+                if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
+                    done_steps_stmt = select(StepExecution.step_name).where(
+                        StepExecution.task_run_id == run_id,
+                        StepExecution.status == "done",
+                    )
+                    result = await session.execute(done_steps_stmt)
+                    done_names = {row[0] for row in result.fetchall()}
+                    if "create_pr" in done_names or "push" in done_names:
+                        return (
+                            f"Pipeline incomplete: {agent.role} agent reached "
+                            f"push/create_pr step but pr_number is still None"
+                        )
+
+        return None
+    except Exception:
+        log.debug("validate_pipeline.failed", run_id=run_id, exc_info=True)
         return None
 
 
