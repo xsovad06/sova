@@ -4289,10 +4289,8 @@ class TestWorkAPI:
         issue_numbers = [g["issue_number"] for g in data.get("issues", [])]
         assert "73" not in issue_numbers
 
-    async def test_active_grouped_shows_paused_when_no_done_run(
-        self, client: AsyncClient, session: AsyncSession
-    ) -> None:
-        """Paused runs should appear in Active when no later run completed the issue."""
+    async def test_active_grouped_excludes_paused_runs(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Paused runs are terminal and should not appear in Active."""
         now = datetime.now(timezone.utc)
         session.add(
             TaskRun(
@@ -4308,7 +4306,7 @@ class TestWorkAPI:
         resp = await client.get("/api/work/active-grouped")
         data = resp.json()
         issue_numbers = [g["issue_number"] for g in data.get("issues", [])]
-        assert "99" in issue_numbers
+        assert "99" not in issue_numbers
 
     async def test_summary_active_count_excludes_superseded(self, client: AsyncClient, session: AsyncSession) -> None:
         """Summary active count should match the Active tab (exclude superseded)."""
@@ -9744,6 +9742,36 @@ class TestLivenessSweepMergeCheck:
         async with await get_session() as session:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "running", "alive process should not be marked interrupted"
+
+    async def test_sweep_skips_paused_runs(self) -> None:
+        """Paused runs (gate failures) must not be reclassified by the sweep."""
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="88",
+                    role="researcher",
+                    status="paused",
+                    pid=999993,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.dashboard.services.control_service._is_process_alive": {
+                    "return_value": False,
+                },
+            }
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
 
 
 class TestWaitAndFinalizeOutputWriter:
