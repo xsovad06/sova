@@ -164,9 +164,13 @@ async def _shutdown_tasks(
     metrics_writer: MetricsSnapshotWriter | None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
+    from sova.dashboard.routers.agents import _ws_manager
     from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+    from sova.dashboard.services.batch_service import cancel_all_batches
 
     await cancel_background_tasks()
+    await _ws_manager.cancel_all()
+    await cancel_all_batches()
     if metrics_writer is not None:
         await metrics_writer.stop()
     bg_tasks = pr_throttle_tasks + pr_monitor_tasks

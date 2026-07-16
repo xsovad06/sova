@@ -1,4 +1,4 @@
-"""Agents API -- multi-agent start, stop, status, and output streaming."""
+"""Agents API: multi-agent start, stop, status, and output streaming."""
 
 from __future__ import annotations
 
@@ -53,10 +53,20 @@ class _ConnectionManager:
         if not group:
             self._groups.pop(project_dir, None)
 
+    async def cancel_all(self) -> None:
+        """Cancel all producer tasks. Called during lifespan shutdown."""
+        tasks = [t for t in self._producer_tasks.values() if not t.done()]
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._producer_tasks.clear()
+        self._groups.clear()
+
     async def _broadcast(self, data: dict, project_dir: Path | None) -> None:
         for ws in list(self._groups.get(project_dir, [])):
             try:
-                await ws.send_json(data)
+                await asyncio.wait_for(ws.send_json(data), timeout=2.0)
             except Exception:
                 self.disconnect(ws, project_dir)
 
@@ -67,15 +77,18 @@ class _ConnectionManager:
             get_all_agent_statuses,
         )
 
-        while self._groups.get(project_dir):
-            try:
-                statuses = await get_all_agent_statuses(project_dir=project_dir)
-                message = format_status_update(statuses)
-            except Exception:
-                log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
-                message = {"type": "status_update", "runs": []}
-            await self._broadcast(message, project_dir)
-            await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
+        try:
+            while self._groups.get(project_dir):
+                try:
+                    statuses = await get_all_agent_statuses(project_dir=project_dir)
+                    message = format_status_update(statuses)
+                except Exception:
+                    log.warning("Failed to fetch agent statuses for WebSocket broadcast", exc_info=True)
+                    message = {"type": "status_update", "runs": []}
+                await self._broadcast(message, project_dir)
+                await asyncio.sleep(_STATUS_BROADCAST_INTERVAL)
+        except asyncio.CancelledError:
+            raise
 
 
 _ws_manager = _ConnectionManager()

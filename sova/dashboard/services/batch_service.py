@@ -1,4 +1,4 @@
-"""Batch operations -- triage/harden/run multiple issues from the dashboard."""
+"""Batch operations: triage/harden/run multiple issues from the dashboard."""
 
 from __future__ import annotations
 
@@ -61,6 +61,17 @@ class BatchJob:
 _active_batches: dict[str, BatchJob] = {}
 
 _MAX_COMPLETED_BATCHES = 50
+
+
+async def cancel_all_batches() -> None:
+    """Cancel all running batch tasks. Called during lifespan shutdown."""
+    tasks = []
+    for job in _active_batches.values():
+        if job._task is not None and not job._task.done():
+            job._task.cancel()
+            tasks.append(job._task)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _prune_completed() -> None:

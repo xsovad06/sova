@@ -775,8 +775,18 @@ class TestShutdownTasks:
         monitor = asyncio.create_task(_hang())
         writer = AsyncMock()
 
-        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+        cancel_bg = "sova.dashboard.services.agent_lifecycle.cancel_background_tasks"
+        cancel_batch = "sova.dashboard.services.batch_service.cancel_all_batches"
+        with (
+            patch(cancel_bg, new_callable=AsyncMock) as mock_bg,
+            patch("sova.dashboard.routers.agents._ws_manager") as mock_ws,
+            patch(cancel_batch, new_callable=AsyncMock) as mock_batch,
+        ):
+            mock_ws.cancel_all = AsyncMock()
             await _shutdown_tasks(sweep, [throttle], [monitor], writer)
+            mock_bg.assert_awaited_once()
+            mock_ws.cancel_all.assert_awaited_once()
+            mock_batch.assert_awaited_once()
 
         assert sweep.cancelled()
         assert throttle.cancelled()
@@ -794,8 +804,18 @@ class TestShutdownTasks:
 
         sweep = asyncio.create_task(_hang())
 
-        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+        cancel_bg = "sova.dashboard.services.agent_lifecycle.cancel_background_tasks"
+        cancel_batch = "sova.dashboard.services.batch_service.cancel_all_batches"
+        with (
+            patch(cancel_bg, new_callable=AsyncMock) as mock_bg,
+            patch("sova.dashboard.routers.agents._ws_manager") as mock_ws,
+            patch(cancel_batch, new_callable=AsyncMock) as mock_batch,
+        ):
+            mock_ws.cancel_all = AsyncMock()
             await _shutdown_tasks(sweep, [], [], None)
+            mock_bg.assert_awaited_once()
+            mock_ws.cancel_all.assert_awaited_once()
+            mock_batch.assert_awaited_once()
 
         assert sweep.cancelled()
 
@@ -810,8 +830,18 @@ class TestShutdownTasks:
 
         sweep = asyncio.create_task(_hang())
 
-        with patch("sova.dashboard.services.agent_lifecycle.cancel_background_tasks", new_callable=AsyncMock):
+        cancel_bg = "sova.dashboard.services.agent_lifecycle.cancel_background_tasks"
+        cancel_batch = "sova.dashboard.services.batch_service.cancel_all_batches"
+        with (
+            patch(cancel_bg, new_callable=AsyncMock) as mock_bg,
+            patch("sova.dashboard.routers.agents._ws_manager") as mock_ws,
+            patch(cancel_batch, new_callable=AsyncMock) as mock_batch,
+        ):
+            mock_ws.cancel_all = AsyncMock()
             await _shutdown_tasks(sweep, [], [], None)
+            mock_bg.assert_awaited_once()
+            mock_ws.cancel_all.assert_awaited_once()
+            mock_batch.assert_awaited_once()
 
         assert sweep.cancelled()
 
@@ -6593,6 +6623,255 @@ class TestDowngradeToFailed:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.status == "failed"
                 assert refreshed.error_message == "Original error"
+
+
+class TestPipelineOutcomeValidation:
+    """_validate_pipeline_outcome checks whether pipeline roles executed their workflows."""
+
+    async def test_command_role_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        result = await _validate_pipeline_outcome(1, agent)
+        assert result is None
+
+    async def test_non_pipeline_role_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "triage"
+        result = await _validate_pipeline_outcome(1, agent)
+        assert result is None
+
+    async def test_none_role_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = None
+        result = await _validate_pipeline_outcome(1, agent)
+        assert result is None
+
+    async def test_developer_pipeline_bypassed(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="400",
+                    role="developer",
+                    status="done",
+                    current_step="agent",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        assert "no PR was created" in result
+
+    async def test_researcher_pipeline_bypassed(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="401",
+                    role="researcher",
+                    status="done",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "researcher"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        assert "no PR was created" not in result
+
+    async def test_planner_pipeline_bypassed(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="402",
+                    role="planner",
+                    status="done",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "planner"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+
+    async def test_developer_pipeline_ran_successfully(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="403",
+                    role="developer",
+                    status="done",
+                    current_step="create_pr",
+                    pr_number=42,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="create_pr", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_developer_pipeline_ran_no_pr_after_create_pr(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="404",
+                    role="developer",
+                    status="done",
+                    current_step="push",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="create_pr", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline incomplete" in result
+
+    async def test_developer_early_step_no_pr_ok(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="405",
+                    role="developer",
+                    status="done",
+                    current_step="develop",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_sentinel_cleared_zero_steps(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="406",
+                    role="developer",
+                    status="done",
+                    current_step=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_sentinel_active_with_steps(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="407",
+                    role="developer",
+                    status="done",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
 
 
 class TestReadFileHandoff:
