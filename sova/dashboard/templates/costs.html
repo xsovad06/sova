@@ -4,7 +4,7 @@
 <h2 class="text-2xl font-semibold mb-6">Cost Tracking</h2>
 
 <!-- Summary row -->
-<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+<div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
   <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
     <p class="text-xs text-gray-500 uppercase">Total</p>
     <p class="text-2xl font-bold text-accent-green" id="cost-total">--</p>
@@ -20,6 +20,16 @@
   <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
     <p class="text-xs text-gray-500 uppercase">Invocations</p>
     <p class="text-2xl font-bold" id="cost-invocations">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Total Energy</p>
+    <p class="text-2xl font-bold text-accent-purple" id="cost-energy">--</p>
+    <p class="text-xs text-gray-600 mt-0.5" id="cost-energy-detail"></p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Total CO2</p>
+    <p class="text-2xl font-bold text-accent-purple" id="cost-co2">--</p>
+    <p class="text-xs text-gray-600 mt-0.5" id="cost-co2-detail"></p>
   </div>
 </div>
 
@@ -75,19 +85,29 @@
 {% block scripts %}
 <script>
 async function loadCosts() {
-  const [summary, daily, byIssue, byPhase, byModel, byRouting] = await Promise.all([
+  const [summary, daily, byIssue, byPhase, byModel, byRouting, energy] = await Promise.all([
     fetchAPI(apiUrl('/costs/summary')),
     fetchAPI(apiUrl('/costs/daily')),
     fetchAPI(apiUrl('/costs/by-issue')),
     fetchAPI(apiUrl('/costs/by-phase')),
     fetchAPI(apiUrl('/costs/by-model')),
     fetchAPI(apiUrl('/costs/by-routing')),
+    fetchAPI(apiUrl('/resources/energy/total')).catch(function() { return {total_energy_wh: 0, run_count: 0}; }),
   ]);
 
   document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
   document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
   document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
   document.getElementById('cost-invocations').textContent = summary.total_invocations;
+
+  var ewh = parseFloat(energy.total_energy_wh || 0);
+  document.getElementById('cost-energy').textContent = ewh >= 1 ? ewh.toFixed(2) + ' Wh' : (ewh * 1000).toFixed(1) + ' mWh';
+  var co2g = parseFloat(energy.total_co2_grams || 0);
+  document.getElementById('cost-co2').textContent = co2g >= 1 ? co2g.toFixed(2) + ' g' : (co2g * 1000).toFixed(1) + ' mg';
+  if (energy.run_count > 0) {
+    document.getElementById('cost-energy-detail').textContent = energy.run_count + ' runs tracked';
+    document.getElementById('cost-co2-detail').textContent = energy.run_count + ' runs tracked';
+  }
 
   // Daily chart (CSS bars)
   const maxCost = Math.max(...daily.map(d => parseFloat(d.cost_usd || 0)), 0.01);

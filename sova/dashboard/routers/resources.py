@@ -99,3 +99,27 @@ async def cross_project_metrics() -> dict:
     except Exception:
         log.warning("resources.cross_project.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch cross-project metrics") from None
+
+
+@router.get("/resources/capacity", responses={500: {"description": "Internal error"}})
+async def capacity_recommendation() -> dict:
+    from sova.dashboard.project_context import get_project_dir
+
+    project_dir = get_project_dir()
+    try:
+        return await resource_service.get_capacity_recommendation(project_dir)
+    except Exception:
+        log.warning("resources.capacity.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch capacity recommendation") from None
+
+
+@router.get("/resources/energy/total", responses={500: {"description": "Internal error"}})
+async def total_energy() -> dict:
+    from sova.dashboard.project_context import get_project_dir
+
+    project_dir = get_project_dir()
+    try:
+        return await resource_service.get_total_energy(project_dir)
+    except Exception:
+        log.warning("resources.energy_total.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch total energy") from None

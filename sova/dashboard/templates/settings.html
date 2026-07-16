@@ -3,6 +3,20 @@
 {% block content %}
 <h2 class="text-2xl font-semibold mb-6">Settings</h2>
 
+<!-- Capacity recommendation (loaded async) -->
+<div id="capacity-callout" class="hidden mb-6 bg-surface-card rounded-lg border border-gray-700/50 p-4">
+  <div class="flex items-start gap-3">
+    <div class="shrink-0 w-8 h-8 rounded-full bg-accent-purple/20 flex items-center justify-center">
+      <span class="text-accent-purple text-sm font-bold">C</span>
+    </div>
+    <div class="min-w-0">
+      <p class="text-sm font-medium text-gray-300">Capacity Recommendation</p>
+      <p class="text-xs text-gray-500 mt-1" id="capacity-detail"></p>
+      <div class="flex gap-4 mt-2" id="capacity-metrics"></div>
+    </div>
+  </div>
+</div>
+
 <!-- All settings in a responsive two-column grid -->
 <div id="config-groups" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6 items-start">
   <p class="text-gray-500 text-sm lg:col-span-2">Loading configuration...</p>
@@ -477,5 +491,37 @@ async function syncInstallation() {
 }
 
 loadConfig();
+loadCapacityRecommendation();
+
+async function loadCapacityRecommendation() {
+  try {
+    var rec = await fetchAPI(apiUrl('/resources/capacity'));
+    if (!rec) return;
+    var callout = document.getElementById('capacity-callout');
+    callout.classList.remove('hidden');
+    document.getElementById('capacity-detail').textContent = rec.reason || 'Insufficient data for recommendation.';
+    if (rec.confidence === 'insufficient') {
+      document.getElementById('capacity-metrics').innerHTML =
+        '<span class="text-xs text-gray-600">Confidence: insufficient</span>';
+      return;
+    }
+    var confColor = rec.confidence === 'high' ? 'text-accent-green' : rec.confidence === 'medium' ? 'text-accent-yellow' : 'text-gray-400';
+    var metricsContainer = document.getElementById('capacity-metrics');
+    metricsContainer.innerHTML = '';
+    function appendMetric(text, cls) {
+      var span = document.createElement('span');
+      span.className = cls;
+      span.textContent = text;
+      metricsContainer.appendChild(span);
+    }
+    appendMetric('Current: ' + rec.current_max, 'text-sm font-medium text-gray-300');
+    appendMetric('Recommended: ' + rec.recommended_max, 'text-sm font-medium text-accent-purple');
+    if (rec.headroom_cpu_percent != null) appendMetric('CPU headroom: ' + rec.headroom_cpu_percent + '%', 'text-xs text-gray-500');
+    if (rec.headroom_memory_percent != null) appendMetric('Mem headroom: ' + rec.headroom_memory_percent + '%', 'text-xs text-gray-500');
+    appendMetric('Confidence: ' + rec.confidence, 'text-xs ' + confColor);
+  } catch (e) {
+    // Capacity data not available
+  }
+}
 </script>
 {% endblock %}

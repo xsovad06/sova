@@ -784,3 +784,321 @@ class TestSystemMetricsHistory:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/system/history")
         assert resp.status_code == 500
+
+
+class TestCapacityEndpoint:
+    @pytest.mark.asyncio
+    async def test_capacity_returns_recommendation(self, client: AsyncClient, seed_run_with_resources) -> None:
+        resp = await client.get("/api/resources/capacity")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "recommended_max" in data
+        assert "current_max" in data
+        assert "confidence" in data
+        assert "reason" in data
+
+    @pytest.mark.asyncio
+    async def test_capacity_500_on_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_capacity_recommendation"
+        with patch(target, side_effect=RuntimeError("config fail")):
+            resp = await client.get("/api/resources/capacity")
+        assert resp.status_code == 500
+        assert "Failed to fetch capacity recommendation" in resp.json()["detail"]
+
+
+class TestEnergyTotalEndpoint:
+    @pytest.mark.asyncio
+    async def test_energy_total_returns_data(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/resources/energy/total")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_energy_wh" in data
+        assert "run_count" in data
+
+    @pytest.mark.asyncio
+    async def test_energy_total_with_data(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Verify energy total aggregates seeded records."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="200",
+            role="developer",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("1.00"),
+            project_slug="test",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=25.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            peak_num_threads=6,
+            energy_wh=0.5,
+            co2_grams=0.218,
+            chip_name="Apple M2",
+            tdp_watts=10.0,
+        )
+        session.add(summary)
+        await session.commit()
+
+        resp = await client.get("/api/resources/energy/total")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert Decimal(data["total_energy_wh"]) > 0
+        assert Decimal(data["total_co2_grams"]) > 0
+        assert data["run_count"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_energy_total_500_on_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_total_energy"
+        with patch(target, side_effect=RuntimeError("db fail")):
+            resp = await client.get("/api/resources/energy/total")
+        assert resp.status_code == 500
+        assert "Failed to fetch total energy" in resp.json()["detail"]
+
+
+class TestComputeAndStoreEnergy:
+    @pytest.mark.asyncio
+    async def test_computes_and_stores(self, session: AsyncSession) -> None:
+        """End-to-end: _compute_and_store_energy updates ResourceSummaryRecord."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _compute_and_store_energy
+        from sova.monitoring.collector import ResourceSummary
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="300",
+            role="developer",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("1.00"),
+            project_slug="test",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        summary_rec = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=25.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            peak_num_threads=6,
+        )
+        session.add(summary_rec)
+        await session.commit()
+
+        summary = ResourceSummary(
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=25.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            total_io_read_bytes=None,
+            total_io_write_bytes=None,
+            peak_num_threads=6,
+        )
+
+        with patch("sova.monitoring.energy.estimate_energy") as mock_est:
+            from sova.monitoring.energy import EnergyEstimate
+
+            mock_est.return_value = EnergyEstimate(
+                energy_wh=0.5,
+                co2_grams=0.218,
+                chip_name="Apple M2",
+                tdp_watts=10.0,
+                duration_seconds=3600.0,
+                avg_cpu_percent=25.0,
+            )
+            await _compute_and_store_energy(run.id, summary, None)
+
+        async with await get_session() as sess:
+            from sqlalchemy import select
+
+            rec = await sess.scalar(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == run.id))
+            assert rec is not None
+            assert float(rec.energy_wh) == 0.5
+            assert float(rec.co2_grams) == 0.218
+            assert rec.chip_name == "Apple M2"
+            assert float(rec.tdp_watts) == 10.0
+
+    @pytest.mark.asyncio
+    async def test_no_task_run_noop(self) -> None:
+        """Missing TaskRun is a no-op."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _compute_and_store_energy
+        from sova.monitoring.collector import ResourceSummary
+
+        summary = ResourceSummary(
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=25.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            total_io_read_bytes=None,
+            total_io_write_bytes=None,
+            peak_num_threads=6,
+        )
+        with patch("sova.monitoring.energy.estimate_energy") as mock_est:
+            await _compute_and_store_energy(99999, summary, None)
+            mock_est.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_zero_duration_noop(self, session: AsyncSession) -> None:
+        """Zero-duration estimate returns None, no DB update."""
+        from sova.dashboard.services.agent_lifecycle import _compute_and_store_energy
+        from sova.monitoring.collector import ResourceSummary
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="301",
+            role="developer",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("0.10"),
+            project_slug="test",
+            started_at=now,
+            ended_at=now,  # zero duration
+        )
+        session.add(run)
+        await session.flush()
+
+        summary_rec = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=1,
+            peak_cpu_percent=10.0,
+            avg_cpu_percent=5.0,
+            peak_memory_rss_bytes=50_000_000,
+            peak_memory_vms_bytes=100_000_000,
+            peak_num_threads=3,
+        )
+        session.add(summary_rec)
+        await session.commit()
+
+        summary = ResourceSummary(
+            sample_count=1,
+            peak_cpu_percent=10.0,
+            avg_cpu_percent=5.0,
+            peak_memory_rss_bytes=50_000_000,
+            peak_memory_vms_bytes=100_000_000,
+            total_io_read_bytes=None,
+            total_io_write_bytes=None,
+            peak_num_threads=3,
+        )
+        await _compute_and_store_energy(run.id, summary, None)
+
+        async with await get_session() as sess:
+            from sqlalchemy import select
+
+            rec = await sess.scalar(select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == run.id))
+            assert rec is not None
+            assert rec.energy_wh is None
+
+
+class TestSummaryToDictEnergy:
+    @pytest.mark.asyncio
+    async def test_includes_energy_fields(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.resource_service import _summary_to_dict
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="400",
+            role="developer",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("1.00"),
+            project_slug="test",
+            started_at=now - timedelta(hours=1),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=25.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            peak_num_threads=6,
+            energy_wh=0.5,
+            co2_grams=0.218,
+            chip_name="Apple M2",
+            tdp_watts=10.0,
+        )
+        session.add(summary)
+        await session.commit()
+
+        d = _summary_to_dict(summary)
+        assert d["energy_wh"] == 0.5
+        assert d["co2_grams"] == 0.218
+        assert d["chip_name"] == "Apple M2"
+        assert d["tdp_watts"] == 10.0
+
+    @pytest.mark.asyncio
+    async def test_excludes_energy_when_none(self, session: AsyncSession) -> None:
+        from sova.dashboard.services.resource_service import _summary_to_dict
+
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="401",
+            role="triage",
+            status="done",
+            current_step="complete",
+            total_cost_usd=Decimal("0.10"),
+            project_slug="test",
+            started_at=now - timedelta(minutes=5),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=2,
+            peak_cpu_percent=10.0,
+            avg_cpu_percent=5.0,
+            peak_memory_rss_bytes=50_000_000,
+            peak_memory_vms_bytes=100_000_000,
+            peak_num_threads=3,
+        )
+        session.add(summary)
+        await session.commit()
+
+        d = _summary_to_dict(summary)
+        assert "energy_wh" not in d
+        assert "co2_grams" not in d
+        assert "chip_name" not in d
+
+
+class TestCrossProjectRouter:
+    @pytest.mark.asyncio
+    async def test_cross_project_endpoint(self, client: AsyncClient) -> None:
+        resp = await client.get("/api/resources/cross-project")
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_cross_project_endpoint_500(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        target = "sova.dashboard.routers.resources.resource_service.get_cross_project_metrics"
+        with patch(target, side_effect=RuntimeError("oops")):
+            resp = await client.get("/api/resources/cross-project")
+        assert resp.status_code == 500

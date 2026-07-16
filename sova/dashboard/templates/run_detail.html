@@ -497,7 +497,7 @@ async function syncCommands(e) {
 function resourceCard(label, value, cls) {
   return '<div class="bg-[var(--color-surface)] rounded p-2">' +
     '<p class="text-xs text-gray-500">' + escapeHtml(label) + '</p>' +
-    '<p class="text-sm font-medium ' + (cls || 'text-gray-200') + '">' + value + '</p></div>';
+    '<p class="text-sm font-medium ' + (cls || 'text-gray-200') + '">' + escapeHtml(String(value)) + '</p></div>';
 }
 
 async function loadResources() {
@@ -520,6 +520,9 @@ async function loadResources() {
       resourceCard('Peak Threads', s.peak_num_threads, 'text-accent-yellow') +
       (s.total_io_read_bytes != null ? resourceCard('I/O Read', formatBytes(s.total_io_read_bytes), 'text-gray-300') : '') +
       (s.total_io_write_bytes != null ? resourceCard('I/O Write', formatBytes(s.total_io_write_bytes), 'text-gray-300') : '') +
+      (s.energy_wh != null ? resourceCard('Energy', parseFloat(s.energy_wh).toFixed(3) + ' Wh', 'text-accent-purple') : '') +
+      (s.co2_grams != null ? resourceCard('CO2', parseFloat(s.co2_grams).toFixed(3) + ' g', 'text-accent-purple') : '') +
+      (s.chip_name != null ? resourceCard('Chip', s.chip_name, 'text-gray-400') : '') +
       resourceCard('Samples', s.sample_count, 'text-gray-400');
 
     if (samplesData && samplesData.samples && samplesData.samples.length >= 2) {

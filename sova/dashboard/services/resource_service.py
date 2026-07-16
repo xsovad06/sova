@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import time
 from collections import deque
 from datetime import timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -170,7 +172,7 @@ def _extract_latest_metrics(collector: ResourceCollector | None) -> tuple[float 
 
 
 def _summary_to_dict(s: ResourceSummaryRecord) -> dict:
-    return {
+    d = {
         "sample_count": s.sample_count,
         "peak_cpu_percent": float(s.peak_cpu_percent),
         "avg_cpu_percent": float(s.avg_cpu_percent),
@@ -180,6 +182,12 @@ def _summary_to_dict(s: ResourceSummaryRecord) -> dict:
         "total_io_write_bytes": s.total_io_write_bytes,
         "peak_num_threads": s.peak_num_threads,
     }
+    if s.energy_wh is not None:
+        d["energy_wh"] = float(s.energy_wh)
+        d["co2_grams"] = float(s.co2_grams) if s.co2_grams is not None else None
+        d["chip_name"] = s.chip_name
+        d["tdp_watts"] = float(s.tdp_watts) if s.tdp_watts is not None else None
+    return d
 
 
 def _sample_to_dict(s: ResourceSampleRecord) -> dict:
@@ -207,6 +215,116 @@ def get_cross_project_metrics(project_dir: Path | None = None) -> dict:
 
     resolved = (project_dir or Path.cwd()).resolve()
     return read_cross_project_metrics(resolved)
+
+
+async def get_total_energy(project_dir: Path | None = None) -> dict:
+    """Get total energy consumption across all runs with energy data."""
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            from sqlalchemy import func
+
+            result = await session.execute(
+                select(
+                    func.sum(ResourceSummaryRecord.energy_wh),
+                    func.sum(ResourceSummaryRecord.co2_grams),
+                    func.count(ResourceSummaryRecord.id),
+                ).where(ResourceSummaryRecord.energy_wh.isnot(None))
+            )
+            row = result.one()
+            total = Decimal(str(row[0])) if row[0] is not None else Decimal("0")
+            total_co2 = Decimal(str(row[1])) if row[1] is not None else Decimal("0")
+            count = row[2]
+        return {
+            "total_energy_wh": str(round(total, 4)),
+            "total_co2_grams": str(round(total_co2, 4)),
+            "run_count": count,
+        }
+    except Exception:
+        log.warning("total_energy.query_failed", exc_info=True)
+        raise
+
+
+async def get_capacity_recommendation(project_dir: Path | None = None) -> dict:
+    """Get a capacity recommendation based on historical resource data."""
+    from dataclasses import asdict
+
+    from sova.config.loader import load_config
+    from sova.db.session import get_session
+    from sova.monitoring.advisor import recommend_capacity
+
+    try:
+        cfg = load_config(project_dir)
+    except Exception:
+        log.warning("capacity.config_load_failed", exc_info=True)
+        raise
+
+    current_max = getattr(cfg, "max_parallel_agents", 3)
+    safety_margin = cfg.monitoring.safety_margin
+
+    # Fetch historical summaries from DB
+    summaries: list[dict] = []
+    latest_time = None
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            stmt = (
+                select(ResourceSummaryRecord)
+                .where(ResourceSummaryRecord.sample_count > 0)
+                .order_by(ResourceSummaryRecord.created_at.desc())
+                .limit(50)
+            )
+            result = await session.execute(stmt)
+            records = result.scalars().all()
+            for r in records:
+                summaries.append(
+                    {
+                        "avg_cpu_percent": float(r.avg_cpu_percent),
+                        "peak_cpu_percent": float(r.peak_cpu_percent),
+                        "peak_memory_rss_bytes": r.peak_memory_rss_bytes,
+                    }
+                )
+            if records:
+                latest_time = records[0].created_at
+    except Exception:
+        log.warning("capacity.db_query_failed", exc_info=True)
+        raise
+
+    # System metrics
+    try:
+        cpu_count = psutil.cpu_count() or 1
+        mem = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent(interval=None) or 0.0
+    except Exception:
+        cpu_count = 1
+        mem = None
+        cpu_percent = 0.0
+
+    total_memory = mem.total if mem else 0
+    memory_percent = mem.percent if mem else 0.0
+
+    # Cross-project metrics
+    cross_cpu = 0.0
+    try:
+        resolved = (project_dir or Path.cwd()).resolve()
+        cross = await asyncio.to_thread(get_cross_project_metrics, resolved)
+        totals = cross.get("machine_totals", {})
+        cross_cpu = totals.get("total_agent_cpu_percent", 0.0)
+    except Exception:
+        log.warning("capacity.cross_project_failed", exc_info=True)
+
+    rec = recommend_capacity(
+        summaries=summaries,
+        current_max=current_max,
+        cpu_count=cpu_count,
+        total_memory_bytes=total_memory,
+        current_cpu_percent=cpu_percent,
+        current_memory_percent=memory_percent,
+        cross_project_cpu_percent=cross_cpu,
+        safety_margin=safety_margin,
+        latest_summary_time=latest_time,
+    )
+    return asdict(rec)
 
 
 def _downsample(samples: list, limit: int) -> list:

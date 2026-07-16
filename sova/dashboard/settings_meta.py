@@ -635,6 +635,27 @@ _REGISTRY: list[SettingMeta] = [
         "monitoring",
         "number",
     ),
+    SettingMeta(
+        "monitoring.tdp_override",
+        "TDP override (W)",
+        "Override auto-detected chip TDP in watts for energy estimation (empty = auto-detect)",
+        "monitoring",
+        "number",
+    ),
+    SettingMeta(
+        "monitoring.safety_margin",
+        "Safety margin",
+        "Fraction of CPU/memory to reserve when computing capacity recommendations (0.0-0.5)",
+        "monitoring",
+        "number",
+    ),
+    SettingMeta(
+        "monitoring.co2_grams_per_kwh",
+        "Carbon intensity (g CO2/kWh)",
+        "Grid carbon intensity for CO2 emissions estimation (default 436 = world average)",
+        "monitoring",
+        "number",
+    ),
     # -- Knowledge Retrieval --
     SettingMeta(
         "knowledge.max_context_tokens",
