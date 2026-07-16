@@ -44,6 +44,7 @@ from sova.dashboard.services.agent_db import (
     _finalize_task_run,
     _update_task_run_pid,
     _validate_command_outcome,
+    _validate_pipeline_outcome,
 )
 from sova.dashboard.services.agent_pool import (
     AgentState,
@@ -107,8 +108,8 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 
 async def cancel_background_tasks() -> None:
-    """Cancel ALL background tasks: per-agent I/O readers, resource flushers,
-    and tracked wait/finalize + state transition tasks.
+    """Cancel ALL background tasks (per-agent I/O readers, resource flushers,
+    wait/finalize, and state transition tasks).
 
     Called during lifespan shutdown to prevent orphaned subprocess I/O tasks
     and in-flight DB queries from blocking uvicorn reload.
@@ -124,6 +125,15 @@ async def cancel_background_tasks() -> None:
                 if task is not None and not task.done():
                     task.cancel()
                     all_tasks.append(task)
+            if agent.resource_collector is not None:
+                try:
+                    await asyncio.wait_for(agent.resource_collector.stop(), timeout=3.0)
+                except Exception:
+                    log.warning(
+                        "resource_collector.stop_failed",
+                        run_id=agent.run_id,
+                        exc_info=True,
+                    )
 
     for t in _background_tasks:
         if not t.done():
@@ -131,7 +141,16 @@ async def cancel_background_tasks() -> None:
             all_tasks.append(t)
 
     if all_tasks:
-        await asyncio.gather(*all_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*all_tasks, return_exceptions=True),
+                timeout=3.0,
+            )
+        except TimeoutError:
+            log.warning(
+                "cancel_background_tasks.timeout",
+                pending=[t.get_name() for t in all_tasks if not t.done()],
+            )
     _background_tasks.clear()
 
 
@@ -618,7 +637,15 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     if agent.process is None:
         return
 
-    exit_code = await agent.process.wait()
+    try:
+        exit_code = await agent.process.wait()
+    except asyncio.CancelledError:
+        if agent.process is not None and agent.process.is_running:
+            try:
+                await agent.process.stop(timeout=3.0)
+            except Exception:
+                log.debug("finalize.stop_on_cancel_failed", run_id=agent.run_id, exc_info=True)
+        raise
     run_id = agent.run_id
 
     status = "done" if exit_code == 0 else "failed"
@@ -657,6 +684,8 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # pushing commits, review-pr without posting a review).
     if exit_code == 0 and run_id:
         failure_reason = await _validate_command_outcome(run_id, agent)
+        if not failure_reason:
+            failure_reason = await _validate_pipeline_outcome(run_id, agent)
         if failure_reason:
             await _downgrade_to_failed(run_id, failure_reason, agent.project_dir)
             status = "failed"
