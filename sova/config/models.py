@@ -348,7 +348,7 @@ class TestingConfig(BaseSettings):
 class MonitoringConfig(BaseSettings):
     """Resource monitoring configuration for agent processes."""
 
-    enabled: bool = False
+    enabled: bool = True
     interval: float = Field(5.0, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")

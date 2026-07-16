@@ -611,7 +611,7 @@ class TestMonitoringConfig:
         from sova.config.models import MonitoringConfig
 
         cfg = MonitoringConfig()
-        assert cfg.enabled is False
+        assert cfg.enabled is True
         assert cfg.interval == 5.0
         assert cfg.interval > 0
 
