@@ -19,6 +19,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Testing
 
+- **Functions locally-imported in a helper (`from x import y as z` inside a function) must be patched at the import source, not at the module** -- `run_shell` imported as `from sova.utils.shell import run as run_shell` inside `_check_pr_branch_pushed()` creates a local name that `monkeypatch.setattr("sova.dashboard.services.agent_db.run_shell", ...)` cannot reach. Patch `sova.utils.shell.run` instead. PR #347. [confirmed: 1]
+- **Add direct unit tests for functions that are mocked in higher-level tests, or SonarCloud will flag 0% coverage** -- if `_is_issue()` and `_check_pr_branch_pushed()` are always mocked in integration tests, SonarCloud sees 0% new coverage even though the feature is tested indirectly. Add `TestIsIssue` / `TestCheckPrBranchPushed` with direct calls to cover the actual implementation paths. PR #347. [confirmed: 1]
 - **Runtime/stress/chaos tests excluded from CI via pytest markers** -- `tests/runtime/` uses `@pytest.mark.runtime`, `@pytest.mark.stress`, `@pytest.mark.chaos`. `make test-py` adds `-m "not runtime and not stress and not chaos"` to keep CI fast. `make test-runtime` runs only heavy tests with 120s timeout. New process lifecycle tests go in `tests/runtime/`, not `tests/test_dashboard.py`. PR #341. [confirmed: 1]
 
 ## Dashboard / Frontend
@@ -199,3 +201,10 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## Common Mistakes (tracked by occurrence)
 
 - **`except X as exc:` + `log.warning(..., exc_info=True)` leaves `exc` unused** -- remove `as exc` or ruff F841 fires. (occurrences: 2) [confirmed: 1]
+
+## Supervisor / Progression Engine
+
+- **commit-format invariant must include all top-level sova/ directories as valid scopes** -- when adding a new module directory (supervisor, mcp, monitoring, db), add the scope to `VALID_SCOPES` in `invariants/commit-format.sh` and to AGENTS.md's Scopes list. Missing scopes cause push failures even for obviously correct scope names. PR #345. [confirmed: 1]
+- **CHECKPOINT_NEEDED distinguishes "human approval needed" from "no action possible"** -- WAIT means the state genuinely has no transition (BACKLOG, IN_PROGRESS, DONE). CHECKPOINT_NEEDED means a transition is possible but an auto flag is disabled. Return it from _determine_transition() when state is actionable but the config flag is off; filter it in execute_decisions() alongside WAIT and BLOCKED. Without this distinction, the progression engine can't surface "waiting for human approval" vs. "nothing to do". PR #345. [confirmed: 1]
+- **Evaluate_all should load config once and pass it through to gate methods** -- calling load_config() inside _check_quota_gate() and then again in evaluate_all() means 2+ TOML parses per cycle. Load once, pass via cfg= kwarg. Gate methods fall back to self-loading when cfg=None (for single-task eval path). PR #345. [confirmed: 1]
+- **Sync gates in asyncio.gather produce GC warnings** -- when a method is changed from async to sync (e.g., _check_dependency_gate), patch.object mocks using new_callable=AsyncMock create coroutines that get garbage-collected without being awaited. Use bare return_value= patching for sync methods. PR #345. [confirmed: 1]
