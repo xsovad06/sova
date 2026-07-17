@@ -1102,3 +1102,122 @@ class TestCrossProjectRouter:
         with patch(target, side_effect=RuntimeError("oops")):
             resp = await client.get("/api/resources/cross-project")
         assert resp.status_code == 500
+
+
+class TestCo2GramsColumn:
+    """Regression tests for co2_grams column missing from migration 017."""
+
+    @pytest.mark.asyncio
+    async def test_co2_grams_persists_and_round_trips(self, session: AsyncSession) -> None:
+        """co2_grams must persist through ORM write and read."""
+        run = TaskRun(
+            issue_number="500",
+            role="developer",
+            status="done",
+            current_step="complete",
+            project_slug="test",
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=5,
+            peak_cpu_percent=40.0,
+            avg_cpu_percent=20.0,
+            peak_memory_rss_bytes=100_000_000,
+            peak_memory_vms_bytes=200_000_000,
+            total_io_read_bytes=0,
+            total_io_write_bytes=0,
+            peak_num_threads=4,
+            energy_wh=Decimal("0.0025"),
+            co2_grams=Decimal("1.09"),
+            chip_name="Apple M2",
+            tdp_watts=Decimal("15.0"),
+        )
+        session.add(summary)
+        await session.commit()
+
+        from sqlalchemy import select as sa_select
+
+        refreshed = await session.scalar(
+            sa_select(ResourceSummaryRecord).where(ResourceSummaryRecord.task_run_id == run.id)
+        )
+        assert refreshed is not None
+        assert float(refreshed.co2_grams) == pytest.approx(1.09, rel=1e-3)
+        assert float(refreshed.energy_wh) == pytest.approx(0.0025, rel=1e-3)
+        assert refreshed.chip_name == "Apple M2"
+
+    @pytest.mark.asyncio
+    async def test_summary_to_dict_includes_co2_grams(self, session: AsyncSession) -> None:
+        """_summary_to_dict must include co2_grams in its output when energy_wh is set."""
+        from sova.dashboard.services.resource_service import _summary_to_dict
+
+        run = TaskRun(
+            issue_number="501",
+            role="developer",
+            status="done",
+            current_step="complete",
+            project_slug="test",
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=3,
+            peak_cpu_percent=30.0,
+            avg_cpu_percent=15.0,
+            peak_memory_rss_bytes=50_000_000,
+            peak_memory_vms_bytes=100_000_000,
+            total_io_read_bytes=0,
+            total_io_write_bytes=0,
+            peak_num_threads=2,
+            energy_wh=Decimal("0.001"),
+            co2_grams=Decimal("0.436"),
+            chip_name="Apple M3",
+            tdp_watts=Decimal("20.0"),
+        )
+        session.add(summary)
+        await session.commit()
+
+        d = _summary_to_dict(summary)
+        assert "energy_wh" in d
+        assert "co2_grams" in d
+        assert d["co2_grams"] == pytest.approx(0.436, rel=1e-3)
+        assert d["chip_name"] == "Apple M3"
+        assert d["tdp_watts"] == pytest.approx(20.0, rel=1e-3)
+
+    @pytest.mark.asyncio
+    async def test_summary_to_dict_omits_energy_fields_when_null(self, session: AsyncSession) -> None:
+        """_summary_to_dict must omit energy fields entirely when energy_wh is None."""
+        from sova.dashboard.services.resource_service import _summary_to_dict
+
+        run = TaskRun(
+            issue_number="502",
+            role="developer",
+            status="done",
+            current_step="complete",
+            project_slug="test",
+        )
+        session.add(run)
+        await session.flush()
+
+        summary = ResourceSummaryRecord(
+            task_run_id=run.id,
+            sample_count=2,
+            peak_cpu_percent=10.0,
+            avg_cpu_percent=5.0,
+            peak_memory_rss_bytes=20_000_000,
+            peak_memory_vms_bytes=40_000_000,
+            total_io_read_bytes=0,
+            total_io_write_bytes=0,
+            peak_num_threads=1,
+        )
+        session.add(summary)
+        await session.commit()
+
+        d = _summary_to_dict(summary)
+        assert "energy_wh" not in d
+        assert "co2_grams" not in d
+        assert "chip_name" not in d
