@@ -1,0 +1,473 @@
+"""Dependency-aware task progression engine.
+
+Deterministic state machine that evaluates active tasks and produces
+ProgressionDecision objects based on observable state (issue labels,
+dependency graph, CodeRabbit quota, agent slots, budget). No LLM calls.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from sova.adapters.base import TaskAdapter, TaskState
+from sova.config.loader import load_config
+from sova.config.models import ProjectConfig, SupervisorConfig
+from sova.core.state import TASK_RUN_TERMINAL
+from sova.dashboard.services.agent_recovery import _is_process_alive
+from sova.dashboard.services.agent_validation import _check_issue_budget
+from sova.db.models import TaskRun
+from sova.git.pr import find_pr_for_issue
+from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
+from sova.utils.logging import get_logger
+
+log = get_logger(component="supervisor.progression")
+
+_NOT_COMPUTED = object()  # sentinel: distinguish "not precomputed" from "checked, no block"
+
+
+class ProgressionAction(StrEnum):
+    SPAWN_RESEARCHER = "spawn_researcher"
+    SPAWN_DEVELOPER = "spawn_developer"
+    SPAWN_INTEGRATE = "spawn_integrate"
+    WAIT = "wait"
+    BLOCKED = "blocked"
+    CHECKPOINT_NEEDED = "checkpoint_needed"
+
+
+@dataclass(frozen=True, slots=True)
+class BlockReason:
+    gate: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressionDecision:
+    issue_number: int
+    action: ProgressionAction
+    role: str | None = None
+    reason: str = ""
+    blocked_by: tuple[BlockReason, ...] = field(default_factory=tuple)
+
+
+# Map ProgressionAction to the role string used by start_agent()
+_ACTION_TO_ROLE: dict[ProgressionAction, str] = {
+    ProgressionAction.SPAWN_RESEARCHER: "researcher",
+    ProgressionAction.SPAWN_DEVELOPER: "developer",
+    ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
+}
+
+
+class TaskProgressionEngine:
+    """Evaluate active tasks and produce deterministic progression decisions."""
+
+    def __init__(
+        self,
+        config: SupervisorConfig,
+        adapter: TaskAdapter,
+        project_dir: Path,
+        session_factory: async_sessionmaker,
+    ) -> None:
+        self._config = config
+        self._adapter = adapter
+        self._project_dir = project_dir
+        self._session_factory = session_factory
+
+    async def evaluate_all(self) -> list[ProgressionDecision]:
+        """Scan all active tasks, return next action for each."""
+        try:
+            graph = await build_dependency_graph(self._adapter)
+        except Exception:
+            log.warning("evaluate_all.graph_build_failed", exc_info=True)
+            return []
+
+        # Load config once for the whole evaluation cycle
+        cfg = load_config(self._project_dir)
+
+        # Pre-compute global gates once, then decrement as slots/quota are consumed
+        global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
+
+        # Compute alive count once: used for both the slot gate and remaining capacity
+        alive_count = await self._get_alive_count()
+        global_slots: BlockReason | None = None
+        if alive_count >= cfg.max_parallel_agents:
+            global_slots = BlockReason(
+                gate="slots",
+                detail=f"All agent slots occupied ({alive_count}/{cfg.max_parallel_agents})",
+            )
+        remaining_slots = cfg.max_parallel_agents - alive_count
+        remaining_quota = not bool(global_quota)  # True if quota is available
+
+        tasks = [graph.get_task(nid) for nid in graph.nodes]
+        decisions: list[ProgressionDecision] = []
+        for task in tasks:
+            if task is None:
+                continue
+            issue = int(task.id)
+
+            # Recompute slot blocker based on remaining capacity
+            effective_slots = global_slots
+            if effective_slots is None and remaining_slots <= 0:
+                effective_slots = BlockReason(
+                    gate="slots",
+                    detail="All agent slots would be occupied (batch capacity exhausted)",
+                )
+
+            # Recompute quota blocker based on remaining capacity
+            effective_quota = global_quota
+            if effective_quota is None and not remaining_quota:
+                effective_quota = BlockReason(
+                    gate="quota",
+                    detail="CodeRabbit quota would be exhausted (batch capacity exhausted)",
+                )
+
+            decision = await self._evaluate_single(
+                issue,
+                task.state,
+                graph,
+                precomputed_quota=effective_quota,
+                precomputed_slots=effective_slots,
+            )
+            decisions.append(decision)
+
+            # Decrement capacity for actionable decisions
+            non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
+            if decision.action not in non_actionable:
+                remaining_slots -= 1
+                if decision.action == ProgressionAction.SPAWN_DEVELOPER:
+                    remaining_quota = False
+
+        return decisions
+
+    async def evaluate_task(self, issue_number: int) -> ProgressionDecision:
+        """Evaluate a single task's readiness for progression."""
+        try:
+            state = await self._adapter.get_state(str(issue_number))
+        except Exception:
+            log.warning("evaluate_task.get_state_failed", issue=issue_number, exc_info=True)
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.BLOCKED,
+                reason="Failed to fetch task state from tracker",
+                blocked_by=(BlockReason(gate="adapter", detail="get_state() call failed"),),
+            )
+
+        # Short-circuit: skip graph build if no transition is possible or automation is disabled
+        candidate = self._determine_transition(state)
+        if candidate is None:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.WAIT,
+                reason=f"No transition available from state '{state.value}'",
+            )
+        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.CHECKPOINT_NEEDED,
+                reason=f"Automation disabled for state '{state.value}': requires human approval",
+            )
+
+        try:
+            graph = await build_dependency_graph(self._adapter)
+        except Exception:
+            log.warning("evaluate_task.graph_build_failed", issue=issue_number, exc_info=True)
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.BLOCKED,
+                reason="Failed to build dependency graph",
+                blocked_by=(BlockReason(gate="adapter", detail="build_dependency_graph() failed"),),
+            )
+
+        return await self._evaluate_single(issue_number, state, graph)
+
+    async def execute_decision(self, decision: ProgressionDecision) -> dict:
+        """Spawn agent based on decision. Returns start_agent result or error dict."""
+        if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}:
+            return {"skipped": True, "action": decision.action.value, "reason": decision.reason}
+
+        from sova.dashboard.services.agent_lifecycle import start_agent
+
+        role = decision.role or _ACTION_TO_ROLE.get(decision.action)
+        if role is None:
+            return {"error": f"No role mapping for action {decision.action}"}
+
+        kwargs: dict = {"issue": str(decision.issue_number), "role": role}
+
+        # For integrate-pr, we need the PR number
+        if decision.action == ProgressionAction.SPAWN_INTEGRATE:
+            pr_number = await self._find_pr_for_issue(decision.issue_number)
+            if pr_number is None:
+                return {"error": f"No open PR found for issue #{decision.issue_number}"}
+            kwargs["pr_number"] = pr_number
+
+        log.info(
+            "progression.execute",
+            issue=decision.issue_number,
+            action=decision.action.value,
+            role=role,
+        )
+        return await start_agent(**kwargs)
+
+    async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
+        """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED)."""
+        _non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
+        actionable = [d for d in decisions if d.action not in _non_actionable]
+        results: list[dict] = []
+        for decision in actionable:
+            result = await self.execute_decision(decision)
+            results.append(result)
+        return results
+
+    # -- Internal evaluation logic ------------------------------------------------
+
+    async def _evaluate_single(
+        self,
+        issue_number: int,
+        state: TaskState,
+        graph: DependencyGraph,
+        *,
+        precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+    ) -> ProgressionDecision:
+        """Evaluate a single task against all gates."""
+        candidate = self._determine_transition(state)
+        if candidate is None:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.WAIT,
+                reason=f"No transition available from state '{state.value}'",
+            )
+
+        # Short-circuit: CHECKPOINT_NEEDED means automation is disabled -- no gates to run
+        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.CHECKPOINT_NEEDED,
+                reason=f"Automation disabled for state '{state.value}': requires human approval",
+            )
+
+        # Dependency gate is sync (reads in-memory graph only)
+        blockers: list[BlockReason] = []
+        if self._config.respect_dependencies:
+            dep_block = self._check_dependency_gate(issue_number, graph)
+            if dep_block:
+                blockers.append(dep_block)
+
+        # Run async per-task gates concurrently
+        gate_results = await asyncio.gather(
+            self._check_already_running(issue_number),
+            self._check_budget_gate(issue_number),
+        )
+        blockers.extend(r for r in gate_results if r is not None)
+
+        # Add precomputed global gates (or compute on demand for single-task eval)
+        # Quota gate only applies to actions that produce PRs (SPAWN_DEVELOPER)
+        if precomputed_quota is _NOT_COMPUTED:
+            quota_block = await self._check_quota_gate(candidate)
+        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
+            quota_block = precomputed_quota
+        else:
+            quota_block = None
+        if quota_block:
+            blockers.append(quota_block)
+
+        if precomputed_slots is _NOT_COMPUTED:
+            slot_block = await self._check_slot_gate()
+        else:
+            slot_block = precomputed_slots
+        if slot_block:
+            blockers.append(slot_block)
+
+        if blockers:
+            reasons = "; ".join(b.detail for b in blockers)
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.BLOCKED,
+                role=_ACTION_TO_ROLE.get(candidate),
+                reason=f"Blocked: {reasons}",
+                blocked_by=tuple(blockers),
+            )
+
+        return ProgressionDecision(
+            issue_number=issue_number,
+            action=candidate,
+            role=_ACTION_TO_ROLE.get(candidate),
+            reason=f"Ready to {candidate.value}",
+        )
+
+    def _determine_transition(self, state: TaskState) -> ProgressionAction | None:
+        """Map current state to candidate action based on config flags.
+
+        Returns the action to take, CHECKPOINT_NEEDED when a transition is possible but
+        the relevant auto flag is disabled (needs human approval), or None when no
+        transition exists from this state.
+        """
+        if state == TaskState.TRIAGED:
+            return (
+                ProgressionAction.SPAWN_RESEARCHER
+                if self._config.auto_research
+                else ProgressionAction.CHECKPOINT_NEEDED
+            )
+        if state == TaskState.RESEARCHED:
+            return (
+                ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
+            )
+        if state == TaskState.IN_REVIEW:
+            # auto_address_review is reserved for future supervisor-level address-review control.
+            # Intra-pipeline chaining (develop -> review -> address) is handled by the handoff
+            # system, not the progression engine. The supervisor only handles the inter-role
+            # transition: IN_REVIEW -> integrate (once the PR is approved by a human).
+            return (
+                ProgressionAction.SPAWN_INTEGRATE
+                if self._config.auto_integrate
+                else ProgressionAction.CHECKPOINT_NEEDED
+            )
+        # BACKLOG: triage is manual per spec
+        # NEEDS_SPEC: human approves spec externally
+        # IN_PROGRESS: handled by existing role chaining
+        # DONE, HUMAN_ONLY: no action
+        return None
+
+    def _check_dependency_gate(self, issue: int, graph: DependencyGraph) -> BlockReason | None:
+        """Check if all dependencies are DONE (no I/O: reads in-memory graph only)."""
+        deps = graph.get_dependencies(issue)
+        if not deps:
+            return None
+
+        for dep_id in deps:
+            dep_task = graph.get_task(dep_id)
+            if dep_task is None:
+                return BlockReason(
+                    gate="dependency",
+                    detail=f"Dependency #{dep_id} not found (missing reference)",
+                )
+            if dep_task.state != TaskState.DONE:
+                return BlockReason(
+                    gate="dependency",
+                    detail=f"Blocked by #{dep_id} (state: {dep_task.state.value})",
+                )
+
+        return None
+
+    async def _check_quota_gate(
+        self, action: ProgressionAction, *, cfg: ProjectConfig | None = None
+    ) -> BlockReason | None:
+        """Check CodeRabbit quota headroom for actions that produce PRs."""
+        if action != ProgressionAction.SPAWN_DEVELOPER:
+            return None
+
+        try:
+            from sova.supervisor.coderabbit_quota import get_quota_status
+
+            if cfg is None:
+                cfg = load_config(self._project_dir)
+            if not cfg.coderabbit_quota.enabled:
+                return None
+
+            async with self._session_factory() as session:
+                status = await get_quota_status(session, cfg.coderabbit_quota)
+                if not status.can_create_pr:
+                    wait_msg = ""
+                    if status.next_available_minutes is not None:
+                        wait_msg = f" (available in {status.next_available_minutes:.0f}m)"
+                    return BlockReason(
+                        gate="quota",
+                        detail=f"CodeRabbit quota exhausted{wait_msg}",
+                    )
+        except Exception:
+            log.debug("quota_gate.check_failed", exc_info=True)
+
+        return None
+
+    async def _get_alive_count(self) -> int:
+        """Count active agent reservations: alive processes plus pending (PID-less) runs."""
+        try:
+            async with self._session_factory() as session:
+                stmt = select(TaskRun).where(TaskRun.status.notin_(TASK_RUN_TERMINAL))
+                result = await session.execute(stmt)
+                active_runs = result.scalars().all()
+                count = 0
+                for run in active_runs:
+                    if run.pid is None:
+                        count += 1  # pending: PID not yet assigned, count as active reservation
+                    elif _is_process_alive(run.pid):
+                        count += 1
+                return count
+        except Exception:
+            log.debug("get_alive_count.failed", exc_info=True)
+            return 0
+
+    async def _check_slot_gate(self, *, cfg: ProjectConfig | None = None) -> BlockReason | None:
+        """Check agent slot availability against max_concurrent."""
+        try:
+            alive_count = await self._get_alive_count()
+            if cfg is None:
+                cfg = load_config(self._project_dir)
+            max_concurrent = cfg.max_parallel_agents
+            if alive_count >= max_concurrent:
+                return BlockReason(
+                    gate="slots",
+                    detail=f"All agent slots occupied ({alive_count}/{max_concurrent})",
+                )
+        except Exception:
+            log.debug("slot_gate.check_failed", exc_info=True)
+
+        return None
+
+    async def _count_alive_agents(self) -> int:
+        """Count currently alive agent processes."""
+        return await self._get_alive_count()
+
+    async def _check_budget_gate(self, issue: int) -> BlockReason | None:
+        """Check per-issue budget limit."""
+        try:
+            error = await _check_issue_budget(str(issue), self._project_dir)
+            if error:
+                return BlockReason(gate="budget", detail=error["error"])
+        except Exception:
+            log.debug("budget_gate.check_failed", issue=issue, exc_info=True)
+
+        return None
+
+    async def _check_already_running(self, issue: int) -> BlockReason | None:
+        """Check if an agent is already running or being started for this issue."""
+        try:
+            async with self._session_factory() as session:
+                stmt = select(TaskRun).where(
+                    TaskRun.issue_number == str(issue),
+                    TaskRun.status.notin_(TASK_RUN_TERMINAL),
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+                for run in runs:
+                    if run.pid is None:
+                        return BlockReason(
+                            gate="already_running",
+                            detail=f"Agent being started for #{issue} (run {run.id}, PID not yet assigned)",
+                        )
+                    if _is_process_alive(run.pid):
+                        return BlockReason(
+                            gate="already_running",
+                            detail=f"Agent already running for #{issue} (run {run.id}, PID {run.pid})",
+                        )
+        except Exception:
+            log.debug("already_running.check_failed", issue=issue, exc_info=True)
+
+        return None
+
+    async def _find_pr_for_issue(self, issue: int) -> int | None:
+        """Find an open PR linked to this issue."""
+        try:
+            cfg = load_config(self._project_dir)
+            if not cfg.github_repo:
+                return None
+            pr = await find_pr_for_issue(str(issue), repo=cfg.github_repo, github_user=cfg.github_user)
+            return pr.number if pr else None
+        except Exception:
+            log.debug("find_pr.failed", issue=issue, exc_info=True)
+            return None

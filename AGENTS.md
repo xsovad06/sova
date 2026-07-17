@@ -46,7 +46,7 @@ sova/
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
-    supervisor/                    # Supervisor-level services (CodeRabbit quota tracking, task dependency graph)
+    supervisor/                    # Supervisor-level services (TaskProgressionEngine: dependency-aware deterministic state machine; CodeRabbit quota tracking; task dependency graph)
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
     monitoring/                     # Resource monitoring (psutil-based CPU, memory, I/O tracking)
@@ -62,7 +62,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 3522 at last count)
+  tests/                           # pytest suite (3200+ tests, 3580 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
@@ -133,7 +133,7 @@ This project uses **GitHub Issues** with a project board.
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`.
-Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`.
+Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`, `supervisor`, `mcp`, `monitoring`, `db`.
 The `ci` type is scopeless (repo-wide infrastructure); all other types require a scope.
 
 Examples:
