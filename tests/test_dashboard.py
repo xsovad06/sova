@@ -6508,6 +6508,32 @@ class TestCommandOutcomeValidation:
         result = await _validate_command_outcome(run_id, agent)
         assert result is None
 
+    async def test_address_pr_passes_when_git_confirms_pushed(self) -> None:
+        """Git ref comparison confirms push, skips text scanning entirely."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="312", role="command:address-pr", status="done", pr_number=102)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.pr_number = 102
+        agent.project_dir = None
+        with patch(
+            "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
+            result = await _validate_command_outcome(run_id, agent)
+        assert result is None
+
     async def test_address_pr_fails_when_git_confirms_unpushed(self) -> None:
         """Git ref comparison detects unpushed commits."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -6515,12 +6541,12 @@ class TestCommandOutcomeValidation:
         from sova.dashboard.services.agent_db import _validate_command_outcome
         from sova.dashboard.services.agent_pool import AgentState
 
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(issue_number="313", role="command:address-pr", status="done", pr_number=103)
-            session.add(run)
-            await session.flush()
-            run_id = run.id
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="313", role="command:address-pr", status="done", pr_number=103)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
 
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
@@ -7179,6 +7205,123 @@ class TestIsIssue:
 
 
 class TestCheckPrBranchPushed:
+    """Unit tests for the _check_pr_branch_pushed helper."""
+
+    async def test_returns_none_when_no_pr_number(self, tmp_path: Path) -> None:
+        """Returns None immediately when agent has no pr_number."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_branch_pushed
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 0
+        assert await _check_pr_branch_pushed(agent) is None
+
+    async def test_returns_none_when_branch_lookup_fails(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns None when the gh CLI fails to return a branch name."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_branch_pushed
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 100
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = False
+            result.stdout = ""
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_branch_pushed(agent) is None
+
+    async def test_returns_none_when_fetch_fails(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns None when git fetch fails, to prevent stale-ref false result."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_branch_pushed
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 100
+        agent.project_dir = tmp_path
+        call_count = 0
+
+        async def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            if call_count == 1:
+                result.success = True
+                result.stdout = "feature/my-branch\n"
+            else:
+                result.success = False
+                result.stdout = ""
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_branch_pushed(agent) is None
+
+    async def test_returns_true_when_no_unpushed_commits(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns True when rev-list count is 0 (branch is pushed)."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_branch_pushed
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 100
+        agent.project_dir = tmp_path
+        call_count = 0
+
+        async def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.success = True
+            if call_count == 1:
+                result.stdout = "feature/my-branch\n"
+            elif call_count == 2:
+                result.stdout = ""
+            else:
+                result.stdout = "0\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_branch_pushed(agent) is True
+
+    async def test_returns_false_when_unpushed_commits(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns False when rev-list count > 0 (commits not pushed)."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_branch_pushed
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 100
+        agent.project_dir = tmp_path
+        call_count = 0
+
+        async def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            result = MagicMock()
+            result.success = True
+            if call_count == 1:
+                result.stdout = "feature/my-branch\n"
+            elif call_count == 2:
+                result.stdout = ""
+            else:
+                result.stdout = "3\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_branch_pushed(agent) is False
+
+
 class TestStepProgress:
     """Tests for get_step_progress pipeline variant detection."""
 

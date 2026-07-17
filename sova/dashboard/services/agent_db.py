@@ -210,18 +210,74 @@ async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str
 
 
 async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
-    """Check that address-pr actually committed and pushed changes."""
+    """Check that address-pr actually committed and pushed changes.
+
+    Uses git ref comparison (local HEAD vs remote tracking branch) as the
+    primary check. Falls back to output text scanning when the git check
+    is inconclusive (e.g., worktree already cleaned up).
+    """
     if agent.pr_number is None:
         return None
+
+    pushed = await _check_pr_branch_pushed(agent)
+    if pushed is True:
+        return None
+    if pushed is False:
+        return "address-pr completed without pushing changes"
 
     lines = await _fetch_output_lines(run_id, agent.project_dir)
     if lines is None:
         return None
 
-    has_push_evidence = any("git push" in line.lower() or "force-with-lease" in line.lower() for line in lines)
+    _PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
+    has_push_evidence = any(any(kw in line.lower() for kw in _PUSH_KEYWORDS) for line in lines)
 
     if not has_push_evidence:
         return "address-pr completed without pushing changes"
+    return None
+
+
+async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
+    """Check if the PR branch has unpushed commits. Returns None if inconclusive."""
+    from sova.utils.shell import run as run_shell
+
+    if not agent.pr_number:
+        return None
+    try:
+        branch_result = await run_shell(
+            "gh",
+            "pr",
+            "view",
+            str(agent.pr_number),
+            "--json",
+            "headRefName",
+            "--jq",
+            ".headRefName",
+            cwd=agent.project_dir,
+            timeout=10,
+        )
+        if not branch_result.success or not branch_result.stdout.strip():
+            return None
+        branch = branch_result.stdout.strip()
+
+        fetch_result = await run_shell("git", "fetch", "origin", branch, cwd=agent.project_dir, timeout=15)
+        if not fetch_result.success:
+            return None
+
+        count_result = await run_shell(
+            "git",
+            "rev-list",
+            "--count",
+            f"origin/{branch}..{branch}",
+            cwd=agent.project_dir,
+            timeout=5,
+        )
+        if count_result.success and count_result.stdout.strip() == "0":
+            return True
+        if count_result.success and count_result.stdout.strip().isdigit():
+            return False
+    except Exception:
+        log.debug("check_pr_branch_pushed.failed", pr=agent.pr_number, exc_info=True)
     return None
 
 
