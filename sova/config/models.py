@@ -414,6 +414,20 @@ class RTKConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_RTK_")
 
 
+class SupervisorConfig(BaseSettings):
+    """Supervisor: dependency-aware task progression engine."""
+
+    enabled: bool = False
+    auto_research: bool = True
+    auto_develop: bool = False
+    auto_address_review: bool = False
+    auto_integrate: bool = False
+    respect_dependencies: bool = True
+    poll_interval_seconds: int = Field(120, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -475,6 +489,7 @@ class ProjectConfig(BaseSettings):
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
+    supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

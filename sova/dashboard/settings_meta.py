@@ -45,6 +45,7 @@ GROUPS: dict[str, str] = {
     "rtk": "RTK Compression",
     "coderabbit_quota": "CodeRabbit Quota",
     "pr_monitor": "PR Monitor",
+    "supervisor": "Supervisor",
 }
 
 GROUP_ORDER: list[str] = [
@@ -76,6 +77,7 @@ GROUP_ORDER: list[str] = [
     "rtk",
     "coderabbit_quota",
     "pr_monitor",
+    "supervisor",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -779,6 +781,56 @@ _REGISTRY: list[SettingMeta] = [
         "Automatically request CodeRabbit re-review when rate limit expires",
         "pr_monitor",
         "boolean",
+    ),
+    # -- Supervisor --
+    SettingMeta(
+        "supervisor.enabled",
+        "Enabled",
+        "Enable the dependency-aware task progression engine",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.auto_research",
+        "Auto-research",
+        "Automatically spawn researcher after triage when dependencies are met",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.auto_develop",
+        "Auto-develop",
+        "Automatically spawn developer after research (requires spec approval by default)",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.auto_address_review",
+        "Auto-address review",
+        "Reserved for future use (intra-pipeline address-review chaining is handled by the handoff system)",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.auto_integrate",
+        "Auto-integrate",
+        "Automatically run integration pipeline when PR is approved",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.respect_dependencies",
+        "Respect dependencies",
+        "Gate agent spawning on dependency graph (block until all deps are DONE)",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.poll_interval_seconds",
+        _LABEL_POLL_INTERVAL,
+        "Seconds between progression evaluation cycles",
+        "supervisor",
+        "number",
     ),
 ]
 
