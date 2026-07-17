@@ -6508,6 +6508,33 @@ class TestCommandOutcomeValidation:
         result = await _validate_command_outcome(run_id, agent)
         assert result is None
 
+    async def test_address_pr_fails_when_git_confirms_unpushed(self) -> None:
+        """Git ref comparison detects unpushed commits."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_command_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="313", role="command:address-pr", status="done", pr_number=103)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.pr_number = 103
+        agent.project_dir = None
+        with patch(
+            "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            result = await _validate_command_outcome(run_id, agent)
+        assert result is not None
+        assert "without pushing" in result
+
     async def test_review_pr_fails_without_post_evidence(self) -> None:
         from unittest.mock import MagicMock
 
@@ -7062,10 +7089,17 @@ class TestAgentContextHelpers:
         mock_result = MagicMock()
         mock_result.success = True
         mock_result.stdout = "Some text\nCloses #42\nMore text"
-        with patch(
-            "sova.dashboard.services.agent_context.run_shell",
-            new_callable=AsyncMock,
-            return_value=mock_result,
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.run_shell",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "sova.dashboard.services.agent_context._is_issue",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
             result = await _resolve_issue_from_pr(100, tmp_path)
         assert result == "42"
@@ -7088,6 +7122,63 @@ class TestAgentContextHelpers:
         assert result == ""
 
 
+class TestIsIssue:
+    """Unit tests for the _is_issue helper."""
+
+    async def test_returns_true_for_real_issue(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns True when the Issues API returns no pull_request field (empty output)."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_context import _is_issue
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = ""
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+
+        assert await _is_issue("42", tmp_path) is True
+
+    async def test_returns_false_for_pr(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns False when the Issues API returns a pull_request field (it is a PR)."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_context import _is_issue
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = '{"url": "https://..."}'
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+
+        assert await _is_issue("339", tmp_path) is False
+
+    async def test_returns_true_on_exception(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns True (safe default) when run_shell raises."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_context import _is_issue
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_context.run_shell",
+            AsyncMock(side_effect=OSError("gh not found")),
+        )
+
+        assert await _is_issue("99", tmp_path) is True
+
+    async def test_returns_true_on_failed_command(self, tmp_path: Path, monkeypatch) -> None:
+        """Returns False when the gh command fails (success=False)."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_context import _is_issue
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = False
+        mock_result.return_value.stdout = ""
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+
+        assert await _is_issue("99", tmp_path) is False
+
+
+class TestCheckPrBranchPushed:
 class TestStepProgress:
     """Tests for get_step_progress pipeline variant detection."""
 
@@ -9419,6 +9510,33 @@ class TestPrsAPI:
         assert resp.json()["prs"] == []
 
 
+class TestExtractLinkedIssue:
+    """Tests for _extract_linked_issue PR-vs-issue disambiguation."""
+
+    def test_prefers_closing_issues_references(self) -> None:
+        from sova.dashboard.services.pr_service import _extract_linked_issue
+
+        raw = {"closingIssuesReferences": [{"number": 42}], "body": "Closes #99"}
+        assert _extract_linked_issue(raw) == 42
+
+    def test_falls_back_to_body_parsing(self) -> None:
+        from sova.dashboard.services.pr_service import _extract_linked_issue
+
+        raw = {"closingIssuesReferences": [], "body": "Fixes #55"}
+        assert _extract_linked_issue(raw) == 55
+
+    def test_returns_none_when_no_link(self) -> None:
+        from sova.dashboard.services.pr_service import _extract_linked_issue
+
+        raw = {"closingIssuesReferences": [], "body": "No issue link"}
+        assert _extract_linked_issue(raw) is None
+
+    def test_handles_missing_fields(self) -> None:
+        from sova.dashboard.services.pr_service import _extract_linked_issue
+
+        assert _extract_linked_issue({}) is None
+
+
 # ---------------------------------------------------------------------------
 # _resolve_issue_from_pr
 # ---------------------------------------------------------------------------
@@ -9437,6 +9555,7 @@ class TestResolveIssueFromPr:
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "## Summary\n\nCloses #42\n"
         monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "42"
@@ -9451,6 +9570,7 @@ class TestResolveIssueFromPr:
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "Fixes #123"
         monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "123"
@@ -9465,9 +9585,43 @@ class TestResolveIssueFromPr:
         mock_result.return_value.success = True
         mock_result.return_value.stdout = "resolves #77"
         monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=True))
 
         result = await _resolve_issue_from_pr(99, tmp_path)
         assert result == "77"
+
+    @pytest.mark.asyncio
+    async def test_skips_pr_reference(self, tmp_path, monkeypatch) -> None:
+        """When 'Closes #N' references a PR (not an issue), return empty."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "Closes #339"
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", AsyncMock(return_value=False))
+
+        result = await _resolve_issue_from_pr(341, tmp_path)
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_skips_pr_ref_returns_second_valid_issue(self, tmp_path, monkeypatch) -> None:
+        """When the first reference is a PR, evaluate subsequent matches and return the first valid issue."""
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_lifecycle import _resolve_issue_from_pr
+
+        mock_result = AsyncMock()
+        mock_result.return_value.success = True
+        mock_result.return_value.stdout = "Closes #339 and Fixes #42"
+        monkeypatch.setattr("sova.dashboard.services.agent_context.run_shell", mock_result)
+        is_issue = AsyncMock(side_effect=lambda n, _d: n == "42")
+        monkeypatch.setattr("sova.dashboard.services.agent_context._is_issue", is_issue)
+
+        result = await _resolve_issue_from_pr(341, tmp_path)
+        assert result == "42"
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_match(self, tmp_path, monkeypatch) -> None:

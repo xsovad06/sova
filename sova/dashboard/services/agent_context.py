@@ -127,7 +127,11 @@ async def _resolve_command_context(safe_args: dict, command: str, project_dir: P
 
 
 async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str:
-    """Extract a linked issue number from a PR body via gh CLI (best-effort)."""
+    """Extract a linked issue number from a PR body via gh CLI (best-effort).
+
+    Validates that the referenced number is actually an issue (not another PR)
+    by checking whether the GitHub Issues API returns a pull_request field.
+    """
     import re
 
     try:
@@ -145,12 +149,32 @@ async def _resolve_issue_from_pr(pr_number: int | str, project_dir: Path) -> str
             timeout=10,
         )
         if result.success and result.stdout:
-            match = re.search(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", result.stdout, re.IGNORECASE)
-            if match:
-                return match.group(1)
+            for match in re.finditer(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", result.stdout, re.IGNORECASE):
+                candidate = match.group(1)
+                if await _is_issue(candidate, project_dir):
+                    return candidate
+                log.debug("resolve_issue_from_pr.not_issue", pr=pr_number, ref=candidate)
     except Exception:
         log.debug("resolve_issue_from_pr.failed", pr=pr_number, exc_info=True)
     return ""
+
+
+async def _is_issue(number: str, project_dir: Path) -> bool:
+    """Return True if the GitHub number is an issue (not a PR)."""
+    try:
+        result = await run_shell(
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/issues/{number}",
+            "--jq",
+            ".pull_request // empty",
+            cwd=project_dir,
+            timeout=10,
+        )
+        return result.success and not result.stdout.strip()
+    except Exception:
+        log.debug("is_issue.failed", number=number, exc_info=True)
+        return True
 
 
 async def _resolve_project_gh_env(project_dir: Path) -> dict[str, str] | None:

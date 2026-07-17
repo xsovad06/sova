@@ -52,6 +52,18 @@ def parse_linked_issue(body: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _extract_linked_issue(raw: dict) -> int | None:
+    """Extract linked issue from closingIssuesReferences (accurate) or PR body (fallback).
+
+    closingIssuesReferences only contains real issues, not PRs, so it avoids
+    the false positive where 'Closes #N' references another PR.
+    """
+    refs = raw.get("closingIssuesReferences") or []
+    if refs:
+        return refs[0].get("number")
+    return parse_linked_issue(raw.get("body"))
+
+
 def _summarize_ci(rollup: list[dict] | None) -> str:
     """Summarize statusCheckRollup contexts into a single CI status string.
 
@@ -162,7 +174,6 @@ def _extract_review_logins(latest_reviews: list[dict] | None) -> list[str]:
 
 def _enrich_pr(raw: dict, now: float) -> dict:
     """Transform a raw gh pr list entry into a PR tracker dict."""
-    body = raw.get("body") or ""
     ci_status = _summarize_ci(raw.get("statusCheckRollup"))
     review_decision = raw.get("reviewDecision") or ""
     is_draft = bool(raw.get("isDraft"))
@@ -196,7 +207,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "mergeable": mergeable,
         "is_draft": is_draft,
         "author": author.get("login", ""),
-        "linked_issue": parse_linked_issue(body),
+        "linked_issue": _extract_linked_issue(raw),
         "age_seconds": _age_seconds(raw.get("createdAt") or "", now),
         "labels": labels,
         "thread_total": thread_total,
