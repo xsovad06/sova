@@ -124,7 +124,7 @@ async def _notify_terminal_notifier(
 
 
 async def _notify_jxa(title: str, message: str, *, subtitle: str = "") -> None:
-    full_message = f"{subtitle} -- {message}" if subtitle else message
+    full_message = f"{subtitle}: {message}" if subtitle else message
     script = (
         "var app = Application.currentApplication();"
         "app.includeStandardAdditions = true;"
