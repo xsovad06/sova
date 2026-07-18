@@ -273,11 +273,20 @@ def _parse_verdict_from_output(lines: list[str]) -> str | None:
     return None
 
 
-async def get_sova_review_verdict(issue_number: str) -> dict:
-    """Query the DB for the most recent SOVA reviewer verdict on an issue.
+async def get_sova_review_verdict(
+    issue_number: str | None, *, pr_number: int | None = None, project_dir: "Path | None" = None
+) -> dict:
+    """Query the DB for the most recent SOVA reviewer verdict on an issue or PR.
 
     Returns adapter-agnostic review state from SOVA's own TaskRun records,
     independent of any platform-specific review mechanism (GitHub reviews, etc.).
+
+    When pr_number is provided, only runs against that specific PR are considered.
+    This prevents a reviewer verdict from a previous PR version being treated as
+    current when the PR has since been updated by an address-review cycle.
+
+    When issue_number is None, pr_number must be provided; the lookup queries
+    solely by PR number (for unlinked standalone PRs with no associated issue).
 
     When handoff_json is present, the verdict is derived from it (authoritative).
     When a review run completed successfully but has no handoff_json (e.g.
@@ -297,17 +306,30 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
         "reviewed_at": None,
     }
 
+    if issue_number is None and pr_number is None:
+        return no_review
+
+    issue_num_clean = issue_number.lstrip("#").strip() if issue_number is not None else None
+    if issue_num_clean == "":
+        if pr_number is None:
+            return no_review
+        issue_num_clean = None  # fall through to PR-only query
+
     try:
-        async with await get_session() as session:
+        async with await get_session(project_dir=project_dir) as session:
             # First: look for runs WITH handoff_json (authoritative source).
+            filters = [
+                TaskRun.role.in_(["reviewer", "command:review-pr"]),
+                TaskRun.status.in_(["done", "failed", "interrupted"]),
+                TaskRun.handoff_json.isnot(None),
+            ]
+            if issue_num_clean is not None:
+                filters.append(TaskRun.issue_number == issue_num_clean)
+            if pr_number is not None:
+                filters.append(TaskRun.pr_number == pr_number)
             stmt = (
                 select(TaskRun)
-                .where(
-                    TaskRun.issue_number == issue_number.lstrip("#").strip(),
-                    TaskRun.role.in_(["reviewer", "command:review-pr"]),
-                    TaskRun.status.in_(["done", "failed", "interrupted"]),
-                    TaskRun.handoff_json.isnot(None),
-                )
+                .where(*filters)
                 .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
                 .limit(1)
             )
@@ -317,14 +339,18 @@ async def get_sova_review_verdict(issue_number: str) -> dict:
             # Fallback: look for command:review-pr runs WITHOUT handoff_json.
             # These runs post to GitHub but don't write structured handoff data.
             if not run:
+                fallback_filters = [
+                    TaskRun.role == "command:review-pr",
+                    TaskRun.status == "done",
+                    TaskRun.handoff_json.is_(None),
+                ]
+                if issue_num_clean is not None:
+                    fallback_filters.append(TaskRun.issue_number == issue_num_clean)
+                if pr_number is not None:
+                    fallback_filters.append(TaskRun.pr_number == pr_number)
                 stmt = (
                     select(TaskRun)
-                    .where(
-                        TaskRun.issue_number == issue_number.lstrip("#").strip(),
-                        TaskRun.role == "command:review-pr",
-                        TaskRun.status == "done",
-                        TaskRun.handoff_json.is_(None),
-                    )
+                    .where(*fallback_filters)
                     .order_by(func.coalesce(TaskRun.ended_at, TaskRun.started_at).desc())
                     .limit(1)
                 )
@@ -437,7 +463,9 @@ async def get_pr_status_for_issue(issue_number: str) -> dict:
     except Exception:
         log.debug("ci_checks.fetch_failed", pr=pr_info.number, exc_info=True)
 
-    sova_review = await get_sova_review_verdict(issue_number)
+    from sova.dashboard.project_context import get_project_dir as _get_project_dir
+
+    sova_review = await get_sova_review_verdict(issue_number, pr_number=status.number, project_dir=_get_project_dir())
 
     return {
         "has_pr": True,

@@ -4,7 +4,7 @@ Merges four state sources (GitHub labels, PR status, handoff files, running agen
 into a single computed state per issue/PR. The task browser renders from this state
 instead of computing actions independently.
 
-Priority cascade: running agent > handoff action > PR state > GitHub label.
+Priority cascade: running agent > handoff action > PR state (SOVA-verdict adjusted) > GitHub label.
 """
 
 from __future__ import annotations
@@ -219,10 +219,17 @@ def compute_work_item_state(
     pr_data: dict | None,
     handoff: dict | None,
     running_agent: dict | None,
+    sova_verdict: dict | None = None,
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
-    Priority: running agent > handoff > PR state > GitHub label.
+    Priority: running agent > handoff > PR state (adjusted by SOVA verdict) > GitHub label.
+
+    sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
+    When present it overrides the raw GitHub state in two cases:
+      - Verdict "revise"/"block": override any Integrate-bound state to PR_CHANGES_REQUESTED.
+      - No SOVA review at all: override Integrate-bound states to PR_AWAITING_REVIEW so that
+        "Review PR" is shown before an Integrate button can appear.
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
@@ -241,13 +248,50 @@ def compute_work_item_state(
         if pr_state_raw == "MERGED":
             return WorkItemState.MERGED
         computed = pr_data.get("computed_state", "")
-        if computed in _PR_STATE_MAP:
-            return _PR_STATE_MAP[computed]
+        mapped = _PR_STATE_MAP.get(computed)
+        if mapped is not None:
+            return _apply_sova_verdict(mapped, sova_verdict)
 
     if task_state is not None:
         return _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
 
     return WorkItemState.BACKLOG
+
+
+# States where an Integrate button would be the primary action without SOVA override.
+_INTEGRATE_STATES = frozenset({WorkItemState.PR_APPROVED, WorkItemState.PR_READY_TO_MERGE})
+
+# States that SOVA verdict "revise"/"block" should downgrade to PR_CHANGES_REQUESTED.
+# Excludes PR_DRAFT/PR_CI_*/PR_CHANGES_REQUESTED (already showing correct action).
+_VERDICT_OVERRIDEABLE = frozenset(
+    {
+        WorkItemState.PR_AWAITING_REVIEW,
+        WorkItemState.PR_APPROVED,
+        WorkItemState.PR_READY_TO_MERGE,
+    }
+)
+
+
+def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> WorkItemState:
+    """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
+
+    Two adjustments (findings 1 and 3):
+      1. No SOVA review: block Integrate-bound states — show Review PR instead.
+      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address PR).
+    """
+    if sova_verdict is None:
+        return mapped
+
+    has_review = sova_verdict.get("has_sova_review", False)
+    verdict = sova_verdict.get("verdict")
+
+    if not has_review and mapped in _INTEGRATE_STATES:
+        return WorkItemState.PR_AWAITING_REVIEW
+
+    if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
+        return WorkItemState.PR_CHANGES_REQUESTED
+
+    return mapped
 
 
 _HANDOFF_STATES = frozenset({WorkItemState.HANDOFF_PENDING, WorkItemState.SPEC_REVIEW})
@@ -297,6 +341,7 @@ def _build_task_item(
     pr_data: dict | None,
     running: dict | None,
     handoff: dict | None,
+    sova_verdict: dict | None = None,
 ) -> dict:
     """Build a work item from a queue task and its linked PR/handoff/agent."""
     issue_num = str(task["issue"])
@@ -311,6 +356,7 @@ def _build_task_item(
         pr_data=pr_data,
         handoff=handoff,
         running_agent=running,
+        sova_verdict=sova_verdict if pr_data else None,
     )
 
     # Synthesize a resume action for awaiting_approval runs without handoff
@@ -360,6 +406,7 @@ def _build_pr_item(
     running: dict | None,
     handoff: dict | None,
     issue_num: str | None,
+    sova_verdict: dict | None = None,
 ) -> dict:
     """Build a work item from a standalone or unlinked PR."""
     state = compute_work_item_state(
@@ -367,6 +414,7 @@ def _build_pr_item(
         pr_data=pr,
         handoff=handoff,
         running_agent=running,
+        sova_verdict=sova_verdict,
     )
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
 
@@ -400,6 +448,7 @@ def _append_standalone_pr_items(
     linked_issue_numbers: set[str],
     running_by_issue: dict[str, dict],
     handoffs_by_issue: dict[str, dict],
+    verdicts_by_issue: dict[str, dict] | None = None,
 ) -> None:
     """Add work items for PRs not already covered by a queue task."""
     for pr in prs:
@@ -411,7 +460,14 @@ def _append_standalone_pr_items(
         pr_key = issue_num if issue_num else f"pr:{pr['number']}"
         running = running_by_issue.get(pr_key)
         handoff = handoffs_by_issue.get(pr_key) if not issue_num else handoffs_by_issue.get(issue_num)
-        items.append(_build_pr_item(pr, running, handoff, issue_num))
+        if verdicts_by_issue is not None:
+            if issue_num:
+                verdict = verdicts_by_issue.get(issue_num)
+            else:
+                verdict = verdicts_by_issue.get(f"pr:{pr['number']}")
+        else:
+            verdict = None
+        items.append(_build_pr_item(pr, running, handoff, issue_num, sova_verdict=verdict))
 
 
 def _find_integrate_action(item: dict) -> dict | None:
@@ -486,6 +542,12 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     running_by_issue = _index_running_agents(agents_data)
     handoffs_by_issue = _index_handoffs(handoffs)
     prs_by_issue = _index_prs_by_issue(prs)
+
+    # Pre-fetch SOVA verdicts for all issues with open PRs and unlinked standalone PRs.
+    # Scoped to current PR number so stale verdicts from prior PR revisions are excluded.
+    unlinked_prs = [pr for pr in prs if not pr.get("linked_issue")]
+    verdicts_by_issue = await _fetch_sova_verdicts(prs_by_issue, unlinked_prs=unlinked_prs, project_dir=project_dir)
+
     linked_issue_numbers: set[str] = set()
 
     items: list[dict] = []
@@ -500,6 +562,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 pr_data,
                 running_by_issue.get(issue_num),
                 handoffs_by_issue.get(issue_num),
+                sova_verdict=verdicts_by_issue.get(issue_num) if pr_data else None,
             )
         )
 
@@ -509,6 +572,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         linked_issue_numbers,
         running_by_issue,
         handoffs_by_issue,
+        verdicts_by_issue=verdicts_by_issue,
     )
 
     _sort_items(items)
@@ -532,6 +596,36 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         "slots_available": max(0, max_concurrent - running_count),
         "max_concurrent": max_concurrent,
     }
+
+
+async def _fetch_sova_verdicts(
+    prs_by_issue: dict[str, dict],
+    unlinked_prs: list[dict] | None = None,
+    project_dir: Path | None = None,
+) -> dict[str, dict]:
+    """Batch-fetch SOVA reviewer verdicts for all issues and unlinked PRs.
+
+    Scoped to the current PR number so verdicts from prior PR revisions are excluded.
+    Returns a dict of {issue_number: verdict_dict} for linked PRs and
+    {"pr:{number}": verdict_dict} for unlinked standalone PRs.
+    """
+    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+    async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
+        try:
+            return key, await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
+        except Exception:
+            log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
+            return key, {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+    tasks = [fetch_one(issue, issue, pr.get("number")) for issue, pr in prs_by_issue.items()]
+    for pr in unlinked_prs or []:
+        pr_num = pr.get("number")
+        if pr_num:
+            tasks.append(fetch_one(f"pr:{pr_num}", None, pr_num))
+
+    results = await asyncio.gather(*tasks)
+    return dict(results)
 
 
 async def _fetch_all_sources(

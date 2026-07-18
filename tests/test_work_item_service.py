@@ -527,22 +527,37 @@ class TestGetWorkItems:
 
     @pytest.fixture()
     def _mock_sources(self):
-        """Patch _fetch_all_sources and _get_project_agents."""
+        """Patch _fetch_all_sources, _fetch_sova_verdicts, and _get_project_agents."""
         with (
             patch(
                 "sova.dashboard.services.work_item_service._fetch_all_sources",
                 new_callable=AsyncMock,
             ) as mock_fetch,
             patch(
+                "sova.dashboard.services.work_item_service._fetch_sova_verdicts",
+                new_callable=AsyncMock,
+            ) as mock_verdicts,
+            patch(
                 "sova.dashboard.services.agent_pool._get_project_agents",
             ) as mock_pa,
         ):
             mock_pa.return_value = MagicMock(max_concurrent=3)
-            yield mock_fetch, mock_pa
+            # Default: match production behaviour; return explicit no-review for every issue.
+            # Tests that want specific verdicts can set mock_verdicts.return_value directly.
+            mock_verdicts.side_effect = lambda prs_by_issue, **_: {
+                issue: {
+                    "has_sova_review": False,
+                    "verdict": None,
+                    "finding_count": 0,
+                    "reviewed_at": None,
+                }
+                for issue in prs_by_issue
+            }
+            yield mock_fetch, mock_pa, mock_verdicts
 
     @pytest.mark.asyncio()
     async def test_basic_assembly(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, *_ = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "triaged", "labels": [], "priority": 2}]
         mock_fetch.return_value = (queue, [], [], {"agents": [], "completed": []})
 
@@ -556,10 +571,14 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_task_with_linked_pr_deduplication(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, _, mock_verdicts = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "in_review", "labels": [], "priority": -1}]
         prs = [{"number": 100, "linked_issue": 42, "computed_state": "approved", "state": "OPEN", "title": "Fix"}]
         mock_fetch.return_value = (queue, prs, [], {"agents": [], "completed": []})
+        mock_verdicts.side_effect = None
+        mock_verdicts.return_value = {
+            "42": {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        }
 
         result = await get_work_items()
 
@@ -570,7 +589,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_standalone_pr_appears(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, *_ = _mock_sources
         prs = [{"number": 200, "linked_issue": None, "computed_state": "ci_running", "state": "OPEN", "title": "Quick"}]
         mock_fetch.return_value = ([], prs, [], {"agents": [], "completed": []})
 
@@ -583,7 +602,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_running_agent_counted(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, *_ = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "in_progress", "labels": [], "priority": 1}]
         agents = {"agents": [{"issue": "42", "run_id": 5, "role": "developer", "elapsed_seconds": 60}], "completed": []}
         mock_fetch.return_value = (queue, [], [], agents)
@@ -596,7 +615,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_handoff_attached_to_task(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, *_ = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "in_review", "labels": [], "priority": -1}]
         handoffs = [
             {"issue": "42", "status": "awaiting_action", "summary": "Done", "next_actions": [{"id": "integrate"}]},
@@ -610,7 +629,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_project_dir_sets_slug(self, _mock_sources) -> None:
-        mock_fetch, mock_pa = _mock_sources
+        mock_fetch, mock_pa, _ = _mock_sources
         mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
 
         from pathlib import Path
@@ -624,7 +643,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_no_project_agents_defaults_max_3(self, _mock_sources) -> None:
-        mock_fetch, mock_pa = _mock_sources
+        mock_fetch, mock_pa, _ = _mock_sources
         mock_pa.return_value = None
         mock_fetch.return_value = ([], [], [], {"agents": [], "completed": []})
 
@@ -635,11 +654,15 @@ class TestGetWorkItems:
     @pytest.mark.asyncio()
     async def test_pr_with_issue_not_in_queue(self, _mock_sources) -> None:
         """PR linked to issue that's NOT in queue -- appears as PR item with issue context."""
-        mock_fetch, _ = _mock_sources
+        mock_fetch, _, mock_verdicts = _mock_sources
         prs = [
             {"number": 300, "linked_issue": 99, "computed_state": "approved_ci_green", "state": "OPEN", "title": "Fix"},
         ]
         mock_fetch.return_value = ([], prs, [], {"agents": [], "completed": []})
+        mock_verdicts.side_effect = None
+        mock_verdicts.return_value = {
+            "99": {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        }
 
         result = await get_work_items()
 
@@ -649,7 +672,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_sorting_applied(self, _mock_sources) -> None:
-        mock_fetch, _ = _mock_sources
+        mock_fetch, *_ = _mock_sources
         queue = [
             {"issue": "1", "title": "Low", "state": "triaged", "labels": [], "priority": 99},
             {"issue": "2", "title": "High", "state": "in_progress", "labels": [], "priority": 1},
@@ -685,6 +708,24 @@ class TestAppendStandalonePrItems:
         _append_standalone_pr_items(items, prs, set(), {}, {})
         assert len(items) == 1
         assert items[0]["issue_number"] == "42"
+
+    def test_unlinked_pr_uses_pr_number_key_for_verdict(self) -> None:
+        """Unlinked PRs look up verdict by 'pr:{number}' key, not by issue."""
+        items: list[dict] = []
+        prs = [{"number": 200, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
+        verdicts = {"pr:200": {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}}
+        _append_standalone_pr_items(items, prs, set(), {}, {}, verdicts_by_issue=verdicts)
+        assert len(items) == 1
+        assert items[0]["state"] == "pr_approved"
+
+    def test_unlinked_pr_with_no_review_verdict_shows_awaiting(self) -> None:
+        """Unlinked PR with a 'pr:N' entry showing has_sova_review=False shows pr_awaiting_review."""
+        items: list[dict] = []
+        prs = [{"number": 300, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
+        verdicts = {"pr:300": {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}}
+        _append_standalone_pr_items(items, prs, set(), {}, {}, verdicts_by_issue=verdicts)
+        assert len(items) == 1
+        assert items[0]["state"] == "pr_awaiting_review"
 
 
 class TestFindIntegrateAction:
@@ -785,3 +826,58 @@ class TestGetWorkItemsConfigLoadFailure:
             assert "config_load_failed" in str(mock_log.warning.call_args)
 
         assert result["items"] == []
+
+
+class TestFetchSovaVerdicts:
+    """Direct tests for _fetch_sova_verdicts covering the unlinked PR path."""
+
+    @pytest.mark.asyncio()
+    async def test_fetches_verdicts_for_linked_prs(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        mock_verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=mock_verdict,
+        ) as mock_call:
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        assert "42" in result
+        assert result["42"]["has_sova_review"] is False
+        mock_call.assert_called_once_with("42", pr_number=100, project_dir=None)
+
+    @pytest.mark.asyncio()
+    async def test_fetches_verdicts_for_unlinked_prs(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        mock_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value=mock_verdict,
+        ) as mock_call:
+            result = await _fetch_sova_verdicts(
+                {},
+                unlinked_prs=[{"number": 200}],
+            )
+
+        assert "pr:200" in result
+        assert result["pr:200"]["has_sova_review"] is True
+        assert result["pr:200"]["verdict"] == "approve"
+        mock_call.assert_called_once_with(None, pr_number=200, project_dir=None)
+
+    @pytest.mark.asyncio()
+    async def test_unlinked_pr_without_number_is_skipped(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+        ) as mock_verdict:
+            result = await _fetch_sova_verdicts({}, unlinked_prs=[{"number": None}])
+
+        assert result == {}
+        mock_verdict.assert_not_called()
