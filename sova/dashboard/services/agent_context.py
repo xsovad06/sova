@@ -86,6 +86,13 @@ async def _resolve_issue_worktree(
             else:
                 wt_id = branch_name.replace("/", "-").replace(" ", "-")[:50]
 
+            # Guard: wt_id must be non-empty after sanitization; an empty wt_id
+            # produces a path that resolves to the worktrees directory itself and
+            # causes create_worktree to fail, falling back to project_dir.
+            if not wt_id.strip("-"):
+                log.warning("command.worktree_skipped_no_id", branch=branch_name, pr=pr_number)
+                return project_dir
+
             wt_info = await create_worktree(
                 issue_id=wt_id,
                 branch=branch_name,
