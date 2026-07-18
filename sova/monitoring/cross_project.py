@@ -89,28 +89,39 @@ class MetricsSnapshotWriter:
 
     async def _write_loop(self) -> None:
         """Write snapshots at a fixed interval."""
+        loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(_WRITE_INTERVAL)
             try:
-                self._write_snapshot()
+                # Collect metrics on the event loop thread: get_system_metrics()
+                # reads pa.agents (shared dict modified only from the event loop
+                # thread). Running it in an executor thread would race with
+                # concurrent dict mutations (agent start/stop) and raise
+                # RuntimeError: dictionary changed size during iteration.
+                data = self._collect_metrics()
+                if data is not None:
+                    # Only the disk I/O is offloaded -- no shared state accessed.
+                    await loop.run_in_executor(None, self._flush_to_disk, data)
             except Exception:
                 log.warning("cross_project.write_error", slug=self._slug, exc_info=True)
 
-    def _write_snapshot(self) -> None:
-        """Write a single metric snapshot atomically."""
+    def _collect_metrics(self) -> dict | None:
+        """Collect metrics on the event loop thread and return them, or None."""
         if not self._enabled:
-            return
-
-        if self._get_metrics is None:
+            return None
+        if self._get_metrics is not None:
+            data = self._get_metrics()
+        else:
             from sova.dashboard.services.resource_service import get_system_metrics
 
             data = get_system_metrics()
-        else:
-            data = self._get_metrics()
+        return data if data.get("available") else None
 
-        if not data.get("available"):
-            return
+    def _flush_to_disk(self, data: dict) -> None:
+        """Write a pre-collected metrics dict to disk atomically.
 
+        Safe to run in a thread executor: accesses no shared mutable state.
+        """
         snapshot = {
             "timestamp": time.time(),
             "pid": self._pid,
@@ -122,7 +133,6 @@ class MetricsSnapshotWriter:
             "agent_slots": data.get("agent_slots", {}),
         }
 
-        # Atomic write: write to temp file, then rename
         try:
             fd, tmp_path = tempfile.mkstemp(dir=str(self._metrics_dir), suffix=".tmp", prefix=self._slug)
             try:
@@ -130,7 +140,6 @@ class MetricsSnapshotWriter:
                     json.dump(snapshot, f)
                 os.replace(tmp_path, str(self._snapshot_path))
             except BaseException:
-                # Clean up temp file on failure
                 try:
                     os.unlink(tmp_path)
                 except OSError:
@@ -139,6 +148,12 @@ class MetricsSnapshotWriter:
         except OSError as e:
             log.warning("cross_project.atomic_write_failed", slug=self._slug, error=str(e))
             self._enabled = False
+
+    def _write_snapshot(self) -> None:
+        """Write a single metric snapshot atomically (used by start() and tests)."""
+        data = self._collect_metrics()
+        if data is not None:
+            self._flush_to_disk(data)
 
 
 def read_cross_project_metrics(
