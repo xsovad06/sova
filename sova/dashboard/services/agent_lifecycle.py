@@ -137,9 +137,18 @@ async def cancel_background_tasks() -> None:
     from sova.dashboard.services.agent_pool import _projects
 
     all_tasks: list[asyncio.Task] = []
-    for pa in _projects.values():
-        for agent in pa.agents.values():
-            all_tasks.extend(await _cancel_agent_io_tasks(agent))
+    # Run per-agent IO cancellation concurrently. The sequential loop was
+    # O(N * 3s) because each _cancel_agent_io_tasks awaits
+    # resource_collector.stop() before returning. With asyncio.gather the
+    # wall-clock cost is max(individual stop) regardless of agent count.
+    agents = [agent for pa in _projects.values() for agent in pa.agents.values()]
+    results = await asyncio.gather(
+        *(_cancel_agent_io_tasks(a) for a in agents),
+        return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, list):
+            all_tasks.extend(r)
 
     for t in _background_tasks:
         if not t.done():
