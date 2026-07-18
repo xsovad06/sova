@@ -11,6 +11,9 @@ from pydantic import BaseModel
 from sova.config.registry import register_project
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import setup_service
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.setup")
 
 router = APIRouter(tags=["setup"])
 
@@ -147,7 +150,14 @@ async def configure_project(req: ConfigureRequest):
     toml_file.write_text(toml_content)
 
     slug = register_project(project)
-    return {"status": "ok", "config_path": str(toml_file), "slug": slug}
+
+    # Best-effort: create any missing agent:* labels now so the first triage
+    # doesn't fail due to missing labels. Failure is non-fatal here.
+    labels_result = await setup_service.ensure_agent_labels(project)
+    if created := labels_result.get("created"):
+        log.info("setup.agent_labels_created", count=len(created), labels=created)
+
+    return {"status": "ok", "config_path": str(toml_file), "slug": slug, "labels": labels_result}
 
 
 @router.post("/setup/commands/sync")
@@ -216,6 +226,20 @@ async def create_milestones(req: CreateMilestonesRequest):
         raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
 
     return await setup_service.create_starter_milestones(project, titles=req.titles)
+
+
+class EnsureLabelsRequest(BaseModel):
+    project_path: str
+
+
+@router.post("/setup/labels/create", responses={404: {"description": "Project directory not found"}})
+async def create_agent_labels(req: EnsureLabelsRequest) -> dict:
+    """Create any missing agent:* labels on the GitHub repo."""
+    project = Path(req.project_path).expanduser().resolve()
+    if not project.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {project}")
+
+    return await setup_service.ensure_agent_labels(project)
 
 
 @router.post("/setup/jira/test")

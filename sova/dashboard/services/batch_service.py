@@ -184,6 +184,32 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         adapter = create_adapter(config)
         role = TriageRole()
 
+        # Pre-flight: ensure all agent:* labels exist before per-item work begins.
+        # This prevents individual triage failures caused by GitHub label propagation
+        # delays when auto-creating labels reactively inside _add_label.
+        # Skip for cancelled batches: the per-item loop will mark each item skipped.
+        if not job.cancelled:
+            try:
+                created = await adapter.ensure_repo_labels()
+                if created:
+                    emit_safe(
+                        f"Created {len(created)} missing agent label(s): {', '.join(created)}",
+                        severity=FeedEventSeverity.info,
+                        category="batch",
+                        metadata={"batch_id": job.batch_id, "created_labels": created},
+                    )
+            except RuntimeError as exc:
+                msg = (
+                    f"Batch triage aborted: could not set up required labels. {exc} "
+                    "Ensure your GitHub token has 'repo' scope and re-run triage."
+                )
+                log.error("batch.triage.labels_preflight_failed", error=str(exc), exc_info=True)
+                emit_safe(msg, severity=FeedEventSeverity.error, category="batch", metadata={"batch_id": job.batch_id})
+                for item in job.results:
+                    item.status = "failed"
+                    item.detail = "Aborted: missing agent labels (see feed for details)"
+                return
+
         sem = asyncio.Semaphore(job.max_concurrency)
 
         async def _process_item(item: BatchItemResult) -> None:

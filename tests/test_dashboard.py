@@ -5087,6 +5087,31 @@ class TestSetupAPI:
         assert resp.status_code == 404
         assert "Directory not found" in resp.json()["detail"]
 
+    async def test_create_agent_labels_happy_path(self, client: AsyncClient, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.setup_service.ensure_agent_labels",
+            new_callable=AsyncMock,
+            return_value={"status": "ok", "created": ["agent:triaged", "agent:ready"]},
+        ):
+            resp = await client.post(
+                "/api/setup/labels/create",
+                json={"project_path": str(tmp_path)},
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "agent:triaged" in data["created"]
+
+    async def test_create_agent_labels_returns_404_for_missing_dir(self, client: AsyncClient) -> None:
+        resp = await client.post(
+            "/api/setup/labels/create",
+            json={"project_path": "/nonexistent/path/that/does/not/exist"},
+        )
+        assert resp.status_code == 404
+        assert "Directory not found" in resp.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Work Service -- direct service tests

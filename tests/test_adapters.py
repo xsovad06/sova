@@ -1075,3 +1075,41 @@ class TestProjectBoard:
         with patch.object(self.adapter, "_move_on_board", new_callable=AsyncMock) as mock_move:
             await self.adapter.transition_state("42", TaskState.DONE)
             mock_move.assert_called_once_with("42", TaskState.DONE)
+
+    # -- ensure_repo_labels --
+
+    async def test_ensure_repo_labels_creates_missing(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels creates labels not yet on the repo."""
+        required = frozenset({"agent:ready", "agent:triaged"})
+        existing = [{"name": "agent:ready"}]
+        mock_run.side_effect = [
+            _shell_result(stdout=json.dumps(existing)),
+            _shell_result(),
+        ]
+
+        created = await self.adapter.ensure_repo_labels(required=required)
+
+        assert created == ["agent:triaged"]
+
+    async def test_ensure_repo_labels_idempotent_on_already_exists(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels treats 'already exists' create failure as success."""
+        mock_run.side_effect = [
+            _shell_result(stdout="[]"),
+            _shell_result(returncode=1, stderr="label 'agent:ready' already exists"),
+        ]
+
+        created = await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
+
+        assert created == []
+
+    async def test_ensure_repo_labels_raises_on_permission_error(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels raises RuntimeError on real creation failures."""
+        import pytest
+
+        mock_run.side_effect = [
+            _shell_result(stdout="[]"),
+            _shell_result(returncode=1, stderr="HTTP 403: insufficient scope"),
+        ]
+
+        with pytest.raises(RuntimeError, match="Could not create label"):
+            await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
