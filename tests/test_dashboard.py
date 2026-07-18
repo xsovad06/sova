@@ -760,11 +760,10 @@ class TestCancelBackgroundTasks:
     async def test_cancels_multiple_agents_concurrently(self) -> None:
         """IO task cancellation for N agents runs concurrently, not serially.
 
-        With the old sequential loop, N agents × 3s resource_collector.stop()
+        With the old sequential loop, N agents x 3s resource_collector.stop()
         timeout = N*3 seconds of serial shutdown time. The concurrent gather
         makes the wall-clock cost max(individual stop) regardless of N.
         """
-        import time
         from unittest.mock import AsyncMock, MagicMock
 
         from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
@@ -772,8 +771,15 @@ class TestCancelBackgroundTasks:
 
         pa = _get_project_agents()
 
-        async def _slow_stop() -> None:
-            await asyncio.sleep(0.1)
+        active = 0
+        max_active = 0
+
+        async def _concurrent_stop() -> None:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0)  # yield so other coroutines can reach this point
+            active -= 1
 
         agents_added = []
         for i in range(3):
@@ -781,20 +787,47 @@ class TestCancelBackgroundTasks:
             mock_process.pid = 90000 + i
             agent = AgentState(run_id=90000 + i, issue=str(i), role="developer", process=mock_process)
             mock_collector = MagicMock()
-            mock_collector.stop = AsyncMock(side_effect=_slow_stop)
+            mock_collector.stop = AsyncMock(side_effect=_concurrent_stop)
             agent.resource_collector = mock_collector
             pa.agents[90000 + i] = agent
             agents_added.append(90000 + i)
 
         try:
-            start = time.monotonic()
             await cancel_background_tasks()
-            elapsed = time.monotonic() - start
-            # Three agents each sleeping 0.1 s: serial = 0.3 s, concurrent < 0.25 s
-            assert elapsed < 0.25, f"Expected concurrent execution but took {elapsed:.2f}s"
+            # All 3 agents must have been active simultaneously at peak
+            assert max_active == 3, f"Expected 3 concurrent stops, but peak was {max_active}"
         finally:
             for run_id in agents_added:
                 pa.agents.pop(run_id, None)
+
+    async def test_exception_from_cancel_agent_io_tasks_is_logged(self) -> None:
+        """Exceptions returned by gather(return_exceptions=True) are logged, not silently dropped."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+
+        pa = _get_project_agents()
+        agent = MagicMock(spec=AgentState)
+        agent.resource_collector = None
+        pa.agents[8888] = agent
+
+        async def _raise_io_tasks(a) -> None:
+            raise RuntimeError("io cancel failed")
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle._cancel_agent_io_tasks",
+            side_effect=_raise_io_tasks,
+        ):
+            with patch("sova.dashboard.services.agent_lifecycle.log") as mock_log:
+                try:
+                    await cancel_background_tasks()
+                finally:
+                    pa.agents.pop(8888, None)
+
+        mock_log.warning.assert_called_once()
+        call_kwargs = mock_log.warning.call_args
+        assert call_kwargs[0][0] == "cancel_agent_io_tasks.failed"
 
 
 class TestShutdownTasks:
@@ -6384,6 +6417,64 @@ class TestAgentRecoveryDirect:
         assert result["has_sova_review"] is False
         assert result["verdict"] is None
 
+    async def test_sova_review_verdict_by_pr_number_only(self) -> None:
+        """get_sova_review_verdict with issue_number=None queries solely by PR number."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="200",
+                    pr_number=500,
+                    role="reviewer",
+                    status="done",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict(None, pr_number=500)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    async def test_sova_review_verdict_none_issue_none_pr_returns_no_review(self) -> None:
+        """get_sova_review_verdict(None) with no pr_number returns no_review immediately."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        result = await get_sova_review_verdict(None)
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+
+    async def test_sova_review_verdict_empty_string_issue_returns_no_review(self) -> None:
+        """Empty string issue_number with no pr_number returns no_review (not a global query)."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        result = await get_sova_review_verdict("")
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+
+    async def test_sova_review_verdict_empty_string_with_pr_queries_by_pr(self) -> None:
+        """Empty string issue_number + pr_number falls through to PR-only query."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="999",
+                    pr_number=777,
+                    role="reviewer",
+                    status="done",
+                    handoff_json={"next_action": "approve", "pending_findings": []},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("", pr_number=777)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
 
 # ---------------------------------------------------------------------------
 # Verdict parsing from output lines
@@ -11360,3 +11451,183 @@ class TestHandoffIssueFilter:
         data = resp.json()
         assert data["has_handoff"] is False
         assert data["handoffs"] == []
+
+
+# ---------------------------------------------------------------------------
+# SOVA verdict integration with compute_work_item_state (findings 1 + 3)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeWorkItemStateWithSovaVerdict:
+    """compute_work_item_state() applies SOVA reviewer verdict to override GitHub-derived states."""
+
+    def _approved_pr(self) -> dict:
+        return {"state": "OPEN", "computed_state": "approved"}
+
+    def _ready_pr(self) -> dict:
+        return {"state": "OPEN", "computed_state": "approved_ci_green"}
+
+    def _awaiting_pr(self) -> dict:
+        return {"state": "OPEN", "computed_state": "awaiting_review"}
+
+    def _addressed_pr(self) -> dict:
+        return {"state": "OPEN", "computed_state": "review_addressed"}
+
+    def _no_review_verdict(self) -> dict:
+        return {"has_sova_review": False, "verdict": None, "finding_count": 0}
+
+    def _revise_verdict(self) -> dict:
+        return {"has_sova_review": True, "verdict": "revise", "finding_count": 3}
+
+    def _block_verdict(self) -> dict:
+        return {"has_sova_review": True, "verdict": "block", "finding_count": 1}
+
+    def _approve_verdict(self) -> dict:
+        return {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+
+    def test_finding3_no_review_approved_pr_becomes_awaiting_review(self) -> None:
+        """Finding 3: when no SOVA review exists, Approved PR shows Review PR (not Integrate)."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._approved_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._no_review_verdict(),
+        )
+        assert state == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_finding3_no_review_ready_to_merge_becomes_awaiting_review(self) -> None:
+        """Finding 3: no SOVA review blocks even approved_ci_green state."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._ready_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._no_review_verdict(),
+        )
+        assert state == WorkItemState.PR_AWAITING_REVIEW
+
+    def test_finding3_no_review_does_not_affect_changes_requested(self) -> None:
+        """Finding 3: if GitHub already shows changes_requested, keep it as-is."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        pr = {"state": "OPEN", "computed_state": "changes_requested"}
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=pr,
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._no_review_verdict(),
+        )
+        assert state == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_finding1_revise_verdict_on_approved_pr_becomes_changes_requested(self) -> None:
+        """Finding 1: SOVA verdict=revise overrides GitHub approved to show Address PR."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._approved_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._revise_verdict(),
+        )
+        assert state == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_finding1_block_verdict_on_ready_to_merge_becomes_changes_requested(self) -> None:
+        """Finding 1: SOVA verdict=block overrides approved_ci_green to show Address PR."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._ready_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._block_verdict(),
+        )
+        assert state == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_finding1_revise_verdict_does_not_override_review_addressed(self) -> None:
+        """PR_REVIEW_ADDRESSED is not in _VERDICT_OVERRIDEABLE: its default action is already
+        'Review PR', so overriding to PR_CHANGES_REQUESTED adds no benefit and causes a
+        false 'Address PR' when threads are manually resolved without a fresh SOVA review."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._addressed_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._revise_verdict(),
+        )
+        assert state == WorkItemState.PR_REVIEW_ADDRESSED
+
+    def test_finding1_revise_verdict_on_awaiting_review_becomes_changes_requested(self) -> None:
+        """Finding 1: SOVA revise also overrides awaiting_review state."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._awaiting_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._revise_verdict(),
+        )
+        assert state == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_approve_verdict_does_not_block_integrate(self) -> None:
+        """SOVA verdict=approve leaves approved PR state untouched (Integrate allowed)."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._ready_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=self._approve_verdict(),
+        )
+        assert state == WorkItemState.PR_READY_TO_MERGE
+
+    def test_no_verdict_passed_uses_github_state_unchanged(self) -> None:
+        """When sova_verdict is None (not pre-fetched), GitHub state is used as-is."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._approved_pr(),
+            handoff=None,
+            running_agent=None,
+            sova_verdict=None,
+        )
+        assert state == WorkItemState.PR_APPROVED
+
+    def test_running_agent_takes_priority_over_sova_verdict(self) -> None:
+        """Running agent state is always highest priority — verdict cannot override it."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._approved_pr(),
+            handoff=None,
+            running_agent={"role": "reviewer"},
+            sova_verdict=self._revise_verdict(),
+        )
+        assert state == WorkItemState.AGENT_RUNNING
+
+    def test_awaiting_handoff_takes_priority_over_sova_verdict(self) -> None:
+        """Handoff awaiting action takes priority over SOVA verdict."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {"status": "awaiting_action", "next_actions": [{"id": "integrate"}]}
+        state = compute_work_item_state(
+            task_state=None,
+            pr_data=self._approved_pr(),
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=self._revise_verdict(),
+        )
+        assert state == WorkItemState.HANDOFF_PENDING
