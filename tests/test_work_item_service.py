@@ -9,6 +9,7 @@ import pytest
 from sova.dashboard.services.work_item_service import (
     WorkItemState,
     _append_standalone_pr_items,
+    _apply_sova_verdict,
     _attach_integration_gates,
     _build_pr_item,
     _build_task_item,
@@ -213,6 +214,38 @@ class TestComputeWorkItemState:
     def test_unknown_label_defaults_backlog(self) -> None:
         assert _state(task_state="unknown_state") == WorkItemState.BACKLOG
 
+    # -- SOVA verdict integration --
+
+    def test_pr_approved_no_sova_review_yields_sova_pending(self) -> None:
+        verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_SOVA_PENDING
+        )
+
+    def test_pr_approved_with_sova_approve_stays_approved(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_APPROVED
+        )
+
+    def test_pr_approved_with_sova_revise_yields_changes_requested(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 2, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
     # -- Edge cases --
 
     def test_no_inputs_defaults_backlog(self) -> None:
@@ -267,6 +300,18 @@ class TestGetActions:
     def test_pr_awaiting_review_has_review(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_AWAITING_REVIEW, issue_number="42", pr_number=123)
         assert primary["id"] == "review_pr"
+
+    def test_pr_sova_pending_has_address_pr_command(self) -> None:
+        """PR_SOVA_PENDING primary is the address-pr command (not the developer agent)."""
+        primary, secondary = _get_actions(WorkItemState.PR_SOVA_PENDING, issue_number="42", pr_number=123)
+        assert primary is not None
+        assert primary["id"] == "address_pr"
+        assert primary["handler"] == "run_command"
+        assert primary["handler_args"]["command"] == "address-pr"
+        assert primary["style"] == "warning"
+        review_ids = [a["id"] for a in secondary]
+        assert "review_pr" in review_ids
+        assert "integrate" in review_ids
 
     def test_pr_changes_requested_has_address(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number="42", pr_number=123)
@@ -399,6 +444,87 @@ class TestSortItems:
         ]
         _sort_items(items)
         assert items[0]["state"] == "pr_ready_to_merge"
+
+    def test_sova_pending_sorts_before_normal(self) -> None:
+        items = [
+            {"state": "triaged", "priority": 2},
+            {"state": "pr_sova_pending", "priority": 99},
+        ]
+        _sort_items(items)
+        assert items[0]["state"] == "pr_sova_pending"
+
+
+class TestApplySovaVerdict:
+    """Unit tests for _apply_sova_verdict() covering all override paths."""
+
+    def _no_review(self) -> dict:
+        return {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+    def _review(self, verdict: str) -> dict:
+        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "reviewed_at": None}
+
+    # -- sova_verdict=None: pass-through --
+
+    def test_none_verdict_leaves_state_unchanged(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, None) == WorkItemState.PR_APPROVED
+
+    def test_none_verdict_leaves_awaiting_unchanged(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, None) == WorkItemState.PR_AWAITING_REVIEW
+
+    # -- No SOVA review, integrate-bound states → PR_SOVA_PENDING --
+
+    def test_no_review_approved_yields_sova_pending(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review()) == WorkItemState.PR_SOVA_PENDING
+
+    def test_no_review_ready_to_merge_yields_sova_pending(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._no_review()) == WorkItemState.PR_SOVA_PENDING
+
+    def test_no_review_awaiting_review_unchanged(self) -> None:
+        """PR_AWAITING_REVIEW is not in _INTEGRATE_STATES, so no downgrade."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._no_review()) == WorkItemState.PR_AWAITING_REVIEW
+        )
+
+    def test_no_review_changes_requested_unchanged(self) -> None:
+        """Existing CHANGES_REQUESTED is already actionable; SOVA pending doesn't override it."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_CHANGES_REQUESTED, self._no_review())
+            == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
+    # -- SOVA reviewed with approve: pass-through --
+
+    def test_approved_verdict_leaves_approved_unchanged(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("approve")) == WorkItemState.PR_APPROVED
+
+    def test_approved_verdict_leaves_ready_to_merge_unchanged(self) -> None:
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("approve"))
+            == WorkItemState.PR_READY_TO_MERGE
+        )
+
+    # -- SOVA reviewed with revise/block: downgrade overrideable states --
+
+    def test_revise_verdict_on_approved_yields_changes_requested(self) -> None:
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise")) == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
+    def test_block_verdict_on_ready_to_merge_yields_changes_requested(self) -> None:
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("block"))
+            == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
+    def test_revise_verdict_on_awaiting_review_yields_changes_requested(self) -> None:
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("revise"))
+            == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
+    def test_revise_verdict_leaves_ci_failed_unchanged(self) -> None:
+        """CI_FAILED is not in _VERDICT_OVERRIDEABLE; existing fix action should not be clobbered."""
+        assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("revise")) == WorkItemState.PR_CI_FAILED
 
 
 class TestBuildTaskItem:
@@ -718,14 +844,14 @@ class TestAppendStandalonePrItems:
         assert len(items) == 1
         assert items[0]["state"] == "pr_approved"
 
-    def test_unlinked_pr_with_no_review_verdict_shows_awaiting(self) -> None:
-        """Unlinked PR with a 'pr:N' entry showing has_sova_review=False shows pr_awaiting_review."""
+    def test_unlinked_pr_with_no_review_verdict_shows_sova_pending(self) -> None:
+        """Unlinked approved PR with has_sova_review=False shows pr_sova_pending (not pr_awaiting_review)."""
         items: list[dict] = []
         prs = [{"number": 300, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
         verdicts = {"pr:300": {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}}
         _append_standalone_pr_items(items, prs, set(), {}, {}, verdicts_by_issue=verdicts)
         assert len(items) == 1
-        assert items[0]["state"] == "pr_awaiting_review"
+        assert items[0]["state"] == "pr_sova_pending"
 
 
 class TestFindIntegrateAction:
