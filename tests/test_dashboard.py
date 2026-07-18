@@ -5147,6 +5147,76 @@ class TestSetupAPI:
 
 
 # ---------------------------------------------------------------------------
+# Setup Service -- direct service tests (not via HTTP)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureAgentLabels:
+    """Direct tests for setup_service.ensure_agent_labels."""
+
+    async def test_happy_path_returns_created_labels(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.setup_service import ensure_agent_labels
+
+        mock_adapter = AsyncMock()
+        mock_adapter.ensure_repo_labels.return_value = ["agent:ready", "agent:triaged"]
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await ensure_agent_labels(tmp_path)
+
+        assert result == {"status": "ok", "created": ["agent:ready", "agent:triaged"]}
+
+    async def test_load_config_failure_returns_error(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.setup_service import ensure_agent_labels
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=FileNotFoundError("sova.toml not found"),
+        ):
+            result = await ensure_agent_labels(tmp_path)
+
+        assert result["status"] == "error"
+        assert "Failed to load config" in result["detail"]
+
+    async def test_create_adapter_failure_returns_error(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.setup_service import ensure_agent_labels
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("unsupported adapter")),
+        ):
+            result = await ensure_agent_labels(tmp_path)
+
+        assert result["status"] == "error"
+        assert "unsupported adapter" in result["detail"]
+
+    async def test_ensure_repo_labels_failure_returns_error(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.setup_service import ensure_agent_labels
+
+        mock_adapter = AsyncMock()
+        mock_adapter.ensure_repo_labels.side_effect = RuntimeError("HTTP 403: insufficient scope")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        ):
+            result = await ensure_agent_labels(tmp_path)
+
+        assert result["status"] == "error"
+        assert "403" in result["detail"]
+
+
+# ---------------------------------------------------------------------------
 # Work Service -- direct service tests
 # ---------------------------------------------------------------------------
 
@@ -11485,8 +11555,8 @@ class TestComputeWorkItemStateWithSovaVerdict:
     def _approve_verdict(self) -> dict:
         return {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
 
-    def test_finding3_no_review_approved_pr_becomes_awaiting_review(self) -> None:
-        """Finding 3: when no SOVA review exists, Approved PR shows Review PR (not Integrate)."""
+    def test_finding3_no_review_approved_pr_becomes_sova_pending(self) -> None:
+        """Finding 3: when no SOVA review exists, Approved PR shows Address PR first (PR_SOVA_PENDING)."""
         from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
 
         state = compute_work_item_state(
@@ -11496,10 +11566,10 @@ class TestComputeWorkItemStateWithSovaVerdict:
             running_agent=None,
             sova_verdict=self._no_review_verdict(),
         )
-        assert state == WorkItemState.PR_AWAITING_REVIEW
+        assert state == WorkItemState.PR_SOVA_PENDING
 
-    def test_finding3_no_review_ready_to_merge_becomes_awaiting_review(self) -> None:
-        """Finding 3: no SOVA review blocks even approved_ci_green state."""
+    def test_finding3_no_review_ready_to_merge_becomes_sova_pending(self) -> None:
+        """Finding 3: no SOVA review on approved_ci_green state yields PR_SOVA_PENDING."""
         from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
 
         state = compute_work_item_state(
@@ -11509,7 +11579,7 @@ class TestComputeWorkItemStateWithSovaVerdict:
             running_agent=None,
             sova_verdict=self._no_review_verdict(),
         )
-        assert state == WorkItemState.PR_AWAITING_REVIEW
+        assert state == WorkItemState.PR_SOVA_PENDING
 
     def test_finding3_no_review_does_not_affect_changes_requested(self) -> None:
         """Finding 3: if GitHub already shows changes_requested, keep it as-is."""
