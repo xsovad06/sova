@@ -82,98 +82,155 @@ def _is_process_alive(pid: int) -> bool:
         return False
 
 
+_MERGE_CHECK_TIMEOUT = 10.0  # per-PR GitHub check during recovery
+_RECOVERY_TOTAL_TIMEOUT = 20.0  # hard cap on the entire recover_stale_runs() call
+
+
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
-    """Detect and mark stale non-terminal TaskRuns on dashboard startup."""
+    """Detect and mark stale non-terminal TaskRuns on dashboard startup.
+
+    Three-phase approach to keep startup fast regardless of stale-run count:
+      1. Read-only query + handoff checks (synchronous, fast).
+      2. Merge checks for crashed merge-role runs -- run concurrently, total
+         budget capped at ``_RECOVERY_TOTAL_TIMEOUT`` seconds. Previously these
+         ran sequentially inside a write transaction, causing N×15s freezes.
+      3. Single write transaction to persist all status updates.
+    """
+    import asyncio
+
     try:
+        from decimal import Decimal
+
         from sqlalchemy import select
 
+        from sova.dashboard.services.agent_lifecycle import (
+            _MERGE_ROLES,
+            _check_pr_merged_on_failure,
+        )
         from sova.dashboard.services.work_service import _TERMINAL
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
-        interrupted = []
+        # Phase 1: load stale runs and apply fast (synchronous) checks.
+        async with await get_session(project_dir=project_dir) as session:
+            stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL))
+            result = await session.execute(stmt)
+            all_stale = result.scalars().all()
 
+        # Collect dead runs with their snapshot data for writing back later.
+        # We deliberately work outside a session here so the write lock is free.
+        dead_runs: list[dict] = []
+        for run in all_stale:
+            if run.pid and _is_process_alive(run.pid):
+                log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                continue
+
+            was_status = run.status
+            final_status = "interrupted"
+            cost_override = None
+            error_msg = None
+
+            # Handoff check: if agent wrote a handoff after the run started, mark done.
+            # Skip issue-less runs: get_handoff(issue=None) returns the project-wide
+            # latest handoff, which belongs to a different run.
+            try:
+                from sova.dashboard.services import handoff_service
+
+                hf = handoff_service.get_handoff(project_dir, issue=run.issue_number) if run.issue_number else None
+                if hf and hf.get("status") == "awaiting_action":
+                    hf_time_str = hf.get("created_at")
+                    run_start = run.started_at or datetime.min.replace(tzinfo=timezone.utc)
+                    if run_start.tzinfo is None:
+                        run_start = run_start.replace(tzinfo=timezone.utc)
+                    hf_dt = None
+                    if hf_time_str:
+                        hf_dt = datetime.fromisoformat(hf_time_str.replace("Z", "+00:00"))
+                        if hf_dt.tzinfo is None:
+                            hf_dt = hf_dt.replace(tzinfo=timezone.utc)
+                    if hf_dt is not None and hf_dt >= run_start:
+                        final_status = "done"
+                        cost = hf.get("details", {}).get("cost_usd")
+                        if cost is not None:
+                            cost_override = Decimal(str(cost))
+                        log.info("recovery.completed_with_handoff", run_id=run.id, issue=run.issue_number)
+            except Exception:
+                log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
+
+            _role_parts = (run.role or "").removeprefix("command:").removeprefix("/").split()
+            needs_merge_check = (
+                final_status == "interrupted"
+                and run.pr_number is not None
+                and bool(_role_parts)
+                and _role_parts[0] in _MERGE_ROLES
+            )
+
+            dead_runs.append(
+                {
+                    "run_id": run.id,
+                    "pr_number": run.pr_number,
+                    "issue": run.issue_number,
+                    "role": run.role,
+                    "pid": run.pid,
+                    "was_status": was_status,
+                    "final_status": final_status,
+                    "cost_override": cost_override,
+                    "error_msg": error_msg,
+                    "needs_merge_check": needs_merge_check,
+                }
+            )
+
+        if not dead_runs:
+            return []
+
+        # Phase 2: merge checks concurrently, bounded by the total timeout.
+        merge_candidates = [r for r in dead_runs if r["needs_merge_check"]]
+        if merge_candidates:
+
+            async def _check_one(rec: dict) -> tuple[int, bool]:
+                try:
+                    merged = await asyncio.wait_for(
+                        _check_pr_merged_on_failure(rec["pr_number"], project_dir),
+                        timeout=_MERGE_CHECK_TIMEOUT,
+                    )
+                    return rec["run_id"], merged
+                except (asyncio.TimeoutError, Exception):
+                    log.debug("recovery.merge_check_skipped", run_id=rec["run_id"], exc_info=True)
+                    return rec["run_id"], False
+
+            dead_by_id = {r["run_id"]: r for r in dead_runs}
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*(_check_one(r) for r in merge_candidates)),
+                    timeout=_RECOVERY_TOTAL_TIMEOUT,
+                )
+                for run_id, merged in results:
+                    if merged:
+                        rec = dead_by_id[run_id]
+                        rec["final_status"] = "done"
+                        rec["error_msg"] = f"Agent process died but PR #{rec['pr_number']} was merged"
+                        log.info("recovery.merge_succeeded_despite_crash", run_id=run_id, pr=rec["pr_number"])
+            except asyncio.TimeoutError:
+                log.warning("recovery.merge_checks_timed_out", total_timeout=_RECOVERY_TOTAL_TIMEOUT)
+
+        # Phase 3: single fast write transaction.
+        interrupted = []
         async with await get_session(project_dir=project_dir) as session:
             async with session.begin():
-                stmt = select(TaskRun).where(TaskRun.status.notin_(_TERMINAL))
+                stmt = select(TaskRun).where(TaskRun.id.in_([r["run_id"] for r in dead_runs]))
                 result = await session.execute(stmt)
-                stale_runs = result.scalars().all()
+                runs_by_id = {r.id: r for r in result.scalars().all()}
 
-                for run in stale_runs:
-                    if run.pid and _is_process_alive(run.pid):
-                        log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                for rec in dead_runs:
+                    run = runs_by_id.get(rec["run_id"])
+                    if run is None:
                         continue
-
-                    was_status = run.status
-                    final_status = "interrupted"
-
-                    # Check if agent completed and wrote a handoff before dying
-                    try:
-                        from sova.dashboard.services import handoff_service
-
-                        hf = handoff_service.get_handoff(project_dir, issue=run.issue_number)
-                        if hf and hf.get("status") == "awaiting_action":
-                            hf_time_str = hf.get("created_at")
-                            run_start = run.started_at or datetime.min.replace(tzinfo=timezone.utc)
-                            if run_start.tzinfo is None:
-                                run_start = run_start.replace(tzinfo=timezone.utc)
-                            if hf_time_str:
-                                hf_dt = datetime.fromisoformat(hf_time_str.replace("Z", "+00:00"))
-                                if hf_dt.tzinfo is None:
-                                    hf_dt = hf_dt.replace(tzinfo=timezone.utc)
-                            else:
-                                hf_dt = None
-                            if hf_dt is not None and hf_dt >= run_start:
-                                final_status = "done"
-                                cost = hf.get("details", {}).get("cost_usd")
-                                if cost is not None:
-                                    from decimal import Decimal
-
-                                    run.total_cost_usd = Decimal(str(cost))
-                                run.error_message = None
-                                log.info(
-                                    "recovery.completed_with_handoff",
-                                    run_id=run.id,
-                                    issue=run.issue_number,
-                                )
-                    except Exception:
-                        log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
-
-                    # For merge-role runs with a PR number, check GitHub with a bounded
-                    # timeout to detect successful merges despite agent crash. The 15-second
-                    # cap is acceptable at startup (vs the 300-second default that caused the
-                    # original hang). The liveness sweep skips terminal runs, so this is the
-                    # only place to correctly classify integrate-pr / approve-merge runs.
-                    if final_status == "interrupted" and run.pr_number is not None:
-                        import asyncio
-
-                        from sova.dashboard.services.agent_lifecycle import (
-                            _MERGE_ROLES,
-                            _check_pr_merged_on_failure,
-                        )
-
-                        cmd_name = (run.role or "").removeprefix("command:").removeprefix("/").split()[0]
-                        if cmd_name in _MERGE_ROLES:
-                            try:
-                                if await asyncio.wait_for(
-                                    _check_pr_merged_on_failure(run.pr_number, project_dir),
-                                    timeout=15.0,
-                                ):
-                                    final_status = "done"
-                                    run.error_message = f"Agent process died but PR #{run.pr_number} was merged"
-                                    log.info(
-                                        "recovery.merge_succeeded_despite_crash",
-                                        run_id=run.id,
-                                        pr=run.pr_number,
-                                    )
-                            except (asyncio.TimeoutError, Exception):
-                                log.debug("recovery.merge_check_skipped", run_id=run.id, exc_info=True)
-
+                    if run.status in _TERMINAL:
+                        continue  # finalized by a concurrent writer between Phase 1 and Phase 3
+                    final_status = rec["final_status"]
                     run.status = final_status
-                    if final_status == "interrupted":
-                        run.error_message = f"Stale run recovered on startup (was {was_status!r})"
                     run.ended_at = datetime.now(timezone.utc)
                     if final_status == "interrupted":
+                        run.error_message = f"Stale run recovered on startup (was {rec['was_status']!r})"
                         interrupted.append(
                             {
                                 "run_id": run.id,
@@ -182,12 +239,16 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                                 "pid": run.pid,
                             }
                         )
+                    else:
+                        run.error_message = rec["error_msg"]
+                        if rec["cost_override"] is not None:
+                            run.total_cost_usd = rec["cost_override"]
                     log.warning(
                         "recovery.stale_run",
                         run_id=run.id,
                         issue=run.issue_number,
                         pid=run.pid,
-                        was_status=was_status,
+                        was_status=rec["was_status"],
                         final_status=final_status,
                     )
 

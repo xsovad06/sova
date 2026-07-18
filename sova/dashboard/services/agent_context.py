@@ -44,12 +44,19 @@ async def _resolve_branch_name(pr_number: int | None, project_dir: Path) -> str:
     return ""
 
 
-async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name: str = "") -> Path:
-    """Return the worktree path for an issue if one exists, else project_dir.
+async def _resolve_issue_worktree(
+    issue: str,
+    project_dir: Path,
+    *,
+    branch_name: str = "",
+    pr_number: int | None = None,
+) -> Path:
+    """Return the worktree path for an issue, creating one if needed.
 
-    Falls back to branch-based lookup via ``find_worktree_by_branch()`` when
-    the issue-based directory doesn't exist but *branch_name* is provided.
-    Filters out the main worktree to avoid running in the project root.
+    Tries issue-based directory first, then branch-based lookup. When a branch
+    is known but no worktree exists yet (common for issue-less PRs), creates a
+    worktree so the agent never runs in the main project directory. Falls back
+    to project_dir only when no branch is known.
     """
     issue_id = issue.lstrip("#").strip()
     if issue_id and issue_id.isdigit():
@@ -66,6 +73,29 @@ async def _resolve_issue_worktree(issue: str, project_dir: Path, *, branch_name:
                 return wt_path
         except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError):
             log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
+
+        # No existing worktree found -- create one for this branch so the agent
+        # doesn't run in the main project directory and pollute its working tree.
+        try:
+            from sova.git.worktree import create_worktree
+
+            if issue_id and issue_id.isdigit():
+                wt_id = issue_id
+            elif pr_number is not None:
+                wt_id = f"pr-{pr_number}"
+            else:
+                wt_id = branch_name.replace("/", "-").replace(" ", "-")[:50]
+
+            wt_info = await create_worktree(
+                issue_id=wt_id,
+                branch=branch_name,
+                base_branch="HEAD",
+                project_dir=project_dir,
+            )
+            log.info("command.created_worktree", branch=branch_name, wt_id=wt_id, path=str(wt_info.path))
+            return wt_info.path
+        except Exception:
+            log.warning("command.create_worktree_failed", branch=branch_name, exc_info=True)
 
     return project_dir
 
