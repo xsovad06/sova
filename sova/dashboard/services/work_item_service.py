@@ -230,11 +230,13 @@ def compute_work_item_state(
     Priority: running agent > handoff > PR state (adjusted by SOVA verdict) > GitHub label.
 
     sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
-    When present it overrides the raw GitHub state in two cases:
+    When present it overrides the raw GitHub state in three cases:
       - Verdict "revise"/"block": override any Integrate-bound state to PR_CHANGES_REQUESTED.
       - No SOVA review + externally approved PR (PR_APPROVED/PR_READY_TO_MERGE): override to
         PR_SOVA_PENDING so "Address PR" is shown first, letting users handle inline comments
         before triggering the SOVA review. PRs with no external review remain PR_AWAITING_REVIEW.
+      - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
+        upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
@@ -280,10 +282,13 @@ _VERDICT_OVERRIDEABLE = frozenset(
 def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
 
-    Two adjustments:
+    Three adjustments:
       1. No SOVA review + externally approved PR: show Address PR first (PR_SOVA_PENDING)
          so users can handle inline comments before triggering SOVA review.
       2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address via agent).
+      3. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
+         not APPROVED; GitHub forbids self-approval): upgrade PR_AWAITING_REVIEW to
+         PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
     if sova_verdict is None:
         return mapped
@@ -296,6 +301,9 @@ def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> Wor
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
         return WorkItemState.PR_CHANGES_REQUESTED
+
+    if has_review and verdict == "approve" and mapped == WorkItemState.PR_AWAITING_REVIEW:
+        return WorkItemState.PR_APPROVED
 
     return mapped
 
