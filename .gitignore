@@ -38,6 +38,8 @@ htmlcov/
 .claude/agent-control/
 .claude/agent-output/
 .claude/sova.db
+.claude/sova.db-wal
+.claude/sova.db-shm
 .claude/worktrees/
 .claude/assets/
 .claude/specs/

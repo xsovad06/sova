@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-17</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-19</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -732,7 +732,7 @@ flowchart TD
   I257["#257 Live system metrics\nfloating widget\n(DONE)"]:::done
   I258["#258 Cross-project\nresource aggregation\n(DONE)"]:::done
   I259["#259 Capacity advisor\n+ energy estimation\n(DONE)"]:::done
-  I355["#355 Fix available memory\nmetric display"]:::autonomous
+  I355["#355 Fix available memory\nmetric display\n(DONE)"]:::done
   I356["#356 Pre-spawn memory\ngate + warning banner"]:::autonomous
   I254 --> I255
   I255 --> I256
@@ -770,6 +770,11 @@ flowchart TD
       <span class="task-number">#250</span>
       <span class="task-title">Activity feed: conversational notification panel with live system events</span>
       <span class="task-badge badge-done">done</span>
+    </div>
+    <div class="task-row">
+      <span class="task-number">#366</span>
+      <span class="task-title">Dashboard output polling: Page Visibility pause + adaptive backoff + SSE push stream</span>
+      <span class="task-badge badge-guided">hybrid</span>
     </div>
   </div>
 
@@ -1317,18 +1322,17 @@ flowchart TD
           <span class="task-title">Capacity advisor and energy estimation</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#355</span>
           <span class="task-title">Fix available memory metric display (show allocatable, not compressed)</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #257 (done)</div>
         <div class="task-row">
           <span class="task-number">#356</span>
           <span class="task-title">Resource exhaustion guard: pre-spawn memory gate + warning banner</span>
           <span class="task-badge badge-autonomous">agentic</span>
         </div>
-        <div class="dep-arrow">depends on #355 -- Phase 1 of memory guard</div>
+        <div class="dep-arrow">depends on #355 (done) -- Phase 1 of memory guard</div>
         <div class="task-row">
           <span class="task-number">#357</span>
           <span class="task-title">Supervisor memory pressure gate in TaskProgressionEngine</span>
@@ -1346,6 +1350,11 @@ flowchart TD
           <span class="task-number">#250</span>
           <span class="task-title">Activity feed: conversational notification panel with live system events</span>
           <span class="task-badge badge-done">done</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#366</span>
+          <span class="task-title">Dashboard output polling: Page Visibility pause + adaptive backoff + SSE push stream (3 phases)</span>
+          <span class="task-badge badge-guided">hybrid</span>
         </div>
       </div>
 
@@ -1477,7 +1486,7 @@ gantt
     #257 Live metrics widget         :done, t257, 2026-07-13, 1d
     #258 Cross-project aggregation   :done, t258, 2026-07-15, 1d
     #259 Capacity advisor + energy   :done, t259, 2026-07-17, 1d
-    #355 Fix available memory metric :t355, 2026-07-18, 1d
+    #355 Fix available memory metric :done, t355, 2026-07-18, 1d
     #356 Pre-spawn memory gate       :t356, after t355, 2d
     #357 Supervisor memory gate      :t357, after t356, 3d
 
@@ -1493,6 +1502,10 @@ gantt
     #250 Activity feed               :done, t250, 2026-07-09, 1d
     #297 Supervisor daemon + UI      :t297, after t296, 5d
     #298 Fleet manager               :t298, after t297, 5d
+
+  section Dashboard Scalability
+    #366 Output SSE (Phase 1+2)      :t366a, 2026-07-21, 2d
+    #366 Output SSE (Phase 3)        :t366b, after t366a, 5d
 
   section Release Gate
     #6 Measure velocity              :t6, 2026-09-15, 14d
@@ -1518,8 +1531,8 @@ gantt
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
         <li><strong>Pipeline determinism</strong>: COMPLETE -- #277 (deterministic pipeline ops) done</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
-        <li><strong>Resource monitoring</strong>: 6 of 9 done (#254-259 complete); 3 remaining: #355 (metric fix), #356 (pre-spawn gate, Phase 1), #357 (supervisor gate, Phase 2)</li>
-        <li><strong>Recently completed</strong>: #296 (task progression engine), #259 (capacity advisor), #295 (PR lifecycle monitor), #258 (cross-project aggregation), #294 (PR creation throttle), #293 (dependency graph engine), #292 (PR readiness gates), #257 (live metrics widget), #256 (per-run resource metrics), #250 (activity feed), #121 (kanban pipeline view), #291 (CodeRabbit rate limit), #277 (deterministic pipeline), #255 (resource DB model), #205 (RTK compression), #227 (memory lifecycle), #241 (feed prior findings), #233 (regression tracking), #226 (memory injection), #234 (multi-perspective review), #232 (inner dev loop)</li>
+        <li><strong>Resource monitoring</strong>: 7 of 9 done (#254-259, #355 complete); 2 remaining: #356 (pre-spawn gate, Phase 1), #357 (supervisor gate, Phase 2)</li>
+        <li><strong>Recently completed</strong>: #355 (available memory metric fix), #296 (task progression engine), #259 (capacity advisor), #295 (PR lifecycle monitor), #258 (cross-project aggregation), #294 (PR creation throttle), #293 (dependency graph engine), #292 (PR readiness gates), #257 (live metrics widget), #256 (per-run resource metrics), #250 (activity feed), #121 (kanban pipeline view), #291 (CodeRabbit rate limit), #277 (deterministic pipeline), #255 (resource DB model), #205 (RTK compression), #227 (memory lifecycle), #241 (feed prior findings), #233 (regression tracking), #226 (memory injection), #234 (multi-perspective review), #232 (inner dev loop)</li>
       </ul>
     </div>
     <div class="notes">
@@ -1532,10 +1545,11 @@ gantt
         <li><strong>Health audit</strong>: COMPLETE -- all 6 issues (#235-240) done</li>
         <li><strong>Knowledge system</strong>: COMPLETE -- all 4 issues (#224-227) done</li>
         <li><strong>Agent quality</strong>: COMPLETE -- all 5 issues (#232-234, #241, #205) done</li>
-        <li><strong>Resource monitoring</strong>: 6 of 9 done (#254-259 complete); 3 remaining: #355 (metric fix), #356 (pre-spawn gate, Phase 1), #357 (supervisor gate, Phase 2)</li>
+        <li><strong>Resource monitoring</strong>: 7 of 9 done (#254-259, #355 complete); 2 remaining: #356 (pre-spawn gate, Phase 1), #357 (supervisor gate, Phase 2)</li>
         <li><strong>Supervisor Agent (5 remaining, Phase 7):</strong> #297-298 -- supervisor daemon + visual dashboard, cross-project fleet manager (#291-296 done); #343-344 -- auto-retry, runtime watchdog; #357 -- memory pressure gate (Phase 2 of resource guard, depends on #356)</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
         <li><strong>Deferred (10 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
+        <li><strong>Dashboard scalability (#366):</strong> 3-phase polling reduction: Page Visibility API pause (Phase 1), adaptive backoff (Phase 2), SSE push stream replacing the 1s poll loop (Phase 3); targets ~70% request reduction during multi-tab sessions</li>
       </ul>
     </div>
   </div>

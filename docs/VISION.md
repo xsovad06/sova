@@ -301,7 +301,11 @@ Target: October 2026.
 | ~~--~~ | ~~Intelligent model routing~~ | ~~dynamically select Opus/Sonnet/Haiku based on task complexity~~ (done: #155-157) |
 | ~~#277~~ | ~~Pipeline determinism~~ | ~~replace LLM calls with deterministic code in PR body, memory extraction, triage, review ingestion~~ (done) |
 | ~~#254-259~~ | ~~Resource monitoring~~ | ~~per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor~~ (done: #254-259) |
-| #355-357 | Resource exhaustion guard | Fix available memory metric (#355), pre-spawn gate + dashboard warning banner (#356, Phase 1), supervisor memory pressure gate (#357, Phase 2 -- moves check into TaskProgressionEngine) |
+| ~~#355~~ | ~~Resource exhaustion guard (Phase 0)~~ | ~~Fix available memory metric: show allocatable memory, not compressed~~ (done: #355) |
+| #356-357 | Resource exhaustion guard | Pre-spawn gate + dashboard warning banner (#356, Phase 1), supervisor memory pressure gate (#357, Phase 2 -- moves check into TaskProgressionEngine) |
+| #366 | Dashboard output polling | Replace 1s HTTP short-poll with Page Visibility API pause (Phase 1), adaptive backoff (Phase 2), and SSE push stream (Phase 3) to reduce ~12 req/s to near-zero idle traffic |
+| #367 | Dashboard agent widget UX | Fix: widget persists in DOM after TTL expires (no `loadAgents()` scheduled post-TTL); cost always shows $0.00 (live cost not synced to DB after each successful step) |
+| #368 | Dashboard markdown rendering | Render markdown in agent output views: load `marked.js` in `run_detail.html`, replace `textContent` with `innerHTML = marked.parse(...)`, apply `.prose-invert` CSS |
 
 ## Design Principles
 
