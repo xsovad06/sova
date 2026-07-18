@@ -96,26 +96,42 @@ task_run.status = status
 
 `create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
+### SQLite WAL mode and busy timeout
+
+Before running migrations, `init_db()` calls `_enable_sqlite_wal(engine)` which runs
+`PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set -- all
+subsequent connections automatically use WAL without re-running the PRAGMA.
+
+All SQLite engines are also created with `connect_args={"check_same_thread": False, "timeout": 30}`.
+The `timeout` maps to `sqlite3.connect(timeout=30)` (Python's busy-wait duration in seconds).
+This prevents instant `SQLITE_BUSY` failures when the old and new uvicorn workers briefly
+overlap during a `--reload` restart. `PRAGMA busy_timeout` is redundant with `connect_args`
+timeout -- only the latter is needed since it applies to all pooled connections.
+
 ### Engine disposal after migrations
 
-`init_db()` calls `await engine.dispose()` after migrations for file-backed SQLite to force fresh connections (aiosqlite stale schema cache). Skipped for in-memory DBs because dispose destroys data.
+`_run_migrations()` returns `bool`: `True` if DDL was executed (Alembic ran at least one
+migration), `False` if the DB was already at the head revision (fast path). `init_db()` only
+calls `engine.dispose()` and `_backup_db()` when `True`. For no-op restarts (DB already at
+head), neither disposal nor backup runs, saving one connection round-trip (~300 ms).
 
 ### Migration conventions
 
 1. **Use `batch_alter_table`** for all SQLite DDL (env.py has `render_as_batch=True`)
 2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008)
-3. **Sequential numbering**: `001` through `008` (not Alembic UUIDs)
-4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak`
+3. **Sequential numbering**: `001` through `018` (not Alembic UUIDs)
+4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak` -- only when DDL ran
 5. **Self-healing fallback**: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps at head
 
-### The four alembic_version cases
+### The five alembic_version cases
 
 Handled in `_run_migrations()` (`sova/db/session.py`):
 
 1. **Fresh DB** (no tables): run all migrations from scratch
 2. **Pre-Alembic DB** (tables exist, no `alembic_version`): stamp at current head
-3. **Valid version**: upgrade to head
-4. **Empty/corrupted `alembic_version`**: `DROP TABLE` then treat as case 1
+3. **Already at head** (version == `_get_alembic_head()`): return `False` immediately; skip upgrade, dispose, and backup
+4. **Behind head** (version < head): upgrade to head; dispose pool; backup DB
+5. **Empty/corrupted `alembic_version`**: `DROP TABLE` then treat as case 1
 
 ## Multi-Project DB Support
 
