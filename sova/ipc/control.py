@@ -68,7 +68,13 @@ class AgentProcess:
         except TimeoutError:
             log.warning("process.kill", pid=self.pid)
             self._proc.kill()
-            await self._proc.wait()
+            try:
+                async with asyncio.timeout(5.0):
+                    await self._proc.wait()
+            except TimeoutError:
+                # On macOS a process in uninterruptible sleep ignores SIGKILL.
+                # Give up rather than blocking the event loop indefinitely.
+                log.warning("process.sigkill_timeout", pid=self.pid)
 
     async def stdout_lines(self) -> AsyncIterator[str]:
         """Yield stdout lines as they arrive (for dashboard streaming)."""
