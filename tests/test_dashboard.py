@@ -2170,7 +2170,7 @@ class TestDuplicateAgentPrevention:
 
         assert result["status"] == "started"
         mock_branch.assert_awaited_once_with(332, pa.project_dir)
-        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55")
+        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55", pr_number=332)
         spawn_call = mock_runtime_factory.return_value.spawn
         actual_cwd = spawn_call.call_args[0][1]
         assert actual_cwd == worktree_path
@@ -7411,6 +7411,60 @@ class TestAgentContextHelpers:
         ):
             result = await _resolve_issue_from_pr(100, tmp_path)
         assert result == ""
+
+    async def test_resolve_issue_worktree_creates_for_issueless_pr(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree creates a worktree for issue-less PRs when none exists."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        expected_path = tmp_path / ".claude" / "worktrees" / "pr-42"
+        mock_wt_info = MagicMock()
+        mock_wt_info.path = expected_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.git.worktree.create_worktree",
+                new_callable=AsyncMock,
+                return_value=mock_wt_info,
+            ) as mock_create,
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="feat/no-issue", pr_number=42)
+
+        assert result == expected_path
+        mock_create.assert_awaited_once_with(
+            issue_id="pr-42",
+            branch="feat/no-issue",
+            base_branch="HEAD",
+            project_dir=tmp_path,
+        )
+
+    async def test_resolve_issue_worktree_falls_back_to_project_dir_on_create_failure(self, tmp_path: Path) -> None:
+        """_resolve_issue_worktree falls back to project_dir if worktree creation fails."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.git.worktree.create_worktree",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("git error"),
+            ),
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="feat/no-issue", pr_number=42)
+
+        assert result == tmp_path
 
 
 class TestIsIssue:

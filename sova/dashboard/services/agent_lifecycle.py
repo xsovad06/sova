@@ -494,7 +494,7 @@ async def start_agent(
 
         project_dir = pa.project_dir
         branch_name = await _resolve_branch_name(pr_number, project_dir)
-        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
 
         if not force and issue:
             budget_error = await _check_issue_budget(issue, project_dir)
@@ -660,7 +660,7 @@ async def start_command(
 
         project_dir = pa.project_dir
         branch_name = await _resolve_branch_name(pr_number, project_dir)
-        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
         prompt = _resolve_command_prompt(command, args, project_dir)
 
         try:
