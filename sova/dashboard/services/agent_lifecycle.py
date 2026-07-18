@@ -149,6 +149,8 @@ async def cancel_background_tasks() -> None:
     for r in results:
         if isinstance(r, list):
             all_tasks.extend(r)
+        elif isinstance(r, Exception):
+            log.warning("cancel_agent_io_tasks.failed", exc_info=r)
 
     for t in _background_tasks:
         if not t.done():
