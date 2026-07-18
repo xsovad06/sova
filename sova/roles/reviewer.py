@@ -186,7 +186,7 @@ Examine every changed line against each criterion. Score each finding 1-10 (10 =
 - Be specific: reference exact file paths and line numbers from the diff.
 
 ## Output Format
-Return ONLY a JSON object (no markdown fences, no extra text):
+Return ONLY a JSON object (no markdown fences, no extra text, no preamble):
 {{
   "findings": [
     {{
@@ -322,62 +322,69 @@ def _chunk_diff(diff: str, chunk_size: int = DIFF_CHUNK_SIZE) -> list[str]:
     return chunks if chunks else [diff]
 
 
-def _format_findings_comment(findings: list[ReviewFinding], summary: str, pr_number: int) -> str:
-    """Format findings into a GitHub PR comment matching /review-full style."""
-    lines = [f"## Code Review for PR #{pr_number}", ""]
+_SEVERITY_CRITICAL = 7
+_SEVERITY_HIGH = 5
+_SEVERITY_MEDIUM = 3
 
-    actionable = list(findings)
+
+def _severity_label(severity: int) -> str:
+    """Map a numeric severity (1-10) to a categorical label."""
+    if severity >= _SEVERITY_CRITICAL:
+        return "CRITICAL"
+    if severity >= _SEVERITY_HIGH:
+        return "HIGH"
+    if severity >= _SEVERITY_MEDIUM:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _verdict_label(findings: list[ReviewFinding]) -> str:
+    """Determine the review verdict from findings."""
+    if not findings:
+        return "APPROVE"
+    max_sev = max(f.severity for f in findings)
+    if max_sev >= _SEVERITY_CRITICAL:
+        return "BLOCK"
+    return "REVISE"
+
+
+def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:
+    """Build the shared review body used by both review API and comment fallback."""
+    verdict = _verdict_label(findings)
+    lines = [f"## Review: {verdict}", ""]
 
     if not findings:
         if summary:
             lines.extend([summary, ""])
         lines.append("No issues found after thorough review.")
-        lines.extend(["", "---", "**Assessment**: LGTM -- no issues found, ready to merge"])
         return "\n".join(lines)
 
-    # Summary block
     if summary:
         lines.extend([summary, ""])
 
     lines.append(f"**{len(findings)} findings** (all to be addressed)")
     lines.append("")
 
-    # Scored findings table
-    lines.append("| Sev | Category | File | Finding |")
-    lines.append("|-----|----------|------|---------|")
     for f in sorted(findings, key=lambda x: x.severity, reverse=True):
+        label = _severity_label(f.severity)
         loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
-        lines.append(f"| {f.severity}/10 | {f.category} | {loc} | {f.description} |")
-
-    # Detailed actionable findings with fix suggestions
-    if actionable:
-        lines.extend(["", "### Findings requiring action", ""])
-        for i, f in enumerate(sorted(actionable, key=lambda x: x.severity, reverse=True), 1):
-            loc = f"{f.file}:{f.line}" if f.line else f.file
-            lines.append(f"**{i}. [{f.severity}/10] [{f.category}] `{loc}`**")
-            lines.append("")
-            lines.append(f"  {f.description}")
-            if f.suggestion:
-                lines.append("")
-                lines.append(f"  **Fix**: {f.suggestion}")
-            lines.append("")
-
-    # Assessment
-    max_sev = max(f.severity for f in findings) if findings else 0
-    if max_sev >= 7:
-        assessment = "BLOCK -- critical issues must be fixed before merge"
-    elif actionable:
-        assessment = "REVISE -- actionable findings should be addressed"
-    else:
-        assessment = "LGTM -- only minor observations, ready to merge"
-    lines.extend(["---", f"**Assessment**: {assessment}"])
+        entry = f"- **[{label}]** [{f.category}] {loc}: {f.description}"
+        if f.suggestion:
+            entry += f" Fix: {f.suggestion}"
+        lines.append(entry)
 
     return "\n".join(lines)
 
 
+def _format_findings_comment(findings: list[ReviewFinding], summary: str) -> str:
+    """Format findings into a GitHub PR comment (fallback path)."""
+    return _format_findings_body(findings, summary)
+
+
 def _format_inline_comment(finding: ReviewFinding) -> str:
     """Format a single finding as an inline PR review comment."""
-    parts = [f"**[{finding.severity}/10] {finding.category}**: {finding.description}"]
+    label = _severity_label(finding.severity)
+    parts = [f"**[{label}] {finding.category}**: {finding.description}"]
     if finding.suggestion:
         parts.append(f"\n**Suggestion**: {finding.suggestion}")
     return "\n".join(parts)
@@ -386,51 +393,9 @@ def _format_inline_comment(finding: ReviewFinding) -> str:
 def _format_review_body(
     findings: list[ReviewFinding],
     summary: str,
-    pr_number: int,
-    body_only: list[ReviewFinding],
 ) -> str:
-    """Format the review body with summary table and any non-inline findings."""
-    lines = [f"## Code Review for PR #{pr_number}", ""]
-
-    if not findings:
-        if summary:
-            lines.extend([summary, ""])
-        lines.append("No issues found after thorough review.")
-        lines.extend(["", "---", "**Assessment**: LGTM -- no issues found, ready to merge"])
-        return "\n".join(lines)
-
-    if summary:
-        lines.extend([summary, ""])
-
-    lines.append(f"**{len(findings)} findings** ({len(findings) - len(body_only)} inline, {len(body_only)} in summary)")
-    lines.append("")
-
-    lines.append("| Sev | Category | File | Finding |")
-    lines.append("|-----|----------|------|---------|")
-    for f in sorted(findings, key=lambda x: x.severity, reverse=True):
-        loc = f"`{f.file}:{f.line}`" if f.line else f"`{f.file}`"
-        lines.append(f"| {f.severity}/10 | {f.category} | {loc} | {f.description} |")
-
-    if body_only:
-        lines.extend(["", "### Findings not on changed lines", ""])
-        for i, f in enumerate(sorted(body_only, key=lambda x: x.severity, reverse=True), 1):
-            loc = f"{f.file}:{f.line}" if f.line else f.file
-            lines.append(f"**{i}. [{f.severity}/10] [{f.category}] `{loc}`**")
-            lines.append("")
-            lines.append(f"  {f.description}")
-            if f.suggestion:
-                lines.append("")
-                lines.append(f"  **Fix**: {f.suggestion}")
-            lines.append("")
-
-    max_sev = max(f.severity for f in findings)
-    if max_sev >= 7:
-        assessment = "BLOCK -- critical issues must be fixed before merge"
-    else:
-        assessment = "REVISE -- actionable findings should be addressed"
-    lines.extend(["---", f"**Assessment**: {assessment}"])
-
-    return "\n".join(lines)
+    """Format the review body for the PR review API (with inline comments)."""
+    return _format_findings_body(findings, summary)
 
 
 def _build_review_comments(
@@ -672,7 +637,7 @@ class ReviewerRole(AgentRole):
         diff_lines = parse_diff_lines(diff)
         inline_comments, body_only = _build_review_comments(review.findings, diff_lines)
 
-        body = _format_review_body(review.findings, review.summary, ctx.pr_number, body_only)
+        body = _format_review_body(review.findings, review.summary)
 
         try:
             await ctx.adapter.post_pr_review(
@@ -699,7 +664,7 @@ class ReviewerRole(AgentRole):
                     log.warning("reviewer.body_only_review_failed", exc_info=True)
             else:
                 log.warning("reviewer.review_api_failed", exc_info=True)
-        fallback = _format_findings_comment(review.findings, review.summary, ctx.pr_number)
+        fallback = _format_findings_comment(review.findings, review.summary)
         await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
 
     async def _run_review(
@@ -837,14 +802,15 @@ class ReviewerRole(AgentRole):
         try:
             from sova.core.steps._spec_helpers import SECTION_REVIEW_RATIONALE, append_spec_section
 
-            significant = [f for f in review.findings if f.severity >= 5]
+            significant = [f for f in review.findings if f.severity >= _SEVERITY_HIGH]
             if not significant:
                 return
 
             lines: list[str] = []
             for f in sorted(significant, key=lambda x: x.severity, reverse=True):
                 loc = f"{f.file}:{f.line}" if f.line else f.file
-                lines.append(f"- [{f.severity}/10] [{f.category}] `{loc}`: {f.description}")
+                label = _severity_label(f.severity)
+                lines.append(f"- [{label}] [{f.category}] `{loc}`: {f.description}")
                 if f.suggestion:
                     lines.append(f"  Fix: {f.suggestion}")
 

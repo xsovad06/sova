@@ -20,6 +20,7 @@ from sova.cli.commands.harden import (
 )
 from sova.config.models import ProjectConfig
 from sova.db.session import close_db, init_db
+from sova.utils.markdown import strip_preamble as _strip_preamble
 
 runner = CliRunner()
 
@@ -99,6 +100,74 @@ class TestStripCodeFences:
     def test_whitespace_around_fences(self) -> None:
         text = "\n  ```markdown\n## Title\n```  \n"
         assert _strip_code_fences(text) == "## Title"
+
+
+class TestStripPreamble:
+    def test_no_preamble(self) -> None:
+        text = "## Title\nContent"
+        assert _strip_preamble(text) == text
+
+    def test_strips_reasoning_preamble(self) -> None:
+        text = "Now I have all the context needed.\nLet me produce the output.\n## Title\nContent"
+        assert _strip_preamble(text) == "## Title\nContent"
+
+    def test_no_heading_returns_unchanged(self) -> None:
+        text = "Just some plain text\nwith no headings at all."
+        assert _strip_preamble(text) == text
+
+    def test_heading_inside_code_block_ignored(self) -> None:
+        text = "Preamble text\n```python\n## This is a comment\n```\n## Real Heading\nContent"
+        assert _strip_preamble(text) == "## Real Heading\nContent"
+
+    def test_heading_only_inside_code_block(self) -> None:
+        text = "Preamble\n```\n## Not a heading\n```\nMore text"
+        assert _strip_preamble(text) == text
+
+    def test_first_line_is_heading(self) -> None:
+        text = "## Title\nContent\nMore"
+        assert _strip_preamble(text) == text
+
+    def test_multiple_headings_strips_to_first(self) -> None:
+        text = "Reasoning here.\n# First\nBody\n## Second\nMore"
+        assert _strip_preamble(text) == "# First\nBody\n## Second\nMore"
+
+    def test_empty_string(self) -> None:
+        assert _strip_preamble("") == ""
+
+    def test_issue_number_not_treated_as_heading(self) -> None:
+        text = "#123 is closed\n## Real Heading\nContent"
+        assert _strip_preamble(text) == "## Real Heading\nContent"
+
+    def test_bare_hash_treated_as_heading(self) -> None:
+        text = "Preamble\n#\nContent"
+        assert _strip_preamble(text) == "#\nContent"
+
+    def test_multi_hash_without_space_not_heading(self) -> None:
+        text = "##no-space\n## Real\nContent"
+        assert _strip_preamble(text) == "## Real\nContent"
+
+    def test_indented_heading_not_treated_as_heading(self) -> None:
+        text = "Preamble\n  # Indented\n## Real\nBody"
+        assert _strip_preamble(text) == "## Real\nBody"
+
+
+class TestIsAtxHeading:
+    def test_valid_headings(self) -> None:
+        from sova.utils.markdown import _is_atx_heading
+
+        assert _is_atx_heading("# Title") is True
+        assert _is_atx_heading("## Subtitle") is True
+        assert _is_atx_heading("### Deep") is True
+        assert _is_atx_heading("#") is True
+
+    def test_invalid_headings(self) -> None:
+        from sova.utils.markdown import _is_atx_heading
+
+        assert _is_atx_heading("#123") is False
+        assert _is_atx_heading("#no-space") is False
+        assert _is_atx_heading("##nope") is False
+        assert _is_atx_heading("not a heading") is False
+        assert _is_atx_heading("") is False
 
 
 class TestLoadProjectDocs:

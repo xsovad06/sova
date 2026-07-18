@@ -83,28 +83,24 @@ _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 
 
-_MERGE_CHECK_TIMEOUT = 10.0  # seconds per PR check in the liveness sweep
+async def _mark_dead_run(run: object, project_dir: Path) -> None:
+    """Mark a single dead-PID TaskRun as done (if merged) or interrupted."""
+    from datetime import datetime, timezone
 
-
-async def _check_merged(run: object, project_dir: Path) -> bool:
-    """Return True if this merge-role run's PR was successfully merged.
-
-    Runs outside a DB transaction so the write lock is not held during the
-    GitHub API call. Bounded to _MERGE_CHECK_TIMEOUT seconds.
-    """
     from sova.dashboard.services.agent_lifecycle import _MERGE_ROLES, _check_pr_merged_on_failure
 
-    parts = (run.role or "").removeprefix("command:").removeprefix("/").split()
-    if not parts or parts[0] not in _MERGE_ROLES or run.pr_number is None:
-        return False
-    try:
-        return await asyncio.wait_for(
-            _check_pr_merged_on_failure(run.pr_number, project_dir),
-            timeout=_MERGE_CHECK_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        log.debug("sweep.merge_check_skipped", run_id=run.id, pr=run.pr_number, exc_info=True)
-        return False
+    cmd_name = (run.role or "").removeprefix("command:").removeprefix("/").split()[0]
+    if cmd_name in _MERGE_ROLES and run.pr_number is not None:
+        if await _check_pr_merged_on_failure(run.pr_number, project_dir):
+            run.status = "done"
+            run.error_message = f"Agent process died but PR #{run.pr_number} was merged successfully"
+            run.ended_at = datetime.now(timezone.utc)
+            log.info("sweep.merged_despite_crash", run_id=run.id, pr=run.pr_number)
+            return
+
+    run.status = "interrupted"
+    run.error_message = "Agent process died unexpectedly"
+    run.ended_at = datetime.now(timezone.utc)
 
 
 def _collect_sweep_dirs(project_dir: Path | None, *, is_multi: bool) -> list[Path]:
@@ -121,16 +117,7 @@ def _collect_sweep_dirs(project_dir: Path | None, *, is_multi: bool) -> list[Pat
 
 
 async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> None:
-    """Single pass: check for dead agent processes and mark their TaskRuns.
-
-    GitHub API calls (merge checks) happen outside the DB write transaction so
-    the write lock is never held during I/O. The structure is:
-      1. Read-only query to find dead runs.
-      2. Merge checks sequentially, outside any transaction.
-      3. Write transaction (fast, CPU-only) to persist status updates.
-    """
-    from datetime import datetime, timezone
-
+    """Single pass: check for dead agent processes and mark their TaskRuns."""
     from sqlalchemy import select
 
     from sova.dashboard.services.control_service import _is_process_alive, _projects
@@ -143,45 +130,19 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 
     for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
         managed = managed_run_ids_by_dir.get(d, set())
-
-        # Step 1: read dead runs (no write lock).
-        async with await get_session(project_dir=d) as session:
-            stmt = select(TaskRun).where(
-                TaskRun.status.notin_(_TERMINAL),
-                TaskRun.pid.isnot(None),
-            )
-            result = await session.execute(stmt)
-            all_runs = result.scalars().all()
-
-        dead_runs = [r for r in all_runs if r.id not in managed and not _is_process_alive(r.pid)]
-        if not dead_runs:
-            continue
-
-        # Step 2: merge checks outside any transaction (I/O, bounded, sequential).
-        merged_ids: set[int] = set()
-        for run in dead_runs:
-            if await _check_merged(run, d):
-                merged_ids.add(run.id)
-
-        # Step 3: fast write transaction to persist the results.
         async with await get_session(project_dir=d) as session:
             async with session.begin():
-                stmt = select(TaskRun).where(TaskRun.id.in_([r.id for r in dead_runs]))
+                stmt = select(TaskRun).where(
+                    TaskRun.status.notin_(_TERMINAL),
+                    TaskRun.pid.isnot(None),
+                )
                 result = await session.execute(stmt)
-                runs_to_update = result.scalars().all()
-                for run in runs_to_update:
-                    if run.status in _TERMINAL:
-                        continue  # _wait_and_finalize already set terminal status between steps 1 and 3
-                    now = datetime.now(timezone.utc)
-                    if run.id in merged_ids:
-                        run.status = "done"
-                        run.error_message = f"Agent process died but PR #{run.pr_number} was merged successfully"
-                        log.info("sweep.merged_despite_crash", run_id=run.id, pr=run.pr_number)
-                    else:
-                        run.status = "interrupted"
-                        run.error_message = "Agent process died unexpectedly"
-                        log.info("sweep.marked_interrupted", run_id=run.id)
-                    run.ended_at = now
+                runs = result.scalars().all()
+
+                for run in runs:
+                    if run.id in managed or _is_process_alive(run.pid):
+                        continue
+                    await _mark_dead_run(run, d)
 
 
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:

@@ -757,78 +757,6 @@ class TestCancelBackgroundTasks:
         finally:
             del pa.agents[9999]
 
-    async def test_cancels_multiple_agents_concurrently(self) -> None:
-        """IO task cancellation for N agents runs concurrently, not serially.
-
-        With the old sequential loop, N agents x 3s resource_collector.stop()
-        timeout = N*3 seconds of serial shutdown time. The concurrent gather
-        makes the wall-clock cost max(individual stop) regardless of N.
-        """
-        from unittest.mock import AsyncMock, MagicMock
-
-        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
-        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
-
-        pa = _get_project_agents()
-
-        active = 0
-        max_active = 0
-
-        async def _concurrent_stop() -> None:
-            nonlocal active, max_active
-            active += 1
-            max_active = max(max_active, active)
-            await asyncio.sleep(0)  # yield so other coroutines can reach this point
-            active -= 1
-
-        agents_added = []
-        for i in range(3):
-            mock_process = MagicMock()
-            mock_process.pid = 90000 + i
-            agent = AgentState(run_id=90000 + i, issue=str(i), role="developer", process=mock_process)
-            mock_collector = MagicMock()
-            mock_collector.stop = AsyncMock(side_effect=_concurrent_stop)
-            agent.resource_collector = mock_collector
-            pa.agents[90000 + i] = agent
-            agents_added.append(90000 + i)
-
-        try:
-            await cancel_background_tasks()
-            # All 3 agents must have been active simultaneously at peak
-            assert max_active == 3, f"Expected 3 concurrent stops, but peak was {max_active}"
-        finally:
-            for run_id in agents_added:
-                pa.agents.pop(run_id, None)
-
-    async def test_exception_from_cancel_agent_io_tasks_is_logged(self) -> None:
-        """Exceptions returned by gather(return_exceptions=True) are logged, not silently dropped."""
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
-        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
-
-        pa = _get_project_agents()
-        agent = MagicMock(spec=AgentState)
-        agent.resource_collector = None
-        pa.agents[8888] = agent
-
-        async def _raise_io_tasks(a) -> None:
-            raise RuntimeError("io cancel failed")
-
-        with patch(
-            "sova.dashboard.services.agent_lifecycle._cancel_agent_io_tasks",
-            side_effect=_raise_io_tasks,
-        ):
-            with patch("sova.dashboard.services.agent_lifecycle.log") as mock_log:
-                try:
-                    await cancel_background_tasks()
-                finally:
-                    pa.agents.pop(8888, None)
-
-        mock_log.warning.assert_called_once()
-        call_kwargs = mock_log.warning.call_args
-        assert call_kwargs[0][0] == "cancel_agent_io_tasks.failed"
-
 
 class TestShutdownTasks:
     """Cover the _shutdown_tasks helper in app.py."""
@@ -924,13 +852,8 @@ class TestShutdownTasks:
 
 
 class TestRecoveryMergeCheck:
-    async def test_recover_merge_role_marks_done_when_pr_merged(self) -> None:
-        """integrate-pr stale runs are marked done when the PR was actually merged.
-
-        recover_stale_runs() calls _check_pr_merged_on_failure with a 15-second
-        timeout so that a successful merge-despite-crash is correctly classified
-        as "done" instead of leaving a permanent "interrupted" banner.
-        """
+    async def test_recover_merge_role_checks_pr_merged(self) -> None:
+        """Merge-role runs should be marked 'done' if PR was actually merged."""
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.control_service import recover_stale_runs
@@ -948,24 +871,23 @@ class TestRecoveryMergeCheck:
             await session.flush()
             run_id = run.id
 
-        mock_check = AsyncMock(return_value=True)
         with patch(
             "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            mock_check,
+            new_callable=AsyncMock,
+            return_value=True,
         ):
             interrupted = await recover_stale_runs()
 
-        # PR was merged: run should be "done", not in the interrupted list
         assert len(interrupted) == 0
-        mock_check.assert_called_once_with(130, None)
 
         session2 = await get_session()
         async with session2.begin():
             updated = await session2.get(TaskRun, run_id)
             assert updated.status == "done"
+            assert "merged successfully" in updated.error_message
 
-    async def test_recover_merge_role_marked_interrupted_when_pr_not_merged(self) -> None:
-        """integrate-pr stale runs are marked interrupted when the PR was not merged."""
+    async def test_recover_merge_role_not_merged_stays_interrupted(self) -> None:
+        """Merge-role runs where PR was NOT merged stay interrupted."""
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.control_service import recover_stale_runs
@@ -983,44 +905,10 @@ class TestRecoveryMergeCheck:
             await session.flush()
             run_id = run.id
 
-        mock_check = AsyncMock(return_value=False)
         with patch(
             "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            mock_check,
-        ):
-            interrupted = await recover_stale_runs()
-
-        assert len(interrupted) == 1
-        mock_check.assert_called_once_with(130, None)
-
-        session2 = await get_session()
-        async with session2.begin():
-            updated = await session2.get(TaskRun, run_id)
-            assert updated.status == "interrupted"
-
-    async def test_recover_approve_merge_role_also_interrupted(self) -> None:
-        """approve-merge stale runs are marked interrupted when the PR was not merged."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.control_service import recover_stale_runs
-
-        session = await get_session()
-        async with session.begin():
-            run = TaskRun(
-                issue_number="114",
-                role="command:approve-merge",
-                status="running",
-                pid=999999,
-                pr_number=131,
-            )
-            session.add(run)
-            await session.flush()
-            run_id = run.id
-
-        mock_check = AsyncMock(return_value=False)
-        with patch(
-            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            mock_check,
+            new_callable=AsyncMock,
+            return_value=False,
         ):
             interrupted = await recover_stale_runs()
 
@@ -1032,7 +920,7 @@ class TestRecoveryMergeCheck:
             assert updated.status == "interrupted"
 
     async def test_recover_non_merge_role_ignores_pr(self) -> None:
-        """Non-merge roles are marked interrupted regardless of pr_number."""
+        """Non-merge roles should not check PR status even if pr_number is set."""
         from sova.dashboard.services.control_service import recover_stale_runs
 
         session = await get_session()
@@ -2170,7 +2058,7 @@ class TestDuplicateAgentPrevention:
 
         assert result["status"] == "started"
         mock_branch.assert_awaited_once_with(332, pa.project_dir)
-        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55", pr_number=332)
+        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55")
         spawn_call = mock_runtime_factory.return_value.spawn
         actual_cwd = spawn_call.call_args[0][1]
         assert actual_cwd == worktree_path
@@ -5120,101 +5008,6 @@ class TestSetupAPI:
         assert resp.status_code == 404
         assert "Directory not found" in resp.json()["detail"]
 
-    async def test_create_agent_labels_happy_path(self, client: AsyncClient, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        with patch(
-            "sova.dashboard.services.setup_service.ensure_agent_labels",
-            new_callable=AsyncMock,
-            return_value={"status": "ok", "created": ["agent:triaged", "agent:ready"]},
-        ):
-            resp = await client.post(
-                "/api/setup/labels/create",
-                json={"project_path": str(tmp_path)},
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "ok"
-        assert "agent:triaged" in data["created"]
-
-    async def test_create_agent_labels_returns_404_for_missing_dir(self, client: AsyncClient) -> None:
-        resp = await client.post(
-            "/api/setup/labels/create",
-            json={"project_path": "/nonexistent/path/that/does/not/exist"},
-        )
-        assert resp.status_code == 404
-        assert "Directory not found" in resp.json()["detail"]
-
-
-# ---------------------------------------------------------------------------
-# Setup Service -- direct service tests (not via HTTP)
-# ---------------------------------------------------------------------------
-
-
-class TestEnsureAgentLabels:
-    """Direct tests for setup_service.ensure_agent_labels."""
-
-    async def test_happy_path_returns_created_labels(self, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.setup_service import ensure_agent_labels
-
-        mock_adapter = AsyncMock()
-        mock_adapter.ensure_repo_labels.return_value = ["agent:ready", "agent:triaged"]
-
-        with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
-        ):
-            result = await ensure_agent_labels(tmp_path)
-
-        assert result == {"status": "ok", "created": ["agent:ready", "agent:triaged"]}
-
-    async def test_load_config_failure_returns_error(self, tmp_path: Path) -> None:
-        from unittest.mock import patch
-
-        from sova.dashboard.services.setup_service import ensure_agent_labels
-
-        with patch(
-            "sova.config.loader.load_config",
-            side_effect=FileNotFoundError("sova.toml not found"),
-        ):
-            result = await ensure_agent_labels(tmp_path)
-
-        assert result["status"] == "error"
-        assert "Failed to load config" in result["detail"]
-
-    async def test_create_adapter_failure_returns_error(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.setup_service import ensure_agent_labels
-
-        with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", side_effect=ValueError("unsupported adapter")),
-        ):
-            result = await ensure_agent_labels(tmp_path)
-
-        assert result["status"] == "error"
-        assert "unsupported adapter" in result["detail"]
-
-    async def test_ensure_repo_labels_failure_returns_error(self, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.setup_service import ensure_agent_labels
-
-        mock_adapter = AsyncMock()
-        mock_adapter.ensure_repo_labels.side_effect = RuntimeError("HTTP 403: insufficient scope")
-
-        with (
-            patch("sova.config.loader.load_config", return_value=MagicMock()),
-            patch("sova.adapters.create_adapter", return_value=mock_adapter),
-        ):
-            result = await ensure_agent_labels(tmp_path)
-
-        assert result["status"] == "error"
-        assert "403" in result["detail"]
-
 
 # ---------------------------------------------------------------------------
 # Work Service -- direct service tests
@@ -6610,64 +6403,6 @@ class TestAgentRecoveryDirect:
         assert result["has_sova_review"] is False
         assert result["verdict"] is None
 
-    async def test_sova_review_verdict_by_pr_number_only(self) -> None:
-        """get_sova_review_verdict with issue_number=None queries solely by PR number."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        session = await get_session()
-        async with session.begin():
-            session.add(
-                TaskRun(
-                    issue_number="200",
-                    pr_number=500,
-                    role="reviewer",
-                    status="done",
-                    handoff_json={"next_action": "approve", "pending_findings": []},
-                    ended_at=datetime.now(timezone.utc),
-                )
-            )
-
-        result = await get_sova_review_verdict(None, pr_number=500)
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-
-    async def test_sova_review_verdict_none_issue_none_pr_returns_no_review(self) -> None:
-        """get_sova_review_verdict(None) with no pr_number returns no_review immediately."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        result = await get_sova_review_verdict(None)
-        assert result["has_sova_review"] is False
-        assert result["verdict"] is None
-
-    async def test_sova_review_verdict_empty_string_issue_returns_no_review(self) -> None:
-        """Empty string issue_number with no pr_number returns no_review (not a global query)."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        result = await get_sova_review_verdict("")
-        assert result["has_sova_review"] is False
-        assert result["verdict"] is None
-
-    async def test_sova_review_verdict_empty_string_with_pr_queries_by_pr(self) -> None:
-        """Empty string issue_number + pr_number falls through to PR-only query."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        session = await get_session()
-        async with session.begin():
-            session.add(
-                TaskRun(
-                    issue_number="999",
-                    pr_number=777,
-                    role="reviewer",
-                    status="done",
-                    handoff_json={"next_action": "approve", "pending_findings": []},
-                    ended_at=datetime.now(timezone.utc),
-                )
-            )
-
-        result = await get_sova_review_verdict("", pr_number=777)
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-
 
 # ---------------------------------------------------------------------------
 # Verdict parsing from output lines
@@ -7534,60 +7269,6 @@ class TestAgentContextHelpers:
         ):
             result = await _resolve_issue_from_pr(100, tmp_path)
         assert result == ""
-
-    async def test_resolve_issue_worktree_creates_for_issueless_pr(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree creates a worktree for issue-less PRs when none exists."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_context import _resolve_issue_worktree
-
-        expected_path = tmp_path / ".claude" / "worktrees" / "pr-42"
-        mock_wt_info = MagicMock()
-        mock_wt_info.path = expected_path
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_context.find_worktree_by_branch",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "sova.git.worktree.create_worktree",
-                new_callable=AsyncMock,
-                return_value=mock_wt_info,
-            ) as mock_create,
-        ):
-            result = await _resolve_issue_worktree("", tmp_path, branch_name="feat/no-issue", pr_number=42)
-
-        assert result == expected_path
-        mock_create.assert_awaited_once_with(
-            issue_id="pr-42",
-            branch="feat/no-issue",
-            base_branch="HEAD",
-            project_dir=tmp_path,
-        )
-
-    async def test_resolve_issue_worktree_falls_back_to_project_dir_on_create_failure(self, tmp_path: Path) -> None:
-        """_resolve_issue_worktree falls back to project_dir if worktree creation fails."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_context import _resolve_issue_worktree
-
-        with (
-            patch(
-                "sova.dashboard.services.agent_context.find_worktree_by_branch",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "sova.git.worktree.create_worktree",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("git error"),
-            ),
-        ):
-            result = await _resolve_issue_worktree("", tmp_path, branch_name="feat/no-issue", pr_number=42)
-
-        assert result == tmp_path
 
 
 class TestIsIssue:
@@ -11698,183 +11379,3 @@ class TestHandoffIssueFilter:
         data = resp.json()
         assert data["has_handoff"] is False
         assert data["handoffs"] == []
-
-
-# ---------------------------------------------------------------------------
-# SOVA verdict integration with compute_work_item_state (findings 1 + 3)
-# ---------------------------------------------------------------------------
-
-
-class TestComputeWorkItemStateWithSovaVerdict:
-    """compute_work_item_state() applies SOVA reviewer verdict to override GitHub-derived states."""
-
-    def _approved_pr(self) -> dict:
-        return {"state": "OPEN", "computed_state": "approved"}
-
-    def _ready_pr(self) -> dict:
-        return {"state": "OPEN", "computed_state": "approved_ci_green"}
-
-    def _awaiting_pr(self) -> dict:
-        return {"state": "OPEN", "computed_state": "awaiting_review"}
-
-    def _addressed_pr(self) -> dict:
-        return {"state": "OPEN", "computed_state": "review_addressed"}
-
-    def _no_review_verdict(self) -> dict:
-        return {"has_sova_review": False, "verdict": None, "finding_count": 0}
-
-    def _revise_verdict(self) -> dict:
-        return {"has_sova_review": True, "verdict": "revise", "finding_count": 3}
-
-    def _block_verdict(self) -> dict:
-        return {"has_sova_review": True, "verdict": "block", "finding_count": 1}
-
-    def _approve_verdict(self) -> dict:
-        return {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-
-    def test_finding3_no_review_approved_pr_becomes_sova_pending(self) -> None:
-        """Finding 3: when no SOVA review exists, Approved PR shows Address PR first (PR_SOVA_PENDING)."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._approved_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._no_review_verdict(),
-        )
-        assert state == WorkItemState.PR_SOVA_PENDING
-
-    def test_finding3_no_review_ready_to_merge_becomes_sova_pending(self) -> None:
-        """Finding 3: no SOVA review on approved_ci_green state yields PR_SOVA_PENDING."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._ready_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._no_review_verdict(),
-        )
-        assert state == WorkItemState.PR_SOVA_PENDING
-
-    def test_finding3_no_review_does_not_affect_changes_requested(self) -> None:
-        """Finding 3: if GitHub already shows changes_requested, keep it as-is."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        pr = {"state": "OPEN", "computed_state": "changes_requested"}
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=pr,
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._no_review_verdict(),
-        )
-        assert state == WorkItemState.PR_CHANGES_REQUESTED
-
-    def test_finding1_revise_verdict_on_approved_pr_becomes_changes_requested(self) -> None:
-        """Finding 1: SOVA verdict=revise overrides GitHub approved to show Address PR."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._approved_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._revise_verdict(),
-        )
-        assert state == WorkItemState.PR_CHANGES_REQUESTED
-
-    def test_finding1_block_verdict_on_ready_to_merge_becomes_changes_requested(self) -> None:
-        """Finding 1: SOVA verdict=block overrides approved_ci_green to show Address PR."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._ready_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._block_verdict(),
-        )
-        assert state == WorkItemState.PR_CHANGES_REQUESTED
-
-    def test_finding1_revise_verdict_does_not_override_review_addressed(self) -> None:
-        """PR_REVIEW_ADDRESSED is not in _VERDICT_OVERRIDEABLE: its default action is already
-        'Review PR', so overriding to PR_CHANGES_REQUESTED adds no benefit and causes a
-        false 'Address PR' when threads are manually resolved without a fresh SOVA review."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._addressed_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._revise_verdict(),
-        )
-        assert state == WorkItemState.PR_REVIEW_ADDRESSED
-
-    def test_finding1_revise_verdict_on_awaiting_review_becomes_changes_requested(self) -> None:
-        """Finding 1: SOVA revise also overrides awaiting_review state."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._awaiting_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._revise_verdict(),
-        )
-        assert state == WorkItemState.PR_CHANGES_REQUESTED
-
-    def test_approve_verdict_does_not_block_integrate(self) -> None:
-        """SOVA verdict=approve leaves approved PR state untouched (Integrate allowed)."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._ready_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=self._approve_verdict(),
-        )
-        assert state == WorkItemState.PR_READY_TO_MERGE
-
-    def test_no_verdict_passed_uses_github_state_unchanged(self) -> None:
-        """When sova_verdict is None (not pre-fetched), GitHub state is used as-is."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._approved_pr(),
-            handoff=None,
-            running_agent=None,
-            sova_verdict=None,
-        )
-        assert state == WorkItemState.PR_APPROVED
-
-    def test_running_agent_takes_priority_over_sova_verdict(self) -> None:
-        """Running agent state is always highest priority — verdict cannot override it."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._approved_pr(),
-            handoff=None,
-            running_agent={"role": "reviewer"},
-            sova_verdict=self._revise_verdict(),
-        )
-        assert state == WorkItemState.AGENT_RUNNING
-
-    def test_awaiting_handoff_takes_priority_over_sova_verdict(self) -> None:
-        """Handoff awaiting action takes priority over SOVA verdict."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {"status": "awaiting_action", "next_actions": [{"id": "integrate"}]}
-        state = compute_work_item_state(
-            task_state=None,
-            pr_data=self._approved_pr(),
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=self._revise_verdict(),
-        )
-        assert state == WorkItemState.HANDOFF_PENDING

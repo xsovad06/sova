@@ -72,20 +72,19 @@ Create a pull request for the current branch using the project's standard PR tem
 
    ```markdown
    ## Summary
-   [WHAT was changed and WHY]
+   In 1-3 bullet points, describe what changed and why.
 
    ## Changes
-   [Brief description of each logical change]
+   Brief description of each logical change grouped by area.
 
-   ## Testing
-   [How to verify the changes work]
+   ## Review guidance
+   What should a reviewer focus on? Any trade-offs or shortcuts?
 
-   ## Checklist
-   - [ ] Tests pass
-   - [ ] Linter passes
-   - [ ] Documentation updated (if applicable)
-   - [ ] Breaking changes documented (if applicable)
+   ## Test plan
+   How were these changes verified?
    ```
+
+   Do not include preamble or commentary before the first heading. Do not use emojis.
 
    If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body.
 

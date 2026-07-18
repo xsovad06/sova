@@ -133,12 +133,38 @@ This command runs as a headless agent. You MUST execute every step below through
 
    **Only continue to step 11 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
 
-11. **Reply to each comment on GitHub** -- keep replies SHORT and DIRECT:
-   - Fixed: `Fixed: [what changed].` or `Added [what].`
-   - Acknowledged (not fixed): `Acknowledged -- [justification: false positive / not applicable / needs human input].`
-   - No filler words, no 'Great catch!', no emojis.
+11. **Post a single summary comment** on the PR with all dispositions. Do NOT reply to each thread individually. One comment per address-pr round:
 
-12. **Resolve each thread** using GraphQL:
+    ```markdown
+    ## Address Review: Round N
+
+    | # | Finding | Action |
+    |---|---------|--------|
+    | 1 | `file:line`: short description | Fixed: what changed. |
+    | 2 | `file:line`: short description | Acknowledged: justification. |
+    ```
+
+    Keep the Action column SHORT and DIRECT. No filler words, no 'Great catch!', no emojis.
+
+12. **Resolve each addressed thread** using GraphQL:
+    First fetch the thread node IDs for the PR:
+    ```bash
+    gh api graphql -f query='{
+      repository(owner: "<OWNER>", name: "<REPO>") {
+        pullRequest(number: <PR_NUMBER>) {
+          reviewThreads(first: 50) {
+            nodes {
+              id
+              isResolved
+              comments(first: 1) { nodes { body path line } }
+            }
+          }
+        }
+      }
+    }'
+    ```
+    Match each thread to a finding using the thread's `path` (file) and `line` fields from the query response.
+    Resolve threads whose corresponding finding was marked Fixed in step 11. Leave threads for Acknowledged findings open for the reviewer.
     ```bash
     gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
     ```

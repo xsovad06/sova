@@ -29,13 +29,6 @@ _STATE_LABELS: dict[TaskState, str] = {
 # Reverse map: label -> state (for reading state from labels).
 _LABEL_TO_STATE: dict[str, TaskState] = {v: k for k, v in _STATE_LABELS.items()}
 
-# Full set of agent labels SOVA expects to exist on any GitHub repo it manages.
-# Includes state-transition labels (_STATE_LABELS) and triage outcome labels.
-REQUIRED_AGENT_LABELS: frozenset[str] = frozenset(_STATE_LABELS.values()) | {
-    "agent:ready",
-    "agent:needs-research",
-}
-
 # Maps TaskState to candidate board column names (case-insensitive match).
 _STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
     TaskState.BACKLOG: [_COL_BACKLOG, "todo", _COL_TODO],
@@ -143,60 +136,6 @@ class GitHubAdapter(TaskAdapter):
 
     async def add_label(self, task_id: str, label: str) -> None:
         await self._add_label(task_id, label)
-
-    async def ensure_repo_labels(self, required: frozenset[str] | None = None) -> list[str]:
-        """Verify required agent labels exist on the repo, creating any that are missing.
-
-        Returns the names of labels that were created.
-        Raises RuntimeError if labels cannot be listed or any missing label cannot be created.
-        """
-        to_check = required if required is not None else REQUIRED_AGENT_LABELS
-        result = await self._gh("label", "list", "--repo", self.repo, "--json", "name", "--limit", "500")
-        if not result.success:
-            raise RuntimeError(f"Could not list repo labels: {result.stderr[:200]}")
-
-        try:
-            existing = {lbl["name"] for lbl in json.loads(result.stdout)}
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
-            raise RuntimeError(f"Could not parse label list: {exc}") from exc
-
-        missing = sorted(to_check - existing)
-        created: list[str] = []
-        for label in missing:
-            log.info("label.auto_create", label=label, repo=self.repo)
-            create = await self._gh(
-                "label",
-                "create",
-                label,
-                "--repo",
-                self.repo,
-                "--description",
-                "",
-                "--color",
-                "ededed",
-            )
-            if not create.success:
-                # Another concurrent request may have created the label first; re-check before failing.
-                recheck = await self._gh("label", "list", "--repo", self.repo, "--json", "name", "--limit", "500")
-                if not recheck.success:
-                    raise RuntimeError(
-                        f"Could not create label '{label}' and re-check also failed: {recheck.stderr[:200]}. "
-                        f"Create it manually: gh label create {label!r} --repo {self.repo}"
-                    )
-                try:
-                    existing_now = {lbl["name"] for lbl in json.loads(recheck.stdout)}
-                except (json.JSONDecodeError, TypeError, KeyError):
-                    existing_now = set()
-                if label not in existing_now:
-                    raise RuntimeError(
-                        f"Could not create label '{label}': {create.stderr[:200]}. "
-                        f"Create it manually: gh label create {label!r} --repo {self.repo}"
-                    )
-                log.info("label.already_exists", label=label, repo=self.repo)
-            else:
-                created.append(label)
-
-        return created
 
     async def remove_label(self, task_id: str, label: str) -> None:
         await self._gh(
