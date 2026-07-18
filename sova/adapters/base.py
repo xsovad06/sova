@@ -128,15 +128,6 @@ class TaskAdapter(ABC):
     async def remove_label(self, task_id: str, label: str) -> None:
         """Remove a label from the task."""
 
-    async def ensure_repo_labels(self, required: frozenset[str] | None = None) -> list[str]:
-        """Ensure required labels exist on the tracker. No-op for adapters without a label registry.
-
-        Returns the names of labels that were created.
-        Raises RuntimeError if required labels cannot be created.
-        """
-        del required
-        return []
-
     # -- Egress-filtered methods (Template Method pattern) -------------------
 
     async def post_comment(self, task_id: str, body: str) -> None:

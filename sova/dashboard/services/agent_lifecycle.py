@@ -137,20 +137,9 @@ async def cancel_background_tasks() -> None:
     from sova.dashboard.services.agent_pool import _projects
 
     all_tasks: list[asyncio.Task] = []
-    # Run per-agent IO cancellation concurrently. The sequential loop was
-    # O(N * 3s) because each _cancel_agent_io_tasks awaits
-    # resource_collector.stop() before returning. With asyncio.gather the
-    # wall-clock cost is max(individual stop) regardless of agent count.
-    agents = [agent for pa in _projects.values() for agent in pa.agents.values()]
-    results = await asyncio.gather(
-        *(_cancel_agent_io_tasks(a) for a in agents),
-        return_exceptions=True,
-    )
-    for r in results:
-        if isinstance(r, list):
-            all_tasks.extend(r)
-        elif isinstance(r, Exception):
-            log.warning("cancel_agent_io_tasks.failed", exc_info=r)
+    for pa in _projects.values():
+        for agent in pa.agents.values():
+            all_tasks.extend(await _cancel_agent_io_tasks(agent))
 
     for t in _background_tasks:
         if not t.done():
@@ -494,7 +483,7 @@ async def start_agent(
 
         project_dir = pa.project_dir
         branch_name = await _resolve_branch_name(pr_number, project_dir)
-        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
 
         if not force and issue:
             budget_error = await _check_issue_budget(issue, project_dir)
@@ -660,7 +649,7 @@ async def start_command(
 
         project_dir = pa.project_dir
         branch_name = await _resolve_branch_name(pr_number, project_dir)
-        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
+        cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name)
         prompt = _resolve_command_prompt(command, args, project_dir)
 
         try:

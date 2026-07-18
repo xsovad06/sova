@@ -16,6 +16,8 @@ from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig
 from sova.roles.triage import TriageRole
+from sova.utils.markdown import strip_code_fences as _strip_code_fences
+from sova.utils.markdown import strip_preamble as _strip_preamble
 
 console = Console(stderr=True)
 
@@ -112,7 +114,7 @@ async def _harden_single_task(
         console.print(f"[red]  Failed: {exc}[/red]")
         return (task, "failed", None)
 
-    enriched_body = _strip_code_fences(result.text)
+    enriched_body = _strip_preamble(_strip_code_fences(result.text))
 
     if not enriched_body.strip():
         console.print("[red]  Claude returned empty analysis.[/red]")
@@ -337,18 +339,6 @@ Follow these steps internally (do NOT include the step numbers in the output):
    Key files to look at, patterns to follow, gotchas to watch for.
 
 Output the COMPLETE updated issue body in markdown. Do NOT wrap the output in a code block.
-Do NOT include YAML frontmatter. Start directly with the first section heading."""
-
-
-def _strip_code_fences(text: str) -> str:
-    """Strip leading/trailing markdown code fences if present."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.split("\n")
-        # Remove first line (```markdown or ```)
-        lines = lines[1:]
-        # Remove last line if it's ```
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        stripped = "\n".join(lines)
-    return stripped.strip()
+Do NOT include YAML frontmatter. Start directly with the first section heading.
+Do NOT include any preamble, reasoning, or commentary before the output.
+Do NOT use emojis or icons anywhere in the output."""

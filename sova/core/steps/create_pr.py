@@ -14,6 +14,7 @@ from sova.git import operations as git_ops
 from sova.llm.client import invoke
 from sova.utils.formatting import truncate
 from sova.utils.logging import get_logger
+from sova.utils.markdown import strip_preamble
 from sova.utils.shell import run
 
 if TYPE_CHECKING:
@@ -33,7 +34,8 @@ _CONVENTIONAL_RE = re.compile(
 
 _PR_BODY_PROMPT_BASE = """\
 Generate a pull request description for the changes below. Output ONLY the \
-markdown body (no fences, no commentary). Use this structure:
+markdown body (no fences, no commentary, no preamble). Start directly with \
+the first heading. Do not use emojis or icons. Use this structure:
 
 ## Summary
 1-3 bullet points: WHAT changed and WHY.
@@ -299,7 +301,7 @@ class CreatePRStep(BaseStep):
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)
 
         ctx.add_cost(result.cost_usd)
-        body = result.text
+        body = strip_preamble(result.text)
         if ctx.has_issue:
             if ts.is_jira:
                 close_re = re.compile(

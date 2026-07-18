@@ -528,35 +528,6 @@ async def create_starter_milestones(
     }
 
 
-async def ensure_agent_labels(project_dir: Path) -> dict:
-    """Ensure all required agent:* labels exist on the GitHub repo.
-
-    Creates any that are missing. No-op for non-GitHub task sources.
-    Returns a dict with `status` and `created` (names of labels that were created),
-    or `status=error` with a `detail` key on failure.
-    """
-    from sova.adapters import create_adapter
-    from sova.config.loader import load_config
-
-    try:
-        cfg = load_config(project_dir)
-    except (FileNotFoundError, ValueError, KeyError) as e:
-        return {"status": "error", "detail": f"Failed to load config: {e}"}
-
-    try:
-        adapter = create_adapter(cfg)
-    except ValueError as e:
-        return {"status": "error", "detail": str(e)}
-
-    try:
-        created = await adapter.ensure_repo_labels()
-    except RuntimeError as e:
-        log.warning("ensure_agent_labels.failed", error=str(e), exc_info=True)
-        return {"status": "error", "detail": str(e)}
-
-    return {"status": "ok", "created": created}
-
-
 def _read_existing_toml(project: Path) -> dict:
     """Read existing sova.toml as a flat dict for prefilling the form."""
     toml_file = project / _SOVA_TOML

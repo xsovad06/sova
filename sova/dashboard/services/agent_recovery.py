@@ -207,7 +207,7 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     if merged:
                         rec = dead_by_id[run_id]
                         rec["final_status"] = "done"
-                        rec["error_msg"] = f"Agent process died but PR #{rec['pr_number']} was merged"
+                        rec["error_msg"] = f"Agent process died but PR #{rec['pr_number']} was merged successfully"
                         log.info("recovery.merge_succeeded_despite_crash", run_id=run_id, pr=rec["pr_number"])
             except asyncio.TimeoutError:
                 log.warning("recovery.merge_checks_timed_out", total_timeout=_RECOVERY_TOTAL_TIMEOUT)

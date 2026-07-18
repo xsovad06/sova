@@ -184,32 +184,6 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         adapter = create_adapter(config)
         role = TriageRole()
 
-        # Pre-flight: ensure all agent:* labels exist before per-item work begins.
-        # This prevents individual triage failures caused by GitHub label propagation
-        # delays when auto-creating labels reactively inside _add_label.
-        # Skip for dry_run (no repo mutation) and cancelled jobs (already stopping).
-        if not job.cancelled and config.triage.mode != "dry_run":
-            try:
-                created = await adapter.ensure_repo_labels()
-                if created:
-                    emit_safe(
-                        f"Created {len(created)} missing agent label(s): {', '.join(created)}",
-                        severity=FeedEventSeverity.info,
-                        category="batch",
-                        metadata={"batch_id": job.batch_id, "created_labels": created},
-                    )
-            except RuntimeError as exc:
-                msg = (
-                    f"Batch triage aborted: could not set up required labels. {exc} "
-                    "Ensure your GitHub token has 'repo' scope and re-run triage."
-                )
-                log.error("batch.triage.labels_preflight_failed", error=str(exc), exc_info=True)
-                emit_safe(msg, severity=FeedEventSeverity.error, category="batch", metadata={"batch_id": job.batch_id})
-                for item in job.results:
-                    item.status = "failed"
-                    item.detail = "Aborted: missing agent labels (see feed for details)"
-                return
-
         sem = asyncio.Semaphore(job.max_concurrency)
 
         async def _process_item(item: BatchItemResult) -> None:
@@ -304,12 +278,13 @@ async def _run_batch_harden(
             _format_issues_summary,
             _load_issue_template,
             _load_project_docs,
-            _strip_code_fences,
         )
         from sova.config.loader import load_config
         from sova.db.session import init_db
         from sova.llm.client import invoke
         from sova.roles.triage import TriageRole
+        from sova.utils.markdown import strip_code_fences as _strip_code_fences
+        from sova.utils.markdown import strip_preamble
 
         await init_db(project_dir)
         config = load_config(project_dir)
@@ -342,7 +317,7 @@ async def _run_batch_harden(
                     prompt = _build_harden_prompt(task, project_docs, all_issues_summary, template_content, issue_type)
 
                     result = await invoke(prompt, task_type="harden", cwd=project_dir, timeout=300)
-                    enriched_body = _strip_code_fences(result.text)
+                    enriched_body = strip_preamble(_strip_code_fences(result.text))
 
                     if not enriched_body.strip():
                         item.status = "failed"

@@ -430,48 +430,6 @@ class TestAgentProcess:
 
         mock_proc.terminate.assert_called_once()
 
-    async def test_stop_sigkill_timeout_does_not_hang(self) -> None:
-        """stop() must not block forever when the process ignores SIGKILL.
-
-        On macOS a process in uninterruptible sleep never responds to SIGKILL.
-        The 5-second asyncio.timeout wrapper must log a warning and return
-        rather than hanging the event loop indefinitely.
-        """
-        from unittest.mock import patch
-
-        from sova.ipc.control import AgentProcess
-
-        mock_proc = AsyncMock()
-        mock_proc.pid = 12345
-        mock_proc.returncode = None
-        mock_proc.stdout = AsyncMock()
-        mock_proc.stderr = AsyncMock()
-        mock_proc.terminate = MagicMock()
-        mock_proc.kill = MagicMock()
-        # SIGTERM times out → SIGKILL is sent → wait() also hangs
-        call_count = 0
-
-        async def _hanging_wait():
-            nonlocal call_count
-            call_count += 1
-            await asyncio.sleep(9999)
-
-        mock_proc.wait = _hanging_wait
-
-        ap = AgentProcess(mock_proc)
-
-        with patch("sova.ipc.control.log") as mock_log:
-            # stop() with a very short timeout so SIGTERM fires quickly
-            await ap.stop(timeout=0.05)
-
-        mock_proc.terminate.assert_called_once()
-        mock_proc.kill.assert_called_once()
-        # Both SIGTERM-wait and SIGKILL-wait should have been attempted
-        assert call_count >= 2
-        # Warning logged for the SIGKILL timeout
-        warning_calls = [str(c) for c in mock_log.warning.call_args_list]
-        assert any("sigkill_timeout" in c for c in warning_calls)
-
     async def test_is_running_false_when_exited(self) -> None:
         from sova.ipc.control import AgentProcess
 

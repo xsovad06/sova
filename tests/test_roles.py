@@ -2631,7 +2631,7 @@ class TestReviewerLLMReview:
         adapter.post_pr_review.assert_awaited_once()
         body = adapter.post_pr_review.call_args[1]["body"]
         assert "No issues found" in body
-        assert "LGTM" in body
+        assert "## Review: APPROVE" in body
 
     async def test_llm_failure_graceful_fallback(self) -> None:
         from unittest.mock import patch
@@ -3278,13 +3278,38 @@ class TestReviewerParsing:
         chunks = _chunk_diff(diff, chunk_size=70000)
         assert len(chunks) == 2
 
+    def test_severity_label_thresholds(self) -> None:
+        from sova.roles.reviewer import _severity_label
+
+        assert _severity_label(10) == "CRITICAL"
+        assert _severity_label(7) == "CRITICAL"
+        assert _severity_label(6) == "HIGH"
+        assert _severity_label(5) == "HIGH"
+        assert _severity_label(4) == "MEDIUM"
+        assert _severity_label(3) == "MEDIUM"
+        assert _severity_label(2) == "LOW"
+        assert _severity_label(1) == "LOW"
+
+    def test_verdict_label(self) -> None:
+        from sova.roles.reviewer import ReviewFinding, _verdict_label
+
+        def _f(severity: int) -> ReviewFinding:
+            return ReviewFinding(file="a.py", severity=severity, category="bug", description="X")
+
+        assert _verdict_label([]) == "APPROVE"
+        assert _verdict_label([_f(7)]) == "BLOCK"
+        assert _verdict_label([_f(8)]) == "BLOCK"
+        assert _verdict_label([_f(10)]) == "BLOCK"
+        assert _verdict_label([_f(6)]) == "REVISE"
+        assert _verdict_label([_f(5)]) == "REVISE"
+        assert _verdict_label([_f(1)]) == "REVISE"
+
     def test_format_findings_no_findings(self) -> None:
         from sova.roles.reviewer import _format_findings_comment
 
-        comment = _format_findings_comment([], "All good", 42)
+        comment = _format_findings_comment([], "All good")
         assert "No issues found" in comment
-        assert "PR #42" in comment
-        assert "LGTM" in comment
+        assert "## Review: APPROVE" in comment
 
     def test_format_findings_with_actionable(self) -> None:
         from sova.roles.reviewer import ReviewFinding, _format_findings_comment
@@ -3293,23 +3318,43 @@ class TestReviewerParsing:
             ReviewFinding(file="a.py", severity=7, category="bug", description="Null ref", suggestion="Add check"),
             ReviewFinding(file="b.py", severity=1, category="style", description="Whitespace"),
         ]
-        comment = _format_findings_comment(findings, "Mixed", 10)
+        comment = _format_findings_comment(findings, "Mixed")
         assert "2 findings" in comment
         assert "all to be addressed" in comment
         assert "Null ref" in comment
-        assert "Findings requiring action" in comment
-        assert "BLOCK" in comment
+        assert "## Review: BLOCK" in comment
+        assert "**[CRITICAL]**" in comment
+        assert "**[LOW]**" in comment
 
-    def test_format_findings_revise_assessment(self) -> None:
-        """Findings with severity < 7 produce REVISE assessment."""
+    def test_format_findings_revise_verdict(self) -> None:
+        """Findings with severity < 7 produce REVISE verdict."""
         from sova.roles.reviewer import ReviewFinding, _format_findings_comment
 
         findings = [
             ReviewFinding(file="a.py", severity=5, category="bug", description="Moderate issue"),
         ]
-        comment = _format_findings_comment(findings, "Needs work", 50)
-        assert "REVISE" in comment
-        assert "actionable findings" in comment
+        comment = _format_findings_comment(findings, "Needs work")
+        assert "## Review: REVISE" in comment
+        assert "**[HIGH]**" in comment
+
+    def test_format_review_body_matches_comment(self) -> None:
+        """review_body and findings_comment produce identical output."""
+        from sova.roles.reviewer import ReviewFinding, _format_findings_comment, _format_review_body
+
+        findings = [
+            ReviewFinding(file="a.py", severity=5, category="bug", description="Issue"),
+        ]
+        body = _format_review_body(findings, "Sum")
+        comment = _format_findings_comment(findings, "Sum")
+        assert body == comment
+
+    def test_format_inline_comment_uses_severity_label(self) -> None:
+        from sova.roles.reviewer import ReviewFinding, _format_inline_comment
+
+        f = ReviewFinding(file="a.py", severity=7, category="bug", description="Bad", suggestion="Fix it")
+        result = _format_inline_comment(f)
+        assert "[CRITICAL]" in result
+        assert "7/10" not in result
 
     def test_parse_findings_nested_invalid_json_after_extraction(self) -> None:
         """When extracted JSON substring is also invalid, return empty findings."""
