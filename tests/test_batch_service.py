@@ -322,6 +322,112 @@ class TestBatchTriage:
         assert job.status == "cancelled"
         assert all(r.status == "skipped" for r in job.results)
 
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_emits_feed_when_labels_created(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """Pre-flight creates missing labels and emits an info feed event."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        adapter = _mock_adapter()
+        adapter.ensure_repo_labels = AsyncMock(return_value=["agent:ready", "agent:triaged"])
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        mock_role = mock_role_cls.return_value
+        mock_assessment = MagicMock()
+        mock_assessment.suitability = "ready"
+        mock_role.heuristic_assess = MagicMock(return_value=mock_assessment)
+        mock_role.SUITABILITY_LABELS = {"ready": "agent:ready"}
+        mock_role.allowed_input_states = frozenset({TaskState.BACKLOG})
+        mock_role._build_assessment_comment.return_value = "Assessment"
+
+        emitted: list[str] = []
+
+        def _capture_emit(title, **kwargs):
+            emitted.append(title)
+
+        job = BatchJob(
+            batch_id="label_ok",
+            action="triage",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        with patch("sova.dashboard.services.batch_service.emit_safe", side_effect=_capture_emit):
+            await _run_batch_triage(job, Path("/tmp"))
+
+        assert any("Created 2 missing agent label(s)" in m for m in emitted)
+        adapter.ensure_repo_labels.assert_awaited_once()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_aborts_when_label_preflight_fails(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """Pre-flight failure marks all items failed and emits an error feed event."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+        from sova.dashboard.services.feed_service import FeedEventSeverity
+
+        adapter = _mock_adapter()
+        adapter.ensure_repo_labels = AsyncMock(
+            side_effect=RuntimeError("Could not create label 'agent:ready': permission denied")
+        )
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        emitted_severities: list[str] = []
+
+        def _capture_emit(title, severity=FeedEventSeverity.info, **kwargs):
+            emitted_severities.append(severity)
+
+        job = BatchJob(
+            batch_id="label_fail",
+            action="triage",
+            results=[
+                BatchItemResult(issue_id="1"),
+                BatchItemResult(issue_id="2"),
+            ],
+        )
+
+        with patch("sova.dashboard.services.batch_service.emit_safe", side_effect=_capture_emit):
+            await _run_batch_triage(job, Path("/tmp"))
+
+        assert all(r.status == "failed" for r in job.results)
+        assert "missing agent labels" in job.results[0].detail
+        assert FeedEventSeverity.error in emitted_severities
+        mock_role_cls.return_value.heuristic_assess.assert_not_called()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_skips_preflight_when_cancelled(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """Pre-flight is skipped for cancelled batches; items are marked skipped by the loop."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        adapter = _mock_adapter()
+        mock_create_adapter.return_value = adapter
+        mock_config.return_value = _mock_config()
+
+        job = BatchJob(
+            batch_id="cancelled_preflight",
+            action="triage",
+            cancelled=True,
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_triage(job, Path("/tmp"))
+
+        adapter.ensure_repo_labels.assert_not_awaited()
+        assert all(r.status == "skipped" for r in job.results)
+
 
 class TestBatchHarden:
     @patch("sova.db.session.init_db", new_callable=AsyncMock)
