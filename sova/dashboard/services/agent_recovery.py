@@ -24,8 +24,6 @@ _issue_pr_cache: TTLCache[str, int | None] = TTLCache(maxsize=256, ttl=_SYNTHESI
 # Reentrant lock protecting both caches from concurrent thread access
 _cache_lock = threading.RLock()
 
-_MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
-
 
 def _check_issue_cache(issue_number: str) -> tuple[bool, int | None, list[dict] | None]:
     """Check issue-level and synthesis caches.
@@ -141,24 +139,35 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     except Exception:
                         log.debug("recovery.handoff_check_failed", run_id=run.id, exc_info=True)
 
-                    if run.pr_number and run.role:
-                        cmd_name = run.role.removeprefix("command:").removeprefix("/").split()[0]
+                    # For merge-role runs with a PR number, check GitHub with a bounded
+                    # timeout to detect successful merges despite agent crash. The 15-second
+                    # cap is acceptable at startup (vs the 300-second default that caused the
+                    # original hang). The liveness sweep skips terminal runs, so this is the
+                    # only place to correctly classify integrate-pr / approve-merge runs.
+                    if final_status == "interrupted" and run.pr_number is not None:
+                        import asyncio
+
+                        from sova.dashboard.services.agent_lifecycle import (
+                            _MERGE_ROLES,
+                            _check_pr_merged_on_failure,
+                        )
+
+                        cmd_name = (run.role or "").removeprefix("command:").removeprefix("/").split()[0]
                         if cmd_name in _MERGE_ROLES:
                             try:
-                                from sova.dashboard.services.agent_lifecycle import _check_pr_merged_on_failure
-
-                                if await _check_pr_merged_on_failure(run.pr_number, project_dir):
+                                if await asyncio.wait_for(
+                                    _check_pr_merged_on_failure(run.pr_number, project_dir),
+                                    timeout=15.0,
+                                ):
                                     final_status = "done"
-                                    run.error_message = (
-                                        f"Agent process died but PR #{run.pr_number} was merged successfully"
-                                    )
+                                    run.error_message = f"Agent process died but PR #{run.pr_number} was merged"
                                     log.info(
                                         "recovery.merge_succeeded_despite_crash",
                                         run_id=run.id,
                                         pr=run.pr_number,
                                     )
-                            except Exception:
-                                log.debug("recovery.merge_check_failed", run_id=run.id, exc_info=True)
+                            except (asyncio.TimeoutError, Exception):
+                                log.debug("recovery.merge_check_skipped", run_id=run.id, exc_info=True)
 
                     run.status = final_status
                     if final_status == "interrupted":
