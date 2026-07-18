@@ -351,9 +351,11 @@ async def get_sova_review_verdict(
 
     When handoff_json is present, the verdict is derived from it (authoritative).
     When a review run completed successfully but has no handoff_json (e.g.
-    command:review-pr which posts to GitHub but doesn't write handoff), the
-    verdict is parsed from the agent's output lines.  Falls back to "revise"
-    if the output contains no recognizable verdict pattern.
+    command:review-pr which posts to GitHub but doesn't write handoff, or
+    role="reviewer" runs where WorkflowEngine never adopted the TaskRun due to
+    a pipeline bypass leaving current_step="agent"), the verdict is parsed from
+    the agent's output lines.  Falls back to "revise" if the output contains no
+    recognizable verdict pattern.
     """
     from sqlalchemy import func, select
 
@@ -397,11 +399,13 @@ async def get_sova_review_verdict(
             result = await session.execute(stmt)
             run = result.scalar_one_or_none()
 
-            # Fallback: look for command:review-pr runs WITHOUT handoff_json.
-            # These runs post to GitHub but don't write structured handoff data.
+            # Fallback: look for reviewer or command:review-pr runs WITHOUT handoff_json.
+            # command:review-pr posts to GitHub but doesn't write structured handoff data.
+            # reviewer runs may also have null handoff_json when WorkflowEngine never
+            # adopted the TaskRun (pipeline bypass: current_step sentinel not cleared).
             if not run:
                 fallback_filters = [
-                    TaskRun.role == "command:review-pr",
+                    TaskRun.role.in_(["reviewer", "command:review-pr"]),
                     TaskRun.status == "done",
                     TaskRun.handoff_json.is_(None),
                 ]

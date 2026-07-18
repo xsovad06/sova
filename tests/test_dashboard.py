@@ -6194,6 +6194,28 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
+    async def test_sova_review_verdict_null_handoff_reviewer_role(self) -> None:
+        """reviewer role with null handoff_json (pipeline bypass) returns has_sova_review=True."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="107",
+                    role="reviewer",
+                    status="done",
+                    handoff_json=None,
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("107")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+        assert result["finding_count"] == 0
+        assert result["reviewed_at"] is not None
+
     async def test_sova_review_verdict_interrupted_with_findings(self) -> None:
         """A reviewer killed during post-review cleanup still counts."""
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
