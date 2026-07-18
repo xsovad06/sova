@@ -48,6 +48,7 @@ def _mock_adapter(tasks: list[Task] | None = None) -> AsyncMock:
     ]
     adapter.list_tasks.return_value = task_list
     adapter.get_task.side_effect = lambda tid: next((t for t in task_list if t.id == tid), None)
+    adapter.ensure_repo_labels.return_value = []
     return adapter
 
 
@@ -406,21 +407,50 @@ class TestBatchTriage:
     @patch("sova.config.loader.load_config")
     @patch("sova.adapters.create_adapter")
     @patch("sova.roles.triage.TriageRole")
-    async def test_triage_skips_preflight_when_cancelled(
+    async def test_triage_skips_label_preflight_for_dry_run(
         self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
     ) -> None:
-        """Pre-flight is skipped for cancelled batches; items are marked skipped by the loop."""
+        """Label pre-flight must not mutate the repo when mode is dry_run."""
+        from sova.config.models import TriageConfig
         from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
 
         adapter = _mock_adapter()
+        adapter.ensure_repo_labels = AsyncMock(return_value=[])
+        mock_create_adapter.return_value = adapter
+        cfg = _mock_config()
+        cfg.triage = TriageConfig(mode="dry_run")
+        mock_config.return_value = cfg
+
+        job = BatchJob(
+            batch_id="dry_run_labels",
+            action="triage",
+            results=[BatchItemResult(issue_id="1")],
+        )
+
+        await _run_batch_triage(job, Path("/tmp"))
+
+        adapter.ensure_repo_labels.assert_not_awaited()
+
+    @patch("sova.db.session.init_db", new_callable=AsyncMock)
+    @patch("sova.config.loader.load_config")
+    @patch("sova.adapters.create_adapter")
+    @patch("sova.roles.triage.TriageRole")
+    async def test_triage_skips_label_preflight_when_cancelled(
+        self, mock_role_cls, mock_create_adapter, mock_config, mock_init_db
+    ) -> None:
+        """Label pre-flight must not mutate the repo when job is already cancelled."""
+        from sova.dashboard.services.batch_service import BatchItemResult, _run_batch_triage
+
+        adapter = _mock_adapter()
+        adapter.ensure_repo_labels = AsyncMock(return_value=[])
         mock_create_adapter.return_value = adapter
         mock_config.return_value = _mock_config()
 
         job = BatchJob(
-            batch_id="cancelled_preflight",
+            batch_id="cancelled_labels",
             action="triage",
-            cancelled=True,
             results=[BatchItemResult(issue_id="1")],
+            cancelled=True,
         )
 
         await _run_batch_triage(job, Path("/tmp"))

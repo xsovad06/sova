@@ -134,6 +134,7 @@ class TaskAdapter(ABC):
         Returns the names of labels that were created.
         Raises RuntimeError if required labels cannot be created.
         """
+        del required
         return []
 
     # -- Egress-filtered methods (Template Method pattern) -------------------

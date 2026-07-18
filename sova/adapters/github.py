@@ -176,15 +176,23 @@ class GitHubAdapter(TaskAdapter):
                 "ededed",
             )
             if not create.success:
-                # Treat "already exists" as success: another caller created it concurrently.
-                stderr_lower = create.stderr.lower()
-                if "already exists" in stderr_lower or "already been taken" in stderr_lower:
-                    log.debug("label.already_exists", label=label, repo=self.repo)
-                else:
+                # Another concurrent request may have created the label first; re-check before failing.
+                recheck = await self._gh("label", "list", "--repo", self.repo, "--json", "name", "--limit", "500")
+                if not recheck.success:
+                    raise RuntimeError(
+                        f"Could not create label '{label}' and re-check also failed: {recheck.stderr[:200]}. "
+                        f"Create it manually: gh label create {label!r} --repo {self.repo}"
+                    )
+                try:
+                    existing_now = {lbl["name"] for lbl in json.loads(recheck.stdout)}
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    existing_now = set()
+                if label not in existing_now:
                     raise RuntimeError(
                         f"Could not create label '{label}': {create.stderr[:200]}. "
                         f"Create it manually: gh label create {label!r} --repo {self.repo}"
                     )
+                log.info("label.already_exists", label=label, repo=self.repo)
             else:
                 created.append(label)
 

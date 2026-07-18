@@ -115,6 +115,72 @@ class TestTaskAdapterInterface:
         with pytest.raises(TypeError):
             TaskAdapter(repo="user/repo")  # type: ignore[abstract]
 
+    async def test_ensure_repo_labels_base_is_noop(self) -> None:
+        """Base class ensure_repo_labels returns [] without raising."""
+        from sova.adapters.base import TaskAdapter
+
+        class _MinimalAdapter(TaskAdapter):
+            async def list_tasks(self, *_, **__):
+                return []  # type: ignore[override]
+
+            async def get_task(self, *_, **__):
+                return None  # type: ignore[override]
+
+            async def get_state(self, *_, **__):
+                return None  # type: ignore[override]
+
+            async def transition_state(self, *_, **__):
+                pass
+
+            async def assign(self, *_, **__):
+                pass
+
+            async def add_label(self, *_, **__):
+                pass
+
+            async def remove_label(self, *_, **__):
+                pass
+
+            async def _do_post_comment(self, *_, **__):
+                pass
+
+            async def _do_post_pr_comment(self, *_, **__):
+                pass
+
+            async def _do_post_pr_review(self, *_, **__):
+                pass
+
+            async def _do_edit_body(self, *_, **__):
+                pass
+
+            async def link_pr(self, *_, **__):
+                pass
+
+            async def get_pr_reviews(self, *_, **__):
+                return []  # type: ignore[override]
+
+            async def get_comments(self, *_, **__):
+                return []  # type: ignore[override]
+
+            async def _do_create_issue(self, *_, **__):
+                return ""
+
+            async def get_available_transitions(self, *_, **__):
+                return []  # type: ignore[override]
+
+            async def list_milestones(self, *_, **__):
+                return []  # type: ignore[override]
+
+            async def create_milestone(self, *_, **__):
+                return ""
+
+            async def set_milestone(self, *_, **__):
+                pass
+
+        adapter = _MinimalAdapter(repo="user/repo", github_user="user")
+        result = await adapter.ensure_repo_labels()
+        assert result == []
+
     def test_subclass_must_implement_methods(self) -> None:
         required_methods = [
             "list_tasks",
@@ -1092,10 +1158,11 @@ class TestProjectBoard:
         assert created == ["agent:triaged"]
 
     async def test_ensure_repo_labels_idempotent_on_already_exists(self, mock_run: AsyncMock) -> None:
-        """ensure_repo_labels treats 'already exists' create failure as success."""
+        """ensure_repo_labels treats a concurrent-creation failure as success when re-check confirms existence."""
         mock_run.side_effect = [
-            _shell_result(stdout="[]"),
-            _shell_result(returncode=1, stderr="label 'agent:ready' already exists"),
+            _shell_result(stdout="[]"),  # initial list: missing
+            _shell_result(returncode=1, stderr="label 'agent:ready' already exists"),  # create fails
+            _shell_result(stdout='[{"name": "agent:ready"}]'),  # re-check: label exists
         ]
 
         created = await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
@@ -1107,9 +1174,37 @@ class TestProjectBoard:
         import pytest
 
         mock_run.side_effect = [
-            _shell_result(stdout="[]"),
-            _shell_result(returncode=1, stderr="HTTP 403: insufficient scope"),
+            _shell_result(stdout="[]"),  # initial list: missing
+            _shell_result(returncode=1, stderr="HTTP 403: insufficient scope"),  # create fails
+            _shell_result(stdout="[]"),  # re-check: still not there (403, not a race)
         ]
 
         with pytest.raises(RuntimeError, match="Could not create label"):
+            await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
+
+    async def test_ensure_repo_labels_raises_when_recheck_fails(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels raises with a diagnostic message when the re-check API call itself fails."""
+        import pytest
+
+        mock_run.side_effect = [
+            _shell_result(stdout="[]"),  # initial list: missing
+            _shell_result(returncode=1, stderr="HTTP 403: insufficient scope"),  # create fails
+            _shell_result(returncode=1, stderr="HTTP 503: service unavailable"),  # re-check also fails
+        ]
+
+        with pytest.raises(RuntimeError, match="re-check also failed"):
+            await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
+
+    async def test_ensure_repo_labels_list_api_failure(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels raises RuntimeError when the gh label list call fails."""
+        mock_run.return_value = _shell_result(returncode=1, stderr="HTTP 403 Forbidden")
+
+        with pytest.raises(RuntimeError, match="Could not list repo labels"):
+            await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
+
+    async def test_ensure_repo_labels_parse_failure(self, mock_run: AsyncMock) -> None:
+        """ensure_repo_labels raises RuntimeError when the label list response is malformed JSON."""
+        mock_run.return_value = _shell_result(stdout="not valid json")
+
+        with pytest.raises(RuntimeError, match="Could not parse label list"):
             await self.adapter.ensure_repo_labels(required=frozenset({"agent:ready"}))
