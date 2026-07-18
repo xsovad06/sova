@@ -45,6 +45,7 @@ class WorkItemState(StrEnum):
     PR_REVIEW_ADDRESSED = "pr_review_addressed"
     PR_APPROVED = "pr_approved"
     PR_READY_TO_MERGE = "pr_ready_to_merge"
+    PR_SOVA_PENDING = "pr_sova_pending"
 
     # Handoff states
     HANDOFF_PENDING = "handoff_pending"
@@ -71,6 +72,7 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_REVIEW_ADDRESSED: "Review Addressed",
     WorkItemState.PR_APPROVED: "Approved",
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
+    WorkItemState.PR_SOVA_PENDING: "Sova Review Pending",
     WorkItemState.HANDOFF_PENDING: "Action Required",
     WorkItemState.SPEC_REVIEW: "Spec Review",
     WorkItemState.MERGED: "Merged",
@@ -99,6 +101,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_REVIEW_ADDRESSED: "bg-accent-lavender/20 text-accent-lavender",
     WorkItemState.PR_APPROVED: _CLR_GREEN,
     WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
+    WorkItemState.PR_SOVA_PENDING: _CLR_PEACH,
     WorkItemState.HANDOFF_PENDING: _CLR_PEACH,
     WorkItemState.SPEC_REVIEW: _CLR_PEACH,
     WorkItemState.MERGED: _CLR_GREEN_STRONG,
@@ -201,6 +204,7 @@ def _get_actions(
         S.PR_CI_RUNNING: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
         S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
+        S.PR_SOVA_PENDING: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
         S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
@@ -228,8 +232,9 @@ def compute_work_item_state(
     sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
     When present it overrides the raw GitHub state in two cases:
       - Verdict "revise"/"block": override any Integrate-bound state to PR_CHANGES_REQUESTED.
-      - No SOVA review at all: override Integrate-bound states to PR_AWAITING_REVIEW so that
-        "Review PR" is shown before an Integrate button can appear.
+      - No SOVA review + externally approved PR (PR_APPROVED/PR_READY_TO_MERGE): override to
+        PR_SOVA_PENDING so "Address PR" is shown first, letting users handle inline comments
+        before triggering the SOVA review. PRs with no external review remain PR_AWAITING_REVIEW.
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
@@ -275,9 +280,10 @@ _VERDICT_OVERRIDEABLE = frozenset(
 def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
 
-    Two adjustments (findings 1 and 3):
-      1. No SOVA review: block Integrate-bound states — show Review PR instead.
-      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address PR).
+    Two adjustments:
+      1. No SOVA review + externally approved PR: show Address PR first (PR_SOVA_PENDING)
+         so users can handle inline comments before triggering SOVA review.
+      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address via agent).
     """
     if sova_verdict is None:
         return mapped
@@ -286,7 +292,7 @@ def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> Wor
     verdict = sova_verdict.get("verdict")
 
     if not has_review and mapped in _INTEGRATE_STATES:
-        return WorkItemState.PR_AWAITING_REVIEW
+        return WorkItemState.PR_SOVA_PENDING
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
         return WorkItemState.PR_CHANGES_REQUESTED
@@ -777,6 +783,7 @@ _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.PR_APPROVED: 2,
     WorkItemState.PR_CI_FAILED: 3,
     WorkItemState.PR_CHANGES_REQUESTED: 3,
+    WorkItemState.PR_SOVA_PENDING: 3,
 }
 
 
