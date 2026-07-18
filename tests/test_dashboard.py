@@ -757,6 +757,45 @@ class TestCancelBackgroundTasks:
         finally:
             del pa.agents[9999]
 
+    async def test_cancels_multiple_agents_concurrently(self) -> None:
+        """IO task cancellation for N agents runs concurrently, not serially.
+
+        With the old sequential loop, N agents × 3s resource_collector.stop()
+        timeout = N*3 seconds of serial shutdown time. The concurrent gather
+        makes the wall-clock cost max(individual stop) regardless of N.
+        """
+        import time
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
+        from sova.dashboard.services.agent_pool import AgentState, _get_project_agents
+
+        pa = _get_project_agents()
+
+        async def _slow_stop() -> None:
+            await asyncio.sleep(0.1)
+
+        agents_added = []
+        for i in range(3):
+            mock_process = MagicMock()
+            mock_process.pid = 90000 + i
+            agent = AgentState(run_id=90000 + i, issue=str(i), role="developer", process=mock_process)
+            mock_collector = MagicMock()
+            mock_collector.stop = AsyncMock(side_effect=_slow_stop)
+            agent.resource_collector = mock_collector
+            pa.agents[90000 + i] = agent
+            agents_added.append(90000 + i)
+
+        try:
+            start = time.monotonic()
+            await cancel_background_tasks()
+            elapsed = time.monotonic() - start
+            # Three agents each sleeping 0.1 s: serial = 0.3 s, concurrent < 0.25 s
+            assert elapsed < 0.25, f"Expected concurrent execution but took {elapsed:.2f}s"
+        finally:
+            for run_id in agents_added:
+                pa.agents.pop(run_id, None)
+
 
 class TestShutdownTasks:
     """Cover the _shutdown_tasks helper in app.py."""
@@ -852,8 +891,13 @@ class TestShutdownTasks:
 
 
 class TestRecoveryMergeCheck:
-    async def test_recover_merge_role_checks_pr_merged(self) -> None:
-        """Merge-role runs should be marked 'done' if PR was actually merged."""
+    async def test_recover_merge_role_marks_done_when_pr_merged(self) -> None:
+        """integrate-pr stale runs are marked done when the PR was actually merged.
+
+        recover_stale_runs() calls _check_pr_merged_on_failure with a 15-second
+        timeout so that a successful merge-despite-crash is correctly classified
+        as "done" instead of leaving a permanent "interrupted" banner.
+        """
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.control_service import recover_stale_runs
@@ -871,23 +915,24 @@ class TestRecoveryMergeCheck:
             await session.flush()
             run_id = run.id
 
+        mock_check = AsyncMock(return_value=True)
         with patch(
             "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            new_callable=AsyncMock,
-            return_value=True,
+            mock_check,
         ):
             interrupted = await recover_stale_runs()
 
+        # PR was merged: run should be "done", not in the interrupted list
         assert len(interrupted) == 0
+        mock_check.assert_called_once_with(130, None)
 
         session2 = await get_session()
         async with session2.begin():
             updated = await session2.get(TaskRun, run_id)
             assert updated.status == "done"
-            assert "merged successfully" in updated.error_message
 
-    async def test_recover_merge_role_not_merged_stays_interrupted(self) -> None:
-        """Merge-role runs where PR was NOT merged stay interrupted."""
+    async def test_recover_merge_role_marked_interrupted_when_pr_not_merged(self) -> None:
+        """integrate-pr stale runs are marked interrupted when the PR was not merged."""
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.control_service import recover_stale_runs
@@ -905,10 +950,44 @@ class TestRecoveryMergeCheck:
             await session.flush()
             run_id = run.id
 
+        mock_check = AsyncMock(return_value=False)
         with patch(
             "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            new_callable=AsyncMock,
-            return_value=False,
+            mock_check,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert len(interrupted) == 1
+        mock_check.assert_called_once_with(130, None)
+
+        session2 = await get_session()
+        async with session2.begin():
+            updated = await session2.get(TaskRun, run_id)
+            assert updated.status == "interrupted"
+
+    async def test_recover_approve_merge_role_also_interrupted(self) -> None:
+        """approve-merge stale runs are marked interrupted when the PR was not merged."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.control_service import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="114",
+                role="command:approve-merge",
+                status="running",
+                pid=999999,
+                pr_number=131,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        mock_check = AsyncMock(return_value=False)
+        with patch(
+            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+            mock_check,
         ):
             interrupted = await recover_stale_runs()
 
@@ -920,7 +999,7 @@ class TestRecoveryMergeCheck:
             assert updated.status == "interrupted"
 
     async def test_recover_non_merge_role_ignores_pr(self) -> None:
-        """Non-merge roles should not check PR status even if pr_number is set."""
+        """Non-merge roles are marked interrupted regardless of pr_number."""
         from sova.dashboard.services.control_service import recover_stale_runs
 
         session = await get_session()
