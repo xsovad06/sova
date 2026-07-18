@@ -187,8 +187,8 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         # Pre-flight: ensure all agent:* labels exist before per-item work begins.
         # This prevents individual triage failures caused by GitHub label propagation
         # delays when auto-creating labels reactively inside _add_label.
-        # Skip for cancelled batches: the per-item loop will mark each item skipped.
-        if not job.cancelled:
+        # Skip for dry_run (no repo mutation) and cancelled jobs (already stopping).
+        if not job.cancelled and config.triage.mode != "dry_run":
             try:
                 created = await adapter.ensure_repo_labels()
                 if created:
