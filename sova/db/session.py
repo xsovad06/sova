@@ -2,7 +2,7 @@
 
 Supports multi-project mode with per-project DB sessions.
 Uses Alembic migrations for schema changes (not create_all).
-Backs up SQLite databases before running migrations.
+Backs up SQLite databases when migrations apply DDL (not on every restart).
 """
 
 from __future__ import annotations
@@ -75,16 +75,43 @@ def _backup_db(url: str) -> Path | None:
     return backup
 
 
-async def _run_migrations(engine) -> None:
+_ALEMBIC_HEAD_CACHE: str | None = None
+
+
+def _get_alembic_head(alembic_cfg) -> str | None:
+    """Return the current head revision from migration scripts, or None on error.
+
+    Result is cached for the process lifetime -- the head revision never changes
+    while the server is running, so repeated restarts only pay the I/O cost once.
+    """
+    global _ALEMBIC_HEAD_CACHE
+    if _ALEMBIC_HEAD_CACHE is not None:
+        return _ALEMBIC_HEAD_CACHE
+    try:
+        from alembic.script import ScriptDirectory
+
+        script = ScriptDirectory.from_config(alembic_cfg)
+        result = script.get_current_head()
+        if result is not None:
+            _ALEMBIC_HEAD_CACHE = result
+        return result
+    except Exception:
+        return None
+
+
+async def _run_migrations(engine) -> bool:
     """Run Alembic migrations programmatically.
 
     Handles four cases:
     1. Fresh DB (no tables): run all migrations from scratch
     2. Existing DB without alembic_version: stamp at current head (pre-Alembic DB)
-    3. Existing DB with alembic_version: upgrade to head
-    4. Corrupted alembic_version (empty): drop it and run fresh
+    3. Existing DB with alembic_version at head: skip upgrade (fast path)
+    4. Existing DB with alembic_version behind head: upgrade to head
 
     Falls back to create_all + stamp if Alembic migration fails.
+
+    Returns True if DDL was executed (caller should dispose pool to clear schema
+    cache), False if the DB was already at head (pool reuse is safe).
     """
     from alembic import command
     from alembic.config import Config
@@ -95,14 +122,25 @@ async def _run_migrations(engine) -> None:
         table_names = await conn.run_sync(lambda c: inspect(c).get_table_names())
         has_alembic = "alembic_version" in table_names
 
+    current_version: str | None = None
     if has_alembic:
         async with engine.begin() as conn:
             row = await conn.run_sync(lambda c: c.execute(text("SELECT version_num FROM alembic_version")).fetchone())
             if row is None:
                 await conn.run_sync(lambda c: c.execute(text("DROP TABLE alembic_version")))
                 has_alembic = False
+            else:
+                current_version = row[0] or None
 
     has_tables = bool(set(table_names) - {"alembic_version"}) if not has_alembic else bool(table_names)
+
+    # Fast path: DB is already at migration head -- skip the upgrade entirely.
+    # This saves ~300ms of Alembic script loading on every server restart.
+    # Only safe when version is non-empty (empty string means corrupted tracking).
+    if has_alembic and current_version:
+        head = _get_alembic_head(alembic_cfg)
+        if head is not None and current_version == head:
+            return False  # Already at head, no DDL needed
 
     def _do_upgrade(sync_conn):
         alembic_cfg.attributes["connection"] = sync_conn
@@ -130,6 +168,22 @@ async def _run_migrations(engine) -> None:
                 await conn.run_sync(_do_stamp)
         except Exception:
             log.warning("Alembic stamp also failed; tables created but untracked", exc_info=True)
+    return True  # DDL was executed
+
+
+async def _enable_sqlite_wal(engine) -> None:
+    """Enable WAL journal mode on the first connection.
+
+    WAL mode persists in the database file after the first set -- subsequent
+    connections automatically use WAL without re-running the PRAGMA.
+    The busy timeout is handled per-connection via connect_args={"timeout": 30}.
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("PRAGMA journal_mode=WAL"))
+    except Exception:
+        log = logging.getLogger("sova.db")
+        log.warning("Failed to set SQLite WAL mode", exc_info=True)
 
 
 async def init_db(project_dir: Path | None = None, *, run_migrations: bool = True) -> None:
@@ -143,23 +197,31 @@ async def init_db(project_dir: Path | None = None, *, run_migrations: bool = Tru
     global _engine, _session_factory
 
     url = _get_database_url(project_dir)
-    connect_args = {}
+    connect_args: dict = {}
 
     if url.startswith("sqlite"):
-        connect_args["check_same_thread"] = False
+        # check_same_thread: aiosqlite runs in its own thread, not the caller's.
+        # timeout: busy-wait up to 30 s when another connection holds the write
+        # lock. Without this, concurrent access raises "database is locked" after
+        # 5 s (the sqlite3 default) and crashes the request.
+        connect_args = {"check_same_thread": False, "timeout": 30}
 
     _engine = create_async_engine(url, connect_args=connect_args)
     _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
     _engines[url] = (_engine, _session_factory)
 
     if run_migrations:
-        _backup_db(url)
-        await _run_migrations(_engine)
-        if _get_db_path_from_url(url) is not None:
+        is_sqlite_file = _get_db_path_from_url(url) is not None
+        if is_sqlite_file:
+            await _enable_sqlite_wal(_engine)
+
+        ddl_executed = await _run_migrations(_engine)
+        if is_sqlite_file and ddl_executed:
             # Alembic's synchronous DDL via run_sync can leave aiosqlite
-            # connections with a stale schema cache. Dispose the pool so
-            # subsequent queries get fresh connections. Skip for in-memory
-            # DBs which lose data on dispose.
+            # connections with a stale schema cache. Only dispose when DDL
+            # actually ran -- skipping dispose saves one connection round-trip
+            # (~300 ms) on every restart when the DB is already at head.
+            _backup_db(url)
             await _engine.dispose()
     else:
         async with _engine.begin() as conn:
@@ -176,15 +238,19 @@ async def init_db_for_project(project_dir: Path) -> None:
         if url in _engines:
             return
 
-        connect_args = {}
+        connect_args: dict = {}
         if url.startswith("sqlite"):
-            connect_args["check_same_thread"] = False
+            connect_args = {"check_same_thread": False, "timeout": 30}
 
         engine = create_async_engine(url, connect_args=connect_args)
 
-        _backup_db(url)
-        await _run_migrations(engine)
-        if _get_db_path_from_url(url) is not None:
+        is_sqlite_file = _get_db_path_from_url(url) is not None
+        if is_sqlite_file:
+            await _enable_sqlite_wal(engine)
+
+        ddl_executed = await _run_migrations(engine)
+        if is_sqlite_file and ddl_executed:
+            _backup_db(url)
             await engine.dispose()
 
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
