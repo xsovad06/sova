@@ -526,6 +526,26 @@ class TestApplySovaVerdict:
         """CI_FAILED is not in _VERDICT_OVERRIDEABLE; existing fix action should not be clobbered."""
         assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("revise")) == WorkItemState.PR_CI_FAILED
 
+    # -- SOVA approved but GitHub has no formal approval (self-review posted as COMMENT) --
+
+    def test_approved_verdict_on_awaiting_review_upgrades_to_approved(self) -> None:
+        """SOVA approves but GitHub reviewDecision is empty (owner self-review posts as COMMENT).
+        The state should upgrade so "Integrate PR" is shown instead of "Review"."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("approve")) == WorkItemState.PR_APPROVED
+        )
+
+    def test_approved_verdict_does_not_affect_changes_requested(self) -> None:
+        """If another reviewer requested changes, SOVA approve should not override it."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_CHANGES_REQUESTED, self._review("approve"))
+            == WorkItemState.PR_CHANGES_REQUESTED
+        )
+
+    def test_approved_verdict_does_not_affect_ci_failed(self) -> None:
+        """CI failure takes priority; SOVA approve should not change the state."""
+        assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("approve")) == WorkItemState.PR_CI_FAILED
+
 
 class TestBuildTaskItem:
     def test_basic_task(self) -> None:
