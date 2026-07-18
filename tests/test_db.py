@@ -751,7 +751,8 @@ async def test_init_db_for_project_disposes_sqlite_engine(tmp_path) -> None:
 
     with (
         patch("sova.db.session._get_database_url", return_value=test_url),
-        patch("sova.db.session._run_migrations", new_callable=AsyncMock),
+        patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=True),
+        patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
         patch("sova.db.session._backup_db"),
         patch("sova.db.session._get_db_path_from_url", return_value=tmp_path / "sova.db"),
         patch("sova.db.session.create_async_engine", return_value=mock_engine),
@@ -760,7 +761,7 @@ async def test_init_db_for_project_disposes_sqlite_engine(tmp_path) -> None:
         await init_db_for_project(test_dir)
         mock_engine.dispose.assert_awaited_once()
 
-    _engines.pop(test_url, None)
+    _engines.pop(test_url, None)  # dispose test cleanup
 
 
 async def test_init_db_for_project_skips_dispose_for_non_sqlite(tmp_path) -> None:
@@ -787,3 +788,393 @@ async def test_init_db_for_project_skips_dispose_for_non_sqlite(tmp_path) -> Non
         mock_engine.dispose.assert_not_awaited()
 
     _engines.pop(test_url, None)
+
+
+# ---------------------------------------------------------------------------
+# WAL mode + busy_timeout setup (_enable_sqlite_wal)
+# ---------------------------------------------------------------------------
+
+
+async def test_enable_sqlite_wal_sets_wal_mode(tmp_path) -> None:
+    """_enable_sqlite_wal must switch the DB to WAL journal mode."""
+    import sqlite3
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _enable_sqlite_wal
+
+    db_path = tmp_path / "wal-test.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE TABLE IF NOT EXISTS _probe (id INTEGER PRIMARY KEY)"))
+
+    await _enable_sqlite_wal(engine)
+    await engine.dispose()
+
+    raw = sqlite3.connect(str(db_path))
+    mode = raw.execute("PRAGMA journal_mode").fetchone()[0]
+    raw.close()
+
+    assert mode == "wal"
+
+
+async def test_enable_sqlite_wal_is_idempotent(tmp_path) -> None:
+    """Calling _enable_sqlite_wal twice must not raise."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _enable_sqlite_wal
+
+    db_path = tmp_path / "wal-idem.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    await _enable_sqlite_wal(engine)
+    await _enable_sqlite_wal(engine)
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# _run_migrations fast path (skip upgrade when already at head)
+# ---------------------------------------------------------------------------
+
+
+class TestRunMigrationsAtHead:
+    """_run_migrations must skip the upgrade when DB is already at head."""
+
+    async def test_fast_path_returns_false_when_at_head(self, tmp_path) -> None:
+        """Second call on an up-to-date DB must return False (no DDL run)."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "at-head.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        ddl1 = await _run_migrations(engine)
+        assert ddl1 is True
+
+        ddl2 = await _run_migrations(engine)
+        assert ddl2 is False
+
+        await engine.dispose()
+
+    async def test_fast_path_does_not_call_alembic_upgrade(self, tmp_path) -> None:
+        """When at head, alembic.command.upgrade must not be invoked."""
+        from unittest.mock import patch
+
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "skip-upgrade.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)
+
+        with patch("alembic.command.upgrade") as mock_upgrade:
+            result = await _run_migrations(engine)
+
+        assert result is False
+        mock_upgrade.assert_not_called()
+        await engine.dispose()
+
+    async def test_upgrade_runs_when_behind_head(self, tmp_path) -> None:
+        """When DB is behind head, upgrade must run and return True."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from sova.db.session import _run_migrations
+
+        db_path = tmp_path / "behind-head.db"
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
+
+        await _run_migrations(engine)
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE alembic_version SET version_num = '001'"))
+
+        result = await _run_migrations(engine)
+        assert result is True
+        await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# _get_alembic_head caching
+# ---------------------------------------------------------------------------
+
+
+async def test_get_alembic_head_returns_current_head() -> None:
+    """_get_alembic_head must return the actual head revision ('018')."""
+    import pathlib
+
+    from alembic.config import Config
+
+    from sova.db import session as session_mod
+    from sova.db.session import _get_alembic_head
+
+    session_mod._ALEMBIC_HEAD_CACHE = None
+
+    alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
+    head = _get_alembic_head(alembic_cfg)
+    assert head == "018"
+
+
+async def test_get_alembic_head_caches_result() -> None:
+    """ScriptDirectory.from_config must be called only once across repeated calls."""
+    import pathlib
+    from unittest.mock import patch
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from sova.db import session as session_mod
+    from sova.db.session import _get_alembic_head
+
+    session_mod._ALEMBIC_HEAD_CACHE = None
+
+    alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
+    original = ScriptDirectory.from_config
+    call_count = 0
+
+    def counting_from_config(cfg):
+        nonlocal call_count
+        call_count += 1
+        return original(cfg)
+
+    with patch.object(ScriptDirectory, "from_config", side_effect=counting_from_config):
+        head1 = _get_alembic_head(alembic_cfg)
+        head2 = _get_alembic_head(alembic_cfg)
+        head3 = _get_alembic_head(alembic_cfg)
+
+    assert call_count == 1
+    assert head1 == head2 == head3
+
+
+# ---------------------------------------------------------------------------
+# _write_loop uses run_in_executor (MetricsSnapshotWriter)
+# ---------------------------------------------------------------------------
+
+
+async def test_write_loop_dispatches_disk_io_to_executor(tmp_path) -> None:
+    """_write_loop must call _flush_to_disk via run_in_executor (not the full snapshot).
+
+    Metrics collection (_collect_metrics) runs on the event loop thread because it reads
+    shared mutable state (pa.agents). Only the disk I/O (_flush_to_disk) is offloaded.
+    """
+    import asyncio
+    from unittest.mock import MagicMock, patch
+
+    from sova.monitoring.cross_project import MetricsSnapshotWriter
+
+    writer = MetricsSnapshotWriter(
+        project_dir=tmp_path,
+        project_name="test",
+        dashboard_port=9999,
+        metrics_dir=tmp_path / "metrics",
+    )
+    # Return a fake available metrics dict so _flush_to_disk is reached
+    writer._collect_metrics = MagicMock(return_value={"available": True, "system": {}, "agents": [], "agent_slots": {}})
+    flush_mock = MagicMock()
+    writer._flush_to_disk = flush_mock
+
+    loop = asyncio.get_event_loop()
+    executor_funcs: list[object] = []
+
+    async def spy_run_in_executor(executor, func, *args):
+        executor_funcs.append(func)
+        func(*args)
+
+    with (
+        patch("sova.monitoring.cross_project._WRITE_INTERVAL", 0),
+        patch.object(loop, "run_in_executor", side_effect=spy_run_in_executor),
+    ):
+        task = asyncio.create_task(writer._write_loop())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    # _flush_to_disk (disk I/O only) must be dispatched to the executor
+    assert any(f is flush_mock for f in executor_funcs)
+    # _collect_metrics must NOT be in executor calls (it runs on the event loop thread)
+    assert not any(getattr(f, "__name__", "") == "_collect_metrics" for f in executor_funcs)
+
+
+# ---------------------------------------------------------------------------
+# _get_alembic_head exception path
+# ---------------------------------------------------------------------------
+
+
+async def test_get_alembic_head_returns_none_on_exception() -> None:
+    """_get_alembic_head returns None when ScriptDirectory.from_config raises."""
+    from unittest.mock import patch
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    from sova.db import session as session_mod
+    from sova.db.session import _get_alembic_head
+
+    session_mod._ALEMBIC_HEAD_CACHE = None
+
+    cfg = Config()
+    with patch.object(ScriptDirectory, "from_config", side_effect=RuntimeError("no scripts")):
+        result = _get_alembic_head(cfg)
+
+    assert result is None
+    # Cache should remain None so a later success is still attempted.
+    assert session_mod._ALEMBIC_HEAD_CACHE is None
+
+
+# ---------------------------------------------------------------------------
+# _enable_sqlite_wal exception path
+# ---------------------------------------------------------------------------
+
+
+async def test_enable_sqlite_wal_swallows_exception(tmp_path) -> None:
+    """_enable_sqlite_wal logs and swallows exceptions instead of propagating."""
+    from unittest.mock import patch
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from sova.db.session import _enable_sqlite_wal
+
+    db_path = tmp_path / "wal-exc.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+
+    with patch("sqlalchemy.ext.asyncio.AsyncConnection.execute", side_effect=Exception("pragma fail")):
+        # Must not raise even when the PRAGMA fails.
+        await _enable_sqlite_wal(engine)
+
+    await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# init_db with run_migrations=True for a file-based SQLite DB
+# ---------------------------------------------------------------------------
+
+
+async def test_init_db_enables_wal_for_file_sqlite(tmp_path) -> None:
+    """init_db calls _enable_sqlite_wal when using a file-based SQLite DB."""
+    import os
+    from unittest.mock import AsyncMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    # Clear the in-memory URL set by autouse fixture so project_dir is used.
+    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    try:
+        wal_mock = AsyncMock()
+        with (
+            patch("sova.db.session._enable_sqlite_wal", wal_mock),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=True),
+            patch("sova.db.session._backup_db"),
+        ):
+            await init_db(project_dir=tmp_path)
+            wal_mock.assert_awaited_once()
+    finally:
+        if saved is not None:
+            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+async def test_init_db_disposes_when_ddl_executed(tmp_path) -> None:
+    """init_db disposes the engine after migration only when DDL actually ran."""
+    import os
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    try:
+        mock_engine = MagicMock()
+        mock_engine.dispose = AsyncMock()
+
+        with (
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=True),
+            patch("sova.db.session._backup_db"),
+            patch("sova.db.session.create_async_engine", return_value=mock_engine),
+            patch("sova.db.session.async_sessionmaker"),
+        ):
+            await init_db(project_dir=tmp_path)
+            mock_engine.dispose.assert_awaited_once()
+    finally:
+        if saved is not None:
+            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+async def test_init_db_skips_dispose_when_no_ddl(tmp_path) -> None:
+    """init_db skips dispose when _run_migrations returns False (already at head)."""
+    import os
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from sova.db.session import close_db, init_db
+
+    saved = os.environ.pop("SOVA_DATABASE_URL", None)
+    try:
+        mock_engine = MagicMock()
+        mock_engine.dispose = AsyncMock()
+
+        with (
+            patch("sova.db.session._enable_sqlite_wal", new_callable=AsyncMock),
+            patch("sova.db.session._run_migrations", new_callable=AsyncMock, return_value=False),
+            patch("sova.db.session._backup_db"),
+            patch("sova.db.session.create_async_engine", return_value=mock_engine),
+            patch("sova.db.session.async_sessionmaker"),
+        ):
+            await init_db(project_dir=tmp_path)
+            mock_engine.dispose.assert_not_awaited()
+    finally:
+        if saved is not None:
+            os.environ["SOVA_DATABASE_URL"] = saved
+        await close_db()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_issue_worktree -- empty / all-hyphens wt_id guard
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_issue_worktree_skips_when_wt_id_all_hyphens(tmp_path) -> None:
+    """Branch names of only path separators must not trigger create_worktree."""
+    from unittest.mock import AsyncMock, patch
+
+    from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+    with (
+        patch(
+            "sova.dashboard.services.agent_context.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "sova.git.worktree.create_worktree",
+            new_callable=AsyncMock,
+        ) as mock_create,
+    ):
+        result = await _resolve_issue_worktree("", tmp_path, branch_name="///", pr_number=None)
+
+    assert result == tmp_path
+    mock_create.assert_not_awaited()
