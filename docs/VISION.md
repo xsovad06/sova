@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-07-13
+> **Last updated**: 2026-07-17
 
 ## What This Becomes
 
@@ -300,7 +300,8 @@ Target: October 2026.
 | -- | Additional personas | Go, React, Rust framework guidance |
 | ~~--~~ | ~~Intelligent model routing~~ | ~~dynamically select Opus/Sonnet/Haiku based on task complexity~~ (done: #155-157) |
 | ~~#277~~ | ~~Pipeline determinism~~ | ~~replace LLM calls with deterministic code in PR body, memory extraction, triage, review ingestion~~ (done) |
-| #254-259 | Resource monitoring | per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor (#254-257 done, #258-259 open) |
+| ~~#254-259~~ | ~~Resource monitoring~~ | ~~per-agent CPU/memory tracking, live dashboard widget, cross-project aggregation, capacity advisor~~ (done: #254-259) |
+| #355-357 | Resource exhaustion guard | Fix available memory metric (#355), pre-spawn gate + dashboard warning banner (#356, Phase 1), supervisor memory pressure gate (#357, Phase 2 -- moves check into TaskProgressionEngine) |
 
 ## Design Principles
 
