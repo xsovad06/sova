@@ -12,7 +12,6 @@ path for auto-retry. The watchdog never independently retries.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,8 +87,7 @@ class AgentWatchdog:
         """Cancel the watchdog background task."""
         if self._task is not None:
             self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
             log.info("watchdog.stopped")
 
