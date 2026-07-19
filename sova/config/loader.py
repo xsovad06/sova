@@ -80,6 +80,7 @@ _NESTED_SECTIONS = (
     "rtk",
     "coderabbit_quota",
     "pr_monitor",
+    "resources",
     "supervisor",
 )
 

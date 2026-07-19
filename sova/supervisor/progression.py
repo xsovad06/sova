@@ -26,6 +26,13 @@ from sova.git.pr import find_pr_for_issue
 from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
 from sova.utils.logging import get_logger
 
+try:
+    import psutil
+
+    _PSUTIL_AVAILABLE = True
+except ImportError:
+    _PSUTIL_AVAILABLE = False
+
 log = get_logger(component="supervisor.progression")
 
 _NOT_COMPUTED = object()  # sentinel: distinguish "not precomputed" from "checked, no block"
@@ -90,6 +97,7 @@ class TaskProgressionEngine:
         cfg = load_config(self._project_dir)
 
         # Pre-compute global gates once, then decrement as slots/quota are consumed
+        global_memory = self._check_memory_pressure_gate(cfg)
         global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
 
         # Compute alive count once: used for both the slot gate and remaining capacity
@@ -130,6 +138,7 @@ class TaskProgressionEngine:
                 issue,
                 task.state,
                 graph,
+                precomputed_memory=global_memory,
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
             )
@@ -231,6 +240,7 @@ class TaskProgressionEngine:
         state: TaskState,
         graph: DependencyGraph,
         *,
+        precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
     ) -> ProgressionDecision:
@@ -282,6 +292,14 @@ class TaskProgressionEngine:
             slot_block = precomputed_slots
         if slot_block:
             blockers.append(slot_block)
+
+        # Memory pressure gate (global, precomputed or on-demand)
+        if precomputed_memory is _NOT_COMPUTED:
+            memory_block = self._check_memory_pressure_gate()
+        else:
+            memory_block = precomputed_memory
+        if memory_block:
+            blockers.append(memory_block)
 
         if blockers:
             reasons = "; ".join(b.detail for b in blockers)
@@ -419,9 +437,36 @@ class TaskProgressionEngine:
 
         return None
 
-    async def _count_alive_agents(self) -> int:
-        """Count currently alive agent processes."""
-        return await self._get_alive_count()
+    def _check_memory_pressure_gate(self, cfg: ProjectConfig | None = None) -> BlockReason | None:
+        """Check system memory pressure. Fail-open if psutil is unavailable."""
+        if not _PSUTIL_AVAILABLE:
+            return None
+
+        try:
+            if cfg is None:
+                cfg = load_config(self._project_dir)
+            mem = psutil.virtual_memory()
+            available_gb = mem.available / (1024**3)
+            block_threshold = cfg.resources.memory_block_threshold_gb
+            warn_threshold = cfg.resources.memory_warn_threshold_gb
+
+            if available_gb < block_threshold:
+                return BlockReason(
+                    gate="memory",
+                    detail=(
+                        f"System memory pressure: {available_gb:.1f} GB available < {block_threshold:.1f} GB threshold"
+                    ),
+                )
+            if available_gb < warn_threshold:
+                log.warning(
+                    "memory_pressure.warn",
+                    available_gb=round(available_gb, 2),
+                    warn_threshold_gb=warn_threshold,
+                )
+        except Exception:
+            log.debug("memory_gate.check_failed", exc_info=True)
+
+        return None
 
     async def _check_budget_gate(self, issue: int) -> BlockReason | None:
         """Check per-issue budget limit."""

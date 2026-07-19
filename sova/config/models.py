@@ -416,6 +416,19 @@ class RTKConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_RTK_")
 
 
+class ResourcesConfig(BaseSettings):
+    """System resource thresholds for agent spawn gating."""
+
+    memory_block_threshold_gb: float = Field(
+        1.0, gt=0, description="Block agent spawning when available memory drops below this (GB)"
+    )
+    memory_warn_threshold_gb: float = Field(
+        2.0, gt=0, description="Log a warning when available memory drops below this (GB)"
+    )
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_RESOURCES_")
+
+
 class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
@@ -491,6 +504,7 @@ class ProjectConfig(BaseSettings):
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
+    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
