@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
@@ -485,7 +486,7 @@ def classify_failure(error_message: str | None, exit_code: int) -> FailureCatego
     return FailureCategory.RECOVERABLE
 
 
-async def _count_nonterminal_for_issue(issue: str, session: Any) -> int:
+async def _count_nonterminal_for_issue(issue: str, session: AsyncSession) -> int:
     """Return the count of non-terminal TaskRun rows for the given issue.
 
     Caller must provide an active session within an open transaction.
