@@ -830,3 +830,149 @@ class TestConfigIntegration:
             meta = get_meta(key)
             assert meta is not None, f"Missing settings metadata for {key}"
             assert meta.group == "supervisor"
+
+
+# ---------------------------------------------------------------------------
+# ResourcesConfig
+# ---------------------------------------------------------------------------
+
+
+class TestResourcesConfig:
+    def test_defaults(self) -> None:
+        from sova.config.models import ResourcesConfig
+
+        cfg = ResourcesConfig()
+        assert cfg.memory_block_threshold_gb == 1.0
+        assert cfg.memory_warn_threshold_gb == 2.0
+
+    def test_custom_values(self) -> None:
+        from sova.config.models import ResourcesConfig
+
+        cfg = ResourcesConfig(memory_block_threshold_gb=0.5, memory_warn_threshold_gb=1.5)
+        assert cfg.memory_block_threshold_gb == 0.5
+        assert cfg.memory_warn_threshold_gb == 1.5
+
+    def test_field_on_project_config(self) -> None:
+        from sova.config.models import ProjectConfig, ResourcesConfig
+
+        cfg = ProjectConfig()
+        assert isinstance(cfg.resources, ResourcesConfig)
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        from sova.config.loader import load_config
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[resources]\nmemory_block_threshold_gb = 0.5\nmemory_warn_threshold_gb = 3.0\n")
+        cfg = load_config(tmp_path)
+        assert cfg.resources.memory_block_threshold_gb == 0.5
+        assert cfg.resources.memory_warn_threshold_gb == 3.0
+
+    def test_settings_metadata(self) -> None:
+        from sova.dashboard.settings_meta import GROUP_ORDER, GROUPS, get_meta
+
+        assert "resources" in GROUPS
+        assert "resources" in GROUP_ORDER
+
+        expected_keys = [
+            "resources.memory_block_threshold_gb",
+            "resources.memory_warn_threshold_gb",
+        ]
+        for key in expected_keys:
+            meta = get_meta(key)
+            assert meta is not None, f"Missing settings metadata for {key}"
+            assert meta.group == "resources"
+
+    def test_env_prefix(self) -> None:
+        from sova.config.models import ResourcesConfig
+
+        assert ResourcesConfig.model_config["env_prefix"] == "SOVA_RESOURCES_"
+
+
+# ---------------------------------------------------------------------------
+# _check_memory_pressure_gate
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryPressureGate:
+    def test_below_block_threshold_blocks(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        engine = _make_engine()
+        mem_mock = MagicMock()
+        mem_mock.available = int(0.5 * 1024**3)  # 0.5 GB
+        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        with patch("psutil.virtual_memory", return_value=mem_mock):
+            result = engine._check_memory_pressure_gate(cfg)
+        assert result is not None
+        assert result.gate == "memory"
+        assert "0.5" in result.detail
+
+    def test_above_block_threshold_passes(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        engine = _make_engine()
+        mem_mock = MagicMock()
+        mem_mock.available = int(4.0 * 1024**3)  # 4 GB
+        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        with patch("psutil.virtual_memory", return_value=mem_mock):
+            result = engine._check_memory_pressure_gate(cfg)
+        assert result is None
+
+    def test_between_warn_and_block_logs_warning(self) -> None:
+        from sova.config.models import ProjectConfig
+
+        engine = _make_engine()
+        mem_mock = MagicMock()
+        mem_mock.available = int(1.5 * 1024**3)  # 1.5 GB (between 1.0 block and 2.0 warn)
+        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        with (
+            patch("psutil.virtual_memory", return_value=mem_mock),
+            patch("sova.supervisor.progression.log") as mock_log,
+        ):
+            result = engine._check_memory_pressure_gate(cfg)
+        assert result is None  # warn does not block
+        mock_log.warning.assert_called_once()
+
+    def test_psutil_unavailable_fails_open(self) -> None:
+        """When psutil is not installed, the gate fails open (no block)."""
+        engine = _make_engine()
+        with patch("sova.supervisor.progression._PSUTIL_AVAILABLE", False):
+            result = engine._check_memory_pressure_gate()
+        assert result is None
+
+    def test_psutil_exception_fails_open(self) -> None:
+        """Any exception during the check fails open."""
+        engine = _make_engine()
+        with patch("psutil.virtual_memory", side_effect=RuntimeError("fake error")):
+            result = engine._check_memory_pressure_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_memory_gate_integrated_in_evaluate_all(self, mock_cfg: MagicMock) -> None:
+        """Verify that memory pressure blocks all tasks in evaluate_all."""
+        from sova.config.models import ResourcesConfig
+
+        mock_cfg.return_value.max_parallel_agents = 5
+        mock_cfg.return_value.resources = ResourcesConfig(memory_block_threshold_gb=2.0)
+        tasks = [_task(1, state=TaskState.TRIAGED)]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True),
+            adapter=adapter,
+        )
+        memory_block = BlockReason(gate="memory", detail="System memory pressure: 1.0 GB available < 2.0 GB threshold")
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_dependency_gate", return_value=None),
+            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block),
+        ):
+            decisions = await engine.evaluate_all()
+
+        assert len(decisions) == 1
+        assert decisions[0].action == ProgressionAction.BLOCKED
+        assert any(b.gate == "memory" for b in decisions[0].blocked_by)

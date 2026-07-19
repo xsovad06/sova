@@ -45,6 +45,7 @@ GROUPS: dict[str, str] = {
     "rtk": "RTK Compression",
     "coderabbit_quota": "CodeRabbit Quota",
     "pr_monitor": "PR Monitor",
+    "resources": "Resources",
     "supervisor": "Supervisor",
 }
 
@@ -77,6 +78,7 @@ GROUP_ORDER: list[str] = [
     "rtk",
     "coderabbit_quota",
     "pr_monitor",
+    "resources",
     "supervisor",
 ]
 
@@ -795,6 +797,21 @@ _REGISTRY: list[SettingMeta] = [
         "Automatically request CodeRabbit re-review when rate limit expires",
         "pr_monitor",
         "boolean",
+    ),
+    # -- Resources --
+    SettingMeta(
+        "resources.memory_block_threshold_gb",
+        "Memory block threshold (GB)",
+        "Block agent spawning when available system memory drops below this value",
+        "resources",
+        "number",
+    ),
+    SettingMeta(
+        "resources.memory_warn_threshold_gb",
+        "Memory warn threshold (GB)",
+        "Log a warning when available system memory drops below this value",
+        "resources",
+        "number",
     ),
     # -- Supervisor --
     SettingMeta(
