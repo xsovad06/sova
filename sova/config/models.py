@@ -429,6 +429,20 @@ class ResourcesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_RESOURCES_")
 
 
+class WatchdogConfig(BaseSettings):
+    """Agent watchdog: detects stuck, zombie, and bypassed agent processes."""
+
+    enabled: bool = False
+    check_interval_seconds: int = Field(600, gt=0)
+    pipeline_adopt_timeout_minutes: int = Field(5, gt=0)
+    no_output_warn_minutes: int = Field(15, gt=0)
+    no_output_kill_minutes: int = Field(25, gt=0)
+    step_warn_minutes: int = Field(45, gt=0)
+    cooldown_minutes: int = Field(10, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_WATCHDOG_")
+
+
 class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
@@ -506,6 +520,7 @@ class ProjectConfig(BaseSettings):
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
+    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 
