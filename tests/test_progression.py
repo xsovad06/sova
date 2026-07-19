@@ -931,7 +931,11 @@ class TestMemoryPressureGate:
         ):
             result = engine._check_memory_pressure_gate(cfg)
         assert result is None  # warn does not block
-        mock_log.warning.assert_called_once()
+        mock_log.warning.assert_called_once_with(
+            "memory_pressure.warn",
+            available_gb=round(1.5, 2),
+            warn_threshold_gb=2.0,
+        )
 
     def test_psutil_unavailable_fails_open(self) -> None:
         """When psutil is not installed, the gate fails open (no block)."""
@@ -944,6 +948,14 @@ class TestMemoryPressureGate:
         """Any exception during the check fails open."""
         engine = _make_engine()
         with patch("psutil.virtual_memory", side_effect=RuntimeError("fake error")):
+            result = engine._check_memory_pressure_gate()
+        assert result is None
+
+    def test_missing_resources_attr_fails_open(self) -> None:
+        """When cfg.resources raises AttributeError (pre-#356), the gate fails open."""
+        engine = _make_engine()
+        cfg_mock = MagicMock(spec=[])  # spec=[] means no attributes at all
+        with patch("sova.supervisor.progression.load_config", return_value=cfg_mock):
             result = engine._check_memory_pressure_gate()
         assert result is None
 
@@ -974,32 +986,35 @@ class TestMemoryPressureGate:
     @pytest.mark.asyncio
     @patch("sova.supervisor.progression.load_config")
     async def test_memory_gate_integrated_in_evaluate_all(self, mock_cfg: MagicMock) -> None:
-        """Verify that memory pressure blocks all tasks in evaluate_all."""
+        """Verify that memory pressure blocks all tasks and is precomputed once per cycle."""
         from sova.config.models import ResourcesConfig
 
         mock_cfg.return_value.max_parallel_agents = 5
         mock_cfg.return_value.resources = ResourcesConfig(memory_block_threshold_gb=2.0)
-        tasks = [_task(1, state=TaskState.TRIAGED)]
+        tasks = [_task(i, state=TaskState.TRIAGED) for i in range(1, 4)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
             config=SupervisorConfig(auto_research=True),
             adapter=adapter,
         )
-        memory_block = BlockReason(gate="memory", detail="System memory pressure: 1.0 GB available < 2.0 GB threshold")
+        memory_block = BlockReason(gate="memory", detail="System memory pressure: 1.00 GB available < 2.00 GB threshold")
         with (
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block),
+            patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block) as mock_mem_gate,
         ):
             decisions = await engine.evaluate_all()
 
-        assert len(decisions) == 1
-        assert decisions[0].action == ProgressionAction.BLOCKED
-        assert any(b.gate == "memory" for b in decisions[0].blocked_by)
+        assert len(decisions) == 3
+        for d in decisions:
+            assert d.action == ProgressionAction.BLOCKED
+            assert any(b.gate == "memory" for b in d.blocked_by)
+        # Precomputed once per cycle, not per task
+        assert mock_mem_gate.call_count == 1
 
 
 # ---------------------------------------------------------------------------
