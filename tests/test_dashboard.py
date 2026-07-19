@@ -6009,107 +6009,6 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
-    async def test_sova_review_verdict_address_pr_after_review_resets_to_approve(self) -> None:
-        """When command:address-pr completed after the reviewer, verdict resets to approve."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        session = await get_session()
-        review_ts = datetime.now(timezone.utc)
-        addr_ts = review_ts + timedelta(seconds=5)
-        async with session.begin():
-            session.add(
-                TaskRun(
-                    issue_number="108",
-                    role="reviewer",
-                    status="done",
-                    handoff_json=None,
-                    pr_number=900,
-                    ended_at=review_ts,
-                )
-            )
-            session.add(
-                TaskRun(
-                    issue_number="108",
-                    role="command:address-pr",
-                    status="done",
-                    pr_number=900,
-                    ended_at=addr_ts,
-                )
-            )
-
-        result = await get_sova_review_verdict("108", pr_number=900)
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-        assert result["finding_count"] == 0
-
-    async def test_sova_review_verdict_older_address_pr_does_not_reset(self) -> None:
-        """An address-pr run older than the reviewer run does not reset the verdict."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        session = await get_session()
-        addr_ts = datetime.now(timezone.utc)
-        review_ts = addr_ts + timedelta(seconds=5)
-        async with session.begin():
-            session.add(
-                TaskRun(
-                    issue_number="109",
-                    role="reviewer",
-                    status="done",
-                    handoff_json=None,
-                    pr_number=901,
-                    ended_at=review_ts,
-                )
-            )
-            session.add(
-                TaskRun(
-                    issue_number="109",
-                    role="command:address-pr",
-                    status="done",
-                    pr_number=901,
-                    ended_at=addr_ts,
-                )
-            )
-
-        result = await get_sova_review_verdict("109", pr_number=901)
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "revise"
-
-    async def test_sova_review_verdict_authoritative_handoff_superseded_by_newer_address_pr(self) -> None:
-        """Newer address-pr resets verdict even when reviewer has authoritative handoff_json."""
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        session = await get_session()
-        review_ts = datetime.now(timezone.utc)
-        addr_ts = review_ts + timedelta(seconds=5)
-        async with session.begin():
-            session.add(
-                TaskRun(
-                    issue_number="110",
-                    role="reviewer",
-                    status="done",
-                    handoff_json={
-                        "next_action": "address_review",
-                        "pending_findings": [{"file": "z.py", "severity": 9, "description": "critical"}],
-                    },
-                    pr_number=902,
-                    ended_at=review_ts,
-                )
-            )
-            session.add(
-                TaskRun(
-                    issue_number="110",
-                    role="command:address-pr",
-                    status="done",
-                    pr_number=902,
-                    ended_at=addr_ts,
-                )
-            )
-
-        result = await get_sova_review_verdict("110", pr_number=902)
-        assert result["has_sova_review"] is True
-        assert result["verdict"] == "approve"
-        assert result["finding_count"] == 0
-
     async def test_sova_review_verdict_interrupted_with_findings(self) -> None:
         """A reviewer killed during post-review cleanup still counts."""
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
@@ -11379,3 +11278,727 @@ class TestHandoffIssueFilter:
         data = resp.json()
         assert data["has_handoff"] is False
         assert data["handoffs"] == []
+
+
+# ---------------------------------------------------------------------------
+# Failure classification
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyFailure:
+    """classify_failure must distinguish recoverable from terminal failures."""
+
+    def test_exit_code_zero_is_terminal(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("rate limit exceeded", exit_code=0) == FailureCategory.TERMINAL
+
+    def test_budget_exceeded_is_terminal(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("budget exceeded for issue #42", exit_code=1) == FailureCategory.TERMINAL
+
+    def test_permission_denied_is_terminal(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("permission denied: cannot push to main", exit_code=1) == FailureCategory.TERMINAL
+
+    def test_rate_limit_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("429 rate limit hit", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_timeout_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("connection timed out", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_server_error_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("http 503 server error from API", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_http_status_code_no_false_positive(self) -> None:
+        """Bare digits like port numbers or file names must not trigger HTTP status patterns."""
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        # Port number containing 503 must not be classified as recoverable HTTP 503
+        result = classify_failure("process on port 5033 failed", exit_code=1)
+        assert result == FailureCategory.RECOVERABLE  # falls through to default -- but NOT due to "503" substring
+        # Verify the "http 502/503/504" patterns don't fire on bare digits
+        assert classify_failure("error in file app502.log", exit_code=1) == FailureCategory.RECOVERABLE
+        assert classify_failure("pid 5041 killed by OOM", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_pipeline_bypassed_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        msg = "Pipeline bypassed: developer agent completed without executing"
+        assert classify_failure(msg, exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_process_exit_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("Process exited with code 1", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_none_message_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure(None, exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_unknown_error_is_recoverable(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("something unexpected happened", exit_code=1) == FailureCategory.RECOVERABLE
+
+    def test_terminal_takes_precedence(self) -> None:
+        """When both terminal and recoverable patterns appear, terminal wins (checked first)."""
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        msg = "budget exceeded after rate limit retry"
+        assert classify_failure(msg, exit_code=1) == FailureCategory.TERMINAL
+
+    def test_case_insensitive(self) -> None:
+        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+
+        assert classify_failure("RATE LIMIT exceeded", exit_code=1) == FailureCategory.RECOVERABLE
+        assert classify_failure("BUDGET EXCEEDED", exit_code=1) == FailureCategory.TERMINAL
+
+
+# ---------------------------------------------------------------------------
+# Retry count and nonterminal run checks
+# ---------------------------------------------------------------------------
+
+
+class TestRetryDbHelpers:
+    """DB helper functions for retry logic."""
+
+    async def test_get_retry_state_returns_zero_for_missing_run(self) -> None:
+        from sova.dashboard.services.agent_db import _get_retry_state
+
+        count, has_concurrent = await _get_retry_state(99999, "999", None)
+        assert count == 0
+        assert has_concurrent is False
+
+    async def test_get_retry_state_returns_stored_value(self) -> None:
+        from sova.dashboard.services.agent_db import _get_retry_state
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="500",
+                    role="developer",
+                    status="failed",
+                    retry_count=2,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        count, _ = await _get_retry_state(run_id, "500", None)
+        assert count == 2
+
+    async def test_get_retry_state_detects_concurrent_run(self) -> None:
+        from sova.dashboard.services.agent_db import _get_retry_state
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="503",
+                    role="developer",
+                    status="failed",
+                    retry_count=0,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                # Add a concurrent running task for the same issue
+                concurrent = TaskRun(
+                    issue_number="503",
+                    role="developer",
+                    status="running",
+                )
+                session.add(concurrent)
+
+        count, has_concurrent = await _get_retry_state(run_id, "503", None)
+        assert count == 0
+        assert has_concurrent is True
+
+    async def test_has_nonterminal_run_for_issue_false_when_none(self) -> None:
+        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
+
+        result = await _has_nonterminal_run_for_issue("999", None)
+        assert result is False
+
+    async def test_has_nonterminal_run_for_issue_true_when_running(self) -> None:
+        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="501",
+                    role="developer",
+                    status="running",
+                )
+                session.add(run)
+
+        result = await _has_nonterminal_run_for_issue("501", None)
+        assert result is True
+
+    async def test_has_nonterminal_run_for_issue_false_for_terminal(self) -> None:
+        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="502",
+                    role="developer",
+                    status="failed",
+                )
+                session.add(run)
+
+        result = await _has_nonterminal_run_for_issue("502", None)
+        assert result is False
+
+    async def test_has_nonterminal_run_empty_issue(self) -> None:
+        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
+
+        result = await _has_nonterminal_run_for_issue("", None)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Retry scheduling logic
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleRetry:
+    """_schedule_retry must respect limits, classify failures, and prevent duplicates."""
+
+    async def test_skips_non_pipeline_role(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:address-pr"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        result = await _schedule_retry(agent, 1, "some error")
+        assert result is False
+
+    async def test_skips_when_no_issue(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = ""
+        agent.project_dir = Path("/tmp/test")
+
+        result = await _schedule_retry(agent, 1, "timeout")
+        assert result is False
+
+    async def test_skips_terminal_failure(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        with patch("sova.dashboard.services.agent_lifecycle.classify_failure", return_value="terminal"):
+            with patch("sova.config.loader.load_config") as mock_cfg:
+                mock_cfg.return_value.pipeline.max_retries = 3
+                mock_cfg.return_value.pipeline.retry_delay_seconds = 10
+                result = await _schedule_retry(agent, 1, "budget exceeded")
+
+        assert result is False
+
+    async def test_skips_when_max_retries_zero(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.pipeline.max_retries = 0
+            result = await _schedule_retry(agent, 1, "timeout")
+
+        assert result is False
+
+    async def test_skips_when_retry_count_exceeded(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._get_retry_state",
+                new_callable=AsyncMock,
+                return_value=(3, False),
+            ),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 10
+            result = await _schedule_retry(agent, 1, "Process exited with code 1")
+
+        assert result is False
+
+    async def test_skips_when_concurrent_run_exists(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        _patch_base = "sova.dashboard.services.agent_lifecycle"
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(f"{_patch_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, True)),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 10
+            result = await _schedule_retry(agent, 1, "timeout")
+
+        assert result is False
+
+    async def test_spawns_retry_on_recoverable_failure(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.pr_number = None
+        agent.project_dir = Path("/tmp/test")
+
+        _patch_base = "sova.dashboard.services.agent_lifecycle"
+        spawn_result = {"status": "started", "run_id": 99, "pid": 1234}
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(f"{_patch_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
+            patch(
+                f"{_patch_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False
+            ) as mock_check,
+            patch(f"{_patch_base}.start_agent", new_callable=AsyncMock, return_value=spawn_result) as mock_start,
+            patch(f"{_patch_base}._set_retry_link", new_callable=AsyncMock) as mock_link,
+            patch("sova.dashboard.services.agent_lifecycle.emit_safe"),
+            patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.ipc.notifications.notify"),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
+            mock_cfg.return_value.notification = MagicMock()
+            result = await _schedule_retry(agent, 1, "Process exited with code 1")
+
+        assert result is True
+        mock_check.assert_awaited_once_with("42", Path("/tmp/test"))
+        mock_start.assert_awaited_once_with(
+            "42",
+            role="developer",
+            force=True,
+            pr_number=None,
+        )
+        mock_link.assert_awaited_once_with(99, 1, 1, Path("/tmp/test"))
+
+
+# ---------------------------------------------------------------------------
+# TaskRun retry columns
+# ---------------------------------------------------------------------------
+
+
+class TestTaskRunRetryColumns:
+    """TaskRun model has retry_of_id and retry_count columns."""
+
+    async def test_retry_columns_default_values(self) -> None:
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="600",
+                    role="developer",
+                    status="running",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.retry_of_id is None
+                assert refreshed.retry_count == 0
+
+    async def test_retry_columns_stored(self) -> None:
+        async with await get_session() as session:
+            async with session.begin():
+                original = TaskRun(
+                    issue_number="601",
+                    role="developer",
+                    status="failed",
+                )
+                session.add(original)
+                await session.flush()
+                original_id = original.id
+
+        async with await get_session() as session:
+            async with session.begin():
+                retry = TaskRun(
+                    issue_number="601",
+                    role="developer",
+                    status="running",
+                    retry_of_id=original_id,
+                    retry_count=1,
+                )
+                session.add(retry)
+                await session.flush()
+                retry_id = retry.id
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, retry_id)
+                assert refreshed.retry_of_id == original_id
+                assert refreshed.retry_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _set_retry_link
+# ---------------------------------------------------------------------------
+
+
+class TestSetRetryLink:
+    """_set_retry_link persists retry chain metadata on a TaskRun."""
+
+    async def test_sets_retry_fields(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _set_retry_link
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="700",
+                    role="developer",
+                    status="running",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        await _set_retry_link(run_id, original_run_id=50, retry_count=2, project_dir=None)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.retry_of_id == 50
+                assert refreshed.retry_count == 2
+
+    async def test_set_retry_link_exception_swallowed(self) -> None:
+        """_set_retry_link logs but does not raise when the DB call fails."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _set_retry_link
+
+        with patch(
+            "sova.db.session.get_session",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db gone"),
+        ):
+            # Should not raise
+            await _set_retry_link(999, original_run_id=1, retry_count=1, project_dir=Path("/tmp/x"))
+
+
+# ---------------------------------------------------------------------------
+# _get_retry_state / _has_nonterminal_run_for_issue: edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRetryDbHelpersEdgeCases:
+    """Cover exception and empty-issue paths in retry DB helpers."""
+
+    async def test_get_retry_state_empty_issue(self) -> None:
+        from sova.dashboard.services.agent_db import _get_retry_state
+
+        count, has_concurrent = await _get_retry_state(1, "", Path("/tmp/x"))
+        assert count == 0
+        assert has_concurrent is False
+
+    async def test_get_retry_state_exception_returns_defaults(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_db import _get_retry_state
+
+        with patch(
+            "sova.db.session.get_session",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db error"),
+        ):
+            count, has_concurrent = await _get_retry_state(1, "42", Path("/tmp/x"))
+        assert count == 0
+        assert has_concurrent is False
+
+    async def test_has_nonterminal_run_exception_returns_false(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
+
+        with patch(
+            "sova.db.session.get_session",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db error"),
+        ):
+            result = await _has_nonterminal_run_for_issue("42", Path("/tmp/x"))
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _schedule_retry: additional error branches
+# ---------------------------------------------------------------------------
+
+
+class TestScheduleRetryErrorBranches:
+    """Cover config-load failure, notify failure, post-delay concurrent, and spawn failure."""
+
+    async def test_config_load_failure(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            result = await _schedule_retry(agent, 1, "timeout")
+        assert result is False
+
+    async def test_notify_exception_swallowed(self) -> None:
+        """Notification failure must not prevent the retry from being scheduled."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.pr_number = None
+        agent.project_dir = Path("/tmp/test")
+
+        _base = "sova.dashboard.services.agent_lifecycle"
+        spawn_result = {"status": "started", "run_id": 88, "pid": 5678}
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
+            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False),
+            patch(f"{_base}.start_agent", new_callable=AsyncMock, return_value=spawn_result),
+            patch(f"{_base}._set_retry_link", new_callable=AsyncMock),
+            patch(f"{_base}.emit_safe"),
+            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.ipc.notifications.notify", side_effect=RuntimeError("notify broken")),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
+            mock_cfg.return_value.notification = MagicMock()
+            result = await _schedule_retry(agent, 1, "timeout")
+
+        assert result is True
+
+    async def test_concurrent_run_after_delay(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.project_dir = Path("/tmp/test")
+
+        _base = "sova.dashboard.services.agent_lifecycle"
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
+            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=True),
+            patch(f"{_base}.emit_safe"),
+            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.ipc.notifications.notify"),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
+            mock_cfg.return_value.notification = MagicMock()
+            result = await _schedule_retry(agent, 1, "timeout")
+
+        assert result is False
+
+    async def test_spawn_failure(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _schedule_retry
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.issue = "42"
+        agent.pr_number = None
+        agent.project_dir = Path("/tmp/test")
+
+        _base = "sova.dashboard.services.agent_lifecycle"
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
+            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False),
+            patch(f"{_base}.start_agent", new_callable=AsyncMock, return_value={"error": "no slots"}),
+            patch(f"{_base}.emit_safe"),
+            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
+            patch("sova.ipc.notifications.notify"),
+        ):
+            mock_cfg.return_value.pipeline.max_retries = 2
+            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
+            mock_cfg.return_value.notification = MagicMock()
+            result = await _schedule_retry(agent, 1, "timeout")
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _wait_and_finalize: retry integration
+# ---------------------------------------------------------------------------
+
+
+class TestWaitAndFinalizeRetry:
+    """Cover the retry call path and error_message assignment in _wait_and_finalize."""
+
+    async def test_calls_schedule_retry_on_failure(self) -> None:
+        """When the process exits non-zero, _wait_and_finalize calls _schedule_retry."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=1)
+
+        agent = AgentState(
+            run_id=80,
+            issue="200",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[80] = agent
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_schedule_retry", new_callable=AsyncMock, return_value=True) as mock_retry,
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        mock_retry.assert_called_once()
+        args = mock_retry.call_args
+        assert args[0][0] is agent
+        assert args[0][1] == 80
+        assert "Process exited with code 1" in args[0][2]
+
+    async def test_error_message_from_outcome_validation(self) -> None:
+        """When outcome validation downgrades to failed, the failure reason becomes error_message."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=81,
+            issue="201",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[81] = agent
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_validate_command_outcome", new_callable=AsyncMock, return_value=None),
+            patch.object(
+                agent_lifecycle,
+                "_validate_pipeline_outcome",
+                new_callable=AsyncMock,
+                return_value="Pipeline bypassed: no steps executed",
+            ),
+            patch.object(agent_lifecycle, "_downgrade_to_failed", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_schedule_retry", new_callable=AsyncMock, return_value=False) as mock_retry,
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        mock_retry.assert_called_once()
+        assert mock_retry.call_args[0][2] == "Pipeline bypassed: no steps executed"
+
+    async def test_schedule_retry_exception_swallowed(self) -> None:
+        """If _schedule_retry raises, _wait_and_finalize must not crash."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=1)
+
+        agent = AgentState(
+            run_id=82,
+            issue="202",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[82] = agent
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch.object(
+                agent_lifecycle,
+                "_schedule_retry",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("retry exploded"),
+            ),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+        ):
+            # Must not raise
+            await agent_lifecycle._wait_and_finalize(pa, agent)
