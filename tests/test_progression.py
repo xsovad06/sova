@@ -998,7 +998,10 @@ class TestMemoryPressureGate:
             config=SupervisorConfig(auto_research=True),
             adapter=adapter,
         )
-        memory_block = BlockReason(gate="memory", detail="System memory pressure: 1.00 GB available < 2.00 GB threshold")
+        memory_block = BlockReason(
+            gate="memory",
+            detail="System memory pressure: 1.00 GB available < 2.00 GB threshold",
+        )
         with (
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
