@@ -349,10 +349,6 @@ async def get_sova_review_verdict(
     When issue_number is None, pr_number must be provided; the lookup queries
     solely by PR number (for unlinked standalone PRs with no associated issue).
 
-    When a completed `command:address-pr` run exists for the same issue/PR
-    with a timestamp newer than the selected reviewer run, returns "approve"
-    immediately, superseding any verdict from the review run.
-
     When handoff_json is present, the verdict is derived from it (authoritative).
     When a review run completed successfully but has no handoff_json (e.g.
     command:review-pr which posts to GitHub but doesn't write handoff, or
@@ -428,27 +424,6 @@ async def get_sova_review_verdict(
 
             if not run:
                 return no_review
-
-            # If address-pr completed after this review, the review cycle is done: return
-            # "approve" so GitHub state (APPROVED) drives the display rather than the stale verdict.
-            run_ts = run.ended_at or run.started_at
-            addr_filters = [
-                TaskRun.role == "command:address-pr",
-                TaskRun.status == "done",
-                func.coalesce(TaskRun.ended_at, TaskRun.started_at) > run_ts,
-            ]
-            if issue_num_clean is not None:
-                addr_filters.append(TaskRun.issue_number == issue_num_clean)
-            if pr_number is not None:
-                addr_filters.append(TaskRun.pr_number == pr_number)
-            addr_result = await session.execute(select(func.count()).select_from(TaskRun).where(*addr_filters))
-            if addr_result.scalar_one() > 0:
-                return {
-                    "has_sova_review": True,
-                    "verdict": "approve",
-                    "finding_count": 0,
-                    "reviewed_at": run_ts.isoformat() if run_ts else None,
-                }
 
             handoff = run.handoff_json
             if handoff is not None:

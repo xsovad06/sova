@@ -171,7 +171,6 @@ def dashboard(
             log_level="info",
             reload=True,
             reload_dirs=[reload_dir],
-            timeout_graceful_shutdown=5,
         )
     else:
         from sova.dashboard.app import create_app

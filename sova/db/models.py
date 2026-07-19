@@ -51,6 +51,8 @@ class TaskRun(Base):
     assessment_json: Mapped[dict | None] = mapped_column(JSON)
     handoff_json: Mapped[dict | None] = mapped_column(JSON)
     resumed_from_id: Mapped[int | None] = mapped_column(Integer)
+    retry_of_id: Mapped[int | None] = mapped_column(Integer)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     output_file_path: Mapped[str | None] = mapped_column(String(500))
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

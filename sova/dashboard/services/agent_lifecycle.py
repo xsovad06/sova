@@ -41,14 +41,19 @@ from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_db import (
+    _PIPELINE_ROLES,
+    FailureCategory,
     _create_task_run,
     _downgrade_to_failed,
     _fetch_run_states,
     _finalize_orphaned_run,
     _finalize_task_run,
+    _get_retry_state,
+    _has_nonterminal_run_for_issue,
     _update_task_run_pid,
     _validate_command_outcome,
     _validate_pipeline_outcome,
+    classify_failure,
 )
 from sova.dashboard.services.agent_pool import (
     AgentState,
@@ -137,9 +142,19 @@ async def cancel_background_tasks() -> None:
     from sova.dashboard.services.agent_pool import _projects
 
     all_tasks: list[asyncio.Task] = []
-    for pa in _projects.values():
-        for agent in pa.agents.values():
-            all_tasks.extend(await _cancel_agent_io_tasks(agent))
+    # Run per-agent IO cancellation concurrently. Sequential awaiting is
+    # O(N * 3s) because _cancel_agent_io_tasks awaits resource_collector.stop()
+    # before returning. asyncio.gather caps wall-clock cost to max(individual stop).
+    agents = [agent for pa in _projects.values() for agent in pa.agents.values()]
+    results = await asyncio.gather(
+        *(_cancel_agent_io_tasks(a) for a in agents),
+        return_exceptions=True,
+    )
+    for r in results:
+        if isinstance(r, list):
+            all_tasks.extend(r)
+        elif isinstance(r, Exception):
+            log.warning("cancel_agent_io_tasks.failed", exc_info=r)
 
     for t in _background_tasks:
         if not t.done():
@@ -703,6 +718,131 @@ async def start_command(
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
 
+async def _schedule_retry(agent: AgentState, run_id: int, error_message: str | None, exit_code: int = 1) -> bool:
+    """Attempt to schedule a retry for a failed pipeline agent.
+
+    Returns True if a retry was scheduled, False otherwise.
+    Only retries pipeline roles (developer, researcher, planner),
+    not command-based runs.
+    """
+    if not agent.role or agent.role not in _PIPELINE_ROLES:
+        return False
+
+    if not agent.issue:
+        return False
+
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(agent.project_dir)
+    except Exception:
+        log.debug("retry.config_load_failed", run_id=run_id, exc_info=True)
+        return False
+
+    max_retries = cfg.pipeline.max_retries
+    if max_retries <= 0:
+        return False
+
+    category = classify_failure(error_message, exit_code=exit_code)
+    if category == FailureCategory.TERMINAL:
+        log.info("retry.terminal_failure", run_id=run_id, error=error_message)
+        return False
+
+    current_count, has_concurrent = await _get_retry_state(run_id, agent.issue, agent.project_dir)
+    if current_count >= max_retries:
+        log.info(
+            "retry.max_reached",
+            run_id=run_id,
+            retry_count=current_count,
+            max_retries=max_retries,
+        )
+        return False
+
+    if has_concurrent:
+        log.info("retry.concurrent_run_exists", run_id=run_id, issue=agent.issue)
+        return False
+
+    delay = cfg.pipeline.retry_delay_seconds
+    new_count = current_count + 1
+    log.info(
+        "retry.scheduling",
+        run_id=run_id,
+        issue=agent.issue,
+        role=agent.role,
+        retry_count=new_count,
+        delay=delay,
+    )
+
+    emit_safe(
+        f"#{agent.issue} auto-retry {new_count}/{max_retries} in {delay}s",
+        category="agent",
+        metadata={"run_id": run_id, "issue": agent.issue, "retry_count": new_count},
+    )
+
+    try:
+        from sova.ipc.notifications import notify
+
+        role_label = agent.role.capitalize()
+        notify(
+            cfg.notification,
+            "SOVA",
+            f"{agent.project_dir.name} | Retry {new_count}/{max_retries} in {delay}s",
+            subtitle=f"{role_label} retrying #{agent.issue}",
+            group=f"sova-{agent.issue}",
+        )
+    except Exception:
+        log.debug("retry.notify_failed", run_id=run_id, exc_info=True)
+
+    # Sleep inside _wait_and_finalize (a background task per agent).
+    # CancelledError propagates naturally during shutdown.
+    await asyncio.sleep(delay)
+
+    # Re-check for concurrent runs after the delay
+    if await _has_nonterminal_run_for_issue(agent.issue, agent.project_dir):
+        log.info("retry.concurrent_run_after_delay", run_id=run_id, issue=agent.issue)
+        return False
+
+    # Spawn the retry via start_agent with force=True
+    result = await start_agent(
+        agent.issue,
+        role=agent.role,
+        force=True,
+        pr_number=agent.pr_number,
+    )
+
+    if "error" in result:
+        log.warning("retry.spawn_failed", run_id=run_id, error=result["error"])
+        return False
+
+    new_run_id = result.get("run_id")
+    if new_run_id:
+        await _set_retry_link(new_run_id, run_id, new_count, agent.project_dir)
+
+    log.info(
+        "retry.spawned",
+        original_run_id=run_id,
+        new_run_id=new_run_id,
+        retry_count=new_count,
+    )
+    return True
+
+
+async def _set_retry_link(new_run_id: int, original_run_id: int, retry_count: int, project_dir: Path) -> None:
+    """Set retry_of_id and retry_count on the newly created TaskRun."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, new_run_id)
+                if task_run:
+                    task_run.retry_of_id = original_run_id
+                    task_run.retry_count = retry_count
+    except Exception:
+        log.warning("retry.set_link_failed", new_run_id=new_run_id, exc_info=True)
+
+
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
     from sova.dashboard.services.agent_handoff import _process_auto_handoff
@@ -755,6 +895,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # Downgrades "done" to "failed" if the command exited cleanly but
     # didn't actually perform its core work (e.g., address-pr without
     # pushing commits, review-pr without posting a review).
+    error_message: str | None = None
     if exit_code == 0 and run_id:
         failure_reason = await _validate_command_outcome(run_id, agent)
         if not failure_reason:
@@ -763,7 +904,11 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             await _downgrade_to_failed(run_id, failure_reason, agent.project_dir)
             status = "failed"
             exit_code = 1
+            error_message = failure_reason
             log.warning("agent.outcome_validation_failed", run_id=run_id, reason=failure_reason)
+
+    if status == "failed" and not error_message:
+        error_message = f"Process exited with code {exit_code}"
 
     async with pa._lock:
         pa.agents.pop(run_id, None)
@@ -816,6 +961,15 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     if exit_code == 0:
         await _process_auto_handoff(agent)
+    elif status == "failed":
+        try:
+            retried = await _schedule_retry(agent, run_id, error_message, exit_code=exit_code)
+            if retried:
+                log.info("agent.retry_scheduled", run_id=run_id, issue=agent.issue)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("agent.retry_failed", run_id=run_id, exc_info=True)
 
 
 # -- Approval resume ----------------------------------------------------------

@@ -209,6 +209,20 @@ _REGISTRY: list[SettingMeta] = [
         "pipeline",
         "number",
     ),
+    SettingMeta(
+        "pipeline.max_retries",
+        "Max auto-retries",
+        "Maximum automatic retries for recoverable agent failures (0 = disabled)",
+        "pipeline",
+        "number",
+    ),
+    SettingMeta(
+        "pipeline.retry_delay_seconds",
+        "Retry delay (s)",
+        "Seconds to wait before spawning a retry after a recoverable failure",
+        "pipeline",
+        "number",
+    ),
     # -- Spec --
     SettingMeta(
         "spec.threshold",
