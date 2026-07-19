@@ -261,8 +261,46 @@ class TaskProgressionEngine:
                 reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
-        # Dependency gate is sync (reads in-memory graph only)
+        blockers = await self._collect_gate_blockers(
+            issue_number,
+            candidate,
+            graph,
+            precomputed_memory=precomputed_memory,
+            precomputed_quota=precomputed_quota,
+            precomputed_slots=precomputed_slots,
+        )
+
+        if blockers:
+            reasons = "; ".join(b.detail for b in blockers)
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.BLOCKED,
+                role=_ACTION_TO_ROLE.get(candidate),
+                reason=f"Blocked: {reasons}",
+                blocked_by=tuple(blockers),
+            )
+
+        return ProgressionDecision(
+            issue_number=issue_number,
+            action=candidate,
+            role=_ACTION_TO_ROLE.get(candidate),
+            reason=f"Ready to {candidate.value}",
+        )
+
+    async def _collect_gate_blockers(
+        self,
+        issue_number: int,
+        candidate: ProgressionAction,
+        graph: DependencyGraph,
+        *,
+        precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+    ) -> list[BlockReason]:
+        """Run all gate checks and return active blockers."""
         blockers: list[BlockReason] = []
+
+        # Dependency gate is sync (reads in-memory graph only)
         if self._config.respect_dependencies:
             dep_block = self._check_dependency_gate(issue_number, graph)
             if dep_block:
@@ -284,22 +322,7 @@ class TaskProgressionEngine:
         )
         blockers.extend(global_blocks)
 
-        if blockers:
-            reasons = "; ".join(b.detail for b in blockers)
-            return ProgressionDecision(
-                issue_number=issue_number,
-                action=ProgressionAction.BLOCKED,
-                role=_ACTION_TO_ROLE.get(candidate),
-                reason=f"Blocked: {reasons}",
-                blocked_by=tuple(blockers),
-            )
-
-        return ProgressionDecision(
-            issue_number=issue_number,
-            action=candidate,
-            role=_ACTION_TO_ROLE.get(candidate),
-            reason=f"Ready to {candidate.value}",
-        )
+        return blockers
 
     async def _resolve_global_gates(
         self,
@@ -474,7 +497,7 @@ class TaskProgressionEngine:
                 return BlockReason(
                     gate="memory",
                     detail=(
-                        f"System memory pressure: {available_gb:.1f} GB available < {block_threshold:.1f} GB threshold"
+                        f"System memory pressure: {available_gb:.2f} GB available < {block_threshold:.2f} GB threshold"
                     ),
                 )
             if available_gb < warn_threshold:
