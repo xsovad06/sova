@@ -420,7 +420,7 @@ _RECOVERABLE_PATTERNS: tuple[str, ...] = (
     "rate limit",
     "rate_limit",
     "ratelimit",
-    "429",
+    " 429",
     "too many requests",
     "quota exceeded",
     "overloaded",
@@ -455,7 +455,8 @@ _TERMINAL_PATTERNS: tuple[str, ...] = (
     "invalid token",
     "repository not found",
     "human_only",
-    "rejected",
+    "task rejected",
+    "spec rejected",
 )
 
 
