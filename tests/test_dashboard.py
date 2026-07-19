@@ -6216,6 +6216,107 @@ class TestAgentRecoveryDirect:
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
 
+    async def test_sova_review_verdict_address_pr_after_review_resets_to_approve(self) -> None:
+        """When command:address-pr completed after the reviewer, verdict resets to approve."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        review_ts = datetime.now(timezone.utc)
+        addr_ts = review_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="108",
+                    role="reviewer",
+                    status="done",
+                    handoff_json=None,
+                    pr_number=900,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="108",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=900,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("108", pr_number=900)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
+    async def test_sova_review_verdict_older_address_pr_does_not_reset(self) -> None:
+        """An address-pr run older than the reviewer run does not reset the verdict."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        addr_ts = datetime.now(timezone.utc)
+        review_ts = addr_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="109",
+                    role="reviewer",
+                    status="done",
+                    handoff_json=None,
+                    pr_number=901,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="109",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=901,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("109", pr_number=901)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_sova_review_verdict_authoritative_handoff_superseded_by_newer_address_pr(self) -> None:
+        """Newer address-pr resets verdict even when reviewer has authoritative handoff_json."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        review_ts = datetime.now(timezone.utc)
+        addr_ts = review_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="110",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [{"file": "z.py", "severity": 9, "description": "critical"}],
+                    },
+                    pr_number=902,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="110",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=902,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("110", pr_number=902)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
     async def test_sova_review_verdict_interrupted_with_findings(self) -> None:
         """A reviewer killed during post-review cleanup still counts."""
         from sova.dashboard.services.agent_recovery import get_sova_review_verdict
