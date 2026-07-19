@@ -12,6 +12,7 @@ path for auto-retry. The watchdog never independently retries.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -32,6 +33,11 @@ from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
 log = get_logger(component="supervisor.watchdog")
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Return dt with UTC tzinfo, adding it when SQLite returns naive datetimes."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 class AnomalySignal(StrEnum):
@@ -68,6 +74,8 @@ class AgentWatchdog:
         self._config = config
         self._project_dir = project_dir
         self._cooldowns: dict[tuple[int, str], float] = {}
+        # (run_id, step_name) -> monotonic time when that step was first seen
+        self._step_started_at: dict[tuple[int, str], float] = {}
         self._task: asyncio.Task | None = None
 
     def start(self) -> asyncio.Task:
@@ -80,15 +88,21 @@ class AgentWatchdog:
         """Cancel the watchdog background task."""
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
             log.info("watchdog.stopped")
 
     async def _run_loop(self) -> None:
-        """Main loop: sleep, scan, act."""
+        """Main loop: scan immediately, then sleep between scans."""
+        try:
+            # Initial scan to catch runs stuck before the watchdog started
+            await self._scan_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("watchdog.scan_error", exc_info=True)
+
         while True:
             await asyncio.sleep(self._config.check_interval_seconds)
             try:
@@ -189,15 +203,20 @@ class AgentWatchdog:
 
         # 3. No output: check time since last output (or started_at as baseline)
         last_output = last_output_times.get(run.id)
-        baseline = last_output or run.started_at
-        if baseline:
+        raw_baseline = last_output or run.started_at
+        if raw_baseline:
+            baseline = _as_utc(raw_baseline)
             minutes_silent = (now - baseline).total_seconds() / 60.0
             no_output_finding = self._check_no_output(run, minutes_silent)
             if no_output_finding:
                 findings.append(no_output_finding)
 
-        # 4. Step timeout: same step for too long
-        step_finding = self._check_step_timeout(run, now)
+        # 4. Step timeout: track when each step was first seen, warn when too long
+        if run.current_step and run.current_step != "agent":
+            step_key = (run.id, run.current_step)
+            if step_key not in self._step_started_at:
+                self._step_started_at[step_key] = time.monotonic()
+        step_finding = self._check_step_timeout(run)
         if step_finding:
             findings.append(step_finding)
 
@@ -207,7 +226,7 @@ class AgentWatchdog:
         """Kill if pipeline was never adopted within timeout."""
         if run.started_at is None:
             return None
-        minutes_elapsed = (now - run.started_at).total_seconds() / 60.0
+        minutes_elapsed = (now - _as_utc(run.started_at)).total_seconds() / 60.0
         if minutes_elapsed < self._config.pipeline_adopt_timeout_minutes:
             return None
 
@@ -251,22 +270,21 @@ class AgentWatchdog:
             )
         return None
 
-    def _check_step_timeout(self, run: TaskRun, now: datetime) -> WatchdogFinding | None:
-        """Warn if stuck on the same step for too long."""
+    def _check_step_timeout(self, run: TaskRun) -> WatchdogFinding | None:
+        """Warn if stuck on the same step for too long.
+
+        Uses per-step first-seen timestamps so long-running healthy runs (with
+        many sequential steps) are not false-positively flagged.
+        """
         if not run.current_step or run.current_step == "agent":
             return None
-
-        # Use step_executions to find when the current step started.
-        # Since we load runs outside the session, we use started_at as a
-        # conservative fallback. The step-level timestamp requires eager load
-        # or a separate query; for MVP, use started_at.
-        if run.started_at is None:
+        step_key = (run.id, run.current_step)
+        step_first_seen = self._step_started_at.get(step_key)
+        if step_first_seen is None:
+            return None  # step just registered this scan; wait for next cycle
+        minutes_on_step = (time.monotonic() - step_first_seen) / 60.0
+        if minutes_on_step < self._config.step_warn_minutes:
             return None
-
-        minutes_elapsed = (now - run.started_at).total_seconds() / 60.0
-        if minutes_elapsed < self._config.step_warn_minutes:
-            return None
-
         return WatchdogFinding(
             run_id=run.id,
             issue_number=run.issue_number,
@@ -274,11 +292,11 @@ class AgentWatchdog:
             action=WatchdogAction.WARN,
             detail=(
                 f"Run {run.id} has been on step '{run.current_step}' for "
-                f"{minutes_elapsed:.0f}m (threshold: {self._config.step_warn_minutes}m)"
+                f"{minutes_on_step:.0f}m (threshold: {self._config.step_warn_minutes}m)"
             ),
             metadata={
                 "current_step": run.current_step,
-                "minutes_elapsed": round(minutes_elapsed, 1),
+                "minutes_on_step": round(minutes_on_step, 1),
             },
         )
 
@@ -297,10 +315,13 @@ class AgentWatchdog:
         self._cooldowns[key] = time.monotonic()
 
     def _prune_cooldowns(self, active_run_ids: set[int]) -> None:
-        """Remove cooldown entries for runs that are no longer active."""
+        """Remove cooldown and step-tracking entries for runs that are no longer active."""
         stale_keys = [k for k in self._cooldowns if k[0] not in active_run_ids]
         for k in stale_keys:
             del self._cooldowns[k]
+        stale_step_keys = [k for k in self._step_started_at if k[0] not in active_run_ids]
+        for k in stale_step_keys:
+            del self._step_started_at[k]
 
     async def _execute_finding(self, finding: WatchdogFinding) -> None:
         """Take action on a finding: emit feed event, optionally kill."""
