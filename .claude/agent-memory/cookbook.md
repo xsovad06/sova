@@ -134,6 +134,13 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **JQL values must be sanitized before interpolation** -- use `re.sub(r'["\\\x00-\x1f]', "", value)` to strip dangerous characters. File: `sova/adapters/jira.py`. [confirmed: 1]
 - **Secret Pydantic fields need `repr=False`** -- fields with API tokens should use `Field("", repr=False)`. Also applies to request models in routers, not just config models. [confirmed: 1]
 
+## Supervisor / TaskProgressionEngine
+
+- **Precomputation efficiency tests need multi-task coverage** -- a test asserting "memory pressure checked once per cycle" that only runs with a single task proves nothing. Use `[_task(i) for i in range(1, 4)]` and assert `mock.call_count == 1` after `evaluate_all()` to prove the value is reused across tasks. PR #357 CodeRabbit. [confirmed: 1]
+- **Test the blanket `except Exception` fail-open paths explicitly** -- supervisor gate methods that catch `AttributeError` (e.g., when `ResourcesConfig` doesn't exist yet) need a dedicated test that injects the error condition and asserts `returns None`. Higher-level mocks replace the whole method and never exercise the exception handler. PR #357 CodeRabbit. [confirmed: 1]
+- **Standardize numeric precision for the same metric across log calls** -- using `.1f` in `BlockReason.detail` and `round(..., 2)` in `log.warning` for the same value (e.g., `available_gb`) makes log correlation harder. Pick one precision and apply it everywhere. PR #357 CodeRabbit. [confirmed: 1]
+- **Log assertions must verify message key AND structured kwargs, not just call count** -- `mock_log.warning.assert_called_once()` passes even if the wrong message or wrong kwargs are passed. Use `assert_called_once_with('message_key', field=value)` to pin the full call signature and catch regressions. PR #357 CodeRabbit. [confirmed: 1]
+
 ## Refactoring / Code Quality
 
 - **`.split()[0]` on an empty string raises IndexError** -- `(role or "").removeprefix("command:").split()[0]` crashes when role is None or empty because `"".split()` returns `[]`. Always split into a list first and guard: `parts = (...).split(); if not parts or parts[0] not in VALID_SET: return False`. Files: `app.py:_check_merged`, `agent_recovery.py:recover_stale_runs`. PR #364. [confirmed: 1]
