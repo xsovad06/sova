@@ -276,30 +276,13 @@ class TaskProgressionEngine:
         blockers.extend(r for r in gate_results if r is not None)
 
         # Add precomputed global gates (or compute on demand for single-task eval)
-        # Quota gate only applies to actions that produce PRs (SPAWN_DEVELOPER)
-        if precomputed_quota is _NOT_COMPUTED:
-            quota_block = await self._check_quota_gate(candidate)
-        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
-            quota_block = precomputed_quota
-        else:
-            quota_block = None
-        if quota_block:
-            blockers.append(quota_block)
-
-        if precomputed_slots is _NOT_COMPUTED:
-            slot_block = await self._check_slot_gate()
-        else:
-            slot_block = precomputed_slots
-        if slot_block:
-            blockers.append(slot_block)
-
-        # Memory pressure gate (global, precomputed or on-demand)
-        if precomputed_memory is _NOT_COMPUTED:
-            memory_block = self._check_memory_pressure_gate()
-        else:
-            memory_block = precomputed_memory
-        if memory_block:
-            blockers.append(memory_block)
+        global_blocks = await self._resolve_global_gates(
+            candidate,
+            precomputed_quota=precomputed_quota,
+            precomputed_slots=precomputed_slots,
+            precomputed_memory=precomputed_memory,
+        )
+        blockers.extend(global_blocks)
 
         if blockers:
             reasons = "; ".join(b.detail for b in blockers)
@@ -317,6 +300,43 @@ class TaskProgressionEngine:
             role=_ACTION_TO_ROLE.get(candidate),
             reason=f"Ready to {candidate.value}",
         )
+
+    async def _resolve_global_gates(
+        self,
+        candidate: ProgressionAction,
+        *,
+        precomputed_quota: BlockReason | None | object,
+        precomputed_slots: BlockReason | None | object,
+        precomputed_memory: BlockReason | None | object,
+    ) -> list[BlockReason]:
+        """Resolve precomputed-or-on-demand global gates and return active blockers."""
+        blocks: list[BlockReason] = []
+
+        # Quota gate only applies to actions that produce PRs (SPAWN_DEVELOPER)
+        if precomputed_quota is _NOT_COMPUTED:
+            quota_block = await self._check_quota_gate(candidate)
+        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
+            quota_block = precomputed_quota
+        else:
+            quota_block = None
+        if quota_block:
+            blocks.append(quota_block)
+
+        if precomputed_slots is _NOT_COMPUTED:
+            slot_block = await self._check_slot_gate()
+        else:
+            slot_block = precomputed_slots
+        if slot_block:
+            blocks.append(slot_block)
+
+        if precomputed_memory is _NOT_COMPUTED:
+            memory_block = self._check_memory_pressure_gate()
+        else:
+            memory_block = precomputed_memory
+        if memory_block:
+            blocks.append(memory_block)
+
+        return blocks
 
     def _determine_transition(self, state: TaskState) -> ProgressionAction | None:
         """Map current state to candidate action based on config flags.
