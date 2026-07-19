@@ -11306,7 +11306,7 @@ class TestClassifyFailure:
     def test_rate_limit_is_recoverable(self) -> None:
         from sova.dashboard.services.agent_db import FailureCategory, classify_failure
 
-        assert classify_failure("429 rate limit hit", exit_code=1) == FailureCategory.RECOVERABLE
+        assert classify_failure("HTTP 429 rate limit hit", exit_code=1) == FailureCategory.RECOVERABLE
 
     def test_timeout_is_recoverable(self) -> None:
         from sova.dashboard.services.agent_db import FailureCategory, classify_failure
@@ -11328,6 +11328,11 @@ class TestClassifyFailure:
         # Verify the "http 502/503/504" patterns don't fire on bare digits
         assert classify_failure("error in file app502.log", exit_code=1) == FailureCategory.RECOVERABLE
         assert classify_failure("pid 5041 killed by OOM", exit_code=1) == FailureCategory.RECOVERABLE
+        # Bare "429" in numbers must not trigger the recoverable " 429" pattern
+        assert classify_failure("error on port 1429", exit_code=1) == FailureCategory.RECOVERABLE  # default, not via " 429"
+        assert classify_failure("id=8429 failed", exit_code=1) == FailureCategory.RECOVERABLE  # default, not via " 429"
+        # Bare "rejected" in unrelated contexts must not trigger terminal pattern
+        assert classify_failure("request rejected due to invalid parameters", exit_code=1) == FailureCategory.RECOVERABLE
 
     def test_pipeline_bypassed_is_recoverable(self) -> None:
         from sova.dashboard.services.agent_db import FailureCategory, classify_failure
