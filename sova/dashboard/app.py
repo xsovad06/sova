@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from sova.monitoring.cross_project import MetricsSnapshotWriter
+    from sova.supervisor.watchdog import AgentWatchdog
 
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse, Response
@@ -162,6 +163,7 @@ async def _shutdown_tasks(
     pr_throttle_tasks: list[asyncio.Task],
     pr_monitor_tasks: list[asyncio.Task],
     metrics_writer: MetricsSnapshotWriter | None,
+    watchdog: AgentWatchdog | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -173,6 +175,8 @@ async def _shutdown_tasks(
     await cancel_all_batches()
     if metrics_writer is not None:
         await metrics_writer.stop()
+    if watchdog is not None:
+        await watchdog.stop()
     bg_tasks = pr_throttle_tasks + pr_monitor_tasks
     for t in bg_tasks:
         t.cancel()
@@ -327,6 +331,14 @@ def create_app(
             )
             pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
 
+        # Start agent watchdog
+        from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
+
+        watchdog: AgentWatchdog | None = None
+        if cfg.watchdog.enabled and not is_multi:
+            watchdog = _AgentWatchdog(config=cfg.watchdog, project_dir=resolved)
+            watchdog.start()
+
         # Start cross-project metrics snapshot writer
         from sova.monitoring.cross_project import MetricsSnapshotWriter
 
@@ -345,7 +357,7 @@ def create_app(
         finally:
             try:
                 await asyncio.wait_for(
-                    _shutdown_tasks(sweep_task, pr_throttle_tasks, pr_monitor_tasks, metrics_writer),
+                    _shutdown_tasks(sweep_task, pr_throttle_tasks, pr_monitor_tasks, metrics_writer, watchdog),
                     timeout=5.0,
                 )
             except TimeoutError:

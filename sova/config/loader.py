@@ -82,6 +82,7 @@ _NESTED_SECTIONS = (
     "pr_monitor",
     "resources",
     "supervisor",
+    "watchdog",
 )
 
 

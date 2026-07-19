@@ -47,6 +47,7 @@ GROUPS: dict[str, str] = {
     "pr_monitor": "PR Monitor",
     "resources": "Resources",
     "supervisor": "Supervisor",
+    "watchdog": "Agent Watchdog",
 }
 
 GROUP_ORDER: list[str] = [
@@ -80,6 +81,7 @@ GROUP_ORDER: list[str] = [
     "pr_monitor",
     "resources",
     "supervisor",
+    "watchdog",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -861,6 +863,56 @@ _REGISTRY: list[SettingMeta] = [
         _LABEL_POLL_INTERVAL,
         "Seconds between progression evaluation cycles",
         "supervisor",
+        "number",
+    ),
+    # -- Watchdog --
+    SettingMeta(
+        "watchdog.enabled",
+        "Enabled",
+        "Enable the agent watchdog to detect stuck, zombie, and bypassed agent processes",
+        "watchdog",
+        "boolean",
+    ),
+    SettingMeta(
+        "watchdog.check_interval_seconds",
+        "Check interval (s)",
+        "Seconds between watchdog scan cycles",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.pipeline_adopt_timeout_minutes",
+        "Pipeline adopt timeout (min)",
+        "Minutes before a run with current_step='agent' is killed (pipeline never adopted)",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.no_output_warn_minutes",
+        "No-output warn (min)",
+        "Minutes without output before emitting a warning feed event",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.no_output_kill_minutes",
+        "No-output kill (min)",
+        "Minutes without output before killing the agent process",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.step_warn_minutes",
+        "Step warn (min)",
+        "Minutes on a single pipeline step before emitting a warning feed event",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.cooldown_minutes",
+        "Cooldown (min)",
+        "Minutes between repeated alerts for the same run and signal type",
+        "watchdog",
         "number",
     ),
 ]
