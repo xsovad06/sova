@@ -442,6 +442,16 @@ class WatchdogConfig(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="SOVA_WATCHDOG_")
 
+    @model_validator(mode="after")
+    def _validate_no_output_thresholds(self) -> WatchdogConfig:
+        if self.no_output_kill_minutes <= self.no_output_warn_minutes:
+            msg = (
+                f"no_output_kill_minutes ({self.no_output_kill_minutes}) must be "
+                f"greater than no_output_warn_minutes ({self.no_output_warn_minutes})"
+            )
+            raise ValueError(msg)
+        return self
+
 
 class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""

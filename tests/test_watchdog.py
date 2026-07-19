@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -114,7 +115,7 @@ class TestWatchdogFinding:
 
 class TestDetectAnomalies:
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_pipeline_not_adopted_within_timeout(self, mock_alive: MagicMock) -> None:
+    def test_pipeline_not_adopted_within_timeout(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         run = _make_run(
             current_step="agent",
@@ -124,7 +125,7 @@ class TestDetectAnomalies:
         assert len(findings) == 0
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_pipeline_not_adopted_past_timeout(self, mock_alive: MagicMock) -> None:
+    def test_pipeline_not_adopted_past_timeout(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(pipeline_adopt_timeout_minutes=5)
         run = _make_run(
             current_step="agent",
@@ -136,7 +137,7 @@ class TestDetectAnomalies:
         assert findings[0].action == WatchdogAction.KILL
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=False)
-    def test_zombie_process(self, mock_alive: MagicMock) -> None:
+    def test_zombie_process(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         run = _make_run(pid=99999)
         findings = wd._detect_anomalies(run, datetime.now(timezone.utc), {})
@@ -145,7 +146,7 @@ class TestDetectAnomalies:
         assert findings[0].action == WatchdogAction.WARN
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_no_output_warn(self, mock_alive: MagicMock) -> None:
+    def test_no_output_warn(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
         run = _make_run(started_at=now - timedelta(minutes=20))
@@ -156,7 +157,7 @@ class TestDetectAnomalies:
         assert no_output[0].action == WatchdogAction.WARN
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_no_output_kill(self, mock_alive: MagicMock) -> None:
+    def test_no_output_kill(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
         run = _make_run(started_at=now - timedelta(minutes=30))
@@ -166,7 +167,7 @@ class TestDetectAnomalies:
         assert no_output_kill[0].action == WatchdogAction.KILL
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_no_output_uses_last_output_time(self, mock_alive: MagicMock) -> None:
+    def test_no_output_uses_last_output_time(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
         # Run started 60 minutes ago, but last output was 5 minutes ago
@@ -177,20 +178,22 @@ class TestDetectAnomalies:
         assert len(no_output) == 0
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_step_timeout_warn(self, mock_alive: MagicMock) -> None:
+    def test_step_timeout_warn(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog(step_warn_minutes=45)
         now = datetime.now(timezone.utc)
         run = _make_run(
             current_step="develop",
             started_at=now - timedelta(minutes=50),
         )
+        # Pre-populate step tracking to simulate the step running for 50 minutes
+        wd._step_started_at[(run.id, "develop")] = time.monotonic() - (50 * 60)
         findings = wd._detect_anomalies(run, now, {run.id: now - timedelta(minutes=1)})
         step_warn = [f for f in findings if f.signal == AnomalySignal.STEP_TIMEOUT_WARN]
         assert len(step_warn) == 1
         assert step_warn[0].action == WatchdogAction.WARN
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
-    def test_no_anomalies_healthy_run(self, mock_alive: MagicMock) -> None:
+    def test_no_anomalies_healthy_run(self, _mock_alive: MagicMock) -> None:
         wd = _make_watchdog()
         now = datetime.now(timezone.utc)
         run = _make_run(
@@ -261,7 +264,6 @@ class TestCooldowns:
 
 
 class TestExecuteFinding:
-    @pytest.mark.asyncio
     @patch("sova.supervisor.watchdog.emit_safe")
     async def test_warn_only_emits_feed_event(self, mock_emit: MagicMock) -> None:
         wd = _make_watchdog()
@@ -278,10 +280,9 @@ class TestExecuteFinding:
         call_kwargs = mock_emit.call_args
         assert "watchdog" in call_kwargs.kwargs["category"]
 
-    @pytest.mark.asyncio
     @patch("sova.supervisor.watchdog.emit_safe")
     @patch("sova.supervisor.watchdog.get_session")
-    async def test_kill_re_queries_status(self, mock_get_session: AsyncMock, mock_emit: MagicMock) -> None:
+    async def test_kill_re_queries_status(self, mock_get_session: AsyncMock, _mock_emit: MagicMock) -> None:
         wd = _make_watchdog()
         finding = WatchdogFinding(
             run_id=1,
@@ -305,10 +306,9 @@ class TestExecuteFinding:
             await wd._execute_finding(finding)
             mock_stop.assert_not_called()  # should skip because status is terminal
 
-    @pytest.mark.asyncio
     @patch("sova.supervisor.watchdog.emit_safe")
     @patch("sova.supervisor.watchdog.get_session")
-    async def test_kill_calls_stop_agent(self, mock_get_session: AsyncMock, mock_emit: MagicMock) -> None:
+    async def test_kill_calls_stop_agent(self, mock_get_session: AsyncMock, _mock_emit: MagicMock) -> None:
         wd = _make_watchdog()
         finding = WatchdogFinding(
             run_id=1,
@@ -338,7 +338,6 @@ class TestExecuteFinding:
 
 
 class TestScanOnce:
-    @pytest.mark.asyncio
     @patch("sova.supervisor.watchdog.get_session")
     async def test_scan_no_active_runs(self, mock_get_session: AsyncMock) -> None:
         wd = _make_watchdog()
@@ -354,12 +353,11 @@ class TestScanOnce:
         findings = await wd._scan_once()
         assert findings == []
 
-    @pytest.mark.asyncio
     @patch("sova.supervisor.watchdog.emit_safe")
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
     @patch("sova.supervisor.watchdog.get_session")
     async def test_scan_detects_no_output_warn(
-        self, mock_get_session: AsyncMock, mock_alive: MagicMock, mock_emit: MagicMock
+        self, mock_get_session: AsyncMock, _mock_alive: MagicMock, _mock_emit: MagicMock
     ) -> None:
         wd = _make_watchdog(no_output_warn_minutes=15, no_output_kill_minutes=25)
         now = datetime.now(timezone.utc)
@@ -373,7 +371,7 @@ class TestScanOnce:
         mock_session = AsyncMock()
         call_count = 0
 
-        async def _mock_execute(stmt):
+        async def _mock_execute(_stmt: object) -> MagicMock:
             nonlocal call_count
             call_count += 1
             result = MagicMock()
@@ -399,19 +397,15 @@ class TestScanOnce:
 
 
 class TestLifecycle:
-    @pytest.mark.asyncio
     async def test_start_creates_task(self) -> None:
         wd = _make_watchdog()
         task = wd.start()
         assert isinstance(task, asyncio.Task)
         assert wd._task is task
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
-    @pytest.mark.asyncio
     async def test_stop_cancels_task(self) -> None:
         wd = _make_watchdog()
         wd.start()
@@ -422,6 +416,147 @@ class TestLifecycle:
 # ---------------------------------------------------------------------------
 # Config triple-registration test
 # ---------------------------------------------------------------------------
+
+
+class TestRunLoop:
+    async def test_run_loop_initial_scan_error_is_caught(self) -> None:
+        """Verify scan errors during initial startup scan are caught, not propagated."""
+        wd = _make_watchdog(check_interval_seconds=3600)
+        with patch.object(wd, "_scan_once", side_effect=RuntimeError("db error")):
+            task = wd.start()
+            # Give the loop time to run the initial scan and hit the error
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def test_run_loop_cancellation_propagates(self) -> None:
+        """CancelledError in the loop must propagate (not swallowed)."""
+        wd = _make_watchdog(check_interval_seconds=3600)
+        task = wd.start()
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_run_loop_runs_initial_scan_before_sleep(self) -> None:
+        """Verify that _scan_once is called immediately, before the first sleep."""
+        wd = _make_watchdog(check_interval_seconds=3600)
+        scan_called = asyncio.Event()
+        original_scan = wd._scan_once
+
+        async def _track_scan() -> list[WatchdogFinding]:
+            scan_called.set()
+            return await original_scan()
+
+        with (
+            patch.object(wd, "_scan_once", side_effect=_track_scan),
+            patch("sova.supervisor.watchdog.get_session") as mock_get_session,
+        ):
+            mock_session = AsyncMock()
+            mock_result = MagicMock()
+            mock_result.scalars.return_value.all.return_value = []
+            mock_session.execute = AsyncMock(return_value=mock_result)
+            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session.__aexit__ = AsyncMock(return_value=None)
+            mock_get_session.return_value = mock_session
+
+            task = wd.start()
+            # Should fire within milliseconds, not after check_interval_seconds
+            await asyncio.wait_for(scan_called.wait(), timeout=1.0)
+            assert scan_called.is_set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+class TestStopMethod:
+    async def test_stop_when_no_task(self) -> None:
+        """Calling stop() when no task is running should be a no-op."""
+        wd = _make_watchdog()
+        await wd.stop()  # should not raise
+        assert wd._task is None
+
+    async def test_stop_suppresses_cancelled_error(self) -> None:
+        """stop() must suppress CancelledError from the awaited task."""
+        wd = _make_watchdog(check_interval_seconds=3600)
+        wd.start()
+        assert wd._task is not None
+        await wd.stop()
+        assert wd._task is None
+
+
+class TestKillAgentEdgeCases:
+    @patch("sova.supervisor.watchdog.emit_safe")
+    @patch("sova.supervisor.watchdog.get_session")
+    async def test_kill_agent_run_not_found(self, mock_get_session: AsyncMock, _mock_emit: MagicMock) -> None:
+        """If the run is gone when re-queried, kill should be a no-op."""
+        wd = _make_watchdog()
+        finding = WatchdogFinding(
+            run_id=999,
+            issue_number="42",
+            signal=AnomalySignal.PIPELINE_NOT_ADOPTED,
+            action=WatchdogAction.KILL,
+            detail="test",
+            metadata={},
+        )
+
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.first.return_value = None  # run not found
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_get_session.return_value = mock_session
+
+        with patch("sova.dashboard.services.agent_lifecycle.stop_agent", new_callable=AsyncMock) as mock_stop:
+            await wd._execute_finding(finding)
+            mock_stop.assert_not_called()
+
+    @patch("sova.supervisor.watchdog.emit_safe")
+    @patch("sova.supervisor.watchdog.get_session")
+    async def test_kill_agent_stop_raises(self, mock_get_session: AsyncMock, _mock_emit: MagicMock) -> None:
+        """If stop_agent raises, the error is logged but not propagated."""
+        wd = _make_watchdog()
+        finding = WatchdogFinding(
+            run_id=1,
+            issue_number="42",
+            signal=AnomalySignal.NO_OUTPUT_KILL,
+            action=WatchdogAction.KILL,
+            detail="test",
+            metadata={},
+        )
+
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.first.return_value = ("running",)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_get_session.return_value = mock_session
+
+        with patch(
+            "sova.dashboard.services.agent_lifecycle.stop_agent",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("stop failed"),
+        ):
+            await wd._execute_finding(finding)  # should not raise
+
+
+class TestConfigValidation:
+    def test_kill_must_exceed_warn(self) -> None:
+        """no_output_kill_minutes must be greater than no_output_warn_minutes."""
+        with pytest.raises(ValueError, match="no_output_kill_minutes"):
+            WatchdogConfig(no_output_warn_minutes=20, no_output_kill_minutes=20)
+
+    def test_kill_less_than_warn_rejected(self) -> None:
+        with pytest.raises(ValueError, match="no_output_kill_minutes"):
+            WatchdogConfig(no_output_warn_minutes=30, no_output_kill_minutes=15)
+
+    def test_valid_thresholds_accepted(self) -> None:
+        cfg = WatchdogConfig(no_output_warn_minutes=10, no_output_kill_minutes=20)
+        assert cfg.no_output_warn_minutes == 10
+        assert cfg.no_output_kill_minutes == 20
 
 
 class TestConfigRegistration:
