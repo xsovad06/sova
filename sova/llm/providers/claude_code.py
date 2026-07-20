@@ -12,7 +12,7 @@ from pathlib import Path
 from sova.llm.models import LLMResult, StreamEvent
 from sova.llm.provider import LLMProvider
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="llm.provider.claude_code")
 
@@ -42,7 +42,8 @@ class ClaudeCodeProvider(LLMProvider):
 
         result = await run(*args, cwd=cwd, timeout=timeout)
         if not result.success:
-            raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {result.stderr[:500]}")
+            detail = _extract_failure_detail(result)
+            raise RuntimeError(f"Claude CLI failed (exit {result.returncode}): {detail}")
 
         return _parse_json_output(result.stdout)
 
@@ -116,6 +117,33 @@ class ClaudeCodeProvider(LLMProvider):
 # ---------------------------------------------------------------------------
 
 
+def _extract_failure_detail(result: ShellResult) -> str:
+    """Extract the best available error detail from a failed Claude CLI run.
+
+    Claude CLI with --output-format json writes error info to stdout as JSON
+    (is_error, result, terminal_reason), while stderr is often empty.
+    """
+    if result.stderr.strip():
+        return result.stderr[:500]
+
+    if result.stdout.strip():
+        try:
+            data = json.loads(result.stdout)
+            parts: list[str] = []
+            if data.get("terminal_reason"):
+                parts.append(f"terminal_reason={data['terminal_reason']}")
+            if data.get("is_error"):
+                parts.append("is_error=true")
+            if data.get("result"):
+                parts.append(str(data["result"])[:300])
+            if parts:
+                return "; ".join(parts)
+        except (json.JSONDecodeError, KeyError):
+            return result.stdout[:500]
+
+    return "(no error detail captured)"
+
+
 def _build_args(
     prompt: str,
     *,
@@ -129,6 +157,8 @@ def _build_args(
         prompt,
         "--output-format",
         output_format,
+        "--permission-mode",
+        "auto",
     ]
 
     if model:
