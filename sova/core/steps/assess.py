@@ -4,8 +4,9 @@ Gate 3: The Developer agent refuses to pick up any issue not in
 "Researched" state. This prevents the old failure mode where the agent
 blindly started work on underspecified issues.
 
-Also guards against duplicate developer runs when a PR already exists
-for the issue (the correct action is address-review, not a fresh run).
+Adopts an existing open PR for the issue into the context, routing the
+pipeline into the address-review variant, instead of failing with a
+duplicate-PR error.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.git.pr import find_pr_for_issue
+from sova.git.pr import find_pr_for_issue, get_pr_branch
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.assess")
@@ -45,18 +46,24 @@ class AssessStep(BaseStep):
                 github_user=ctx.config.github_user,
             )
             if existing_pr:
-                log.warning(
-                    "step.assess.pr_exists",
+                log.info(
+                    "step.assess.adopting_existing_pr",
                     issue=ctx.issue_number,
                     pr=existing_pr.number,
                 )
+                ctx.pr_number = existing_pr.number
+                branch = existing_pr.branch or await get_pr_branch(
+                    existing_pr.number,
+                    repo=ctx.repo,
+                    github_user=ctx.config.github_user,
+                )
+                if branch:
+                    ctx.branch_name = branch
                 return StepResult(
-                    success=False,
-                    summary=f"PR #{existing_pr.number} already exists for issue #{ctx.issue_number}",
-                    error=(
-                        f"Open PR #{existing_pr.number} already exists. "
-                        "Use address-review pipeline (pass --pr) instead of a fresh developer run. "
-                        "Use --force to override."
+                    success=True,
+                    summary=(
+                        f"Adopted existing PR #{existing_pr.number} for issue #{ctx.issue_number} "
+                        "(address-review pipeline)"
                     ),
                 )
 
