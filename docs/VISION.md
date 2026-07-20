@@ -2,7 +2,7 @@
 
 > **Status**: Post-implementation, pre-release
 > **Author**: Damian Sova
-> **Last updated**: 2026-07-17
+> **Last updated**: 2026-07-19
 
 ## What This Becomes
 
