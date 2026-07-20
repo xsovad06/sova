@@ -465,6 +465,43 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 # -- Agent lifecycle ----------------------------------------------------------
 
 
+async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None:
+    """Return the pr_number from the most recent terminal developer run for an issue.
+
+    Called from start_agent when pr_number is not explicitly provided for a
+    developer role. This recovers the PR context after stale-run recovery marks
+    an in-progress developer run as interrupted, so the next start correctly
+    passes --pr and routes to the address-review pipeline.
+    """
+    try:
+        from sqlalchemy import select
+
+        from sova.core.state import TASK_RUN_TERMINAL
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            stmt = (
+                select(TaskRun.pr_number)
+                .where(
+                    TaskRun.issue_number == issue,
+                    TaskRun.role == "developer",
+                    TaskRun.pr_number.is_not(None),
+                    TaskRun.status.in_(TASK_RUN_TERMINAL),
+                )
+                .order_by(TaskRun.id.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            pr = result.scalar_one_or_none()
+            if pr is not None:
+                log.info("start_agent.recovered_pr_number", issue=issue, pr_number=pr)
+            return pr
+    except Exception:
+        log.debug("start_agent.recover_pr_number_failed", issue=issue, exc_info=True)
+        return None
+
+
 async def start_agent(
     issue: str,
     *,
@@ -482,6 +519,14 @@ async def start_agent(
     pa = _get_project_agents(slug)
     if not issue and pr_number:
         issue = await _resolve_issue_from_pr(pr_number, pa.project_dir)
+
+    # For developer runs without an explicit pr_number, recover the most recent
+    # pr_number from DB history. This handles the case where stale-run recovery
+    # marks a developer run as interrupted (losing the --pr context) and a fresh
+    # start is attempted without --pr, which would otherwise fail at AssessStep
+    # with "Open PR already exists".
+    if issue and (role or "developer") == "developer" and not pr_number:
+        pr_number = await _recover_last_pr_number(issue, pa.project_dir)
 
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
