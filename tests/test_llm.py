@@ -352,6 +352,15 @@ class TestExtractFailureDetail:
         detail = _extract_failure_detail(result)
         assert len(detail) <= 310
 
+    def test_handles_non_dict_json_stdout(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=1, stdout='["a", "b"]', stderr="")
+        detail = _extract_failure_detail(result)
+        assert detail == '["a", "b"]'
+
+
 
 # ---------------------------------------------------------------------------
 # Client: invoke_command()
