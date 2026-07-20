@@ -15,6 +15,7 @@ from sova.dashboard.services.pr_service import (
     _check_coderabbit_from_pr_data,
     _check_threads_from_pr_data,
     _enrich_pr,
+    _extract_latest_approval_at,
     _extract_review_logins,
     _summarize_ci,
     check_integration_gates,
@@ -327,6 +328,19 @@ class TestEnrichPr:
         )
         result = _enrich_pr(raw, time.time())
         assert result["computed_state"] == ComputedPRState.REVIEW_ADDRESSED
+
+    def test_latest_approval_at_populated(self) -> None:
+        raw = self._raw_pr(
+            latestReviews=[
+                {"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z", "author": {"login": "alice"}},
+            ],
+        )
+        result = _enrich_pr(raw, time.time())
+        assert result["latest_approval_at"] == "2026-07-20T12:00:00Z"
+
+    def test_latest_approval_at_none_without_approvals(self) -> None:
+        result = _enrich_pr(self._raw_pr(), time.time())
+        assert result["latest_approval_at"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +703,32 @@ class TestExtractReviewLogins:
     def test_empty_login(self) -> None:
         reviews = [{"author": {"login": ""}}, {"author": {"login": "bob"}}]
         assert _extract_review_logins(reviews) == ["bob"]
+
+
+class TestExtractLatestApprovalAt:
+    def test_picks_latest_approved(self) -> None:
+        reviews = [
+            {"state": "APPROVED", "submittedAt": "2026-07-18T10:00:00Z"},
+            {"state": "APPROVED", "submittedAt": "2026-07-20T12:00:00Z"},
+            {"state": "COMMENTED", "submittedAt": "2026-07-21T08:00:00Z"},
+        ]
+        assert _extract_latest_approval_at(reviews) == "2026-07-20T12:00:00Z"
+
+    def test_no_approvals(self) -> None:
+        reviews = [
+            {"state": "CHANGES_REQUESTED", "submittedAt": "2026-07-20T10:00:00Z"},
+        ]
+        assert _extract_latest_approval_at(reviews) is None
+
+    def test_none_reviews(self) -> None:
+        assert _extract_latest_approval_at(None) is None
+
+    def test_empty_reviews(self) -> None:
+        assert _extract_latest_approval_at([]) is None
+
+    def test_missing_submitted_at(self) -> None:
+        reviews = [{"state": "APPROVED"}]
+        assert _extract_latest_approval_at(reviews) is None
 
 
 # ---------------------------------------------------------------------------
