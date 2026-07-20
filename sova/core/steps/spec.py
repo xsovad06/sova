@@ -4,6 +4,12 @@ Produces a .claude/specs/{issue}-{slug}.md specification document
 that guides the developer with concrete implementation plans,
 design decisions, and scope boundaries.
 
+The step generates specs by sending a focused prompt to the LLM via
+``invoke()`` and writing the response to disk. This avoids the
+interactive ``/spec`` command which expects user input (Steps 5-7:
+"ask the user", "iterate on feedback") and fails silently in headless
+pipeline mode.
+
 Behavior depends on complexity threshold, research findings, and open questions:
 - Issues whose Research section indicates already implemented: skip entirely
 - Tasks below spec.threshold skip this step entirely
@@ -15,13 +21,14 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal
+from pathlib import Path
 
 from sova.core.context import ExecutionContext
 from sova.core.steps._handoff_helpers import write_step_handoff
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.dashboard.services.spec_service import find_spec_file
 from sova.ipc.handoff import HandoffAction
-from sova.llm.client import invoke_command
+from sova.llm.client import invoke
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
 
@@ -81,6 +88,124 @@ def _research_says_implemented(body: str) -> bool:
     return any(p in lower for p in _ALREADY_IMPLEMENTED_PATTERNS)
 
 
+def _make_slug(title: str, max_len: int = 40) -> str:
+    """Generate a filesystem-safe slug from an issue title.
+
+    Delegates to the shared ``slugify`` utility, with a fallback for
+    empty titles.
+    """
+    from sova.utils.formatting import slugify
+
+    slug = slugify(title, max_length=max_len)
+    return slug or "spec"
+
+
+def _extract_spec_content(text: str) -> str:
+    """Extract spec markdown from an LLM response.
+
+    The LLM may return the spec in several formats:
+    1. Wrapped in a ```markdown or ```md fenced block
+    2. Starting directly with ``# Spec:`` heading
+    3. As plain text (fallback)
+    """
+    if not text:
+        return ""
+
+    fence_match = re.search(r"```(?:markdown|md)\s*\n(.*?)```", text, re.DOTALL)
+    if fence_match:
+        return fence_match.group(1).strip()
+
+    heading_match = re.search(r"^(# Spec:.+)", text, re.MULTILINE | re.DOTALL)
+    if heading_match:
+        return heading_match.group(1).strip()
+
+    return text.strip()
+
+
+_SPEC_PROMPT_TEMPLATE = """\
+You are a technical spec writer. Produce a structured specification document for the task below.
+
+Return ONLY the spec document in markdown format. Do not include any preamble, explanation, or \
+commentary outside the spec itself. The spec must start with ``# Spec: {{title}}`` and follow \
+the exact template structure shown below.
+
+## Task
+
+**Issue**: #{{issue_number}}
+**Title**: {{title}}
+
+### Description
+
+{{body}}
+
+## Spec Template
+
+Use this exact structure:
+
+```
+# Spec: {{title}}
+
+**Issue**: #{{issue_number}}
+**Status**: draft
+**Created**: {{date}}
+**Complexity**: simple | moderate | complex
+
+## Problem
+
+What problem does this solve? 1-3 sentences from the user's perspective.
+
+## Solution
+
+High-level approach in 2-4 sentences. What changes and why.
+
+## Implementation Plan
+
+Ordered steps. Each step should be one commit-sized unit of work.
+Reference specific files to create/modify.
+
+1. Step one
+2. Step two
+
+## Design Decisions
+
+Pre-answered questions for ambiguities found.
+
+1. **Question?** Answer with rationale.
+
+(Omit if no ambiguities exist.)
+
+## Scope Boundaries
+
+Explicit limits to prevent over-engineering.
+
+- Do NOT {{thing out of scope}}
+
+## Edge Cases
+
+Things the implementation must handle that aren't obvious.
+
+## Testing Strategy
+
+What to test: key scenarios, edge cases, integration points.
+
+## Open Questions
+
+Anything that needs user input before development starts.
+
+(Omit this section if there are no open questions.)
+```
+
+## Rules
+
+- Keep the implementation plan concrete ("add X to Y", not "implement the feature")
+- Reference specific file paths when the issue body mentions them
+- Omit sections that don't apply (e.g., no "Data Model" for a pure UI change)
+- Complexity: simple (1-2 files, <50 lines), moderate (3-6 files, 50-200 lines), complex (7+ files or >200 lines)
+- Do NOT include code blocks in the spec itself (it is a planning document)
+- Return ONLY the spec document, no surrounding text
+"""
+
+
 def _text_has_open_questions(text: str) -> bool:
     """Check if text contains an Open Questions section with content."""
     content = _extract_section(text, "Open Questions")
@@ -88,6 +213,28 @@ def _text_has_open_questions(text: str) -> bool:
     if not normalized or normalized.startswith("(omit") or normalized.startswith("none"):
         return False
     return True
+
+
+def _build_spec_prompt(issue_number: str, title: str, body: str) -> str:
+    """Build the LLM prompt for spec generation."""
+    from datetime import date
+
+    return (
+        _SPEC_PROMPT_TEMPLATE.replace("{{issue_number}}", issue_number)
+        .replace("{{title}}", title)
+        .replace("{{body}}", body)
+        .replace("{{date}}", date.today().isoformat())
+    )
+
+
+def _write_spec_file(issue_number: str, title: str, content: str, project_dir: Path) -> Path:
+    """Write spec content to .claude/specs/{issue}-{slug}.md."""
+    specs_dir = project_dir / ".claude" / "specs"
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    slug = _make_slug(title)
+    spec_path = specs_dir / f"{issue_number}-{slug}.md"
+    spec_path.write_text(content)
+    return spec_path
 
 
 class SpecStep(BaseStep):
@@ -123,10 +270,15 @@ class SpecStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         log.info("step.spec", issue=ctx.issue_number, cwd=str(ctx.project_dir))
 
+        task = ctx.task
+        if task is None:
+            task = await ctx.adapter.get_task(ctx.issue_number)
+
+        prompt = _build_spec_prompt(ctx.issue_number, task.title, task.body or "")
+
         try:
-            result = await invoke_command(
-                "/spec",
-                args=ctx.issue_number,
+            result = await invoke(
+                prompt,
                 model=ctx.config.roles.researcher_model or ctx.config.agent.model,
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
@@ -136,13 +288,16 @@ class SpecStep(BaseStep):
         except RuntimeError as exc:
             return StepResult(success=False, summary="Spec generation failed", error=str(exc))
 
-        spec_path = find_spec_file(ctx.issue_number, project_dir=ctx.project_dir)
-        if spec_path is None:
+        spec_content = _extract_spec_content(result.text)
+        if not spec_content:
             return StepResult(
                 success=False,
-                summary="Spec command ran but no spec file was produced",
-                error="Expected .claude/specs/{issue}-*.md",
+                summary="LLM returned no spec content",
+                error="LLM response was empty or could not be parsed into a spec",
             )
+
+        spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)
+        log.info("step.spec.written", issue=ctx.issue_number, path=str(spec_path))
 
         # Read once, derive everything from text
         text = spec_path.read_text()
