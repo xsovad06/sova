@@ -156,6 +156,13 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 
                 if task_run.status in _TERMINAL_STATUSES:
                     log.info("task_run.already_terminal", run_id=run_id, status=task_run.status)
+                    # Apply file handoff even for already-terminal runs. WorkflowEngine
+                    # finalizes status in the subprocess before exiting, but write_handoff()
+                    # there may target the wrong DB when CWD is a linked worktree. Persisting
+                    # here (dashboard context, correct project_dir) ensures
+                    # get_sova_review_verdict() can always find the real verdict.
+                    if not task_run.handoff_json:
+                        _apply_file_handoff(task_run, file_handoff, run_id)
                     return
 
                 task_run.status = status

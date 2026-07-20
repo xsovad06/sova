@@ -893,7 +893,7 @@ class ReviewerRole(AgentRole):
             details={
                 "next_action": next_action,
                 "cost_usd": str(review.total_cost),
-                "findings": findings_data,
+                "pending_findings": findings_data,
             },
             next_actions=actions,
         )
