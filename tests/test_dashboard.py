@@ -12826,3 +12826,109 @@ class TestGetPrimaryWorktreeRoot:
             root = await get_primary_worktree_root()
 
         assert root == Path("/current/dir")
+
+
+class TestPrSuggestionEndpoint:
+    """Tests for POST /api/prs/{pr_number}/suggestion."""
+
+    async def test_returns_204_when_no_api_key(self, client: AsyncClient, monkeypatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        from sova.dashboard.services.llm_suggestion_service import clear_cache
+
+        clear_cache()
+        body = {
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "pr_computed_state": "approved_ci_green",
+            "has_sova_review": False,
+            "sova_verdict": None,
+            "mergeable": "MERGEABLE",
+            "review_decision": "APPROVED",
+            "ci_passed": True,
+        }
+        resp = await client.post("/api/prs/378/suggestion", json=body)
+        assert resp.status_code == 204
+
+    async def test_returns_suggestion_when_llm_disagrees(self, client: AsyncClient, monkeypatch) -> None:
+        import json
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.llm_suggestion_service import clear_cache
+
+        clear_cache()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+        content = json.dumps({"action_id": "integrate", "reasoning": "CI green and approved"})
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"content": [{"text": content}]}
+
+        body = {
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "pr_computed_state": "approved_ci_green",
+        }
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_cls.return_value.__aenter__.return_value = mock_http
+            mock_http.post.return_value = mock_resp
+            resp = await client.post("/api/prs/378/suggestion", json=body)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["action_id"] == "integrate"
+        assert data["disagrees"] is True
+
+
+class TestPrFeedbackEndpoint:
+    """Tests for POST /api/prs/feedback."""
+
+    async def test_stores_feedback_record(self, client: AsyncClient) -> None:
+        body = {
+            "pr_number": 378,
+            "issue_number": "377",
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": "integrate",
+            "llm_reasoning": "CI green and approved",
+            "user_choice": "deterministic",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "id" in data
+        assert isinstance(data["id"], int)
+
+    async def test_stores_llm_choice(self, client: AsyncClient) -> None:
+        body = {
+            "pr_number": 100,
+            "deterministic_state": "pr_awaiting_review",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": "address_pr",
+            "user_choice": "llm",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+
+    async def test_rejects_invalid_user_choice(self, client: AsyncClient) -> None:
+        body = {
+            "pr_number": 1,
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": "integrate",
+            "user_choice": "not_valid_at_all",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 400
+
+    async def test_accepts_action_id_as_user_choice(self, client: AsyncClient) -> None:
+        """user_choice can be any valid action_id, not just 'deterministic'/'llm'."""
+        body = {
+            "pr_number": 200,
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": "integrate",
+            "user_choice": "address_pr",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
