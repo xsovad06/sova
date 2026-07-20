@@ -706,7 +706,10 @@ class TestAssessStep:
         step = AssessStep()
         assert await step.can_skip(ctx)
 
-    async def test_existing_pr_blocks_developer_run(self) -> None:
+    async def test_existing_pr_adopted_into_context(self) -> None:
+        """When a fresh developer run finds an existing PR, AssessStep should
+        adopt it (set ctx.pr_number + ctx.branch_name) and succeed, routing
+        the pipeline into the address-review variant."""
         from sova.core.steps.assess import AssessStep
         from sova.git.pr import PRInfo
 
@@ -715,12 +718,62 @@ class TestAssessStep:
         ctx = _make_ctx(adapter=adapter, issue_number="42")
         step = AssessStep()
 
-        with patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find:
+        with (
+            patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find,
+            patch("sova.core.steps.assess.get_pr_branch", new_callable=AsyncMock, return_value="feat/issue-42"),
+        ):
             mock_find.return_value = PRInfo(number=99, url="https://github.com/test/repo/pull/99")
             result = await step.execute(ctx)
 
-        assert not result.success
-        assert "PR #99 already exists" in result.summary
+        assert result.success, f"Expected success, got: {result.error}"
+        assert "Adopted existing PR #99" in result.summary
+        assert ctx.pr_number == 99
+        assert ctx.branch_name == "feat/issue-42"
+
+    async def test_existing_pr_adoption_uses_prinfo_branch_without_api_call(self) -> None:
+        """When PRInfo already carries a branch, AssessStep must use it directly
+        and must NOT call get_pr_branch (avoids an extra GitHub API round-trip)."""
+        from sova.core.steps.assess import AssessStep
+        from sova.git.pr import PRInfo
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        step = AssessStep()
+
+        with (
+            patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find,
+            patch("sova.core.steps.assess.get_pr_branch", new_callable=AsyncMock) as mock_get_branch,
+        ):
+            mock_find.return_value = PRInfo(
+                number=99, url="https://github.com/test/repo/pull/99", branch="feat/issue-42"
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 99
+        assert ctx.branch_name == "feat/issue-42"
+        mock_get_branch.assert_not_awaited()
+
+    async def test_existing_pr_adoption_sets_pr_number_even_without_branch(self) -> None:
+        """PR adoption should still succeed when get_pr_branch returns empty string."""
+        from sova.core.steps.assess import AssessStep
+        from sova.git.pr import PRInfo
+
+        adapter = _mock_adapter()
+        adapter.get_state.return_value = TaskState.IN_PROGRESS
+        ctx = _make_ctx(adapter=adapter, issue_number="42")
+        step = AssessStep()
+
+        with (
+            patch("sova.core.steps.assess.find_pr_for_issue", new_callable=AsyncMock) as mock_find,
+            patch("sova.core.steps.assess.get_pr_branch", new_callable=AsyncMock, return_value=""),
+        ):
+            mock_find.return_value = PRInfo(number=99, url="https://github.com/test/repo/pull/99")
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 99
 
     async def test_existing_pr_allowed_when_pr_number_set(self) -> None:
         from sova.core.steps.assess import AssessStep

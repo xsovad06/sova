@@ -987,6 +987,70 @@ class TestAutoHandoffIssueMismatch:
         mock_lifecycle.start_agent.assert_not_awaited()
         mock_clear.assert_not_called()
 
+    async def test_does_not_persist_when_issue_mismatches_with_nonempty_details(self) -> None:
+        """When the handoff issue mismatches the agent issue, no persist must happen
+        even if details is non-empty -- writing another issue's verdict would corrupt
+        the completing run's handoff_json."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.db.session import get_session as real_get_session
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        findings = [{"file": "b.py", "line": 2, "severity": 8, "category": "bug", "description": "Y", "suggestion": ""}]
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="200", role="reviewer", status="done", pr_number=60)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        # Handoff is for issue 201 but agent is running issue 200 -- mismatch
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="201",
+            pr_number=60,
+            summary="1 finding",
+            details={"next_action": "address_review", "pending_findings": findings},
+            next_actions=[
+                HandoffAction(
+                    id="address_review",
+                    label="Address",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "201", "role": "developer", "pr": 60},
+                ),
+            ],
+        )
+
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "200", "project_dir": Path("/tmp/test")})()
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_not_awaited()
+        mock_clear.assert_not_called()
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed is not None
+                assert not refreshed.handoff_json, "mismatched handoff details must not be persisted"
+
     async def test_executes_when_handoff_issue_matches(self) -> None:
         """Auto-handoff should execute normally when issues match."""
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -1029,6 +1093,135 @@ class TestAutoHandoffIssueMismatch:
         mock_start.assert_awaited_once()
         mock_clear.assert_called_once()
         assert mock_clear.call_args[1].get("issue") == "113"
+
+    async def test_persists_handoff_details_to_completing_run(self) -> None:
+        """_process_auto_handoff must persist reviewer handoff details to TaskRun.handoff_json
+        before clearing the file, so get_sova_review_verdict() finds the real verdict later."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.db.session import get_session as real_get_session
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        findings = [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "X", "suggestion": ""}]
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="120", role="reviewer", status="done", pr_number=50)
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="120",
+            pr_number=50,
+            summary="1 finding",
+            details={"next_action": "address_review", "pending_findings": findings, "cost_usd": "0.01"},
+            next_actions=[
+                HandoffAction(
+                    id="address_review",
+                    label="Address",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "120", "role": "developer", "pr": 50},
+                ),
+            ],
+        )
+
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "120", "project_dir": Path("/tmp/test")})()
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        mock_start = AsyncMock(return_value={"run_id": 99})
+        mock_clear = MagicMock()
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
+            ),
+        ):
+            await _process_auto_handoff(agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed is not None
+                assert refreshed.handoff_json is not None, "handoff_json must be persisted before file is cleared"
+                assert refreshed.handoff_json.get("next_action") == "address_review"
+                persisted_findings = refreshed.handoff_json.get("pending_findings", [])
+                assert len(persisted_findings) == 1
+                assert persisted_findings[0]["severity"] == 9
+
+    async def test_skips_persist_when_handoff_json_already_set(self) -> None:
+        """_process_auto_handoff must not overwrite handoff_json if already populated
+        (subprocess wrote it correctly to the right DB)."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.db.session import get_session as real_get_session
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        existing_handoff = {"next_action": "approve", "pending_findings": [], "role": "reviewer"}
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="121",
+                    role="reviewer",
+                    status="done",
+                    pr_number=51,
+                    handoff_json=existing_handoff,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="121",
+            pr_number=51,
+            summary="No findings",
+            details={"next_action": "approve", "pending_findings": [], "cost_usd": "0.01"},
+            next_actions=[
+                HandoffAction(
+                    id="integrate",
+                    label="Integrate PR",
+                    auto_execute=False,
+                    mode="claude-command",
+                    command="/integrate-pr 51",
+                ),
+            ],
+        )
+
+        agent = type("AgentState", (), {"run_id": run_id, "issue": "121", "project_dir": Path("/tmp/test")})()
+
+        original = real_get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        mock_clear = MagicMock()
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            await _process_auto_handoff(agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.handoff_json == existing_handoff, "pre-existing handoff_json must not be overwritten"
 
 
 # ---------------------------------------------------------------------------
@@ -2062,6 +2255,144 @@ class TestDuplicateAgentPrevention:
         spawn_call = mock_runtime_factory.return_value.spawn
         actual_cwd = spawn_call.call_args[0][1]
         assert actual_cwd == worktree_path
+
+    async def test_start_agent_recovers_pr_number_from_db_history(self) -> None:
+        """When start_agent is called for a developer run without pr_number but a prior
+        terminal run for the same issue has one, start_agent must recover that pr_number
+        so the agent gets --pr and routes to the address-review pipeline instead of
+        failing at AssessStep with 'Open PR already exists'."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        # Seed a terminal developer run with a known pr_number in the test DB
+        async with await get_session() as session:
+            async with session.begin():
+                prior_run = TaskRun(
+                    issue_number="344",
+                    role="developer",
+                    status="interrupted",
+                    pr_number=372,
+                )
+                session.add(prior_run)
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 98765
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        spawned_prompt: list[str] = []
+
+        async def _capture_spawn(prompt, cwd, env=None):
+            spawned_prompt.append(prompt)
+            return mock_process
+
+        original = get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=_capture_spawn),
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(
+                agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/issue-344"
+            ),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=Path("/tmp/wt")
+            ),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            result = await start_agent("344", role="developer")  # no pr_number passed
+
+        assert result.get("status") == "started", f"Expected started, got: {result}"
+        assert spawned_prompt, "spawn was never called"
+        prompt_text = spawned_prompt[0]
+        assert "--pr 372" in prompt_text, f"Expected '--pr 372' in prompt, got: {prompt_text}"
+
+    async def test_start_agent_does_not_recover_pr_number_for_reviewer(self) -> None:
+        """PR number recovery from DB history should only apply to 'developer' role.
+        Other roles are not affected."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        # Seed a terminal developer run with a pr_number
+        async with await get_session() as session:
+            async with session.begin():
+                session.add(TaskRun(issue_number="344", role="developer", status="done", pr_number=372))
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 11111
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        spawned_prompt: list[str] = []
+
+        async def _capture_spawn(prompt, cwd, env=None):
+            spawned_prompt.append(prompt)
+            return mock_process
+
+        original = get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=_capture_spawn),
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=88),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree", new_callable=AsyncMock, return_value=Path("/tmp/wt")
+            ),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_check_issue_budget", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+        ):
+            result = await start_agent("344", role="reviewer")  # reviewer role
+
+        assert result.get("status") == "started"
+        assert spawned_prompt
+        # reviewer should NOT have --pr recovered from history
+        assert "--pr" not in spawned_prompt[0], f"Reviewer should not get --pr: {spawned_prompt[0]}"
 
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
@@ -5457,6 +5788,66 @@ class TestFinalizeTaskRunGuard:
                 refreshed = await session.get(TaskRun, run_id)
                 assert refreshed.status == "done"
                 assert float(refreshed.total_cost_usd) == 7.50
+
+    async def test_finalize_applies_file_handoff_when_already_terminal(self) -> None:
+        """_finalize_task_run must persist file handoff even when TaskRun is already terminal.
+
+        The WorkflowEngine subprocess may finalize status before the dashboard's
+        _finalize_task_run runs, causing an early-return. handoff_json must still
+        be set so get_sova_review_verdict() finds the real verdict.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="93",
+                    role="reviewer",
+                    status="done",
+                    pr_number=77,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        findings = [{"file": "a.py", "line": 1, "severity": 9, "category": "bug", "description": "X", "suggestion": ""}]
+        file_handoff_data = {
+            "issue": "93",
+            "pr_number": 77,
+            "details": {"next_action": "address_review", "pending_findings": findings, "cost_usd": "0.05"},
+            "source": "reviewer",
+        }
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.0
+        mock_agent.project_dir = None
+        mock_agent.issue = "93"
+        mock_agent.role = "reviewer"
+
+        original = get_session
+
+        async def _ignore_project_dir(**_kw):
+            return await original()
+
+        with (
+            patch("sova.dashboard.services.agent_db._read_file_handoff", return_value=file_handoff_data),
+            patch("sova.db.session.get_session", side_effect=_ignore_project_dir),
+            patch("sova.supervisor.pr_throttle.dequeue", AsyncMock()),
+        ):
+            await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        async with await get_session() as session:
+            async with session.begin():
+                refreshed = await session.get(TaskRun, run_id)
+                assert refreshed.status == "done"
+                assert refreshed.handoff_json is not None, "handoff_json must be set even on terminal early-return"
+                assert refreshed.handoff_json.get("next_action") == "address_review"
+                findings_out = refreshed.handoff_json.get("pending_findings", [])
+                assert len(findings_out) == 1
+                assert findings_out[0]["severity"] == 9
 
 
 # ---------------------------------------------------------------------------
