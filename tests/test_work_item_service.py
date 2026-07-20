@@ -318,6 +318,14 @@ class TestGetActions:
         assert primary["id"] == "address_review"
         assert primary["handler"] == "start_agent"
 
+    def test_pr_changes_requested_has_integrate_in_secondary(self) -> None:
+        """PR_CHANGES_REQUESTED should always expose integrate-pr in the secondary menu
+        so users can manually override SOVA verdict when the PR is actually ready."""
+        _, secondary = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number="42", pr_number=123)
+        secondary_ids = [a["id"] for a in secondary]
+        assert "integrate" in secondary_ids, f"integrate missing from secondary actions: {secondary_ids}"
+        assert "review_pr" in secondary_ids
+
     def test_agent_running_has_no_action(self) -> None:
         primary, secondary = _get_actions(WorkItemState.AGENT_RUNNING, issue_number="42", pr_number=None)
         assert primary is None
