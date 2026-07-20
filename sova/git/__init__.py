@@ -30,6 +30,7 @@ from sova.git.worktree import (
     cleanup_stale_worktrees,
     cleanup_worktree,
     create_worktree,
+    get_primary_worktree_root,
     list_worktrees,
 )
 
@@ -61,5 +62,6 @@ __all__ = [
     "cleanup_stale_worktrees",
     "cleanup_worktree",
     "create_worktree",
+    "get_primary_worktree_root",
     "list_worktrees",
 ]

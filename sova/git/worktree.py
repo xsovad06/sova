@@ -409,3 +409,24 @@ def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         log.debug("worktree.copy_file", file=filename)
+
+
+async def get_primary_worktree_root(cwd: Path | None = None) -> Path:
+    """Return the primary (main) worktree root, even when called from a linked worktree.
+
+    When the caller is already in the primary worktree, returns ``cwd``
+    unchanged.  When the caller is inside a linked worktree (e.g. a
+    ``.claude/worktrees/<id>`` directory), ``git rev-parse --git-common-dir``
+    returns an absolute path to the shared ``.git`` directory inside the
+    primary worktree.  In that case the primary root is its parent.
+    """
+    effective_cwd = cwd or Path.cwd()
+    result = await run("git", "rev-parse", "--git-common-dir", cwd=effective_cwd)
+    if not result.success:
+        return effective_cwd
+    common_dir = result.stdout.strip()
+    common_path = Path(common_dir)
+    if common_path.is_absolute():
+        # Absolute path indicates we are inside a linked worktree.
+        return common_path.parent
+    return effective_cwd
