@@ -99,6 +99,7 @@ class AwarenessItem:
 class ItemCategory(StrEnum):
     NEEDS_ATTENTION = "needs_attention"   # requires developer action
     INFORMATIONAL = "informational"      # good to know, no action needed
+    SCHEDULE = "schedule"                # time-based items (calendar events, reminders)
     DISMISSED = "dismissed"              # user dismissed or source resolved
 ```
 

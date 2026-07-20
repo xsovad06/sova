@@ -21,6 +21,7 @@ class ItemCategory(StrEnum):
 
     NEEDS_ATTENTION = "needs_attention"
     INFORMATIONAL = "informational"
+    SCHEDULE = "schedule"
     DISMISSED = "dismissed"
 
 

@@ -67,11 +67,9 @@ class BriefingService:
             key=lambda i: (-i.urgency, _ts_sort_key(i.timestamp)),
         )
         schedule = sorted(
-            [i for i in all_items if i.provider == "gcal"],
+            [i for i in all_items if i.category == ItemCategory.SCHEDULE],
             key=lambda i: i.timestamp or datetime.max,
         )
-        # Calendar events go in the schedule section; exclude from informational
-        # to avoid duplication. Urgent calendar items still appear in attention.
         schedule_ids = {i.id for i in schedule}
         informational = sorted(
             [i for i in all_items if i.category == ItemCategory.INFORMATIONAL and i.id not in schedule_ids],

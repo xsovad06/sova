@@ -19,6 +19,7 @@ from sova.awareness.rendering.models import Briefing, ProviderStatus
 def test_item_category_values() -> None:
     assert ItemCategory.NEEDS_ATTENTION == "needs_attention"
     assert ItemCategory.INFORMATIONAL == "informational"
+    assert ItemCategory.SCHEDULE == "schedule"
     assert ItemCategory.DISMISSED == "dismissed"
 
 
@@ -125,7 +126,6 @@ async def test_provider_health_check_not_configured() -> None:
 
 @pytest.mark.asyncio
 async def test_provider_health_check_exception() -> None:
-
     class BadProvider(StubProvider):
         async def is_configured(self) -> bool:
             raise RuntimeError("credential error")
@@ -229,7 +229,7 @@ def _make_items() -> list[AwarenessItem]:
         AwarenessItem(
             id="cal:1",
             provider="gcal",
-            category=ItemCategory.INFORMATIONAL,
+            category=ItemCategory.SCHEDULE,
             title="Team standup",
             timestamp=now + timedelta(hours=1),
         ),
@@ -308,14 +308,14 @@ async def test_briefing_schedule_extracted_from_gcal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_briefing_gcal_informational_excluded_from_informational() -> None:
-    """Calendar events in the schedule section are excluded from informational."""
+async def test_briefing_schedule_items_excluded_from_informational() -> None:
+    """Schedule items are excluded from the informational list."""
     provider = StubProvider(
         items=[
             AwarenessItem(
                 id="cal:1",
                 provider="gcal",
-                category=ItemCategory.INFORMATIONAL,
+                category=ItemCategory.SCHEDULE,
                 title="Team standup",
                 timestamp=datetime.now() + timedelta(hours=1),
             ),
