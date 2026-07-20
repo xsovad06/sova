@@ -47,6 +47,7 @@ GROUPS: dict[str, str] = {
     "pr_monitor": "PR Monitor",
     "resources": "Resources",
     "supervisor": "Supervisor",
+    "memory_guard": "Memory Guard",
     "watchdog": "Agent Watchdog",
     "awareness": "Awareness",
 }
@@ -82,6 +83,7 @@ GROUP_ORDER: list[str] = [
     "pr_monitor",
     "resources",
     "supervisor",
+    "memory_guard",
     "watchdog",
     "awareness",
 ]
@@ -212,20 +214,6 @@ _REGISTRY: list[SettingMeta] = [
         "pipeline.max_address_review_cycles",
         "Max address-review cycles",
         "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
-        "pipeline",
-        "number",
-    ),
-    SettingMeta(
-        "pipeline.max_retries",
-        "Max auto-retries",
-        "Maximum automatic retries for recoverable agent failures (0 = disabled)",
-        "pipeline",
-        "number",
-    ),
-    SettingMeta(
-        "pipeline.retry_delay_seconds",
-        "Retry delay (s)",
-        "Seconds to wait before spawning a retry after a recoverable failure",
         "pipeline",
         "number",
     ),
@@ -865,6 +853,28 @@ _REGISTRY: list[SettingMeta] = [
         _LABEL_POLL_INTERVAL,
         "Seconds between progression evaluation cycles",
         "supervisor",
+        "number",
+    ),
+    # -- Memory Guard --
+    SettingMeta(
+        "memory_guard.enabled",
+        "Enabled",
+        "Check available system memory before spawning agents",
+        "memory_guard",
+        "boolean",
+    ),
+    SettingMeta(
+        "memory_guard.warn_threshold_gb",
+        "Warn threshold (GB)",
+        "Show a warning banner when available memory drops below this value",
+        "memory_guard",
+        "number",
+    ),
+    SettingMeta(
+        "memory_guard.block_threshold_gb",
+        "Block threshold (GB)",
+        "Block agent spawning when available memory drops below this value",
+        "memory_guard",
         "number",
     ),
     # -- Watchdog --

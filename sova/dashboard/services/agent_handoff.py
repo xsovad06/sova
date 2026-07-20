@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sova.dashboard.services.agent_validation import check_memory_pressure
 from sova.dashboard.services.feed_service import emit_safe
 from sova.utils.logging import get_logger
 
@@ -195,6 +196,39 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                     handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
                     write_handoff_file(agent.project_dir, blocked_handoff)
                     return
+
+            # Memory pressure gate (all action modes)
+            mem_block, _mem_warn = check_memory_pressure(agent.project_dir)
+            if mem_block:
+                log.warning(
+                    "auto_handoff.memory_blocked",
+                    run_id=agent.run_id,
+                    issue=handoff.issue,
+                    error=mem_block.get("error", ""),
+                )
+                from sova.ipc.handoff import DashboardHandoff, HandoffAction, write_handoff_file
+
+                blocked_handoff = DashboardHandoff(
+                    source="memory_guard",
+                    status="awaiting_action",
+                    issue=handoff.issue,
+                    pr_number=handoff.pr_number,
+                    branch=handoff.branch,
+                    summary=mem_block.get("error", "Memory pressure blocked auto-handoff"),
+                    next_actions=[
+                        HandoffAction(
+                            id=action.id,
+                            label=f"{action.label} (manual)",
+                            mode=action.mode,
+                            command=action.command,
+                            args=action.args,
+                            auto_execute=False,
+                        ),
+                    ],
+                )
+                handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
+                write_handoff_file(agent.project_dir, blocked_handoff)
+                return
 
             log.info(
                 "auto_handoff.executing",

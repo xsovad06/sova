@@ -112,6 +112,9 @@
   </div>
 </div>
 
+<!-- Memory Pressure Banner -->
+<div id="memory-pressure-banner" class="hidden mb-6"></div>
+
 <!-- Interrupted Runs Banner -->
 <div id="interrupted-banner" class="hidden mb-6"></div>
 
@@ -1575,6 +1578,7 @@ loadWorkItems();
 loadAgents();
 loadPrTracker();
 checkInterrupted();
+checkMemoryPressure();
 loadHistory();
 
 // -- WebSocket for real-time agent status with polling fallback --
@@ -1710,6 +1714,7 @@ window.addEventListener('beforeunload', function() {
   if (_metricsInterval) { clearInterval(_metricsInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
+  if (_memPressureInterval) { clearInterval(_memPressureInterval); }
 });
 
 var _prPollInterval = setInterval(loadPrTracker, 30000);
@@ -2144,6 +2149,7 @@ document.addEventListener('visibilitychange', function() {
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
+    if (_memPressureInterval) { clearInterval(_memPressureInterval); _memPressureInterval = null; }
   } else {
     _wsReconnectAttempts = 0;
     _wsReconnectDelay = 1000;
@@ -2163,6 +2169,8 @@ document.addEventListener('visibilitychange', function() {
     }
     _loadCrQuota();
     _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
+    checkMemoryPressure();
+    _memPressureInterval = setInterval(checkMemoryPressure, 3000);
   }
 });
 // -- CodeRabbit Quota Widget --
@@ -2218,6 +2226,56 @@ async function _syncCrQuota() {
 
 _loadCrQuota();
 var _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
+
+// -- Memory Pressure Banner --
+
+async function checkMemoryPressure() {
+  var banner = document.getElementById('memory-pressure-banner');
+  try {
+    var data = await fetchAPI(apiUrl('/resources/system/metrics'));
+    if (!data.available || !data.system) { banner.classList.add('hidden'); return; }
+    var pressure = data.system.memory_pressure;
+    var availGb = data.system.memory_available_gb;
+    if (!pressure || pressure === 'ok') {
+      banner.classList.add('hidden');
+      sessionStorage.removeItem('sova-memory-pressure-dismissed');
+      return;
+    }
+
+    var isCritical = pressure === 'critical';
+
+    // Only allow dismissing warnings, never critical banners
+    if (!isCritical && sessionStorage.getItem('sova-memory-pressure-dismissed')) {
+      banner.classList.add('hidden');
+      return;
+    }
+
+    var colorClass = isCritical ? 'accent-red' : 'accent-yellow';
+    var label = isCritical ? 'Critical: agent spawning blocked' : 'Warning: memory is low';
+    var detail = availGb != null ? availGb.toFixed(1) + ' GB available' : '';
+
+    var dismissBtn = isCritical ? '' :
+      '<button onclick="dismissMemoryPressure()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors">Dismiss</button>';
+
+    banner.classList.remove('hidden');
+    banner.innerHTML = '<div class="bg-' + colorClass + '/10 border border-' + colorClass + '/30 rounded-lg p-4">' +
+      '<div class="flex items-center justify-between">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-sm font-medium text-' + colorClass + '">' + escapeHtml(label) + '</span>' +
+          '<span class="text-xs text-gray-500">' + escapeHtml(detail) + '</span>' +
+        '</div>' +
+        dismissBtn +
+      '</div>' +
+    '</div>';
+  } catch (e) { /* best-effort */ }
+}
+
+function dismissMemoryPressure() {
+  sessionStorage.setItem('sova-memory-pressure-dismissed', '1');
+  document.getElementById('memory-pressure-banner').classList.add('hidden');
+}
+
+var _memPressureInterval = setInterval(checkMemoryPressure, 3000);
 
 </script>
 {% endblock %}
