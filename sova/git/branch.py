@@ -32,10 +32,10 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     worktree, automatically resolves the conflict by removing the stale
     worktree and retrying.
 
-    If the branch is in active use by another worktree (the primary repo
-    checked out as the base branch while we run inside a feature worktree),
-    the local ref is updated directly via a fetch refspec instead of
-    checking out the branch, which git forbids across worktrees.
+    If the branch is actively checked out in another worktree, returns early
+    after the fetch: git forbids updating a branch via refspec while it is
+    checked out anywhere, but the plain fetch already updated origin/{branch},
+    which is sufficient for rebase steps that target origin/{branch} directly.
     """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
