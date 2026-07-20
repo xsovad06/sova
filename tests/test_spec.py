@@ -16,6 +16,8 @@ from sova.core.steps.spec import (
     SpecStep,
     _complexity_rank,
     _extract_complexity,
+    _extract_spec_content,
+    _make_slug,
     _research_says_implemented,
     _text_has_open_questions,
 )
@@ -154,6 +156,61 @@ class TestTextHasOpenQuestions:
         assert not _text_has_open_questions("")
 
 
+class TestMakeSlug:
+    def test_simple_title(self) -> None:
+        assert _make_slug("Add user authentication") == "add-user-authentication"
+
+    def test_truncates_long_title(self) -> None:
+        slug = _make_slug("A" * 100)
+        assert len(slug) <= 40
+
+    def test_strips_special_characters(self) -> None:
+        assert _make_slug("feat(core): add new feature!") == "feat-core-add-new-feature"
+
+    def test_collapses_multiple_hyphens(self) -> None:
+        assert _make_slug("some---weird   title") == "some-weird-title"
+
+    def test_strips_leading_trailing_hyphens(self) -> None:
+        assert _make_slug("--leading and trailing--") == "leading-and-trailing"
+
+    def test_empty_title(self) -> None:
+        assert _make_slug("") == "spec"
+
+    def test_all_special_chars(self) -> None:
+        assert _make_slug("!@#$%") == "spec"
+
+
+class TestExtractSpecContent:
+    def test_extracts_fenced_markdown(self) -> None:
+        text = "Here is the spec:\n\n```markdown\n# Spec: Test\n\n**Status**: draft\n```\n\nDone."
+        result = _extract_spec_content(text)
+        assert result.startswith("# Spec: Test")
+        assert "**Status**: draft" in result
+
+    def test_extracts_fenced_md(self) -> None:
+        text = "```md\n# Spec\ncontent\n```"
+        result = _extract_spec_content(text)
+        assert result == "# Spec\ncontent"
+
+    def test_extracts_raw_spec_heading(self) -> None:
+        text = "Some preamble.\n\n# Spec: Feature\n\n**Status**: draft\n\n## Solution\n\nDo things."
+        result = _extract_spec_content(text)
+        assert result.startswith("# Spec: Feature")
+
+    def test_prefers_fenced_block(self) -> None:
+        text = "# Spec: Wrong\n\n```markdown\n# Spec: Right\n**Status**: draft\n```"
+        result = _extract_spec_content(text)
+        assert "Right" in result
+
+    def test_returns_full_text_as_fallback(self) -> None:
+        text = "Just some text without a spec heading or fence."
+        result = _extract_spec_content(text)
+        assert result == text
+
+    def test_handles_empty_text(self) -> None:
+        assert _extract_spec_content("") == ""
+
+
 class TestFindSpecFile:
     def test_finds_matching_file(self, tmp_path: Path) -> None:
         specs_dir = tmp_path / ".claude" / "specs"
@@ -255,33 +312,107 @@ class TestSpecStep:
         step = SpecStep()
         assert await step.can_skip(ctx)
 
-    async def test_execute_success_auto_approve(self, tmp_path: Path) -> None:
+    async def test_execute_writes_spec_from_llm_response(self, tmp_path: Path) -> None:
+        """Step writes the spec file from the LLM response text."""
         from sova.llm.models import LLMResult
 
-        # Create a simple spec file
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
-
-        # Need agent-control dir for handoff writing
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Add widget feature",
+            body="Add a widget.\n\n**Complexity**: simple",
+            state=TaskState.TRIAGED,
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
+
+        step = SpecStep()
+        spec_text = (
+            "# Spec: Add widget feature\n\n"
+            "**Status**: draft\n**Complexity**: simple\n\n"
+            "## Solution\n\nAdd the widget.\n"
+        )
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=200
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+        assert "Add widget feature" in spec_path.read_text()
+
+    async def test_execute_writes_fenced_spec(self, tmp_path: Path) -> None:
+        """Step extracts spec from markdown-fenced LLM response."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
+
+        step = SpecStep()
+        llm_response = (
+            "Here is the spec:\n\n```markdown\n"
+            "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n"
+            "## Solution\n\nDo things.\n```\n\nLet me know if changes needed."
+        )
+        llm_result = LLMResult(
+            text=llm_response, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=200
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+        content = spec_path.read_text()
+        assert content.startswith("# Spec: Test")
+        assert "Let me know" not in content
+
+    async def test_execute_success_auto_approve(self, tmp_path: Path) -> None:
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Simple task", body="Do it.\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: Simple task\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert result.success
         assert "auto-approved" in result.summary
-        assert spec.read_text().count("**Status**: approved") == 1
 
-        # Verify handoff file was written with auto_execute=True develop action
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+        assert spec_path.read_text().count("**Status**: approved") == 1
+
         import json
 
         handoff_files = list((tmp_path / ".claude" / "agent-control").glob("handoff*.json"))
@@ -293,47 +424,52 @@ class TestSpecStep:
         assert develop_action["auto_execute"] is True, "develop action must have auto_execute=True"
 
     async def test_execute_auto_approve_already_approved(self, tmp_path: Path) -> None:
-        """Auto-approve succeeds when spec already has Status: approved (idempotent)."""
+        """Auto-approve succeeds when LLM returns spec already marked approved."""
         from sova.llm.models import LLMResult
-
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Status**: approved\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
 
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: Test\n\n**Status**: approved\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert result.success, f"Expected success but got: {result.error}"
         assert "auto-approved" in result.summary
-        assert spec.read_text().count("**Status**: approved") == 1
 
     async def test_execute_auto_approve_no_status_line(self, tmp_path: Path) -> None:
         """Auto-approve fails when spec has no Status line at all."""
         from sova.llm.models import LLMResult
 
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
-
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: Test\n\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert not result.success
@@ -342,25 +478,27 @@ class TestSpecStep:
     async def test_execute_handoff_on_open_questions(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
 
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text(
-            "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n"
-            "## Open Questions\n\n- Should we use X or Y?\n"
-        )
-
-        # Need agent-control dir for handoff writing
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = (
+            "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n"
+            "## Open Questions\n\n- Should we use X or Y?\n"
+        )
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert result.success
@@ -370,21 +508,24 @@ class TestSpecStep:
     async def test_execute_handoff_on_complexity(self, tmp_path: Path) -> None:
         from sova.llm.models import LLMResult
 
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n")
-
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: complex", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert result.success
@@ -400,18 +541,18 @@ class TestSpecStep:
         from sova.db.session import get_session
         from sova.llm.models import LLMResult
 
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n")
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Complex task", body="body\n\n**Complexity**: complex", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
 
-        # A dummy step that should NOT run if pipeline pauses
         class NeverReachedStep:
             name = "should_not_run"
             max_retries = 0
@@ -426,9 +567,12 @@ class TestSpecStep:
                 return GCR(passed=True)
 
         spec_step = SpecStep()
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
+        spec_text = "# Spec: Complex task\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
 
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             engine = WorkflowEngine(steps=[spec_step, NeverReachedStep()], ctx=ctx)
             result = await engine.run()
 
@@ -447,31 +591,37 @@ class TestSpecStep:
         """Auto-approved specs should NOT set awaiting_approval."""
         from sova.llm.models import LLMResult
 
-        specs_dir = tmp_path / ".claude" / "specs"
-        specs_dir.mkdir(parents=True)
-        spec = specs_dir / "42-test.md"
-        spec.write_text("# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n")
         (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
 
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Simple task", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
         ctx = _make_ctx(
             project_dir=tmp_path,
             spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
         )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: Simple task\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert result.success
         assert not result.awaiting_approval
 
     async def test_execute_runtime_error(self) -> None:
-        ctx = _make_ctx()
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
+        ctx = _make_ctx(adapter=adapter)
         step = SpecStep()
 
         with patch(
-            "sova.core.steps.spec.invoke_command",
+            "sova.core.steps.spec.invoke",
             new_callable=AsyncMock,
             side_effect=RuntimeError("CLI failed"),
         ):
@@ -480,18 +630,81 @@ class TestSpecStep:
         assert not result.success
         assert "CLI failed" in result.error
 
-    async def test_execute_no_spec_file_produced(self, tmp_path: Path) -> None:
+    async def test_execute_creates_specs_directory(self, tmp_path: Path) -> None:
+        """Step creates .claude/specs/ directory if it doesn't exist."""
         from sova.llm.models import LLMResult
 
-        ctx = _make_ctx(project_dir=tmp_path)
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="New feature", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
         step = SpecStep()
 
-        llm_result = LLMResult(text="done", model="opus", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50)
-        with patch("sova.core.steps.spec.invoke_command", new_callable=AsyncMock, return_value=llm_result):
+        spec_text = "# Spec: New feature\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo it.\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=200
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert (tmp_path / ".claude" / "specs").is_dir()
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+
+    async def test_execute_includes_task_body_in_prompt(self, tmp_path: Path) -> None:
+        """Step passes the issue body to the LLM prompt."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body="Custom body with details.\n\n## Research\n\nFindings here.\n\n**Complexity**: simple",
+            state=TaskState.TRIAGED,
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_simple=True),
+            adapter=adapter,
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result) as mock_invoke:
+            await step.execute(ctx)
+
+        prompt = mock_invoke.call_args[0][0]
+        assert "Custom body with details" in prompt
+        assert "Findings here" in prompt
+
+    async def test_execute_empty_llm_response(self, tmp_path: Path) -> None:
+        """Step fails gracefully when LLM returns empty text."""
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
+        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        step = SpecStep()
+
+        llm_result = LLMResult(text="", model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=0)
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
             result = await step.execute(ctx)
 
         assert not result.success
-        assert "no spec file" in result.summary.lower()
+        assert "empty" in result.error.lower()
 
     async def test_validate_output_passes(self, tmp_path: Path) -> None:
         specs_dir = tmp_path / ".claude" / "specs"
