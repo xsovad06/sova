@@ -411,6 +411,35 @@ class ResourceSummaryRecord(Base):
     task_run: Mapped["TaskRun"] = relationship(back_populates="resource_summary")
 
 
+class ActionFeedback(Base):
+    """User feedback on PR action suggestions from the dual-evaluation experiment.
+
+    Stores both the deterministic system's choice and the LLM's suggestion so
+    disagreements can be analyzed to improve the deterministic model over time.
+    user_choice is null until the user responds; null rows are valid (suggestion
+    shown but user never clicked).
+    """
+
+    __tablename__ = "action_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    deterministic_state: Mapped[str] = mapped_column(String(50), nullable=False)
+    deterministic_action_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    llm_action_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    llm_reasoning: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    user_choice: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_action_feedback_pr", "pr_number"),
+        Index("ix_action_feedback_project_state", "project_slug", "deterministic_state"),
+    )
+
+
 class PRQueueStatus(StrEnum):
     """Status values for PR creation queue entries."""
 
