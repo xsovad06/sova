@@ -457,6 +457,7 @@ def _build_task_item(
         handoff_summary=_extract_handoff_summary(handoff, state),
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr_data) if pr_data else None,
+        sova_context=_format_sova_context(sova_verdict if pr_data else None),
         labels=task.get("labels", []),
         priority=task.get("priority", 99),
         priority_label=task.get("priority_label", ""),
@@ -501,6 +502,7 @@ def _build_pr_item(
         handoff_summary=_extract_handoff_summary(handoff, state),
         running_agent=_format_running_agent(running) if running else None,
         pr_details=_format_pr_details(pr),
+        sova_context=_format_sova_context(sova_verdict),
         labels=pr.get("labels", []),
         priority=-2,
         priority_label="",
@@ -812,6 +814,16 @@ def _format_running_agent(agent: dict) -> dict:
     }
 
 
+def _format_sova_context(sova_verdict: dict | None) -> dict:
+    """Extract the SOVA review context needed by the LLM suggestion service."""
+    if not sova_verdict:
+        return {"has_sova_review": False, "verdict": None}
+    return {
+        "has_sova_review": bool(sova_verdict.get("has_sova_review", False)),
+        "verdict": sova_verdict.get("verdict"),
+    }
+
+
 def _format_pr_details(pr: dict) -> dict:
     return {
         "number": pr.get("number"),
@@ -840,6 +852,7 @@ def _build_item(**kwargs: object) -> dict:
         "handoff_summary": kwargs.get("handoff_summary", ""),
         "running_agent": kwargs["running_agent"],
         "pr_details": kwargs["pr_details"],
+        "sova_context": kwargs.get("sova_context") or {"has_sova_review": False, "verdict": None},
         "labels": kwargs["labels"],
         "priority": kwargs["priority"],
         "priority_label": kwargs["priority_label"],
