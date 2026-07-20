@@ -33,11 +33,17 @@
 
 <!-- PR Tracker -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
-  <button id="pr-tracker-toggle" type="button" class="w-full flex items-center gap-3 px-4 py-3 border-b border-gray-700/50 cursor-pointer select-none text-left" onclick="togglePrTracker()" aria-controls="pr-tracker-list" aria-expanded="true">
-    <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
-    <span id="pr-tracker-count" class="text-xs text-gray-500"></span>
-    <svg id="pr-tracker-chevron" class="ml-auto w-4 h-4 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
-  </button>
+  <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-700/50">
+    <button id="pr-tracker-toggle" type="button" class="flex items-center gap-3 cursor-pointer select-none text-left flex-1" onclick="togglePrTracker()" aria-controls="pr-tracker-list" aria-expanded="true">
+      <h3 class="text-sm font-medium text-gray-300">Pull Requests</h3>
+      <span id="pr-tracker-count" class="text-xs text-gray-500"></span>
+    </button>
+    <div id="pr-filter-toggle" class="flex rounded-md overflow-hidden border border-gray-600/50 text-xs" onclick="event.stopPropagation()">
+      <button type="button" data-pr-filter="mine" onclick="setPrFilter('mine')" class="px-2.5 py-1 transition-colors">Mine</button>
+      <button type="button" data-pr-filter="all" onclick="setPrFilter('all')" class="px-2.5 py-1 transition-colors">All</button>
+    </div>
+    <svg id="pr-tracker-chevron" class="w-4 h-4 text-gray-500 transition-transform shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+  </div>
   <div id="pr-tracker-list" class="divide-y divide-gray-700/30">
     <p class="text-gray-500 text-sm py-4 text-center">Loading PRs...</p>
   </div>
@@ -1546,7 +1552,19 @@ function renderPrRow(pr) {
     conflictBadge = '<span class="px-2 py-0.5 rounded-full text-xs bg-accent-red/20 text-accent-red" data-tooltip="This PR has merge conflicts that must be resolved">Conflicts</span>';
   }
 
+  var authorAvatar = '';
+  if (pr.author) {
+    authorAvatar = '<div class="flex items-center gap-1.5 shrink-0 w-28">' +
+      '<img src="https://avatars.githubusercontent.com/' + encodeURIComponent(pr.author) + '?size=32" ' +
+        'alt="" width="20" height="20" loading="lazy" ' +
+        'class="rounded-full shrink-0" ' +
+        'onerror="this.style.display=\'none\'">' +
+      '<span class="text-xs text-gray-500 truncate">' + escapeHtml(pr.author) + '</span>' +
+    '</div>';
+  }
+
   return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
+    authorAvatar +
     '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent hover:underline shrink-0">#' + escapeHtml(String(pr.number)) + '</a>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
     issueRef +
@@ -1557,9 +1575,30 @@ function renderPrRow(pr) {
   '</div>';
 }
 
+var _prFilter = localStorage.getItem('sova-pr-filter') || 'all';
+
+function _updateFilterToggleUI() {
+  document.querySelectorAll('#pr-filter-toggle button').forEach(function(btn) {
+    var val = btn.getAttribute('data-pr-filter');
+    if (val === _prFilter) {
+      btn.className = 'px-2.5 py-1 transition-colors bg-accent/20 text-accent font-medium';
+    } else {
+      btn.className = 'px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300';
+    }
+  });
+}
+
+function setPrFilter(value) {
+  _prFilter = value;
+  localStorage.setItem('sova-pr-filter', value);
+  _updateFilterToggleUI();
+  loadPrTracker();
+}
+
 async function loadPrTracker() {
   try {
-    var res = await fetch(apiUrl('/prs/open'));
+    var url = '/prs/open?author_filter=' + encodeURIComponent(_prFilter);
+    var res = await fetch(apiUrl(url));
     if (!res.ok) return;
     var data = await res.json();
     window._prTrackerData = data.prs || [];
@@ -1577,6 +1616,7 @@ async function loadPrTracker() {
 }
 
 // -- Init --
+_updateFilterToggleUI();
 if (_prTrackerCollapsed) {
   document.getElementById('pr-tracker-list').classList.add('hidden');
   document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
