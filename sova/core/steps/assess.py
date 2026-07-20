@@ -4,9 +4,12 @@ Gate 3: The Developer agent refuses to pick up any issue not in
 "Researched" state. This prevents the old failure mode where the agent
 blindly started work on underspecified issues.
 
-Adopts an existing open PR for the issue into the context, routing the
-pipeline into the address-review variant, instead of failing with a
-duplicate-PR error.
+When an existing open PR is found for the issue, AssessStep adopts it into
+ctx.pr_number and ctx.branch_name so the developer pipeline can continue
+without creating a duplicate PR. This does NOT switch to the address-review
+pipeline variant; variant selection happens in DeveloperRole before any steps
+run, driven by --pr passed to the subprocess at spawn time. See
+_recover_last_pr_number() in agent_lifecycle for the primary routing path.
 """
 
 from __future__ import annotations
