@@ -17,6 +17,7 @@ from sova.dashboard.services.work_item_service import (
     _find_integrate_action,
     _format_pr_details,
     _format_running_agent,
+    _format_sova_context,
     _get_actions,
     _index_handoffs,
     _index_prs_by_issue,
@@ -847,6 +848,46 @@ class TestFormatHelpers:
     def test_extract_handoff_summary_wrong_state(self) -> None:
         h = {"status": "awaiting_action", "summary": "All good"}
         assert _extract_handoff_summary(h, WorkItemState.TRIAGED) == ""
+
+    def test_format_sova_context_none(self) -> None:
+        result = _format_sova_context(None)
+        assert result == {"has_sova_review": False, "verdict": None}
+
+    def test_format_sova_context_with_verdict(self) -> None:
+        verdict = {"has_sova_review": True, "verdict": "revise", "reviewed_at": "2026-07-20T10:00:00Z"}
+        result = _format_sova_context(verdict)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    def test_format_sova_context_no_review(self) -> None:
+        verdict = {"has_sova_review": False, "verdict": None}
+        result = _format_sova_context(verdict)
+        assert result["has_sova_review"] is False
+        assert result["verdict"] is None
+
+
+class TestSovaContextInItems:
+    def test_task_item_includes_sova_context_without_pr(self) -> None:
+        task = {"issue": "42", "title": "Fix bug", "state": "triaged", "labels": [], "priority": 2}
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert "sova_context" in item
+        assert item["sova_context"]["has_sova_review"] is False
+        assert item["sova_context"]["verdict"] is None
+
+    def test_task_item_includes_sova_context_with_verdict(self) -> None:
+        task = {"issue": "42", "title": "Fix bug", "state": "in_review", "labels": [], "priority": -1}
+        pr = {"number": 100, "computed_state": "awaiting_review", "state": "OPEN"}
+        verdict = {"has_sova_review": True, "verdict": "revise", "reviewed_at": "2026-07-20T10:00:00Z"}
+        item = _build_task_item(task, pr_data=pr, running=None, handoff=None, sova_verdict=verdict)
+        assert item["sova_context"]["has_sova_review"] is True
+        assert item["sova_context"]["verdict"] == "revise"
+
+    def test_pr_item_includes_sova_context(self) -> None:
+        pr = {"number": 200, "title": "Quick fix", "computed_state": "approved_ci_green", "state": "OPEN"}
+        verdict = {"has_sova_review": False, "verdict": None}
+        item = _build_pr_item(pr, running=None, handoff=None, issue_num=None, sova_verdict=verdict)
+        assert "sova_context" in item
+        assert item["sova_context"]["has_sova_review"] is False
 
     def test_extract_handoff_summary_none(self) -> None:
         assert _extract_handoff_summary(None, WorkItemState.HANDOFF_PENDING) == ""
