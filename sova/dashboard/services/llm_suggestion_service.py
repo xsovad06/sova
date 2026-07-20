@@ -121,7 +121,7 @@ async def get_llm_suggestion(
             deterministic_action_id=deterministic_action_id,
             deterministic_action_label=_PR_ACTION_LABELS.get(deterministic_action_id, deterministic_action_id),
         )
-    except Exception:
+    except (KeyError, ValueError):
         log.warning("llm_suggestion.prompt_format_failed", pr=pr_number, exc_info=True)
         return None
 
