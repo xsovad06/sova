@@ -130,11 +130,58 @@ class TestComputeWorkItemState:
         )
 
     def test_pr_changes_requested(self) -> None:
+        """GitHub-sourced changes_requested maps to PR_EXTERNAL_CHANGES (command path)."""
         assert (
             _state(
                 pr_data={"computed_state": "changes_requested", "state": "OPEN"},
             )
-            == WorkItemState.PR_CHANGES_REQUESTED
+            == WorkItemState.PR_EXTERNAL_CHANGES
+        )
+
+    def test_pr_sova_changes_from_revise_verdict(self) -> None:
+        """SOVA revise verdict on an approved PR → PR_SOVA_CHANGES (agent path)."""
+        verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 2, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_pr_sova_changes_overrides_external_changes(self) -> None:
+        """SOVA revise verdict upgrades PR_EXTERNAL_CHANGES to PR_SOVA_CHANGES."""
+        verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 1, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "changes_requested", "state": "OPEN"},
+                sova_verdict=verdict,
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_external_reviews_disabled_no_sova_pending(self) -> None:
+        """With external_reviews_enabled=False, integrate-bound state + no SOVA review → PR_AWAITING_REVIEW."""
+        verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                sova_verdict=verdict,
+                external_reviews_enabled=False,
+            )
+            == WorkItemState.PR_AWAITING_REVIEW
+        )
+
+    def test_external_reviews_enabled_yields_sova_pending(self) -> None:
+        """With external_reviews_enabled=True (default), no SOVA review → PR_SOVA_PENDING."""
+        verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                sova_verdict=verdict,
+                external_reviews_enabled=True,
+            )
+            == WorkItemState.PR_SOVA_PENDING
         )
 
     def test_pr_awaiting_review(self) -> None:
@@ -237,14 +284,14 @@ class TestComputeWorkItemState:
             == WorkItemState.PR_APPROVED
         )
 
-    def test_pr_approved_with_sova_revise_yields_changes_requested(self) -> None:
+    def test_pr_approved_with_sova_revise_yields_sova_changes(self) -> None:
         verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 2, "reviewed_at": None}
         assert (
             _state(
                 pr_data={"computed_state": "approved", "state": "OPEN"},
                 sova_verdict=verdict,
             )
-            == WorkItemState.PR_CHANGES_REQUESTED
+            == WorkItemState.PR_SOVA_CHANGES
         )
 
     # -- Edge cases --
@@ -349,6 +396,28 @@ class TestGetActions:
         primary, _ = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number=None, pr_number=99)
         assert "issue" not in primary["handler_args"]
         assert primary["handler_args"]["pr"] == 99
+
+    def test_pr_sova_changes_has_address_agent(self) -> None:
+        """PR_SOVA_CHANGES primary is the developer agent (address_review pipeline)."""
+        primary, secondary = _get_actions(WorkItemState.PR_SOVA_CHANGES, issue_number="42", pr_number=123)
+        assert primary is not None
+        assert primary["id"] == "address_review"
+        assert primary["handler"] == "start_agent"
+        assert primary["handler_args"]["role"] == "developer"
+        secondary_ids = [a["id"] for a in secondary]
+        assert "integrate" in secondary_ids
+        assert "review_pr" in secondary_ids
+
+    def test_pr_external_changes_has_address_pr_command(self) -> None:
+        """PR_EXTERNAL_CHANGES primary is the /address-pr command (not developer agent)."""
+        primary, secondary = _get_actions(WorkItemState.PR_EXTERNAL_CHANGES, issue_number="42", pr_number=123)
+        assert primary is not None
+        assert primary["id"] == "address_pr"
+        assert primary["handler"] == "run_command"
+        assert primary["handler_args"]["command"] == "address-pr"
+        secondary_ids = [a["id"] for a in secondary]
+        assert "integrate" in secondary_ids
+        assert "review_pr" in secondary_ids
 
     def test_issue_linked_cmd_includes_issue(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_CI_FAILED, issue_number="42", pr_number=99)
@@ -462,6 +531,22 @@ class TestSortItems:
         _sort_items(items)
         assert items[0]["state"] == "pr_sova_pending"
 
+    def test_sova_changes_sorts_before_normal(self) -> None:
+        items = [
+            {"state": "triaged", "priority": 2},
+            {"state": "pr_sova_changes", "priority": 99},
+        ]
+        _sort_items(items)
+        assert items[0]["state"] == "pr_sova_changes"
+
+    def test_external_changes_sorts_before_normal(self) -> None:
+        items = [
+            {"state": "triaged", "priority": 2},
+            {"state": "pr_external_changes", "priority": 99},
+        ]
+        _sort_items(items)
+        assert items[0]["state"] == "pr_external_changes"
+
 
 class TestApplySovaVerdict:
     """Unit tests for _apply_sova_verdict() covering all override paths."""
@@ -494,11 +579,11 @@ class TestApplySovaVerdict:
             _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._no_review()) == WorkItemState.PR_AWAITING_REVIEW
         )
 
-    def test_no_review_changes_requested_unchanged(self) -> None:
-        """Existing CHANGES_REQUESTED is already actionable; SOVA pending doesn't override it."""
+    def test_no_review_external_changes_unchanged(self) -> None:
+        """Existing PR_EXTERNAL_CHANGES is already actionable; SOVA pending doesn't override it."""
         assert (
-            _apply_sova_verdict(WorkItemState.PR_CHANGES_REQUESTED, self._no_review())
-            == WorkItemState.PR_CHANGES_REQUESTED
+            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._no_review())
+            == WorkItemState.PR_EXTERNAL_CHANGES
         )
 
     # -- SOVA reviewed with approve: pass-through --
@@ -514,21 +599,25 @@ class TestApplySovaVerdict:
 
     # -- SOVA reviewed with revise/block: downgrade overrideable states --
 
-    def test_revise_verdict_on_approved_yields_changes_requested(self) -> None:
+    def test_revise_verdict_on_approved_yields_sova_changes(self) -> None:
+        assert _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise")) == WorkItemState.PR_SOVA_CHANGES
+
+    def test_block_verdict_on_ready_to_merge_yields_sova_changes(self) -> None:
         assert (
-            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise")) == WorkItemState.PR_CHANGES_REQUESTED
+            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("block")) == WorkItemState.PR_SOVA_CHANGES
         )
 
-    def test_block_verdict_on_ready_to_merge_yields_changes_requested(self) -> None:
-        assert (
-            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._review("block"))
-            == WorkItemState.PR_CHANGES_REQUESTED
-        )
-
-    def test_revise_verdict_on_awaiting_review_yields_changes_requested(self) -> None:
+    def test_revise_verdict_on_awaiting_review_yields_sova_changes(self) -> None:
         assert (
             _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("revise"))
-            == WorkItemState.PR_CHANGES_REQUESTED
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_revise_verdict_on_external_changes_yields_sova_changes(self) -> None:
+        """SOVA revise overrides external-reviewer-caused PR_EXTERNAL_CHANGES → PR_SOVA_CHANGES."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._review("revise"))
+            == WorkItemState.PR_SOVA_CHANGES
         )
 
     def test_revise_verdict_leaves_ci_failed_unchanged(self) -> None:
@@ -544,11 +633,11 @@ class TestApplySovaVerdict:
             _apply_sova_verdict(WorkItemState.PR_AWAITING_REVIEW, self._review("approve")) == WorkItemState.PR_APPROVED
         )
 
-    def test_approved_verdict_does_not_affect_changes_requested(self) -> None:
-        """If another reviewer requested changes, SOVA approve should not override it."""
+    def test_approved_verdict_does_not_affect_external_changes(self) -> None:
+        """If an external reviewer requested changes, SOVA approve should not override it."""
         assert (
-            _apply_sova_verdict(WorkItemState.PR_CHANGES_REQUESTED, self._review("approve"))
-            == WorkItemState.PR_CHANGES_REQUESTED
+            _apply_sova_verdict(WorkItemState.PR_EXTERNAL_CHANGES, self._review("approve"))
+            == WorkItemState.PR_EXTERNAL_CHANGES
         )
 
     def test_approved_verdict_does_not_affect_ci_failed(self) -> None:
@@ -575,13 +664,13 @@ class TestApplySovaVerdict:
             verdict,
             latest_approval_at="2026-07-19T08:00:00Z",
         )
-        assert result == WorkItemState.PR_CHANGES_REQUESTED
+        assert result == WorkItemState.PR_SOVA_CHANGES
 
     def test_revise_verdict_without_approval_timestamp_still_downgrades(self) -> None:
         """Backward compat: no latest_approval_at means no staleness check."""
         verdict = self._review("revise", reviewed_at="2026-07-19T10:00:00Z")
         result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict)
-        assert result == WorkItemState.PR_CHANGES_REQUESTED
+        assert result == WorkItemState.PR_SOVA_CHANGES
 
     def test_revise_verdict_without_reviewed_at_still_downgrades(self) -> None:
         """If the SOVA verdict has no timestamp, staleness check is skipped."""
@@ -591,7 +680,36 @@ class TestApplySovaVerdict:
             verdict,
             latest_approval_at="2026-07-20T12:00:00Z",
         )
-        assert result == WorkItemState.PR_CHANGES_REQUESTED
+        assert result == WorkItemState.PR_SOVA_CHANGES
+
+    # -- external_reviews_enabled=False: skip PR_SOVA_PENDING for projects without bot review --
+
+    def test_external_reviews_disabled_approved_yields_awaiting_review(self) -> None:
+        """No external reviewers: integrate-bound + no SOVA review → PR_AWAITING_REVIEW (not PR_SOVA_PENDING)."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review(), external_reviews_enabled=False)
+            == WorkItemState.PR_AWAITING_REVIEW
+        )
+
+    def test_external_reviews_disabled_ready_to_merge_yields_awaiting_review(self) -> None:
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_READY_TO_MERGE, self._no_review(), external_reviews_enabled=False)
+            == WorkItemState.PR_AWAITING_REVIEW
+        )
+
+    def test_external_reviews_enabled_approved_yields_sova_pending(self) -> None:
+        """External reviewers enabled: integrate-bound + no SOVA review → PR_SOVA_PENDING."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._no_review(), external_reviews_enabled=True)
+            == WorkItemState.PR_SOVA_PENDING
+        )
+
+    def test_external_reviews_disabled_does_not_affect_revise_verdict(self) -> None:
+        """external_reviews_enabled=False has no effect when SOVA has reviewed with revise."""
+        assert (
+            _apply_sova_verdict(WorkItemState.PR_APPROVED, self._review("revise"), external_reviews_enabled=False)
+            == WorkItemState.PR_SOVA_CHANGES
+        )
 
 
 class TestIsVerdictStale:
@@ -931,13 +1049,26 @@ class TestAppendStandalonePrItems:
         assert items[0]["state"] == "pr_approved"
 
     def test_unlinked_pr_with_no_review_verdict_shows_sova_pending(self) -> None:
-        """Unlinked approved PR with has_sova_review=False shows pr_sova_pending (not pr_awaiting_review)."""
+        """Unlinked approved PR with has_sova_review=False shows pr_sova_pending when external reviews enabled."""
         items: list[dict] = []
         prs = [{"number": 300, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
         verdicts = {"pr:300": {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}}
-        _append_standalone_pr_items(items, prs, set(), {}, {}, verdicts_by_issue=verdicts)
+        _append_standalone_pr_items(
+            items, prs, set(), {}, {}, verdicts_by_issue=verdicts, external_reviews_enabled=True
+        )
         assert len(items) == 1
         assert items[0]["state"] == "pr_sova_pending"
+
+    def test_unlinked_pr_no_review_no_external_reviewers_shows_awaiting_review(self) -> None:
+        """No external reviewers: approved PR + no SOVA review → pr_awaiting_review (show Review button)."""
+        items: list[dict] = []
+        prs = [{"number": 400, "linked_issue": None, "computed_state": "approved", "state": "OPEN"}]
+        verdicts = {"pr:400": {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}}
+        _append_standalone_pr_items(
+            items, prs, set(), {}, {}, verdicts_by_issue=verdicts, external_reviews_enabled=False
+        )
+        assert len(items) == 1
+        assert items[0]["state"] == "pr_awaiting_review"
 
 
 class TestFindIntegrateAction:
