@@ -454,17 +454,21 @@ async def get_unified_agents(slug: str | None = None) -> dict:
 
 
 async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None:
-    """Return the pr_number from the most recent terminal developer run for an issue.
+    """Return the pr_number from the most recent non-successful terminal developer run for an issue.
 
     Called from start_agent when pr_number is not explicitly provided for a
     developer role. This recovers the PR context after stale-run recovery marks
     an in-progress developer run as interrupted, so the next start correctly
     passes --pr and routes to the address-review pipeline.
+
+    Only looks at interrupted/failed/paused runs, not "done" runs. A done run
+    means the developer pipeline completed; its PR may already be merged. Using
+    that PR number would route a fresh developer start into address-review on a
+    closed PR, which would fail at push/pr steps.
     """
     try:
         from sqlalchemy import select
 
-        from sova.core.state import TASK_RUN_TERMINAL
         from sova.db.models import TaskRun
         from sova.db.session import get_session
 
@@ -475,7 +479,7 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
                     TaskRun.issue_number == issue,
                     TaskRun.role == "developer",
                     TaskRun.pr_number.is_not(None),
-                    TaskRun.status.in_(TASK_RUN_TERMINAL),
+                    TaskRun.status.in_({"interrupted", "failed", "paused"}),
                 )
                 .order_by(TaskRun.id.desc())
                 .limit(1)
