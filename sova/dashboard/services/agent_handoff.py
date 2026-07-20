@@ -152,7 +152,11 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 raw_pr = args.get("pr") or handoff.pr_number
                 target_role = args.get("role")
                 target_issue = str(args.get("issue", handoff.issue)).lstrip("#").strip()
-                pr_num = int(raw_pr) if raw_pr is not None else None
+                try:
+                    pr_num = int(raw_pr) if raw_pr is not None else None
+                except (ValueError, TypeError):
+                    log.warning("auto_handoff.invalid_pr_number", raw_pr=raw_pr, run_id=agent.run_id)
+                    pr_num = None
 
                 # Check circuit breaker for address-review spawns
                 reason = await _check_address_review_circuit_breaker(
