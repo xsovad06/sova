@@ -205,7 +205,7 @@ def _get_actions(
         S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
         S.PR_SOVA_PENDING: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
-        S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review]),
+        S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
         S.PR_READY_TO_MERGE: (
