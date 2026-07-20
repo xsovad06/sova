@@ -707,8 +707,7 @@ async function fetchLlmSuggestions() {
             done: false,
             pr_number: item.pr_number,
             issue_number: item.issue_number || null,
-            deterministic_action_id: item.primary_action.id,
-            llm_reasoning: data.reasoning
+            deterministic_action_id: item.primary_action.id
           };
           anyNew = true;
         } else {
@@ -748,7 +747,7 @@ async function submitLlmFeedback(event, issueKey, choice) {
         deterministic_state: sugg.for_state,
         deterministic_action_id: sugg.deterministic_action_id,
         llm_action_id: sugg.action_id,
-        llm_reasoning: sugg.llm_reasoning,
+        llm_reasoning: sugg.reasoning,
         user_choice: choice
       })
     });
