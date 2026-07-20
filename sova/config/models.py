@@ -467,6 +467,30 @@ class SupervisorConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
 
 
+class AwarenessConfig(BaseSettings):
+    """Awareness subsystem configuration (briefing, email, calendar)."""
+
+    enabled: bool = False
+    providers: list[str] = Field(default_factory=list)
+
+    # Gmail
+    gmail_token_path: str = ""
+    gmail_lookback_hours: int = Field(24, gt=0)
+    gmail_ignore_labels: list[str] = Field(default_factory=lambda: ["SPAM", "TRASH"])
+
+    # Google Calendar
+    gcal_calendars: list[str] = Field(default_factory=lambda: ["primary"])
+    gcal_lookahead_hours: int = Field(36, gt=0)
+
+    # Apple Reminders
+    reminders_lists: list[str] = Field(default_factory=lambda: ["Reminders"])
+
+    # PR status (cross-project)
+    pr_github_user: str = ""
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_AWARENESS_")
+
+
 class ProjectConfig(BaseSettings):
     """Root configuration model for a SOVA project.
 
@@ -531,6 +555,7 @@ class ProjectConfig(BaseSettings):
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

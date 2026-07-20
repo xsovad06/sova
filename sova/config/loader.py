@@ -83,6 +83,7 @@ _NESTED_SECTIONS = (
     "resources",
     "supervisor",
     "watchdog",
+    "awareness",
 )
 
 

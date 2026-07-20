@@ -48,6 +48,7 @@ GROUPS: dict[str, str] = {
     "resources": "Resources",
     "supervisor": "Supervisor",
     "watchdog": "Agent Watchdog",
+    "awareness": "Awareness",
 }
 
 GROUP_ORDER: list[str] = [
@@ -82,6 +83,7 @@ GROUP_ORDER: list[str] = [
     "resources",
     "supervisor",
     "watchdog",
+    "awareness",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -914,6 +916,68 @@ _REGISTRY: list[SettingMeta] = [
         "Minutes between repeated alerts for the same run and signal type",
         "watchdog",
         "number",
+    ),
+    # -- Awareness --
+    SettingMeta(
+        "awareness.enabled",
+        "Enabled",
+        "Enable the awareness subsystem (briefing, providers)",
+        "awareness",
+        "boolean",
+    ),
+    SettingMeta(
+        "awareness.providers",
+        "Providers",
+        "List of enabled provider names (gmail, gcal, reminders, pr_status, agent_runs)",
+        "awareness",
+        "list",
+    ),
+    SettingMeta(
+        "awareness.gmail_token_path",
+        "Gmail token path",
+        "Path to Google OAuth token pickle (empty = default location)",
+        "awareness",
+    ),
+    SettingMeta(
+        "awareness.gmail_lookback_hours",
+        "Gmail lookback (hours)",
+        "How far back to fetch unread emails",
+        "awareness",
+        "number",
+    ),
+    SettingMeta(
+        "awareness.gmail_ignore_labels",
+        "Gmail ignore labels",
+        "Gmail labels to exclude from briefing",
+        "awareness",
+        "list",
+    ),
+    SettingMeta(
+        "awareness.gcal_calendars",
+        "Calendar IDs",
+        "Google Calendar IDs to include (primary = default calendar)",
+        "awareness",
+        "list",
+    ),
+    SettingMeta(
+        "awareness.gcal_lookahead_hours",
+        "Calendar lookahead (hours)",
+        "How far ahead to show calendar events",
+        "awareness",
+        "number",
+    ),
+    SettingMeta(
+        "awareness.reminders_lists",
+        "Reminders lists",
+        "Apple Reminders lists to include",
+        "awareness",
+        "list",
+    ),
+    SettingMeta(
+        "awareness.pr_github_user",
+        "GitHub user for PRs",
+        "GitHub username for review-requested detection across projects",
+        "awareness",
     ),
 ]
 
