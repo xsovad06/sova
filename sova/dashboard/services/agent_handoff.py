@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from sova.dashboard.services.agent_pool import AgentState
+    from sova.ipc.handoff import DashboardHandoff
 
 log = get_logger(component="dashboard.control.handoff")
 
@@ -80,6 +81,32 @@ async def _check_address_review_circuit_breaker(
     return None
 
 
+async def _persist_completing_agent_handoff(run_id: int, handoff: "DashboardHandoff", project_dir: "Path") -> None:
+    """Persist handoff details to the completing agent's TaskRun.handoff_json.
+
+    Called from _process_auto_handoff before the file is cleared. This backstops
+    write_handoff() in the subprocess, which may write to the wrong DB when the
+    subprocess CWD is a linked worktree rather than the project root. Persisting
+    here (dashboard context with the correct project_dir) ensures
+    get_sova_review_verdict() can always find the real verdict.
+
+    Only writes if handoff_json is not already set (subprocess may have written it
+    correctly when the CWD worktree fix is in place).
+    """
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run is not None and not task_run.handoff_json and handoff.details:
+                    task_run.handoff_json = handoff.details
+                    log.info("auto_handoff.handoff_json_persisted", run_id=run_id, source=handoff.source)
+    except Exception:
+        log.warning("auto_handoff.handoff_json_persist_failed", run_id=run_id, exc_info=True)
+
+
 async def _process_auto_handoff(agent: AgentState) -> None:
     """Check for auto-executable handoff actions after an agent completes.
 
@@ -105,6 +132,14 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                 handoff_issue=handoff.issue,
             )
             return
+
+        # Persist handoff details to the completing agent's TaskRun before clearing
+        # the file. Done after the mismatch guard to avoid writing a mismatched
+        # issue's verdict into the completing run's handoff_json. This backstops
+        # write_handoff() in the subprocess, which may write to the wrong DB when
+        # the subprocess CWD is a linked worktree rather than the project root.
+        if agent.run_id is not None and handoff.details:
+            await _persist_completing_agent_handoff(agent.run_id, handoff, agent.project_dir)
 
         for action in handoff.next_actions:
             if not action.auto_execute:
