@@ -4938,6 +4938,61 @@ class TestWorkAPI:
         ar_task = next(t for t in data["tasks"] if t["issue_number"] == "81")
         assert ar_task["pipeline_variant"] == "address_review"
 
+    async def test_work_history_failed_run_has_rerun_fields(self, client: AsyncClient, session: AsyncSession) -> None:
+        """Failed runs in history include issue_number, role, and pr_number for re-run."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="90",
+            role="researcher",
+            status="failed",
+            current_step="spec",
+            pr_number=None,
+            total_cost_usd=Decimal("0.50"),
+            error_message="Expected .claude/specs/{issue}-*.md",
+            started_at=now - timedelta(minutes=10),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.commit()
+
+        resp = await client.get("/api/work/history?status=failed")
+        assert resp.status_code == 200
+        data = resp.json()
+        failed_task = next(t for t in data["tasks"] if t["issue_number"] == "90")
+        assert failed_task["status"] == "failed"
+        assert failed_task["role"] == "researcher"
+        assert failed_task["error_message"] == "Expected .claude/specs/{issue}-*.md"
+        assert "issue_number" in failed_task
+        assert "pr_number" in failed_task
+
+    async def test_work_history_interrupted_run_has_rerun_fields(
+        self, client: AsyncClient, session: AsyncSession
+    ) -> None:
+        """Interrupted runs in history include fields needed for re-run."""
+        now = datetime.now(timezone.utc)
+        run = TaskRun(
+            issue_number="91",
+            role="developer",
+            status="interrupted",
+            current_step="develop",
+            pr_number=42,
+            total_cost_usd=Decimal("1.20"),
+            error_message="Agent process died unexpectedly",
+            started_at=now - timedelta(minutes=15),
+            ended_at=now,
+        )
+        session.add(run)
+        await session.commit()
+
+        resp = await client.get("/api/work/history")
+        assert resp.status_code == 200
+        data = resp.json()
+        interrupted_task = next(t for t in data["tasks"] if t["issue_number"] == "91")
+        assert interrupted_task["status"] == "interrupted"
+        assert interrupted_task["role"] == "developer"
+        assert interrupted_task["pr_number"] == 42
+        assert interrupted_task["error_message"] == "Agent process died unexpectedly"
+
 
 class TestStepPassedStatus:
     """Steps with legacy 'passed' status are counted as completed."""
