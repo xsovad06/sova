@@ -1468,10 +1468,17 @@ function renderHistoryTable(tasks, targetId, showError) {
       '<th class="text-left p-3">Duration</th>' +
       '<th class="text-left p-3">PR</th>' +
       '<th class="text-left p-3">Date</th>' +
+      '<th class="text-center p-3" style="width:5rem"></th>' +
     '</tr></thead><tbody>' +
     tasks.map(function(t) {
       var colors = roleColor(t.role);
       var stepsText = t.total_steps_possible ? (t.steps_completed + '/' + t.total_steps_possible) : '--';
+      var canRerun = (t.status === 'failed' || t.status === 'interrupted') && t.issue_number;
+      var rerunCell = canRerun
+        ? '<td class="p-3 text-center"><button class="rerun-btn px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" ' +
+          'data-issue="' + escapeHtml(String(t.issue_number)) + '" data-role="' + escapeHtml(t.role || '') + '" data-pr="' + escapeHtml(String(parseInt(t.pr_number, 10) || '')) + '" ' +
+          'data-tooltip="Re-run this task">Re-run</button></td>'
+        : '<td class="p-3"></td>';
 
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
         '<td class="p-3">' + issueLink(t.issue_number) + '</td>' +
@@ -1482,8 +1489,9 @@ function renderHistoryTable(tasks, targetId, showError) {
         '<td class="p-3 text-gray-400">' + (t.duration_formatted || '--') + '</td>' +
         '<td class="p-3 text-gray-400">' + prLink(t.pr_number) + '</td>' +
         '<td class="p-3 text-gray-500 text-xs">' + (t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--') + '</td>' +
+        rerunCell +
       '</tr>' +
-      (showError && t.error_message ? '<tr class="border-t border-gray-700/10"><td colspan="8" class="px-3 pb-3 pt-1 text-xs text-accent-red">' + escapeHtml(t.error_message) + '</td></tr>' : '');
+      (showError && t.error_message ? '<tr class="border-t border-gray-700/10"><td colspan="9" class="px-3 pb-3 pt-1 text-xs text-accent-red">' + escapeHtml(t.error_message) + '</td></tr>' : '');
     }).join('') +
     '</tbody></table></div>';
 }
