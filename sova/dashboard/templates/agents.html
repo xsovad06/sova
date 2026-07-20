@@ -227,6 +227,19 @@ var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
 var _cardMenuOpen = false;
 var _workItems = [];
 
+// LLM suggestion experiment: keyed by issueKey (issue_number or "pr:N")
+// Value: {action_id, action_label, reasoning, for_state, done, pr_number, issue_number,
+//         deterministic_action_id, llm_reasoning} | null (null = LLM agrees or unavailable)
+var _llmSuggestions = {};
+var _llmSuggestionFetching = new Set();
+
+var _PR_STAGE_STATES = new Set([
+  'pr_draft', 'pr_ci_running', 'pr_ci_failed',
+  'pr_awaiting_review', 'pr_sova_pending',
+  'pr_changes_requested', 'pr_sova_changes', 'pr_external_changes',
+  'pr_review_addressed', 'pr_approved', 'pr_ready_to_merge'
+]);
+
 async function loadWorkItems() {
   try {
     var res = await fetch(apiUrl('/agents/work-items'));
@@ -509,7 +522,8 @@ function renderTaskCard(item) {
     '</div>';
   }
 
-  return '<div class="' + rowCls + '">' + mainRow + expandedRow + '</div>';
+  var llmRow = _renderLlmSuggestionWidget(item, issueKey);
+  return '<div class="' + rowCls + '">' + mainRow + expandedRow + llmRow + '</div>';
 }
 
 function renderTaskCards() {
@@ -608,7 +622,140 @@ function renderTaskCards() {
   }
 
   grid.innerHTML = html;
+  fetchLlmSuggestions();
 }
+
+// --- LLM Suggestion Experiment ---
+
+function _renderLlmSuggestionWidget(item, issueKey) {
+  var sugg = _llmSuggestions[issueKey];
+  if (!sugg || sugg.done) return '';
+  if (sugg.for_state !== item.state) return '';
+  var detLabel = (item.primary_action && item.primary_action.label) || 'current';
+  var safeKey = issueKey.replace(/[^a-zA-Z0-9-]/g, '-');
+  return '<div class="px-4 pb-2.5 pl-12">' +
+    '<div class="flex items-start gap-2 pt-1.5 border-t border-gray-700/20">' +
+      '<span class="text-xs text-accent-yellow font-medium whitespace-nowrap mt-0.5">LLM:</span>' +
+      '<div class="flex-1 min-w-0">' +
+        '<span class="text-xs text-gray-300 font-medium">' + escapeHtml(sugg.action_label) + '</span>' +
+        (sugg.reasoning
+          ? '<p class="text-xs text-gray-500 italic mt-0.5 line-clamp-2">' + escapeHtml(sugg.reasoning) + '</p>'
+          : '') +
+        '<div class="flex gap-2 mt-1.5" id="llm-feedback-' + safeKey + '">' +
+          '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'deterministic\')" ' +
+            'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+            'Keep: ' + escapeHtml(detLabel) + '</button>' +
+          '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'llm\')" ' +
+            'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+            'LLM is right</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+async function fetchLlmSuggestions() {
+  var toFetch = [];
+  _workItems.forEach(function(item) {
+    if (!_PR_STAGE_STATES.has(item.state)) return;
+    if (!item.pr_number || !item.primary_action) return;
+    var key = item.issue_number || ('pr:' + item.pr_number);
+    // Clear stale suggestion when the card state changed
+    if (key in _llmSuggestions && _llmSuggestions[key] && _llmSuggestions[key].for_state !== item.state) {
+      delete _llmSuggestions[key];
+    }
+    if (!(key in _llmSuggestions) && !_llmSuggestionFetching.has(key)) {
+      toFetch.push(item);
+    }
+  });
+  if (!toFetch.length) return;
+
+  toFetch.forEach(function(item) {
+    _llmSuggestionFetching.add(item.issue_number || ('pr:' + item.pr_number));
+  });
+
+  var anyNew = false;
+  await Promise.all(toFetch.map(async function(item) {
+    var key = item.issue_number || ('pr:' + item.pr_number);
+    try {
+      var prDetails = item.pr_details || {};
+      var sovaCtx = item.sova_context || {};
+      var body = {
+        deterministic_state: item.state,
+        deterministic_action_id: item.primary_action.id,
+        pr_computed_state: prDetails.computed_state || '',
+        has_sova_review: sovaCtx.has_sova_review || false,
+        sova_verdict: sovaCtx.verdict || null,
+        mergeable: prDetails.mergeable || 'UNKNOWN',
+        review_decision: prDetails.review_decision || null,
+        ci_passed: prDetails.ci_status === 'all_passed',
+        external_reviews_enabled: true
+      };
+      var resp = await fetch(apiUrl('/prs/' + item.pr_number + '/suggestion'), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      if (resp.ok && resp.status !== 204) {
+        var data = await resp.json();
+        if (data.disagrees) {
+          _llmSuggestions[key] = {
+            action_id: data.action_id,
+            action_label: data.action_label,
+            reasoning: data.reasoning,
+            for_state: item.state,
+            done: false,
+            pr_number: item.pr_number,
+            issue_number: item.issue_number || null,
+            deterministic_action_id: item.primary_action.id,
+            llm_reasoning: data.reasoning
+          };
+          anyNew = true;
+        } else {
+          _llmSuggestions[key] = null;
+        }
+      } else {
+        _llmSuggestions[key] = null;
+      }
+    } catch (e) {
+      _llmSuggestions[key] = null;
+    }
+    _llmSuggestionFetching.delete(key);
+  }));
+
+  if (anyNew) {
+    renderTaskCards();
+  }
+}
+
+async function submitLlmFeedback(event, issueKey, choice) {
+  event.stopPropagation();
+  var sugg = _llmSuggestions[issueKey];
+  if (!sugg) return;
+  sugg.done = true;
+  var safeKey = issueKey.replace(/[^a-zA-Z0-9-]/g, '-');
+  var feedbackDiv = document.getElementById('llm-feedback-' + safeKey);
+  if (feedbackDiv) {
+    feedbackDiv.innerHTML = '<span class="text-xs text-gray-500 italic">Recorded. Thanks!</span>';
+  }
+  try {
+    await fetch(apiUrl('/prs/feedback'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        pr_number: sugg.pr_number,
+        issue_number: sugg.issue_number,
+        deterministic_state: sugg.for_state,
+        deterministic_action_id: sugg.deterministic_action_id,
+        llm_action_id: sugg.action_id,
+        llm_reasoning: sugg.llm_reasoning,
+        user_choice: choice
+      })
+    });
+  } catch (e) { /* feedback failure is non-fatal */ }
+}
+
+// --- End LLM Suggestion Experiment ---
 
 function toggleCardMenu(event, issue) {
   event.stopPropagation();
