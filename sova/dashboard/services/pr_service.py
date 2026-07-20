@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sova.utils.logging import get_logger
 
@@ -325,8 +325,12 @@ async def check_integration_gates(
     return {"passed": all(g["passed"] for g in gates), "gates": gates}
 
 
-async def list_open_prs_with_state() -> list[dict]:
-    """List all open PRs with computed state. Cached per-repo for 25s."""
+async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"] | None = None) -> list[dict]:
+    """List all open PRs with computed state. Cached per-repo for 25s.
+
+    When *author_filter_override* is ``"mine"`` or ``"all"``, it takes
+    precedence over the ``dashboard.pr_author_filter`` config value.
+    """
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
     from sova.git.pr import get_review_thread_counts, list_open_prs
@@ -345,7 +349,8 @@ async def list_open_prs_with_state() -> list[dict]:
         return []
 
     repo = cfg.github_repo
-    author = cfg.github_user if cfg.dashboard.pr_author_filter == "mine" else None
+    effective_filter = author_filter_override or cfg.dashboard.pr_author_filter
+    author = cfg.github_user if effective_filter == "mine" else None
     cache_key = f"{repo}:{author or ''}"
     now = time.monotonic()
     cached = _pr_cache.get(cache_key)
