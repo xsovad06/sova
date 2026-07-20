@@ -5921,6 +5921,7 @@ class TestMergeAwareFinalization:
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(None, None)),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             from sova.dashboard.services.agent_pool import ProjectAgents
@@ -6061,6 +6062,305 @@ class TestIssueBudgetCheck:
         with patch("sova.db.session.get_session", side_effect=_ignore_project_dir):
             result = await _check_issue_budget("999", Path.cwd())
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Memory pressure gate
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryPressureGate:
+    """check_memory_pressure blocks, warns, or clears based on available memory."""
+
+    def test_blocks_when_below_block_threshold(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+        mem = SimpleNamespace(available=int(0.5 * 1024**3))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is not None
+        assert "error" in block
+        assert "Insufficient" in block["error"]
+        assert warn is None
+
+    def test_warns_when_below_warn_threshold(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+        mem = SimpleNamespace(available=int(2.5 * 1024**3))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is None
+        assert warn is not None
+        assert "Low memory" in warn
+
+    def test_clears_when_sufficient_memory(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+        mem = SimpleNamespace(available=int(8.0 * 1024**3))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is None
+        assert warn is None
+
+    def test_disabled_skips_check(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=False, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is None
+        assert warn is None
+
+    def test_psutil_failure_is_fail_open(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", side_effect=OSError("no psutil")),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is None
+        assert warn is None
+
+    def test_config_load_failure_is_fail_open(self) -> None:
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        with patch(
+            "sova.config.loader.load_config",
+            side_effect=RuntimeError("bad config"),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp"))
+
+        assert block is None
+        assert warn is None
+
+    def test_block_includes_available_gb(self) -> None:
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        cfg = SimpleNamespace(memory_guard=guard)
+        mem = SimpleNamespace(available=int(0.5 * 1024**3))
+
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mem),
+        ):
+            block, _ = check_memory_pressure(Path("/tmp"))
+
+        assert block is not None
+        assert block["available_gb"] == 0.5
+        assert block["block_threshold_gb"] == 1.0
+
+    async def test_start_agent_blocked_by_memory_pressure(self) -> None:
+        """start_agent returns error when memory is below block threshold."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mem_error = {"error": "Insufficient memory: 0.5 GB available"}
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(mem_error, None)),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_agent("42")
+
+        assert "error" in result
+        assert "Insufficient memory" in result["error"]
+
+    async def test_start_agent_force_bypasses_memory_gate(self) -> None:
+        """start_agent with force=True skips the memory check."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mock_process = MagicMock()
+        mock_process.pid = 99
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(
+                agent_lifecycle,
+                "get_runtime",
+                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
+            ),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=1),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "check_memory_pressure") as mock_mem,
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_agent("42", force=True)
+
+        assert "error" not in result
+        mock_mem.assert_not_called()
+
+    async def test_start_command_blocked_by_memory_pressure(self) -> None:
+        """start_command returns error when memory is below block threshold."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+
+        mem_error = {"error": "Insufficient memory: 0.5 GB available"}
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
+            patch.object(agent_lifecycle, "check_memory_pressure", return_value=(mem_error, None)),
+            patch.object(
+                agent_lifecycle, "_resolve_command_context", new_callable=AsyncMock, return_value=(None, "42")
+            ),
+        ):
+            from sova.dashboard.services.agent_pool import ProjectAgents
+
+            pa = ProjectAgents()
+            pa.project_dir = MagicMock()
+            mock_gpa.return_value = pa
+
+            result = await agent_lifecycle.start_command("integrate-pr", args={"issue": "42"})
+
+        assert "error" in result
+        assert "Insufficient memory" in result["error"]
+
+    def test_system_metrics_pressure_level_critical(self) -> None:
+        """get_system_metrics includes memory_pressure='critical' when below block threshold."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services import resource_service
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        mem = SimpleNamespace(
+            total=16 * 1024**3,
+            available=int(0.5 * 1024**3),
+            percent=97.0,
+        )
+
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory", return_value=mem),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(resource_service, "_get_memory_guard_config", return_value=guard),
+        ):
+            result = resource_service.get_system_metrics()
+
+        assert result["system"]["memory_pressure"] == "critical"
+        assert result["system"]["memory_available_gb"] == 0.5
+
+    def test_system_metrics_pressure_level_warning(self) -> None:
+        """get_system_metrics includes memory_pressure='warning' when below warn threshold."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services import resource_service
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        mem = SimpleNamespace(
+            total=16 * 1024**3,
+            available=int(2.5 * 1024**3),
+            percent=85.0,
+        )
+
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory", return_value=mem),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(resource_service, "_get_memory_guard_config", return_value=guard),
+        ):
+            result = resource_service.get_system_metrics()
+
+        assert result["system"]["memory_pressure"] == "warning"
+
+    def test_system_metrics_pressure_level_ok(self) -> None:
+        """get_system_metrics includes memory_pressure='ok' when above all thresholds."""
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services import resource_service
+
+        guard = SimpleNamespace(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=1.0)
+        mem = SimpleNamespace(
+            total=16 * 1024**3,
+            available=int(8.0 * 1024**3),
+            percent=50.0,
+        )
+
+        with (
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.virtual_memory", return_value=mem),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(resource_service, "_get_memory_guard_config", return_value=guard),
+        ):
+            result = resource_service.get_system_metrics()
+
+        assert result["system"]["memory_pressure"] == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -6399,6 +6699,144 @@ class TestAgentRecoveryDirect:
         assert result["verdict"] == "revise"
         assert result["finding_count"] == 0
         assert result["reviewed_at"] is not None
+
+    async def test_sova_review_verdict_address_pr_after_review_resets_to_approve(self) -> None:
+        """When command:address-pr completed after the reviewer, verdict resets to approve."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        review_ts = datetime.now(timezone.utc)
+        addr_ts = review_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="108",
+                    role="reviewer",
+                    status="done",
+                    handoff_json=None,
+                    pr_number=900,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="108",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=900,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("108", pr_number=900)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
+    async def test_sova_review_verdict_older_address_pr_does_not_reset(self) -> None:
+        """An address-pr run older than the reviewer run does not reset the verdict."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        addr_ts = datetime.now(timezone.utc)
+        review_ts = addr_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="109",
+                    role="reviewer",
+                    status="done",
+                    handoff_json=None,
+                    pr_number=901,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="109",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=901,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("109", pr_number=901)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_sova_review_verdict_authoritative_handoff_superseded_by_newer_address_pr(self) -> None:
+        """Newer address-pr resets verdict even when reviewer has authoritative handoff_json."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        review_ts = datetime.now(timezone.utc)
+        addr_ts = review_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="110",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [{"file": "z.py", "severity": 9, "description": "critical"}],
+                    },
+                    pr_number=902,
+                    ended_at=review_ts,
+                )
+            )
+            session.add(
+                TaskRun(
+                    issue_number="110",
+                    role="command:address-pr",
+                    status="done",
+                    pr_number=902,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("110", pr_number=902)
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
+    async def test_sova_review_verdict_failed_address_pr_does_not_supersede(self) -> None:
+        """A failed address-pr run must not supersede the reviewer verdict."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        review_ts = datetime.now(timezone.utc)
+        addr_ts = review_ts + timedelta(seconds=5)
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="111",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "address_review",
+                        "pending_findings": [{"file": "a.py", "severity": 7, "description": "bug"}],
+                    },
+                    pr_number=903,
+                    ended_at=review_ts,
+                )
+            )
+            # Failed address-pr with newer timestamp must NOT reset verdict to approve.
+            session.add(
+                TaskRun(
+                    issue_number="111",
+                    role="command:address-pr",
+                    status="failed",
+                    pr_number=903,
+                    ended_at=addr_ts,
+                )
+            )
+
+        result = await get_sova_review_verdict("111", pr_number=903)
+        assert result["has_sova_review"] is True
+        # severity=7 maps to "block"; the failed address-pr must not clear this.
+        assert result["verdict"] == "block"
 
     async def test_sova_review_verdict_interrupted_with_findings(self) -> None:
         """A reviewer killed during post-review cleanup still counts."""
@@ -11672,733 +12110,610 @@ class TestHandoffIssueFilter:
 
 
 # ---------------------------------------------------------------------------
-# Failure classification
+# check_memory_pressure
 # ---------------------------------------------------------------------------
 
 
-class TestClassifyFailure:
-    """classify_failure must distinguish recoverable from terminal failures."""
+class TestCheckMemoryPressure:
+    def test_returns_block_when_below_block_threshold(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-    def test_exit_code_zero_is_terminal(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
+        from sova.dashboard.services.agent_validation import check_memory_pressure
 
-        assert classify_failure("rate limit exceeded", exit_code=0) == FailureCategory.TERMINAL
+        cfg = ProjectConfig(memory_guard=MemoryGuardConfig(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=2.0))
+        mock_mem = MagicMock()
+        mock_mem.available = int(1.0 * 1024**3)  # 1.0 GB, below block_threshold_gb=2.0
 
-    def test_budget_exceeded_is_terminal(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp/test"))
 
-        assert classify_failure("budget exceeded for issue #42", exit_code=1) == FailureCategory.TERMINAL
+        assert block is not None
+        assert "Insufficient memory" in block["error"]
+        assert block["available_gb"] == 1.0
+        assert warn is None
 
-    def test_permission_denied_is_terminal(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+    def test_returns_warning_when_below_warn_threshold(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-        assert classify_failure("permission denied: cannot push to main", exit_code=1) == FailureCategory.TERMINAL
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
+        from sova.dashboard.services.agent_validation import check_memory_pressure
 
-    def test_rate_limit_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        cfg = ProjectConfig(memory_guard=MemoryGuardConfig(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=2.0))
+        mock_mem = MagicMock()
+        mock_mem.available = int(3.0 * 1024**3)  # 3.0 GB, below warn=4.0 but above block=2.0
 
-        assert classify_failure("HTTP 429 rate limit hit", exit_code=1) == FailureCategory.RECOVERABLE
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp/test"))
 
-    def test_timeout_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        assert block is None
+        assert warn is not None
+        assert "Low memory" in warn
 
-        assert classify_failure("connection timed out", exit_code=1) == FailureCategory.RECOVERABLE
+    def test_returns_none_when_sufficient(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-    def test_server_error_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
+        from sova.dashboard.services.agent_validation import check_memory_pressure
 
-        assert classify_failure("http 503 server error from API", exit_code=1) == FailureCategory.RECOVERABLE
+        cfg = ProjectConfig(memory_guard=MemoryGuardConfig(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=2.0))
+        mock_mem = MagicMock()
+        mock_mem.available = int(8.0 * 1024**3)
 
-    def test_http_status_code_no_false_positive(self) -> None:
-        """Bare digits like port numbers or file names must not trigger HTTP status patterns."""
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        with (
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+        ):
+            block, warn = check_memory_pressure(Path("/tmp/test"))
 
-        # Port number containing 503 must not be classified as recoverable HTTP 503
-        result = classify_failure("process on port 5033 failed", exit_code=1)
-        assert result == FailureCategory.RECOVERABLE  # falls through to default -- but NOT due to "503" substring
-        # Verify the "http 502/503/504" patterns don't fire on bare digits
-        assert classify_failure("error in file app502.log", exit_code=1) == FailureCategory.RECOVERABLE
-        assert classify_failure("pid 5041 killed by OOM", exit_code=1) == FailureCategory.RECOVERABLE
-        # Bare "429" in numbers must not trigger the recoverable " 429" pattern
-        # default, not via " 429"
-        assert classify_failure("error on port 1429", exit_code=1) == FailureCategory.RECOVERABLE
-        # default, not via " 429"
-        assert classify_failure("id=8429 failed", exit_code=1) == FailureCategory.RECOVERABLE
-        # Bare "rejected" in unrelated contexts must not trigger terminal pattern
-        assert (
-            classify_failure("request rejected due to invalid parameters", exit_code=1) == FailureCategory.RECOVERABLE
+        assert block is None
+        assert warn is None
+
+    def test_returns_none_when_disabled(self) -> None:
+        from unittest.mock import patch
+
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
+        from sova.dashboard.services.agent_validation import check_memory_pressure
+
+        cfg = ProjectConfig(
+            memory_guard=MemoryGuardConfig(enabled=False, warn_threshold_gb=4.0, block_threshold_gb=2.0)
         )
 
-    def test_pipeline_bypassed_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        with patch("sova.config.loader.load_config", return_value=cfg):
+            block, warn = check_memory_pressure(Path("/tmp/test"))
 
-        msg = "Pipeline bypassed: developer agent completed without executing"
-        assert classify_failure(msg, exit_code=1) == FailureCategory.RECOVERABLE
+        assert block is None
+        assert warn is None
 
-    def test_process_exit_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+    def test_fail_open_on_exception(self) -> None:
+        from unittest.mock import patch
 
-        assert classify_failure("Process exited with code 1", exit_code=1) == FailureCategory.RECOVERABLE
+        from sova.dashboard.services.agent_validation import check_memory_pressure
 
-    def test_none_message_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            block, warn = check_memory_pressure(Path("/tmp/test"))
 
-        assert classify_failure(None, exit_code=1) == FailureCategory.RECOVERABLE
-
-    def test_unknown_error_is_recoverable(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
-
-        assert classify_failure("something unexpected happened", exit_code=1) == FailureCategory.RECOVERABLE
-
-    def test_terminal_takes_precedence(self) -> None:
-        """When both terminal and recoverable patterns appear, terminal wins (checked first)."""
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
-
-        msg = "budget exceeded after rate limit retry"
-        assert classify_failure(msg, exit_code=1) == FailureCategory.TERMINAL
-
-    def test_case_insensitive(self) -> None:
-        from sova.dashboard.services.agent_db import FailureCategory, classify_failure
-
-        assert classify_failure("RATE LIMIT exceeded", exit_code=1) == FailureCategory.RECOVERABLE
-        assert classify_failure("BUDGET EXCEEDED", exit_code=1) == FailureCategory.TERMINAL
+        assert block is None
+        assert warn is None
 
 
 # ---------------------------------------------------------------------------
-# Retry count and nonterminal run checks
+# _get_memory_guard_config and get_system_metrics memory pressure fields
 # ---------------------------------------------------------------------------
 
 
-class TestRetryDbHelpers:
-    """DB helper functions for retry logic."""
+class TestResourceServiceMemoryPressure:
+    def test_get_memory_guard_config_returns_config(self) -> None:
+        from unittest.mock import patch
 
-    async def test_get_retry_state_returns_zero_for_missing_run(self) -> None:
-        from sova.dashboard.services.agent_db import _get_retry_state
+        import sova.dashboard.services.resource_service as rs
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
 
-        count, has_concurrent = await _get_retry_state(99999, "999", None)
-        assert count == 0
-        assert has_concurrent is False
-
-    async def test_get_retry_state_returns_stored_value(self) -> None:
-        from sova.dashboard.services.agent_db import _get_retry_state
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="500",
-                    role="developer",
-                    status="failed",
-                    retry_count=2,
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        count, _ = await _get_retry_state(run_id, "500", None)
-        assert count == 2
-
-    async def test_get_retry_state_detects_concurrent_run(self) -> None:
-        from sova.dashboard.services.agent_db import _get_retry_state
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="503",
-                    role="developer",
-                    status="failed",
-                    retry_count=0,
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-                # Add a concurrent running task for the same issue
-                concurrent = TaskRun(
-                    issue_number="503",
-                    role="developer",
-                    status="running",
-                )
-                session.add(concurrent)
-
-        count, has_concurrent = await _get_retry_state(run_id, "503", None)
-        assert count == 0
-        assert has_concurrent is True
-
-    async def test_has_nonterminal_run_for_issue_false_when_none(self) -> None:
-        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
-
-        result = await _has_nonterminal_run_for_issue("999", None)
-        assert result is False
-
-    async def test_has_nonterminal_run_for_issue_true_when_running(self) -> None:
-        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="501",
-                    role="developer",
-                    status="running",
-                )
-                session.add(run)
-
-        result = await _has_nonterminal_run_for_issue("501", None)
-        assert result is True
-
-    async def test_has_nonterminal_run_for_issue_false_for_terminal(self) -> None:
-        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="502",
-                    role="developer",
-                    status="failed",
-                )
-                session.add(run)
-
-        result = await _has_nonterminal_run_for_issue("502", None)
-        assert result is False
-
-    async def test_has_nonterminal_run_empty_issue(self) -> None:
-        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
-
-        result = await _has_nonterminal_run_for_issue("", None)
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Retry scheduling logic
-# ---------------------------------------------------------------------------
-
-
-class TestScheduleRetry:
-    """_schedule_retry must respect limits, classify failures, and prevent duplicates."""
-
-    async def test_skips_non_pipeline_role(self) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "command:address-pr"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
-
-        result = await _schedule_retry(agent, 1, "some error")
-        assert result is False
-
-    async def test_skips_when_no_issue(self) -> None:
-        from unittest.mock import MagicMock
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = ""
-        agent.project_dir = Path("/tmp/test")
-
-        result = await _schedule_retry(agent, 1, "timeout")
-        assert result is False
-
-    async def test_skips_terminal_failure(self) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
-
-        with patch("sova.dashboard.services.agent_lifecycle.classify_failure", return_value="terminal"):
-            with patch("sova.config.loader.load_config") as mock_cfg:
-                mock_cfg.return_value.pipeline.max_retries = 3
-                mock_cfg.return_value.pipeline.retry_delay_seconds = 10
-                result = await _schedule_retry(agent, 1, "budget exceeded")
-
-        assert result is False
-
-    async def test_skips_when_max_retries_zero(self) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
-
-        with patch("sova.config.loader.load_config") as mock_cfg:
-            mock_cfg.return_value.pipeline.max_retries = 0
-            result = await _schedule_retry(agent, 1, "timeout")
-
-        assert result is False
-
-    async def test_skips_when_retry_count_exceeded(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
+        cfg = ProjectConfig(memory_guard=MemoryGuardConfig(enabled=True, warn_threshold_gb=5.0, block_threshold_gb=2.0))
 
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(
-                "sova.dashboard.services.agent_lifecycle._get_retry_state",
-                new_callable=AsyncMock,
-                return_value=(3, False),
-            ),
+            patch("sova.config.loader.load_config", return_value=cfg),
+            patch("sova.dashboard.project_context.get_project_dir", return_value=Path("/tmp")),
         ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 10
-            result = await _schedule_retry(agent, 1, "Process exited with code 1")
+            result = rs._get_memory_guard_config()
 
-        assert result is False
+        assert result is not None
+        assert result.warn_threshold_gb == 5.0
+        assert result.block_threshold_gb == 2.0
 
-    async def test_skips_when_concurrent_run_exists(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_get_memory_guard_config_returns_none_on_error(self) -> None:
+        from unittest.mock import patch
 
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
-
-        _patch_base = "sova.dashboard.services.agent_lifecycle"
-        with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(f"{_patch_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, True)),
-        ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 10
-            result = await _schedule_retry(agent, 1, "timeout")
-
-        assert result is False
-
-    async def test_spawns_retry_on_recoverable_failure(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.pr_number = None
-        agent.project_dir = Path("/tmp/test")
-
-        _patch_base = "sova.dashboard.services.agent_lifecycle"
-        spawn_result = {"status": "started", "run_id": 99, "pid": 1234}
-        with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(f"{_patch_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
-            patch(
-                f"{_patch_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False
-            ) as mock_check,
-            patch(f"{_patch_base}.start_agent", new_callable=AsyncMock, return_value=spawn_result) as mock_start,
-            patch(f"{_patch_base}._set_retry_link", new_callable=AsyncMock) as mock_link,
-            patch("sova.dashboard.services.agent_lifecycle.emit_safe"),
-            patch("sova.dashboard.services.agent_lifecycle.asyncio.sleep", new_callable=AsyncMock),
-            patch("sova.ipc.notifications.notify"),
-        ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
-            mock_cfg.return_value.notification = MagicMock()
-            result = await _schedule_retry(agent, 1, "Process exited with code 1")
-
-        assert result is True
-        mock_check.assert_awaited_once_with("42", Path("/tmp/test"))
-        mock_start.assert_awaited_once_with(
-            "42",
-            role="developer",
-            force=True,
-            pr_number=None,
-        )
-        mock_link.assert_awaited_once_with(99, 1, 1, Path("/tmp/test"))
-
-
-# ---------------------------------------------------------------------------
-# TaskRun retry columns
-# ---------------------------------------------------------------------------
-
-
-class TestTaskRunRetryColumns:
-    """TaskRun model has retry_of_id and retry_count columns."""
-
-    async def test_retry_columns_default_values(self) -> None:
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="600",
-                    role="developer",
-                    status="running",
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        async with await get_session() as session:
-            async with session.begin():
-                refreshed = await session.get(TaskRun, run_id)
-                assert refreshed.retry_of_id is None
-                assert refreshed.retry_count == 0
-
-    async def test_retry_columns_stored(self) -> None:
-        async with await get_session() as session:
-            async with session.begin():
-                original = TaskRun(
-                    issue_number="601",
-                    role="developer",
-                    status="failed",
-                )
-                session.add(original)
-                await session.flush()
-                original_id = original.id
-
-        async with await get_session() as session:
-            async with session.begin():
-                retry = TaskRun(
-                    issue_number="601",
-                    role="developer",
-                    status="running",
-                    retry_of_id=original_id,
-                    retry_count=1,
-                )
-                session.add(retry)
-                await session.flush()
-                retry_id = retry.id
-
-        async with await get_session() as session:
-            async with session.begin():
-                refreshed = await session.get(TaskRun, retry_id)
-                assert refreshed.retry_of_id == original_id
-                assert refreshed.retry_count == 1
-
-
-# ---------------------------------------------------------------------------
-# _set_retry_link
-# ---------------------------------------------------------------------------
-
-
-class TestSetRetryLink:
-    """_set_retry_link persists retry chain metadata on a TaskRun."""
-
-    async def test_sets_retry_fields(self) -> None:
-        from sova.dashboard.services.agent_lifecycle import _set_retry_link
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="700",
-                    role="developer",
-                    status="running",
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        await _set_retry_link(run_id, original_run_id=50, retry_count=2, project_dir=None)
-
-        async with await get_session() as session:
-            async with session.begin():
-                refreshed = await session.get(TaskRun, run_id)
-                assert refreshed.retry_of_id == 50
-                assert refreshed.retry_count == 2
-
-    async def test_set_retry_link_exception_swallowed(self) -> None:
-        """_set_retry_link logs but does not raise when the DB call fails."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _set_retry_link
-
-        with patch(
-            "sova.db.session.get_session",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("db gone"),
-        ):
-            # Should not raise
-            await _set_retry_link(999, original_run_id=1, retry_count=1, project_dir=Path("/tmp/x"))
-
-
-# ---------------------------------------------------------------------------
-# _get_retry_state / _has_nonterminal_run_for_issue: edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestRetryDbHelpersEdgeCases:
-    """Cover exception and empty-issue paths in retry DB helpers."""
-
-    async def test_get_retry_state_empty_issue(self) -> None:
-        from sova.dashboard.services.agent_db import _get_retry_state
-
-        count, has_concurrent = await _get_retry_state(1, "", Path("/tmp/x"))
-        assert count == 0
-        assert has_concurrent is False
-
-    async def test_get_retry_state_exception_returns_defaults(self) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_db import _get_retry_state
-
-        with patch(
-            "sova.db.session.get_session",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("db error"),
-        ):
-            count, has_concurrent = await _get_retry_state(1, "42", Path("/tmp/x"))
-        assert count == 0
-        assert has_concurrent is False
-
-    async def test_has_nonterminal_run_exception_returns_false(self) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services.agent_db import _has_nonterminal_run_for_issue
-
-        with patch(
-            "sova.db.session.get_session",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("db error"),
-        ):
-            result = await _has_nonterminal_run_for_issue("42", Path("/tmp/x"))
-        assert result is False
-
-
-# ---------------------------------------------------------------------------
-# _schedule_retry: additional error branches
-# ---------------------------------------------------------------------------
-
-
-class TestScheduleRetryErrorBranches:
-    """Cover config-load failure, notify failure, post-delay concurrent, and spawn failure."""
-
-    async def test_config_load_failure(self) -> None:
-        from unittest.mock import MagicMock, patch
-
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
-
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
+        import sova.dashboard.services.resource_service as rs
 
         with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
-            result = await _schedule_retry(agent, 1, "timeout")
-        assert result is False
+            result = rs._get_memory_guard_config()
 
-    async def test_notify_exception_swallowed(self) -> None:
-        """Notification failure must not prevent the retry from being scheduled."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        assert result is None
 
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
+    def test_system_metrics_includes_memory_pressure_critical(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.pr_number = None
-        agent.project_dir = Path("/tmp/test")
+        import sova.dashboard.services.resource_service as rs
+        from sova.config.models import MemoryGuardConfig
 
-        _base = "sova.dashboard.services.agent_lifecycle"
-        spawn_result = {"status": "started", "run_id": 88, "pid": 5678}
+        guard = MemoryGuardConfig(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=2.0)
+
+        mock_mem = MagicMock()
+        mock_mem.available = int(1.0 * 1024**3)  # 1.0 GB
+        mock_mem.total = int(16.0 * 1024**3)
+        mock_mem.percent = 93.75
+
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
-            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False),
-            patch(f"{_base}.start_agent", new_callable=AsyncMock, return_value=spawn_result),
-            patch(f"{_base}._set_retry_link", new_callable=AsyncMock),
-            patch(f"{_base}.emit_safe"),
-            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
-            patch("sova.ipc.notifications.notify", side_effect=RuntimeError("notify broken")),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(rs, "_get_memory_guard_config", return_value=guard),
+            patch.object(rs, "_get_project_agents", return_value=MagicMock(agents={}, max_concurrent=3)),
         ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
-            mock_cfg.return_value.notification = MagicMock()
-            result = await _schedule_retry(agent, 1, "timeout")
+            result = rs.get_system_metrics()
 
-        assert result is True
+        assert result["available"] is True
+        assert result["system"]["memory_pressure"] == "critical"
+        assert result["system"]["memory_available_gb"] == 1.0
 
-    async def test_concurrent_run_after_delay(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_system_metrics_includes_memory_pressure_warning(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
+        import sova.dashboard.services.resource_service as rs
+        from sova.config.models import MemoryGuardConfig
 
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.project_dir = Path("/tmp/test")
+        guard = MemoryGuardConfig(enabled=True, warn_threshold_gb=4.0, block_threshold_gb=2.0)
 
-        _base = "sova.dashboard.services.agent_lifecycle"
+        mock_mem = MagicMock()
+        mock_mem.available = int(3.0 * 1024**3)  # 3.0 GB (between block=2 and warn=4)
+        mock_mem.total = int(16.0 * 1024**3)
+        mock_mem.percent = 81.25
+
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
-            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=True),
-            patch(f"{_base}.emit_safe"),
-            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
-            patch("sova.ipc.notifications.notify"),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(rs, "_get_memory_guard_config", return_value=guard),
+            patch.object(rs, "_get_project_agents", return_value=MagicMock(agents={}, max_concurrent=3)),
         ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
-            mock_cfg.return_value.notification = MagicMock()
-            result = await _schedule_retry(agent, 1, "timeout")
+            result = rs.get_system_metrics()
 
-        assert result is False
+        assert result["system"]["memory_pressure"] == "warning"
 
-    async def test_spawn_failure(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+    def test_system_metrics_pressure_ok_when_guard_disabled(self) -> None:
+        from unittest.mock import MagicMock, patch
 
-        from sova.dashboard.services.agent_lifecycle import _schedule_retry
-        from sova.dashboard.services.agent_pool import AgentState
+        import sova.dashboard.services.resource_service as rs
+        from sova.config.models import MemoryGuardConfig
 
-        agent = MagicMock(spec=AgentState)
-        agent.role = "developer"
-        agent.issue = "42"
-        agent.pr_number = None
-        agent.project_dir = Path("/tmp/test")
+        guard = MemoryGuardConfig(enabled=False, warn_threshold_gb=4.0, block_threshold_gb=2.0)
 
-        _base = "sova.dashboard.services.agent_lifecycle"
+        mock_mem = MagicMock()
+        mock_mem.available = int(1.0 * 1024**3)  # low but guard disabled
+        mock_mem.total = int(16.0 * 1024**3)
+        mock_mem.percent = 93.75
+
         with (
-            patch("sova.config.loader.load_config") as mock_cfg,
-            patch(f"{_base}._get_retry_state", new_callable=AsyncMock, return_value=(0, False)),
-            patch(f"{_base}._has_nonterminal_run_for_issue", new_callable=AsyncMock, return_value=False),
-            patch(f"{_base}.start_agent", new_callable=AsyncMock, return_value={"error": "no slots"}),
-            patch(f"{_base}.emit_safe"),
-            patch(f"{_base}.asyncio.sleep", new_callable=AsyncMock),
-            patch("sova.ipc.notifications.notify"),
+            patch("psutil.virtual_memory", return_value=mock_mem),
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(rs, "_get_memory_guard_config", return_value=guard),
+            patch.object(rs, "_get_project_agents", return_value=MagicMock(agents={}, max_concurrent=3)),
         ):
-            mock_cfg.return_value.pipeline.max_retries = 2
-            mock_cfg.return_value.pipeline.retry_delay_seconds = 0
-            mock_cfg.return_value.notification = MagicMock()
-            result = await _schedule_retry(agent, 1, "timeout")
+            result = rs.get_system_metrics()
 
-        assert result is False
+        assert result["system"]["memory_pressure"] == "ok"
+
+    def test_system_metrics_pressure_ok_when_guard_none(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        import sova.dashboard.services.resource_service as rs
+
+        mock_mem = MagicMock()
+        mock_mem.available = int(1.0 * 1024**3)
+        mock_mem.total = int(16.0 * 1024**3)
+        mock_mem.percent = 93.75
+
+        with (
+            patch("psutil.virtual_memory", return_value=mock_mem),
+            patch("psutil.cpu_percent", return_value=50.0),
+            patch("psutil.cpu_count", return_value=8),
+            patch.object(rs, "_get_memory_guard_config", return_value=None),
+            patch.object(rs, "_get_project_agents", return_value=MagicMock(agents={}, max_concurrent=3)),
+        ):
+            result = rs.get_system_metrics()
+
+        assert result["system"]["memory_pressure"] == "ok"
 
 
 # ---------------------------------------------------------------------------
-# _wait_and_finalize: retry integration
+# Auto-handoff memory pressure gate
 # ---------------------------------------------------------------------------
 
 
-class TestWaitAndFinalizeRetry:
-    """Cover the retry call path and error_message assignment in _wait_and_finalize."""
+class TestAutoHandoffMemoryGate:
+    async def test_memory_block_stops_auto_handoff(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
 
-    async def test_calls_schedule_retry_on_failure(self) -> None:
-        """When the process exits non-zero, _wait_and_finalize calls _schedule_retry."""
-        from unittest.mock import AsyncMock, patch
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
 
-        from sova.dashboard.services import agent_lifecycle
-        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 1, "issue": "42", "project_dir": Path("/tmp/test")},
+        )()
 
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock(return_value=1)
-
-        agent = AgentState(
-            run_id=80,
-            issue="200",
-            role="developer",
-            process=mock_process,
-            project_dir=Path("/tmp/test-project"),
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="42",
+            pr_number=10,
+            summary="test",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "42", "role": "reviewer"},
+                ),
+            ],
         )
 
-        pa = ProjectAgents()
-        pa.agents[80] = agent
+        block_error = {"error": "Insufficient memory: 0.5 GB available"}
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        mock_write = MagicMock()
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_schedule_retry", new_callable=AsyncMock, return_value=True) as mock_retry,
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
-        ):
-            await agent_lifecycle._wait_and_finalize(pa, agent)
-
-        mock_retry.assert_called_once()
-        args = mock_retry.call_args
-        assert args[0][0] is agent
-        assert args[0][1] == 80
-        assert "Process exited with code 1" in args[0][2]
-
-    async def test_error_message_from_outcome_validation(self) -> None:
-        """When outcome validation downgrades to failed, the failure reason becomes error_message."""
-        from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.services import agent_lifecycle
-        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
-
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock(return_value=0)
-
-        agent = AgentState(
-            run_id=81,
-            issue="201",
-            role="developer",
-            process=mock_process,
-            project_dir=Path("/tmp/test-project"),
-        )
-
-        pa = ProjectAgents()
-        pa.agents[81] = agent
-
-        with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_validate_command_outcome", new_callable=AsyncMock, return_value=None),
-            patch.object(
-                agent_lifecycle,
-                "_validate_pipeline_outcome",
-                new_callable=AsyncMock,
-                return_value="Pipeline bypassed: no steps executed",
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch(
+                "sova.dashboard.services.agent_handoff.check_memory_pressure",
+                return_value=(block_error, None),
             ),
-            patch.object(agent_lifecycle, "_downgrade_to_failed", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_schedule_retry", new_callable=AsyncMock, return_value=False) as mock_retry,
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.ipc.handoff.write_handoff_file", mock_write),
         ):
-            await agent_lifecycle._wait_and_finalize(pa, agent)
+            await _process_auto_handoff(agent)
 
-        mock_retry.assert_called_once()
-        assert mock_retry.call_args[0][2] == "Pipeline bypassed: no steps executed"
+        # Should NOT have spawned the next agent
+        mock_start.assert_not_awaited()
+        # Should have cleared old handoff and written a blocked one
+        mock_clear.assert_called_once()
+        mock_write.assert_called_once()
+        written_handoff = mock_write.call_args[0][1]
+        assert written_handoff.source == "memory_guard"
+        assert written_handoff.next_actions[0].auto_execute is False
+        assert "(manual)" in written_handoff.next_actions[0].label
 
-    async def test_schedule_retry_exception_swallowed(self) -> None:
-        """If _schedule_retry raises, _wait_and_finalize must not crash."""
-        from unittest.mock import AsyncMock, patch
 
-        from sova.dashboard.services import agent_lifecycle
-        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+# ---------------------------------------------------------------------------
+# start_agent / start_command memory pressure gate
+# ---------------------------------------------------------------------------
 
-        mock_process = AsyncMock()
-        mock_process.wait = AsyncMock(return_value=1)
 
-        agent = AgentState(
-            run_id=82,
-            issue="202",
-            role="developer",
-            process=mock_process,
-            project_dir=Path("/tmp/test-project"),
-        )
+class TestStartAgentMemoryGate:
+    async def test_start_agent_blocked_by_memory(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
 
-        pa = ProjectAgents()
-        pa.agents[82] = agent
+        from sova.dashboard.services.agent_lifecycle import start_agent
+
+        block_error = {"error": "Insufficient memory: 0.5 GB available"}
 
         with (
-            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
-            patch.object(
-                agent_lifecycle,
-                "_schedule_retry",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("retry exploded"),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.check_memory_pressure",
+                return_value=(block_error, None),
             ),
-            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_issue_conflict",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("sova.dashboard.services.agent_lifecycle._evict_completed_for_issue", new_callable=MagicMock),
         ):
-            # Must not raise
-            await agent_lifecycle._wait_and_finalize(pa, agent)
+            result = await start_agent("42", role="developer")
+
+        assert result == block_error
+
+    async def test_start_agent_bypasses_memory_with_force(self) -> None:
+        """When force=True, memory pressure check is skipped."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import start_agent
+
+        mock_check = MagicMock(return_value=({"error": "blocked"}, None))
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_validation.check_memory_pressure",
+                mock_check,
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_issue_conflict",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("sova.dashboard.services.agent_lifecycle._evict_completed_for_issue", new_callable=MagicMock),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_branch_name",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp"),
+            ),
+            patch("sova.dashboard.services.agent_lifecycle._create_task_run", new_callable=AsyncMock, return_value=99),
+            patch("sova.dashboard.services.agent_lifecycle._transition_to_in_progress", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.get_runtime") as mock_runtime,
+        ):
+            mock_process = MagicMock()
+            mock_process.pid = 12345
+            mock_runtime.return_value.spawn = AsyncMock(return_value=mock_process)
+            mock_runtime.return_value.get_model_name.return_value = "test"
+
+            await start_agent("42", role="developer", force=True)
+
+        # memory_pressure should NOT have been called when force=True
+        mock_check.assert_not_called()
+
+    async def test_start_command_blocked_by_memory(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import start_command
+
+        block_error = {"error": "Insufficient memory: 0.5 GB available"}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle.check_memory_pressure",
+                return_value=(block_error, None),
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_issue_conflict",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("sova.dashboard.services.agent_lifecycle._evict_completed_for_issue", new_callable=MagicMock),
+        ):
+            result = await start_command("review-pr", args={"issue": "42"})
+
+        assert result == block_error
+
+
+# ---------------------------------------------------------------------------
+# get_sova_review_verdict -- address-pr supersede logic
+# ---------------------------------------------------------------------------
+
+
+class TestReviewVerdictAddressPrSupersede:
+    async def test_address_pr_supersedes_review_verdict(self) -> None:
+        """When address-pr completed after the review run, verdict should be 'approve'."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="50",
+                role="reviewer",
+                status="done",
+                pr_number=200,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+            await session.flush()
+
+            # address-pr completed AFTER the review
+            addr_run = TaskRun(
+                issue_number="50",
+                role="command:address-pr",
+                status="done",
+                pr_number=200,
+                started_at=now - timedelta(minutes=30),
+                ended_at=now - timedelta(minutes=10),
+            )
+            session.add(addr_run)
+
+        result = await get_sova_review_verdict(issue_number="50", pr_number=200, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["finding_count"] == 0
+
+    async def test_no_address_pr_preserves_review_verdict(self) -> None:
+        """Without address-pr, normal review verdict should be returned."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            review_run = TaskRun(
+                issue_number="51",
+                role="reviewer",
+                status="done",
+                pr_number=201,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 5}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+
+        result = await get_sova_review_verdict(issue_number="51", pr_number=201, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "revise"
+
+    async def test_older_address_pr_does_not_supersede(self) -> None:
+        """address-pr that completed BEFORE the review should not supersede."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        now = datetime.now(timezone.utc)
+
+        session = await get_session()
+        async with session.begin():
+            # address-pr ran BEFORE the review
+            addr_run = TaskRun(
+                issue_number="52",
+                role="command:address-pr",
+                status="done",
+                pr_number=202,
+                started_at=now - timedelta(hours=3),
+                ended_at=now - timedelta(hours=2, minutes=30),
+            )
+            session.add(addr_run)
+            await session.flush()
+
+            review_run = TaskRun(
+                issue_number="52",
+                role="reviewer",
+                status="done",
+                pr_number=202,
+                handoff_json={"next_action": "revise", "pending_findings": [{"severity": 8}]},
+                started_at=now - timedelta(hours=2),
+                ended_at=now - timedelta(hours=1),
+            )
+            session.add(review_run)
+
+        result = await get_sova_review_verdict(issue_number="52", pr_number=202, project_dir=Path("/tmp"))
+
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "block"  # severity 8 >= 7
+
+
+# ---------------------------------------------------------------------------
+# sync_branch -- "already used by worktree" handling
+# ---------------------------------------------------------------------------
+
+
+class TestSyncBranchWorktreeConflict:
+    async def test_already_used_by_worktree_updates_ref(self) -> None:
+        """When branch is in active use by another worktree, fetch refspec should be used."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.branch import sync_branch
+
+        checkout_fail = MagicMock()
+        checkout_fail.success = False
+        checkout_fail.stderr = "fatal: 'main' is already used by worktree at '/some/path'"
+
+        fetch_ref_ok = MagicMock()
+        fetch_ref_ok.success = True
+
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_fetch,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            # First call: git fetch origin main (run_checked)
+            # Second call: git checkout main -> fails with "already used by worktree"
+            # Third call: git fetch origin main:main -> succeeds
+            mock_run.side_effect = [checkout_fail, fetch_ref_ok]
+
+            await sync_branch("main", cwd=Path("/tmp/worktree"))
+
+        mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=Path("/tmp/worktree"))
+        assert mock_run.await_count == 2
+        # Second run call should be the fetch refspec
+        mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=Path("/tmp/worktree"))
+
+    async def test_already_used_by_worktree_ref_update_fails(self) -> None:
+        """When fetch refspec fails, should log warning but not raise."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.branch import sync_branch
+
+        checkout_fail = MagicMock()
+        checkout_fail.success = False
+        checkout_fail.stderr = "fatal: 'main' is already used by worktree at '/some/path'"
+
+        fetch_ref_fail = MagicMock()
+        fetch_ref_fail.success = False
+        fetch_ref_fail.stderr = "non-fast-forward update"
+
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock),
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.side_effect = [checkout_fail, fetch_ref_fail]
+            # Should not raise
+            await sync_branch("main", cwd=Path("/tmp/worktree"))
+
+
+# ---------------------------------------------------------------------------
+# get_primary_worktree_root
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrimaryWorktreeRoot:
+    async def test_returns_parent_of_absolute_common_dir(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.worktree import get_primary_worktree_root
+
+        result_mock = MagicMock()
+        result_mock.success = True
+        result_mock.stdout = "/home/user/project/.git\n"
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
+            root = await get_primary_worktree_root(cwd=Path("/home/user/project/.claude/worktrees/42"))
+
+        assert root == Path("/home/user/project")
+
+    async def test_returns_cwd_for_relative_common_dir(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.worktree import get_primary_worktree_root
+
+        result_mock = MagicMock()
+        result_mock.success = True
+        result_mock.stdout = ".git\n"
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
+            root = await get_primary_worktree_root(cwd=Path("/home/user/project"))
+
+        assert root == Path("/home/user/project")
+
+    async def test_returns_cwd_on_git_failure(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.worktree import get_primary_worktree_root
+
+        result_mock = MagicMock()
+        result_mock.success = False
+
+        with patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock):
+            root = await get_primary_worktree_root(cwd=Path("/tmp/not-a-repo"))
+
+        assert root == Path("/tmp/not-a-repo")
+
+    async def test_defaults_to_cwd(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.worktree import get_primary_worktree_root
+
+        result_mock = MagicMock()
+        result_mock.success = True
+        result_mock.stdout = ".git\n"
+
+        with (
+            patch("sova.git.worktree.run", new_callable=AsyncMock, return_value=result_mock),
+            patch("pathlib.Path.cwd", return_value=Path("/current/dir")),
+        ):
+            root = await get_primary_worktree_root()
+
+        assert root == Path("/current/dir")

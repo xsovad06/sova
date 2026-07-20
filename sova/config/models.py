@@ -260,8 +260,11 @@ class PipelineConfig(BaseSettings):
     auto_handoff: bool = True
     auto_address_review: bool = True
     max_address_review_cycles: int = Field(2, ge=0)
-    max_retries: int = Field(2, ge=0)
-    retry_delay_seconds: int = Field(60, ge=0)
+
+    # Deprecated: auto-retry system removed in v0.x. These fields are accepted
+    # but have no effect so existing sova.toml files do not break.
+    max_retries: int = Field(0, ge=0)
+    retry_delay_seconds: int = Field(0, ge=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_PIPELINE_")
 
@@ -429,6 +432,26 @@ class ResourcesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_RESOURCES_")
 
 
+class MemoryGuardConfig(BaseSettings):
+    """Pre-spawn memory availability gate."""
+
+    enabled: bool = True
+    warn_threshold_gb: float = Field(3.0, ge=1.0)
+    block_threshold_gb: float = Field(1.5, ge=0.5)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_MEMORY_GUARD_")
+
+    @model_validator(mode="after")
+    def _block_below_warn(self) -> MemoryGuardConfig:
+        if self.block_threshold_gb >= self.warn_threshold_gb:
+            msg = (
+                f"block_threshold_gb ({self.block_threshold_gb}) must be less than "
+                f"warn_threshold_gb ({self.warn_threshold_gb})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class WatchdogConfig(BaseSettings):
     """Agent watchdog: detects stuck, zombie, and bypassed agent processes."""
 
@@ -554,6 +577,7 @@ class ProjectConfig(BaseSettings):
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
+    memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
 

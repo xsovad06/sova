@@ -7,10 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
-from enum import StrEnum
 from pathlib import Path
-
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from sova.core.state import TaskStatus
 from sova.dashboard.services.agent_pool import AgentState
@@ -415,137 +412,6 @@ async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> N
                     log.warning("task_run.downgraded", run_id=run_id, reason=reason)
     except Exception:
         log.warning("task_run.downgrade_failed", run_id=run_id, exc_info=True)
-
-
-class FailureCategory(StrEnum):
-    RECOVERABLE = "recoverable"
-    TERMINAL = "terminal"
-
-
-# Patterns in error_message that indicate recoverable failures.
-# These are transient issues that a retry can plausibly resolve.
-_RECOVERABLE_PATTERNS: tuple[str, ...] = (
-    "rate limit",
-    "rate_limit",
-    "ratelimit",
-    " 429",
-    "too many requests",
-    "quota exceeded",
-    "overloaded",
-    "server error",
-    "internal server error",
-    "http 502",
-    "http 503",
-    "http 504",
-    "timed out",
-    "timeout",
-    "connection reset",
-    "connection refused",
-    "connection error",
-    "network error",
-    "eof error",
-    "unexpected eof",
-    "broken pipe",
-    "process exited with code",
-    "pipeline bypassed",
-    "spawn failed",
-)
-
-# Patterns that indicate terminal failures (never retry).
-_TERMINAL_PATTERNS: tuple[str, ...] = (
-    "budget exceeded",
-    "budget cap",
-    "max_budget",
-    "max_issue_budget",
-    "permission denied",
-    "authentication failed",
-    "not authorized",
-    "invalid token",
-    "repository not found",
-    "human_only",
-    "task rejected",
-    "spec rejected",
-)
-
-
-def classify_failure(error_message: str | None, exit_code: int) -> FailureCategory:
-    """Classify a failure as recoverable or terminal.
-
-    Uses error_message text matching only (no agent output/stderr).
-    Returns FailureCategory.RECOVERABLE or FailureCategory.TERMINAL.
-    """
-    if exit_code == 0:
-        return FailureCategory.TERMINAL
-
-    if not error_message:
-        return FailureCategory.RECOVERABLE
-
-    lower = error_message.lower()
-
-    for pattern in _TERMINAL_PATTERNS:
-        if pattern in lower:
-            return FailureCategory.TERMINAL
-
-    for pattern in _RECOVERABLE_PATTERNS:
-        if pattern in lower:
-            return FailureCategory.RECOVERABLE
-
-    return FailureCategory.RECOVERABLE
-
-
-async def _count_nonterminal_for_issue(issue: str, session: AsyncSession) -> int:
-    """Return the count of non-terminal TaskRun rows for the given issue.
-
-    Caller must provide an active session within an open transaction.
-    """
-    from sqlalchemy import func, select
-
-    from sova.db.models import TaskRun
-
-    stmt = select(func.count()).where(
-        TaskRun.issue_number == issue,
-        TaskRun.status.notin_(_TERMINAL_STATUSES),
-    )
-    result = await session.execute(stmt)
-    return result.scalar() or 0
-
-
-async def _get_retry_state(run_id: int, issue: str, project_dir: Path) -> tuple[int, bool]:
-    """Get retry_count and whether a nonterminal run exists for the issue.
-
-    Returns (retry_count, has_concurrent_run) in a single DB session.
-    """
-    if not issue:
-        return 0, False
-    try:
-        from sova.db.models import TaskRun
-        from sova.db.session import get_session
-
-        async with await get_session(project_dir=project_dir) as session:
-            async with session.begin():
-                task_run = await session.get(TaskRun, run_id)
-                retry_count = (task_run.retry_count or 0) if task_run else 0
-                concurrent_count = await _count_nonterminal_for_issue(issue, session)
-                return retry_count, concurrent_count > 0
-    except Exception:
-        log.debug("get_retry_state.failed", run_id=run_id, issue=issue, exc_info=True)
-        return 0, False
-
-
-async def _has_nonterminal_run_for_issue(issue: str, project_dir: Path) -> bool:
-    """Check if there is already a non-terminal TaskRun for the given issue."""
-    if not issue:
-        return False
-    try:
-        from sova.db.session import get_session
-
-        async with await get_session(project_dir=project_dir) as session:
-            async with session.begin():
-                count = await _count_nonterminal_for_issue(issue, session)
-                return count > 0
-    except Exception:
-        log.debug("has_nonterminal_run.failed", issue=issue, exc_info=True)
-        return False
 
 
 async def _fetch_run_states(run_ids: list[int]) -> dict[int, dict]:

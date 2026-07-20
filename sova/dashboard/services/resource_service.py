@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING
 import psutil
 
 if TYPE_CHECKING:
+    from sova.config.models import MemoryGuardConfig
     from sova.monitoring.collector import ResourceCollector
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,25 @@ log = get_logger(component="dashboard.resources")
 _SYSTEM_HISTORY_MAX = 60
 
 _system_metrics_history: deque[dict] = deque(maxlen=_SYSTEM_HISTORY_MAX)
+
+
+def _get_memory_guard_config() -> MemoryGuardConfig | None:
+    """Return the MemoryGuardConfig loaded fresh from project config.
+
+    Reads from disk on each call so banner thresholds stay in sync with the
+    agent spawn gate (which also calls ``load_config`` directly).
+    """
+    try:
+        from sova.config.loader import load_config
+        from sova.dashboard.project_context import get_project_dir
+
+        cfg = load_config(get_project_dir())
+        return cfg.memory_guard
+    except Exception:
+        log.warning("system_metrics.memory_guard_load_failed", exc_info=True)
+        return None
+
+
 _history_lock = threading.Lock()
 
 
@@ -139,6 +160,16 @@ def get_system_metrics(slug: str | None = None) -> dict:
             }
         )
 
+    # Memory pressure fields (cached config, no disk I/O per poll).
+    memory_available_gb = round(mem.available / (1024**3), 2)
+    pressure_level = "ok"
+    guard = _get_memory_guard_config()
+    if guard is not None and guard.enabled:
+        if memory_available_gb < guard.block_threshold_gb:
+            pressure_level = "critical"
+        elif memory_available_gb < guard.warn_threshold_gb:
+            pressure_level = "warning"
+
     return {
         "available": True,
         "system": {
@@ -147,6 +178,8 @@ def get_system_metrics(slug: str | None = None) -> dict:
             "memory_total_bytes": memory_total,
             "memory_used_bytes": memory_used,
             "memory_percent": memory_percent,
+            "memory_available_gb": memory_available_gb,
+            "memory_pressure": pressure_level,
             "load_avg": load_avg,
         },
         "agents": agents,

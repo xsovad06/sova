@@ -682,3 +682,43 @@ threads_resolved = true
         assert cfg.integration_gates.sova_reviewed is True
         assert cfg.integration_gates.coderabbit_reviewed is False
         assert cfg.integration_gates.threads_resolved is True
+
+
+class TestMemoryGuardConfig:
+    def test_defaults(self) -> None:
+        from sova.config.models import MemoryGuardConfig
+
+        cfg = MemoryGuardConfig()
+        assert cfg.enabled is True
+        assert cfg.warn_threshold_gb == 3.0
+        assert cfg.block_threshold_gb == 1.5
+
+    def test_project_config_includes_memory_guard(self) -> None:
+        cfg = ProjectConfig()
+        assert hasattr(cfg, "memory_guard")
+        assert cfg.memory_guard.enabled is True
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[memory_guard]
+enabled = false
+warn_threshold_gb = 8.0
+block_threshold_gb = 2.0
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.memory_guard.enabled is False
+        assert cfg.memory_guard.warn_threshold_gb == 8.0
+        assert cfg.memory_guard.block_threshold_gb == 2.0
+
+    def test_block_gte_warn_raises(self) -> None:
+        from sova.config.models import MemoryGuardConfig
+
+        with pytest.raises(ValueError, match="block_threshold_gb.*must be less than.*warn_threshold_gb"):
+            MemoryGuardConfig(warn_threshold_gb=4.0, block_threshold_gb=4.0)
+
+        with pytest.raises(ValueError, match="block_threshold_gb.*must be less than.*warn_threshold_gb"):
+            MemoryGuardConfig(warn_threshold_gb=2.0, block_threshold_gb=5.0)

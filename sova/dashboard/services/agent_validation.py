@@ -133,6 +133,51 @@ async def _check_issue_budget(issue: str, project_dir: Path) -> dict | None:
     return None
 
 
+def check_memory_pressure(project_dir: Path) -> tuple[dict | None, str | None]:
+    """Check system memory availability before spawning an agent.
+
+    Returns ``(block_error, warning_message)``:
+    - ``(dict, None)`` when memory is below block threshold (spawn must be rejected)
+    - ``(None, str)`` when memory is below warn threshold (spawn allowed, show warning)
+    - ``(None, None)`` when memory is sufficient or guard is disabled
+
+    Fail-open: if psutil raises, config cannot be loaded, or threshold
+    values are invalid, returns ``(None, None)``.
+    """
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        guard = cfg.memory_guard
+        if not guard.enabled:
+            return None, None
+
+        import psutil
+
+        mem = psutil.virtual_memory()
+        available_gb = mem.available / (1024**3)
+
+        if available_gb < guard.block_threshold_gb:
+            return {
+                "error": (
+                    f"Insufficient memory: {available_gb:.1f} GB available, "
+                    f"{guard.block_threshold_gb:.1f} GB required. "
+                    f"Close applications or use --force to bypass."
+                ),
+                "available_gb": round(available_gb, 2),
+                "block_threshold_gb": guard.block_threshold_gb,
+            }, None
+
+        if available_gb < guard.warn_threshold_gb:
+            return None, (
+                f"Low memory: {available_gb:.1f} GB available (warn threshold: {guard.warn_threshold_gb:.1f} GB)"
+            )
+    except Exception:
+        log.warning("memory_guard.check_failed", exc_info=True)
+
+    return None, None
+
+
 async def _transition_to_in_progress(issue: str, project_dir: Path) -> None:
     """Move the issue to IN_PROGRESS on the configured tracker."""
     try:
