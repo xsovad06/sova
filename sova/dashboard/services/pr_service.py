@@ -172,6 +172,17 @@ def _extract_review_logins(latest_reviews: list[dict] | None) -> list[str]:
     return sorted(logins)
 
 
+def _extract_latest_approval_at(latest_reviews: list[dict] | None) -> str | None:
+    """Return the most recent APPROVED review's submittedAt timestamp, or None."""
+    best: str | None = None
+    for rev in latest_reviews or []:
+        if rev.get("state") == "APPROVED":
+            ts = rev.get("submittedAt") or ""
+            if ts and (best is None or ts > best):
+                best = ts
+    return best
+
+
 def _enrich_pr(raw: dict, now: float) -> dict:
     """Transform a raw gh pr list entry into a PR tracker dict."""
     ci_status = _summarize_ci(raw.get("statusCheckRollup"))
@@ -213,6 +224,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "thread_total": thread_total,
         "thread_resolved": thread_resolved,
         "review_logins": _extract_review_logins(latest_reviews),
+        "latest_approval_at": _extract_latest_approval_at(latest_reviews),
     }
 
 

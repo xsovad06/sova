@@ -21,6 +21,7 @@ from sova.dashboard.services.work_item_service import (
     _index_handoffs,
     _index_prs_by_issue,
     _index_running_agents,
+    _is_verdict_stale,
     _sort_items,
     compute_work_item_state,
     get_work_items,
@@ -301,17 +302,17 @@ class TestGetActions:
         primary, _ = _get_actions(WorkItemState.PR_AWAITING_REVIEW, issue_number="42", pr_number=123)
         assert primary["id"] == "review_pr"
 
-    def test_pr_sova_pending_has_address_pr_command(self) -> None:
-        """PR_SOVA_PENDING primary is the address-pr command (not the developer agent)."""
+    def test_pr_sova_pending_has_review_pr_command(self) -> None:
+        """PR_SOVA_PENDING primary is review-pr (prompt user to trigger SOVA review)."""
         primary, secondary = _get_actions(WorkItemState.PR_SOVA_PENDING, issue_number="42", pr_number=123)
         assert primary is not None
-        assert primary["id"] == "address_pr"
+        assert primary["id"] == "review_pr"
         assert primary["handler"] == "run_command"
-        assert primary["handler_args"]["command"] == "address-pr"
+        assert primary["handler_args"]["command"] == "review-pr"
         assert primary["style"] == "warning"
-        review_ids = [a["id"] for a in secondary]
-        assert "review_pr" in review_ids
-        assert "integrate" in review_ids
+        secondary_ids = [a["id"] for a in secondary]
+        assert "address_pr" in secondary_ids
+        assert "integrate" in secondary_ids
 
     def test_pr_changes_requested_has_address(self) -> None:
         primary, _ = _get_actions(WorkItemState.PR_CHANGES_REQUESTED, issue_number="42", pr_number=123)
@@ -468,8 +469,8 @@ class TestApplySovaVerdict:
     def _no_review(self) -> dict:
         return {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
 
-    def _review(self, verdict: str) -> dict:
-        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "reviewed_at": None}
+    def _review(self, verdict: str, reviewed_at: str | None = None) -> dict:
+        return {"has_sova_review": True, "verdict": verdict, "finding_count": 1, "reviewed_at": reviewed_at}
 
     # -- sova_verdict=None: pass-through --
 
@@ -553,6 +554,63 @@ class TestApplySovaVerdict:
     def test_approved_verdict_does_not_affect_ci_failed(self) -> None:
         """CI failure takes priority; SOVA approve should not change the state."""
         assert _apply_sova_verdict(WorkItemState.PR_CI_FAILED, self._review("approve")) == WorkItemState.PR_CI_FAILED
+
+    # -- Staleness: human approval after SOVA review invalidates revise/block --
+
+    def test_stale_revise_verdict_skips_downgrade(self) -> None:
+        """If a human approved on GitHub after the SOVA review, the revise verdict is stale."""
+        verdict = self._review("revise", reviewed_at="2026-07-19T10:00:00Z")
+        result = _apply_sova_verdict(
+            WorkItemState.PR_READY_TO_MERGE,
+            verdict,
+            latest_approval_at="2026-07-20T12:00:00Z",
+        )
+        assert result == WorkItemState.PR_READY_TO_MERGE
+
+    def test_fresh_revise_verdict_still_downgrades(self) -> None:
+        """If the SOVA review is newer than the last GitHub approval, it still downgrades."""
+        verdict = self._review("block", reviewed_at="2026-07-20T14:00:00Z")
+        result = _apply_sova_verdict(
+            WorkItemState.PR_APPROVED,
+            verdict,
+            latest_approval_at="2026-07-19T08:00:00Z",
+        )
+        assert result == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_revise_verdict_without_approval_timestamp_still_downgrades(self) -> None:
+        """Backward compat: no latest_approval_at means no staleness check."""
+        verdict = self._review("revise", reviewed_at="2026-07-19T10:00:00Z")
+        result = _apply_sova_verdict(WorkItemState.PR_APPROVED, verdict)
+        assert result == WorkItemState.PR_CHANGES_REQUESTED
+
+    def test_revise_verdict_without_reviewed_at_still_downgrades(self) -> None:
+        """If the SOVA verdict has no timestamp, staleness check is skipped."""
+        verdict = self._review("revise")
+        result = _apply_sova_verdict(
+            WorkItemState.PR_APPROVED,
+            verdict,
+            latest_approval_at="2026-07-20T12:00:00Z",
+        )
+        assert result == WorkItemState.PR_CHANGES_REQUESTED
+
+
+class TestIsVerdictStale:
+    def test_no_approval(self) -> None:
+        assert not _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00Z"}, None)
+
+    def test_no_reviewed_at(self) -> None:
+        assert not _is_verdict_stale({"reviewed_at": None}, "2026-07-20T12:00:00Z")
+
+    def test_approval_after_review(self) -> None:
+        assert _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00Z"}, "2026-07-20T12:00:00Z")
+
+    def test_approval_before_review(self) -> None:
+        assert not _is_verdict_stale({"reviewed_at": "2026-07-20T14:00:00Z"}, "2026-07-19T08:00:00Z")
+
+    def test_mixed_timezone_formats(self) -> None:
+        """GitHub uses 'Z', Python isoformat uses '+00:00'; comparison must still work."""
+        assert _is_verdict_stale({"reviewed_at": "2026-07-19T10:00:00+00:00"}, "2026-07-20T12:00:00Z")
+        assert not _is_verdict_stale({"reviewed_at": "2026-07-20T14:00:00Z"}, "2026-07-19T08:00:00+00:00")
 
 
 class TestBuildTaskItem:

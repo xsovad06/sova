@@ -204,7 +204,7 @@ def _get_actions(
         S.PR_CI_RUNNING: (cmd("review_pr", "Review", "neutral", "review-pr"), [address]),
         S.PR_CI_FAILED: (cmd("address_pr", "Address PR", "danger", "address-pr"), [review]),
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
-        S.PR_SOVA_PENDING: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
+        S.PR_SOVA_PENDING: (cmd("review_pr", "Review PR", "warning", "review-pr"), [address, integrate]),
         S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
@@ -233,8 +233,8 @@ def compute_work_item_state(
     When present it overrides the raw GitHub state in three cases:
       - Verdict "revise"/"block": override any Integrate-bound state to PR_CHANGES_REQUESTED.
       - No SOVA review + externally approved PR (PR_APPROVED/PR_READY_TO_MERGE): override to
-        PR_SOVA_PENDING so "Address PR" is shown first, letting users handle inline comments
-        before triggering the SOVA review. PRs with no external review remain PR_AWAITING_REVIEW.
+        PR_SOVA_PENDING so "Review PR" is shown first, prompting users to trigger the SOVA
+        review. PRs with no external review remain PR_AWAITING_REVIEW.
       - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
         upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
@@ -257,7 +257,11 @@ def compute_work_item_state(
         computed = pr_data.get("computed_state", "")
         mapped = _PR_STATE_MAP.get(computed)
         if mapped is not None:
-            return _apply_sova_verdict(mapped, sova_verdict)
+            return _apply_sova_verdict(
+                mapped,
+                sova_verdict,
+                latest_approval_at=pr_data.get("latest_approval_at"),
+            )
 
     if task_state is not None:
         return _LABEL_STATE_MAP.get(task_state, WorkItemState.BACKLOG)
@@ -279,13 +283,38 @@ _VERDICT_OVERRIDEABLE = frozenset(
 )
 
 
-def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> WorkItemState:
+def _normalize_iso(ts: str) -> str:
+    """Normalize ISO 8601 timestamps so string comparison works across formats.
+
+    GitHub uses 'Z' suffix, Python's isoformat() uses '+00:00'. Replace 'Z' with
+    '+00:00' so both formats sort identically via string comparison.
+    """
+    return ts.replace("Z", "+00:00")
+
+
+def _is_verdict_stale(sova_verdict: dict, latest_approval_at: str | None) -> bool:
+    """Return True if a GitHub approval was submitted after the SOVA review."""
+    if not latest_approval_at:
+        return False
+    reviewed_at = sova_verdict.get("reviewed_at") or ""
+    if not reviewed_at:
+        return False
+    return _normalize_iso(latest_approval_at) > _normalize_iso(reviewed_at)
+
+
+def _apply_sova_verdict(
+    mapped: WorkItemState,
+    sova_verdict: dict | None,
+    *,
+    latest_approval_at: str | None = None,
+) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
 
     Three adjustments:
-      1. No SOVA review + externally approved PR: show Address PR first (PR_SOVA_PENDING)
-         so users can handle inline comments before triggering SOVA review.
-      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address via agent).
+      1. No SOVA review + externally approved PR: show Review PR first (PR_SOVA_PENDING)
+         so users can trigger SOVA review before integrating.
+      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address via agent),
+         unless a human approved on GitHub after the SOVA review (stale verdict).
       3. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
          not APPROVED; GitHub forbids self-approval): upgrade PR_AWAITING_REVIEW to
          PR_APPROVED so "Integrate PR" is shown instead of "Review".
@@ -300,6 +329,8 @@ def _apply_sova_verdict(mapped: WorkItemState, sova_verdict: dict | None) -> Wor
         return WorkItemState.PR_SOVA_PENDING
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
+        if _is_verdict_stale(sova_verdict, latest_approval_at):
+            return mapped
         return WorkItemState.PR_CHANGES_REQUESTED
 
     if has_review and verdict == "approve" and mapped == WorkItemState.PR_AWAITING_REVIEW:
