@@ -133,7 +133,7 @@ This project uses **GitHub Issues** with a project board.
 ### Commit Messages
 Conventional commits format: `type(scope): short description`.
 Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`.
-Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`, `supervisor`, `mcp`, `monitoring`, `db`.
+Scopes: `dashboard`, `commands`, `personas`, `invariants`, `knowledge`, `cli`, `docs`, `scheduler`, `ipc`, `adapters`, `roles`, `core`, `config`, `supervisor`, `mcp`, `monitoring`, `db`, `awareness`.
 The `ci` type is scopeless (repo-wide infrastructure); all other types require a scope.
 
 Examples:

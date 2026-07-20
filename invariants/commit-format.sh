@@ -15,7 +15,7 @@ if [[ "${1:-}" == "--help" ]]; then
 fi
 
 VALID_TYPES="feat|fix|refactor|test|docs|chore|ci"
-VALID_SCOPES="dashboard|commands|personas|invariants|knowledge|cli|docs|scheduler|ipc|adapters|roles|core|config|supervisor|mcp|monitoring|db"
+VALID_SCOPES="dashboard|commands|personas|invariants|knowledge|cli|docs|scheduler|ipc|adapters|roles|core|config|supervisor|mcp|monitoring|db|awareness"
 
 commits=$(git -C "$WORKTREE_DIR" log --format="%H %s" "origin/$BASE_BRANCH..HEAD" 2>/dev/null || true)
 [[ -z "$commits" ]] && exit 0
