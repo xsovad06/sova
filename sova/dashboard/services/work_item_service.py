@@ -41,7 +41,12 @@ class WorkItemState(StrEnum):
     PR_CI_RUNNING = "pr_ci_running"
     PR_CI_FAILED = "pr_ci_failed"
     PR_AWAITING_REVIEW = "pr_awaiting_review"
+    # kept for backward compat; new code should use PR_SOVA_CHANGES or PR_EXTERNAL_CHANGES
     PR_CHANGES_REQUESTED = "pr_changes_requested"
+    # SOVA reviewer said revise/block; developer agent addresses via handoff
+    PR_SOVA_CHANGES = "pr_sova_changes"
+    # external reviewer (CodeRabbit/human) requested changes; /address-pr command handles thread management
+    PR_EXTERNAL_CHANGES = "pr_external_changes"
     PR_REVIEW_ADDRESSED = "pr_review_addressed"
     PR_APPROVED = "pr_approved"
     PR_READY_TO_MERGE = "pr_ready_to_merge"
@@ -69,6 +74,8 @@ _STATE_LABELS: dict[WorkItemState, str] = {
     WorkItemState.PR_CI_FAILED: "CI Failed",
     WorkItemState.PR_AWAITING_REVIEW: "Awaiting Review",
     WorkItemState.PR_CHANGES_REQUESTED: "Changes Requested",
+    WorkItemState.PR_SOVA_CHANGES: "SOVA Changes Requested",
+    WorkItemState.PR_EXTERNAL_CHANGES: "Changes Requested",
     WorkItemState.PR_REVIEW_ADDRESSED: "Review Addressed",
     WorkItemState.PR_APPROVED: "Approved",
     WorkItemState.PR_READY_TO_MERGE: "Ready to Merge",
@@ -98,6 +105,8 @@ _STATE_COLORS: dict[WorkItemState, str] = {
     WorkItemState.PR_CI_FAILED: "bg-accent-red/20 text-accent-red",
     WorkItemState.PR_AWAITING_REVIEW: "bg-accent/20 text-accent",
     WorkItemState.PR_CHANGES_REQUESTED: _CLR_PEACH,
+    WorkItemState.PR_SOVA_CHANGES: _CLR_PEACH,
+    WorkItemState.PR_EXTERNAL_CHANGES: _CLR_PEACH,
     WorkItemState.PR_REVIEW_ADDRESSED: "bg-accent-lavender/20 text-accent-lavender",
     WorkItemState.PR_APPROVED: _CLR_GREEN,
     WorkItemState.PR_READY_TO_MERGE: _CLR_GREEN,
@@ -129,7 +138,7 @@ _PR_STATE_MAP: dict[str, WorkItemState] = {
     "ci_running": WorkItemState.PR_CI_RUNNING,
     "ci_failed": WorkItemState.PR_CI_FAILED,
     "awaiting_review": WorkItemState.PR_AWAITING_REVIEW,
-    "changes_requested": WorkItemState.PR_CHANGES_REQUESTED,
+    "changes_requested": WorkItemState.PR_EXTERNAL_CHANGES,
     "review_addressed": WorkItemState.PR_REVIEW_ADDRESSED,
     "approved": WorkItemState.PR_APPROVED,
     "approved_ci_green": WorkItemState.PR_READY_TO_MERGE,
@@ -206,6 +215,8 @@ def _get_actions(
         S.PR_AWAITING_REVIEW: (cmd("review_pr", "Review", "success", "review-pr"), [address, integrate]),
         S.PR_SOVA_PENDING: (cmd("review_pr", "Review PR", "warning", "review-pr"), [address, integrate]),
         S.PR_CHANGES_REQUESTED: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
+        S.PR_SOVA_CHANGES: (agent("address_review", "Address", "warning", "developer"), [review, integrate]),
+        S.PR_EXTERNAL_CHANGES: (cmd("address_pr", "Address PR", "warning", "address-pr"), [review, integrate]),
         S.PR_REVIEW_ADDRESSED: (cmd("review_pr", "Review", "purple", "review-pr"), [address, integrate]),
         S.PR_APPROVED: (cmd("integrate", "Integrate", "success", "integrate-pr"), [review, address]),
         S.PR_READY_TO_MERGE: (
@@ -224,17 +235,20 @@ def compute_work_item_state(
     handoff: dict | None,
     running_agent: dict | None,
     sova_verdict: dict | None = None,
+    external_reviews_enabled: bool = True,
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
     Priority: running agent > handoff > PR state (adjusted by SOVA verdict) > GitHub label.
 
     sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
-    When present it overrides the raw GitHub state in three cases:
-      - Verdict "revise"/"block": override any Integrate-bound state to PR_CHANGES_REQUESTED.
-      - No SOVA review + externally approved PR (PR_APPROVED/PR_READY_TO_MERGE): override to
-        PR_SOVA_PENDING so "Review PR" is shown first, prompting users to trigger the SOVA
-        review. PRs with no external review remain PR_AWAITING_REVIEW.
+    When present it overrides the raw GitHub state:
+      - Verdict "revise"/"block": override overrideable states to PR_SOVA_CHANGES (developer agent),
+        unless a human approved on GitHub after the SOVA review (stale verdict).
+      - Verdict from GitHub (CHANGES_REQUESTED with no SOVA override): PR_EXTERNAL_CHANGES (command).
+      - No SOVA review + externally approved PR + external_reviews_enabled: override to PR_SOVA_PENDING.
+      - No SOVA review + externally approved PR + not external_reviews_enabled: stay PR_AWAITING_REVIEW
+        so "Review" is shown directly (no inline comments to address on bot-free projects).
       - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
         upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
@@ -261,6 +275,7 @@ def compute_work_item_state(
                 mapped,
                 sova_verdict,
                 latest_approval_at=pr_data.get("latest_approval_at"),
+                external_reviews_enabled=external_reviews_enabled,
             )
 
     if task_state is not None:
@@ -272,13 +287,15 @@ def compute_work_item_state(
 # States where an Integrate button would be the primary action without SOVA override.
 _INTEGRATE_STATES = frozenset({WorkItemState.PR_APPROVED, WorkItemState.PR_READY_TO_MERGE})
 
-# States that SOVA verdict "revise"/"block" should downgrade to PR_CHANGES_REQUESTED.
-# Excludes PR_DRAFT/PR_CI_*/PR_CHANGES_REQUESTED (already showing correct action).
+# States that SOVA verdict "revise"/"block" should downgrade to PR_SOVA_CHANGES.
+# Excludes PR_DRAFT/PR_CI_*/PR_SOVA_CHANGES (already showing correct action).
+# Includes PR_EXTERNAL_CHANGES: SOVA revise overrides an external reviewer's changes-requested.
 _VERDICT_OVERRIDEABLE = frozenset(
     {
         WorkItemState.PR_AWAITING_REVIEW,
         WorkItemState.PR_APPROVED,
         WorkItemState.PR_READY_TO_MERGE,
+        WorkItemState.PR_EXTERNAL_CHANGES,
     }
 )
 
@@ -307,15 +324,18 @@ def _apply_sova_verdict(
     sova_verdict: dict | None,
     *,
     latest_approval_at: str | None = None,
+    external_reviews_enabled: bool = True,
 ) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
 
-    Three adjustments:
-      1. No SOVA review + externally approved PR: show Review PR first (PR_SOVA_PENDING)
-         so users can trigger SOVA review before integrating.
-      2. SOVA verdict is revise/block: downgrade to PR_CHANGES_REQUESTED (Address via agent),
-         unless a human approved on GitHub after the SOVA review (stale verdict).
-      3. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
+    Four adjustments:
+      1. No SOVA review + integrate-bound state + external_reviews_enabled: PR_SOVA_PENDING so users
+         trigger SOVA review before integrating.
+      2. No SOVA review + integrate-bound state + not external_reviews_enabled: return PR_AWAITING_REVIEW
+         so "Review" is shown directly (no bot inline comments to address on reviewer-free projects).
+      3. SOVA verdict is revise/block: downgrade overrideable states to PR_SOVA_CHANGES (developer agent),
+         unless a human approved on GitHub after the SOVA review (stale verdict -- return mapped).
+      4. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
          not APPROVED; GitHub forbids self-approval): upgrade PR_AWAITING_REVIEW to
          PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
@@ -326,12 +346,12 @@ def _apply_sova_verdict(
     verdict = sova_verdict.get("verdict")
 
     if not has_review and mapped in _INTEGRATE_STATES:
-        return WorkItemState.PR_SOVA_PENDING
+        return WorkItemState.PR_SOVA_PENDING if external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
         if _is_verdict_stale(sova_verdict, latest_approval_at):
             return mapped
-        return WorkItemState.PR_CHANGES_REQUESTED
+        return WorkItemState.PR_SOVA_CHANGES
 
     if has_review and verdict == "approve" and mapped == WorkItemState.PR_AWAITING_REVIEW:
         return WorkItemState.PR_APPROVED
@@ -387,6 +407,8 @@ def _build_task_item(
     running: dict | None,
     handoff: dict | None,
     sova_verdict: dict | None = None,
+    *,
+    external_reviews_enabled: bool = True,
 ) -> dict:
     """Build a work item from a queue task and its linked PR/handoff/agent."""
     issue_num = str(task["issue"])
@@ -402,6 +424,7 @@ def _build_task_item(
         handoff=handoff,
         running_agent=running,
         sova_verdict=sova_verdict if pr_data else None,
+        external_reviews_enabled=external_reviews_enabled,
     )
 
     # Synthesize a resume action for awaiting_approval runs without handoff
@@ -452,6 +475,8 @@ def _build_pr_item(
     handoff: dict | None,
     issue_num: str | None,
     sova_verdict: dict | None = None,
+    *,
+    external_reviews_enabled: bool = True,
 ) -> dict:
     """Build a work item from a standalone or unlinked PR."""
     state = compute_work_item_state(
@@ -460,6 +485,7 @@ def _build_pr_item(
         handoff=handoff,
         running_agent=running,
         sova_verdict=sova_verdict,
+        external_reviews_enabled=external_reviews_enabled,
     )
     primary, secondary = _get_actions(state, issue_number=issue_num, pr_number=pr["number"])
 
@@ -494,6 +520,8 @@ def _append_standalone_pr_items(
     running_by_issue: dict[str, dict],
     handoffs_by_issue: dict[str, dict],
     verdicts_by_issue: dict[str, dict] | None = None,
+    *,
+    external_reviews_enabled: bool = True,
 ) -> None:
     """Add work items for PRs not already covered by a queue task."""
     for pr in prs:
@@ -512,7 +540,11 @@ def _append_standalone_pr_items(
                 verdict = verdicts_by_issue.get(f"pr:{pr['number']}")
         else:
             verdict = None
-        items.append(_build_pr_item(pr, running, handoff, issue_num, sova_verdict=verdict))
+        items.append(
+            _build_pr_item(
+                pr, running, handoff, issue_num, sova_verdict=verdict, external_reviews_enabled=external_reviews_enabled
+            )
+        )
 
 
 def _find_integrate_action(item: dict) -> dict | None:
@@ -579,6 +611,17 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     if project_dir:
         slug = project_dir.name
 
+    # Load config early so external_reviews_enabled is available when building items.
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        external_reviews_enabled = cfg.external_reviews.enabled
+    except Exception:
+        log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
+        cfg = None
+        external_reviews_enabled = True  # Safe default: assume external reviewers exist
+
     queue, prs, handoffs, agents_data = await _fetch_all_sources(
         project_dir=project_dir,
         slug=slug,
@@ -608,6 +651,7 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
                 running_by_issue.get(issue_num),
                 handoffs_by_issue.get(issue_num),
                 sova_verdict=verdicts_by_issue.get(issue_num) if pr_data else None,
+                external_reviews_enabled=external_reviews_enabled,
             )
         )
 
@@ -618,17 +662,11 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
         running_by_issue,
         handoffs_by_issue,
         verdicts_by_issue=verdicts_by_issue,
+        external_reviews_enabled=external_reviews_enabled,
     )
 
     _sort_items(items)
 
-    try:
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
-    except Exception:
-        log.warning("work_items.config_load_failed", project_dir=str(project_dir), exc_info=True)
-        cfg = None
     await _attach_integration_gates(items, prs_by_issue, cfg)
 
     pa = _get_project_agents(slug)
@@ -822,6 +860,8 @@ _STATE_SORT_ORDER: dict[str, int] = {
     WorkItemState.PR_APPROVED: 2,
     WorkItemState.PR_CI_FAILED: 3,
     WorkItemState.PR_CHANGES_REQUESTED: 3,
+    WorkItemState.PR_SOVA_CHANGES: 3,
+    WorkItemState.PR_EXTERNAL_CHANGES: 3,
     WorkItemState.PR_SOVA_PENDING: 3,
 }
 
