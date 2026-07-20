@@ -63,7 +63,7 @@ Return ONLY valid JSON, no other text:
 
 
 def _make_cache_key(pr_number: int, deterministic_state: str, pr_computed_state: str) -> str:
-    return f"{pr_number}:{deterministic_state}:{pr_computed_state}"
+    return f"{pr_number}|{deterministic_state}|{pr_computed_state}"
 
 
 def _get_cached(key: str) -> dict | None:
@@ -109,17 +109,21 @@ async def get_llm_suggestion(
     if cached is not None:
         return cached
 
-    prompt = _PROMPT.format(
-        pr_computed_state=pr_computed_state or "unknown",
-        has_sova_review=has_sova_review,
-        sova_verdict=sova_verdict or "none",
-        mergeable=mergeable or "unknown",
-        review_decision=review_decision or "none",
-        ci_passed=ci_passed,
-        external_reviews_enabled=external_reviews_enabled,
-        deterministic_action_id=deterministic_action_id,
-        deterministic_action_label=_PR_ACTION_LABELS.get(deterministic_action_id, deterministic_action_id),
-    )
+    try:
+        prompt = _PROMPT.format(
+            pr_computed_state=pr_computed_state or "unknown",
+            has_sova_review=has_sova_review,
+            sova_verdict=sova_verdict or "none",
+            mergeable=mergeable or "unknown",
+            review_decision=review_decision or "none",
+            ci_passed=ci_passed,
+            external_reviews_enabled=external_reviews_enabled,
+            deterministic_action_id=deterministic_action_id,
+            deterministic_action_label=_PR_ACTION_LABELS.get(deterministic_action_id, deterministic_action_id),
+        )
+    except Exception:
+        log.warning("llm_suggestion.prompt_format_failed", pr=pr_number, exc_info=True)
+        return None
 
     try:
         async with httpx.AsyncClient() as client:
