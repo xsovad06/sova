@@ -1310,6 +1310,20 @@ class TestResolveWorktreeConflictPruneFailed:
 
 
 class TestSyncBranchWorktreeConflict:
+    async def test_returns_early_when_branch_active_in_another_worktree(self) -> None:
+        """When git checkout reports 'already used by worktree', sync_branch returns
+        early after the plain fetch -- no exception, no refspec attempt."""
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+        ):
+            mock_checked.return_value = _shell_ok()  # fetch
+            mock_run.return_value = _shell_fail(stderr="fatal: 'main' is already used by worktree '/repo'")
+
+            await sync_branch("main", cwd=Path("/repo"))  # must not raise
+
+        mock_checked.assert_awaited_once()  # only the fetch, no pull
+
     async def test_retries_after_worktree_conflict(self) -> None:
         with (
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,

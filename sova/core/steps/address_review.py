@@ -19,7 +19,9 @@ def _load_review_findings(project_dir: Path, issue: str = "") -> list[dict]:
     handoff = read_handoff_file(project_dir, issue=issue or None)
     if handoff is None:
         return []
-    return handoff.details.get("findings", [])
+    # "pending_findings" is the canonical key written by ReviewerRole.
+    # "findings" is kept as a legacy fallback for older handoff files.
+    return handoff.details.get("pending_findings") or handoff.details.get("findings", [])
 
 
 async def _load_review_findings_from_db(task_run_id: int | None) -> list[dict]:
