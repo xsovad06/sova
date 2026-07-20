@@ -54,10 +54,15 @@ async def _run_workflow(
     from sova.config.loader import load_config
     from sova.core.context import ExecutionContext
     from sova.db.session import init_db
+    from sova.git.worktree import get_primary_worktree_root
     from sova.roles.dispatcher import dispatch
     from sova.utils.logging import setup_logging
 
-    resolved_dir = project_dir or Path.cwd()
+    # When called from inside a linked git worktree (e.g. a dashboard-spawned
+    # agent running in .claude/worktrees/<id>), Path.cwd() is the worktree
+    # directory, not the project root.  Resolve to the primary worktree root so
+    # that config, DB, and pipeline operations all use the correct base path.
+    resolved_dir = project_dir or await get_primary_worktree_root()
     config = load_config(resolved_dir)
 
     setup_logging(log_file=resolved_dir / ".claude" / "sova.log")

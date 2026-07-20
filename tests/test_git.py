@@ -40,6 +40,7 @@ from sova.git.worktree import (
     cleanup_worktree,
     create_worktree,
     find_worktree_by_branch,
+    get_primary_worktree_root,
     list_worktrees,
     resolve_worktree_conflict,
 )
@@ -1356,6 +1357,55 @@ class TestSyncBranchWorktreeConflict:
 
             with pytest.raises(RuntimeError, match="Failed to resolve worktree conflict"):
                 await sync_branch("feat/x", cwd=Path("/repo"))
+
+    async def test_returns_cleanly_when_active_in_another_worktree(self) -> None:
+        """sync_branch must return without error when the branch is checked out in another
+        worktree.  git refuses fetch refspecs into a checked-out branch, so the correct
+        path is to rely on the origin/<branch> remote ref updated by the first plain fetch."""
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+        ):
+            # First call to run() is checkout -- fails with 'already used by worktree'
+            mock_run.return_value = _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'")
+            mock_checked.return_value = _shell_ok()  # fetch
+
+            await sync_branch("main", cwd=Path("/worktree"))
+
+        # Only the initial fetch should be called; no checkout retry, no fetch refspec
+        mock_checked.assert_awaited_once()
+        mock_run.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# get_primary_worktree_root
+# ---------------------------------------------------------------------------
+
+
+class TestGetPrimaryWorktreeRoot:
+    async def test_returns_cwd_for_primary_worktree(self) -> None:
+        """When called from the primary worktree, git-common-dir is relative (.git),
+        so the function returns the provided cwd unchanged."""
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=".git")
+            result = await get_primary_worktree_root(cwd=Path("/project"))
+        assert result == Path("/project")
+
+    async def test_resolves_primary_root_from_linked_worktree(self) -> None:
+        """When called from a linked worktree, git-common-dir is absolute (points
+        to the shared .git inside the primary worktree), so the function returns
+        its parent as the primary root."""
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout="/project/.git")
+            result = await get_primary_worktree_root(cwd=Path("/project/.claude/worktrees/42"))
+        assert result == Path("/project")
+
+    async def test_falls_back_to_cwd_on_git_failure(self) -> None:
+        """When git rev-parse fails (not a git repo), the function falls back to cwd."""
+        with patch("sova.git.worktree.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_fail(stderr="not a git repository", returncode=128)
+            result = await get_primary_worktree_root(cwd=Path("/some/path"))
+        assert result == Path("/some/path")
 
 
 # ---------------------------------------------------------------------------

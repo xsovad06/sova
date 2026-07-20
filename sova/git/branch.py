@@ -31,13 +31,27 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     If the checkout fails because the branch is already checked out in a
     worktree, automatically resolves the conflict by removing the stale
     worktree and retrying.
+
+    If the branch is in active use by another worktree (the primary repo
+    checked out as the base branch while we run inside a feature worktree),
+    the local ref is updated directly via a fetch refspec instead of
+    checking out the branch, which git forbids across worktrees.
     """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
 
     checkout_result = await run("git", "checkout", branch, cwd=cwd)
     if not checkout_result.success:
-        if "already checked out" in checkout_result.stderr:
+        stderr = checkout_result.stderr
+        if "already used by worktree" in stderr:
+            # Branch is actively checked out in another worktree -- git refuses
+            # fetch refspecs into a currently checked-out branch.  The plain
+            # fetch above already updated refs/remotes/origin/{branch}, which is
+            # sufficient for callers that rebase onto origin/{branch}.
+            log.warning("git.sync_branch.active_worktree", branch=branch)
+            return
+
+        if "already checked out" in stderr:
             from sova.git.worktree import resolve_worktree_conflict
 
             log.warning("git.sync_branch.worktree_conflict", branch=branch)
