@@ -129,6 +129,8 @@ def _extract_failure_detail(result: ShellResult) -> str:
     if result.stdout.strip():
         try:
             data = json.loads(result.stdout)
+            if not isinstance(data, dict):
+                return result.stdout[:500]
             parts: list[str] = []
             if data.get("terminal_reason"):
                 parts.append(f"terminal_reason={data['terminal_reason']}")
