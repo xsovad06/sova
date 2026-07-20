@@ -251,6 +251,107 @@ class TestInvoke:
         assert result.is_error
         assert result.stop_reason == "error"
 
+    async def test_invoke_cli_failure_extracts_stdout_json(self, mock_run: AsyncMock) -> None:
+        """When stderr is empty, error detail should come from stdout JSON."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        error_json = json.dumps(
+            {
+                "is_error": True,
+                "terminal_reason": "budget_exceeded",
+                "result": "Max budget of $2.00 exceeded",
+            }
+        )
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout=error_json,
+            stderr="",
+        )
+
+        with pytest.raises(RuntimeError, match="budget_exceeded") as exc_info:
+            await invoke("Hello")
+        assert "is_error=true" in str(exc_info.value)
+
+    async def test_invoke_cli_failure_prefers_stderr(self, mock_run: AsyncMock) -> None:
+        """When stderr has content, it should be used over stdout."""
+        from sova.llm.client import invoke
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=1,
+            stdout='{"result": "ignored"}',
+            stderr="actual error message",
+        )
+
+        with pytest.raises(RuntimeError, match="actual error message"):
+            await invoke("Hello")
+
+
+# ---------------------------------------------------------------------------
+# _extract_failure_detail
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFailureDetail:
+    def test_prefers_stderr_when_present(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=1, stdout="", stderr="real error")
+        assert _extract_failure_detail(result) == "real error"
+
+    def test_extracts_terminal_reason_from_stdout_json(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        stdout = json.dumps(
+            {
+                "terminal_reason": "budget_exceeded",
+                "is_error": True,
+                "result": "Budget limit reached",
+            }
+        )
+        result = ShellResult(returncode=1, stdout=stdout, stderr="")
+        detail = _extract_failure_detail(result)
+        assert "terminal_reason=budget_exceeded" in detail
+        assert "is_error=true" in detail
+        assert "Budget limit reached" in detail
+
+    def test_handles_stdout_json_with_only_result(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        stdout = json.dumps({"result": "Something went wrong"})
+        result = ShellResult(returncode=1, stdout=stdout, stderr="")
+        detail = _extract_failure_detail(result)
+        assert "Something went wrong" in detail
+
+    def test_handles_invalid_json_stdout(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=1, stdout="not json {{{", stderr="")
+        detail = _extract_failure_detail(result)
+        assert "not json" in detail
+
+    def test_handles_empty_stdout_and_stderr(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        result = ShellResult(returncode=1, stdout="", stderr="")
+        assert _extract_failure_detail(result) == "(no error detail captured)"
+
+    def test_truncates_long_result(self) -> None:
+        from sova.llm.providers.claude_code import _extract_failure_detail
+        from sova.utils.shell import ShellResult
+
+        long_text = "x" * 500
+        stdout = json.dumps({"result": long_text})
+        result = ShellResult(returncode=1, stdout=stdout, stderr="")
+        detail = _extract_failure_detail(result)
+        assert len(detail) <= 310
+
 
 # ---------------------------------------------------------------------------
 # Client: invoke_command()
@@ -913,6 +1014,33 @@ class TestLLMProvider:
 
         with pytest.raises(RuntimeError, match="Failed to parse Claude CLI JSON"):
             _parse_json_output("not valid json {{{")
+
+    def test_build_args_includes_permission_mode_auto(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args("hello")
+        assert "--permission-mode" in args
+        pm_idx = args.index("--permission-mode")
+        assert args[pm_idx + 1] == "auto"
+
+    def test_build_args_includes_all_flags(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args(
+            "test prompt",
+            model="opus",
+            max_budget_usd=Decimal("5.00"),
+            output_format="stream-json",
+        )
+        assert args[0] == "claude"
+        assert "-p" in args
+        assert "--output-format" in args
+        assert "stream-json" in args
+        assert "--model" in args
+        assert "opus" in args
+        assert "--max-budget-usd" in args
+        assert "5.00" in args
+        assert "--permission-mode" in args
 
     async def test_invoke_command_delegates_to_invoke(self) -> None:
         from sova.llm.provider import LLMProvider
