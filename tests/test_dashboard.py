@@ -2394,6 +2394,17 @@ class TestDuplicateAgentPrevention:
         # reviewer should NOT have --pr recovered from history
         assert "--pr" not in spawned_prompt[0], f"Reviewer should not get --pr: {spawned_prompt[0]}"
 
+    async def test_recover_pr_number_returns_none_on_db_error(self) -> None:
+        """_recover_last_pr_number must return None (not raise) when the DB query fails."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _recover_last_pr_number
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("db boom")):
+            result = await _recover_last_pr_number("42", Path("/tmp/proj"))
+
+        assert result is None
+
     async def test_start_command_rejects_duplicate_issue(self) -> None:
         """start_command() should reject if the same issue already has an active agent."""
         from unittest.mock import MagicMock, patch
@@ -2828,6 +2839,49 @@ class TestAutoHandoff:
 
         mock_cmd.assert_awaited_once_with("integrate-pr", {"issue": "42", "pr": 10}, slug=None)
         mock_clear.assert_called_once()
+
+    async def test_auto_handoff_invalid_pr_number_falls_back_to_none(self) -> None:
+        """When args['pr'] is non-numeric, int() raises ValueError.
+        _process_auto_handoff must catch it, log a warning, and continue with pr_num=None."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import AgentState, _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = AgentState(run_id=5, issue="55", role="developer", process=MagicMock())
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="55",
+            pr_number=None,
+            summary="findings",
+            next_actions=[
+                HandoffAction(
+                    id="address_review",
+                    label="Address",
+                    mode="agent",
+                    args={"issue": "55", "role": "developer", "pr": "pr-not-a-number"},
+                    auto_execute=True,
+                ),
+            ],
+        )
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch.object(
+                agent_lifecycle, "start_agent", new_callable=AsyncMock, return_value={"status": "started"}
+            ) as mock_start,
+            patch("sova.dashboard.services.handoff_service.clear_handoff"),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=MagicMock(pipeline=MagicMock(max_address_review_cycles=0)),
+            ),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_awaited_once_with("55", role="developer", pr_number=None, slug=None)
 
     async def test_auto_handoff_no_handoff_file(self) -> None:
         """_process_auto_handoff should handle missing handoff gracefully."""

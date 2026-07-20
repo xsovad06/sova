@@ -420,6 +420,9 @@ function renderTaskCard(item) {
     prBadge = '<' + openTag + ' class="text-xs px-2 py-0.5 rounded-full ' + prStateClass +
       ' whitespace-nowrap shrink-0' + (isLink ? ' cursor-pointer hover:brightness-125' : '') + '">' +
       'PR #' + escapeHtml(String(item.pr_details.number)) + '</' + closeTag + '>';
+  } else if (item.pr_number) {
+    prBadge = '<span class="text-xs px-2 py-0.5 rounded-full bg-gray-600/30 text-gray-400 whitespace-nowrap shrink-0">' +
+      prLink(item.pr_number) + '</span>';
   }
 
   var needsAttention = item.state === 'handoff_pending' || item.state === 'spec_review';
