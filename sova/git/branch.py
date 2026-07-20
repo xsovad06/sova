@@ -44,11 +44,16 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
     if not checkout_result.success:
         stderr = checkout_result.stderr
         if "already used by worktree" in stderr:
-            # Branch is actively checked out in another worktree -- git refuses
-            # fetch refspecs into a currently checked-out branch.  The plain
-            # fetch above already updated refs/remotes/origin/{branch}, which is
-            # sufficient for callers that rebase onto origin/{branch}.
+            # Branch is actively checked out in the primary worktree (not a
+            # stale worktree). Update the local ref directly via fetch refspec
+            # so downstream rebase/merge ops see an up-to-date local branch.
             log.warning("git.sync_branch.active_worktree", branch=branch)
+            fetch_ref = await run("git", "fetch", "origin", f"{branch}:{branch}", cwd=cwd)
+            if not fetch_ref.success:
+                # Non-fast-forward or other failure: local ref stays as-is but
+                # origin/{branch} was updated by the first fetch, which is
+                # sufficient for rebase steps that target origin/{branch}.
+                log.warning("git.sync_branch.ref_update_failed", branch=branch, stderr=(fetch_ref.stderr or "")[:200])
             return
 
         if "already checked out" in stderr:

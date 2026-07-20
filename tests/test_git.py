@@ -1360,21 +1360,25 @@ class TestSyncBranchWorktreeConflict:
 
     async def test_returns_cleanly_when_active_in_another_worktree(self) -> None:
         """sync_branch must return without error when the branch is checked out in another
-        worktree.  git refuses fetch refspecs into a checked-out branch, so the correct
-        path is to rely on the origin/<branch> remote ref updated by the first plain fetch."""
+        worktree.  The code attempts a fetch refspec (branch:branch) to keep the local
+        ref up to date, then returns regardless of whether that fetch succeeds."""
         with (
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
         ):
-            # First call to run() is checkout -- fails with 'already used by worktree'
-            mock_run.return_value = _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'")
-            mock_checked.return_value = _shell_ok()  # fetch
+            # First call: checkout fails with 'already used by worktree'
+            # Second call: fetch refspec succeeds
+            mock_run.side_effect = [
+                _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'"),
+                _shell_ok(),
+            ]
+            mock_checked.return_value = _shell_ok()  # initial fetch
 
             await sync_branch("main", cwd=Path("/worktree"))
 
-        # Only the initial fetch should be called; no checkout retry, no fetch refspec
+        # Initial fetch via run_checked, then checkout + fetch-refspec via run
         mock_checked.assert_awaited_once()
-        mock_run.assert_awaited_once()
+        assert mock_run.await_count == 2
 
 
 # ---------------------------------------------------------------------------
