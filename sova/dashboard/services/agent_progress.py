@@ -17,7 +17,7 @@ ADDRESS_REVIEW_PIPELINE = get_address_review_step_names()
 RESEARCHER_PIPELINE = get_researcher_step_names()
 PLANNER_PIPELINE = get_planner_step_names()
 
-_ADDRESS_REVIEW_ONLY = frozenset({"rebase", "address_review", "handoff_to_user"})
+_ADDRESS_REVIEW_ONLY = frozenset({"ensure_worktree", "rebase", "address_review", "handoff_to_user"})
 _STANDALONE_ROLES = frozenset({"reviewer"})
 _RESEARCHER_ONLY = frozenset({"fetch_task", "research"})
 _PLANNER_ONLY = frozenset({"scan_project", "generate_tasks", "validate_tasks"})

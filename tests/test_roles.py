@@ -672,6 +672,33 @@ class TestDiscoverAddressReviewContext:
 
         assert ctx.worktree_dir is None
 
+    async def test_pr_based_worktree_discovery(self, tmp_path: Path) -> None:
+        """When issue is missing but pr_number is set, discover pr-N worktree."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.roles.developer import DeveloperRole
+
+        ctx = _make_ctx(
+            issue_number="",
+            pr_number=42,
+            branch_name="fix/standalone",
+            project_dir=tmp_path,
+        )
+        role = DeveloperRole()
+        wt_path = tmp_path / ".claude" / "worktrees" / "pr-42"
+        wt_path.mkdir(parents=True)
+
+        with patch(
+            "sova.roles.developer.find_worktree_by_branch",
+            new_callable=AsyncMock,
+        ) as mock_find:
+            await role._discover_address_review_context(ctx)
+
+        assert ctx.worktree_dir == wt_path
+        mock_find.assert_not_awaited()
+
+
+
 
 # ---------------------------------------------------------------------------
 # Reviewer role
