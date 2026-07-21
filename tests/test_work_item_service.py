@@ -791,6 +791,38 @@ class TestBuildTaskItem:
         item = _build_task_item(task, pr_data=None, running=None, handoff=None)
         assert item["last_failed"] is True
 
+    def test_jira_metadata_fields(self) -> None:
+        task = {
+            "issue": "42",
+            "title": "Fix bug",
+            "state": "triaged",
+            "labels": [],
+            "priority": 2,
+            "story_points": 3.0,
+            "sprint": "Sprint 5",
+            "components": ["RBAC"],
+            "jira_status": "In Progress",
+            "jira_priority": "High",
+            "updated_at": "2026-06-10T08:00:00Z",
+        }
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert item["story_points"] == 3.0
+        assert item["sprint"] == "Sprint 5"
+        assert item["components"] == ["RBAC"]
+        assert item["jira_status"] == "In Progress"
+        assert item["jira_priority"] == "High"
+        assert item["updated_at"] == "2026-06-10T08:00:00Z"
+
+    def test_jira_metadata_defaults(self) -> None:
+        task = {"issue": "42", "title": "Fix bug", "state": "triaged", "labels": [], "priority": 2}
+        item = _build_task_item(task, pr_data=None, running=None, handoff=None)
+        assert item["story_points"] is None
+        assert item["sprint"] == ""
+        assert item["components"] == []
+        assert item["jira_status"] == ""
+        assert item["jira_priority"] == ""
+        assert item["updated_at"] == ""
+
 
 class TestBuildPrItem:
     def test_standalone_pr(self) -> None:
@@ -840,6 +872,53 @@ class TestFormatHelpers:
         result = _format_pr_details({"number": 42, "computed_state": "approved", "ci_status": "passed"})
         assert result["number"] == 42
         assert result["computed_state"] == "approved"
+
+    def test_format_pr_details_enriched_fields(self) -> None:
+        pr = {
+            "number": 42,
+            "computed_state": "approved",
+            "ci_status": "passed",
+            "author": "dev",
+            "age_seconds": 3600,
+            "is_draft": False,
+            "additions": 100,
+            "deletions": 20,
+            "changed_files": 5,
+            "thread_total": 3,
+            "thread_resolved": 2,
+            "review_logins": ["reviewer1"],
+            "assignees": ["dev"],
+            "updated_at": "2026-06-02T12:00:00Z",
+            "commit_count": 4,
+        }
+        result = _format_pr_details(pr)
+        assert result["author"] == "dev"
+        assert result["age_seconds"] == 3600
+        assert result["is_draft"] is False
+        assert result["additions"] == 100
+        assert result["deletions"] == 20
+        assert result["changed_files"] == 5
+        assert result["thread_total"] == 3
+        assert result["thread_resolved"] == 2
+        assert result["review_logins"] == ["reviewer1"]
+        assert result["assignees"] == ["dev"]
+        assert result["updated_at"] == "2026-06-02T12:00:00Z"
+        assert result["commit_count"] == 4
+
+    def test_format_pr_details_defaults(self) -> None:
+        result = _format_pr_details({"number": 42})
+        assert result["author"] == ""
+        assert result["age_seconds"] == 0
+        assert result["is_draft"] is False
+        assert result["additions"] == 0
+        assert result["deletions"] == 0
+        assert result["changed_files"] == 0
+        assert result["thread_total"] == 0
+        assert result["thread_resolved"] == 0
+        assert result["review_logins"] == []
+        assert result["assignees"] == []
+        assert result["updated_at"] == ""
+        assert result["commit_count"] == 0
 
     def test_extract_handoff_summary(self) -> None:
         h = {"status": "awaiting_action", "summary": "All good"}
