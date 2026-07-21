@@ -351,7 +351,9 @@ def _verdict_label(findings: list[ReviewFinding]) -> str:
 def _format_findings_body(findings: list[ReviewFinding], summary: str) -> str:
     """Build the shared review body used by both review API and comment fallback."""
     verdict = _verdict_label(findings)
-    lines = [f"## Review: {verdict}", ""]
+    # Machine-readable marker for cross-instance SOVA review detection.
+    # The dashboard scans GitHub reviews for this when no local TaskRun exists.
+    lines = [f"<!-- sova-review: {verdict.lower()} -->", "", f"## Review: {verdict}", ""]
 
     if not findings:
         if summary:
