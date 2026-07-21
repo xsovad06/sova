@@ -161,8 +161,7 @@ class MonitorCIStep(BaseStep):
             completed_count = sum(1 for c in checks if c.is_completed)
             self._write_heartbeat(
                 ctx,
-                f"CI poll: {elapsed}s/{max_wait}s elapsed, "
-                f"{completed_count}/{len(checks)} checks completed",
+                f"CI poll: {elapsed}s/{max_wait}s elapsed, {completed_count}/{len(checks)} checks completed",
             )
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval

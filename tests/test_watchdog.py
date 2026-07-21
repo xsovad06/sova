@@ -32,6 +32,7 @@ def _make_config(**overrides: object) -> WatchdogConfig:
         "no_output_warn_minutes": 15,
         "no_output_kill_minutes": 25,
         "step_warn_minutes": 45,
+        "step_kill_minutes": 60,
         "cooldown_minutes": 10,
     }
     defaults.update(overrides)
@@ -75,6 +76,7 @@ class TestWatchdogConfig:
         assert cfg.no_output_warn_minutes == 15
         assert cfg.no_output_kill_minutes == 25
         assert cfg.step_warn_minutes == 45
+        assert cfg.step_kill_minutes == 60
         assert cfg.cooldown_minutes == 10
 
     def test_custom_values(self) -> None:
@@ -143,7 +145,7 @@ class TestDetectAnomalies:
         findings = wd._detect_anomalies(run, datetime.now(timezone.utc), {})
         assert len(findings) == 1
         assert findings[0].signal == AnomalySignal.ZOMBIE_PROCESS
-        assert findings[0].action == WatchdogAction.WARN
+        assert findings[0].action == WatchdogAction.KILL
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
     def test_no_output_warn(self, _mock_alive: MagicMock) -> None:
@@ -191,6 +193,20 @@ class TestDetectAnomalies:
         step_warn = [f for f in findings if f.signal == AnomalySignal.STEP_TIMEOUT_WARN]
         assert len(step_warn) == 1
         assert step_warn[0].action == WatchdogAction.WARN
+
+    @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
+    def test_step_timeout_kill(self, _mock_alive: MagicMock) -> None:
+        wd = _make_watchdog(step_warn_minutes=45, step_kill_minutes=60)
+        now = datetime.now(timezone.utc)
+        run = _make_run(
+            current_step="monitor_ci",
+            started_at=now - timedelta(minutes=70),
+        )
+        wd._step_started_at[(run.id, "monitor_ci")] = time.monotonic() - (70 * 60)
+        findings = wd._detect_anomalies(run, now, {run.id: now - timedelta(minutes=1)})
+        step_kill = [f for f in findings if f.signal == AnomalySignal.STEP_TIMEOUT_KILL]
+        assert len(step_kill) == 1
+        assert step_kill[0].action == WatchdogAction.KILL
 
     @patch("sova.supervisor.watchdog._is_process_alive", return_value=True)
     def test_no_anomalies_healthy_run(self, _mock_alive: MagicMock) -> None:
@@ -558,6 +574,14 @@ class TestConfigValidation:
         assert cfg.no_output_warn_minutes == 10
         assert cfg.no_output_kill_minutes == 20
 
+    def test_step_kill_must_exceed_step_warn(self) -> None:
+        with pytest.raises(ValueError, match="step_kill_minutes"):
+            WatchdogConfig(step_warn_minutes=60, step_kill_minutes=60)
+
+    def test_step_kill_less_than_warn_rejected(self) -> None:
+        with pytest.raises(ValueError, match="step_kill_minutes"):
+            WatchdogConfig(step_warn_minutes=60, step_kill_minutes=30)
+
 
 class TestConfigRegistration:
     def test_watchdog_in_project_config(self) -> None:
@@ -589,6 +613,7 @@ class TestConfigRegistration:
             "watchdog.no_output_warn_minutes",
             "watchdog.no_output_kill_minutes",
             "watchdog.step_warn_minutes",
+            "watchdog.step_kill_minutes",
             "watchdog.cooldown_minutes",
         ]
         for key in expected_keys:
