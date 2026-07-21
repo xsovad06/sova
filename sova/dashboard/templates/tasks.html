@@ -53,10 +53,10 @@ async function loadTasks() {
       container.innerHTML = '<p class="text-gray-500 text-sm">No active tasks</p>';
     } else {
       container.innerHTML = activeData.tasks.map(function(t) {
-        var prBadge = t.pr_number ? '<span class="text-xs">' + prLink(t.pr_number) + '</span>' : '';
+        var prBadge = (t.issue_number && t.pr_number) ? '<span class="text-xs">' + prLink(t.pr_number) + '</span>' : '';
         return '<div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">' +
           '<div class="flex items-center justify-between mb-2">' +
-            '<span class="text-sm font-medium">' + issueLink(t.issue_number || t.id) + '</span>' +
+            '<span class="text-sm font-medium">' + issueOrPrLink(t.issue_number, t.pr_number) + '</span>' +
             statusBadge(t.status) +
           '</div>' +
           '<div class="space-y-1 text-xs text-gray-400">' +
@@ -79,7 +79,7 @@ async function loadTasks() {
       var rows = historyData.tasks.map(function(t) {
         var endedAt = t.ended_at ? new Date(t.ended_at).toLocaleDateString() : '--';
         return '<tr class="border-b border-gray-700/30 hover:bg-surface-hover/50">' +
-          '<td class="px-4 py-2 text-sm">' + issueLink(t.issue_number || t.id) + '</td>' +
+          '<td class="px-4 py-2 text-sm">' + issueOrPrLink(t.issue_number, t.pr_number) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.role || '--') + '</td>' +
           '<td class="px-4 py-2 text-sm">' + statusBadge(t.status) + '</td>' +
           '<td class="px-4 py-2 text-sm text-gray-400">' + escapeHtml(t.current_step || '--') + '</td>' +
@@ -89,7 +89,7 @@ async function loadTasks() {
       }).join('');
       histEl.innerHTML = '<table class="w-full text-left">' +
         '<thead><tr class="border-b border-gray-700/50 text-xs text-gray-500 uppercase">' +
-          '<th class="px-4 py-2">Issue</th><th class="px-4 py-2">Role</th><th class="px-4 py-2">Status</th>' +
+          '<th class="px-4 py-2">Issue / PR</th><th class="px-4 py-2">Role</th><th class="px-4 py-2">Status</th>' +
           '<th class="px-4 py-2">Last Step</th><th class="px-4 py-2">Cost</th><th class="px-4 py-2">Ended</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table>';
     }

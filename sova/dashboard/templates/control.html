@@ -28,7 +28,7 @@
       </div>
       <div class="flex items-center gap-2">
         <span id="handoff-issue" class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple"></span>
-        <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent/20 text-accent"></span>
+        <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent-lavender/20 text-accent-lavender"></span>
         <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss handoff">
           Dismiss
         </button>
@@ -523,7 +523,7 @@ async function checkInterrupted() {
       const div = document.createElement('div');
       div.className = 'flex items-center justify-between bg-surface rounded px-3 py-2 border border-gray-700/30';
       div.innerHTML = `
-        <span class="text-sm text-gray-300">${issueLink(issue)}${role} <span class="text-xs text-gray-500">${started}</span></span>
+        <span class="text-sm text-gray-300">${issueOrPrLink(issue, run.pr_number)}${role} <span class="text-xs text-gray-500">${started}</span></span>
         <button onclick="restartRun('${safeIssue}', '${safeRole}')"
                 class="text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
           Restart

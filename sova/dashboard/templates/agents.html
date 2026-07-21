@@ -446,7 +446,7 @@ function renderTaskCard(item) {
   var issueDisplay = item.jira_key || item.issue_number;
   var issueRef = (item.issue_number || item.jira_key)
     ? '<span class="text-xs font-medium shrink-0">' + issueLink(issueDisplay, item.url) + '</span>'
-    : '<span class="text-xs font-medium shrink-0 text-gray-500">PR #' + escapeHtml(String(item.pr_number)) + '</span>';
+    : '<span class="text-xs font-medium shrink-0">' + prLink(item.pr_number) + '</span>';
 
   var prNum = item.pr_number || (item.last_run ? item.last_run.pr_number : null);
   var menuIssue = item.issue_number || ('pr-' + item.pr_number);
@@ -1174,8 +1174,8 @@ function renderAgentCard(agent) {
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
-  var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
-  var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role, agent.pipeline_variant));
+  var issueLabel = agent.issue ? issueLink(agent.issue) : (agent.pr_number ? prLink(agent.pr_number) : escapeHtml(formatRole(agent.role, agent.pipeline_variant)));
+  var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
     '<div class="flex items-center justify-between mb-3 cursor-pointer hover:opacity-80" onclick="window.location=\'' + detailUrl + '\'">' +
@@ -1214,8 +1214,8 @@ function renderCompletedCard(agent) {
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
-  var prBadge = agent.pr_number ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
-  var issueLabel = agent.issue ? issueLink(agent.issue) : escapeHtml(formatRole(agent.role));
+  var issueLabel = agent.issue ? issueLink(agent.issue) : (agent.pr_number ? prLink(agent.pr_number) : escapeHtml(formatRole(agent.role)));
+  var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
   var rerunBtn = '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task" ' +
     'data-issue="' + escapeHtml(String(agent.issue)) + '" data-role="' + escapeHtml(agent.role || '') + '" data-pr="' + escapeHtml(String(parseInt(agent.pr_number, 10) || '')) + '">Re-run</button>';
@@ -1365,7 +1365,7 @@ function updateLogTabs(agents) {
     var colors = roleColor(a.role);
     var isActive = activeLogRunId === a.run_id;
     var activeClass = isActive ? 'bg-surface text-white border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300';
-    var tabLabel = a.issue ? '#' + a.issue : formatRole(a.role, a.pipeline_variant);
+    var tabLabel = a.issue ? '#' + a.issue : (a.pr_number ? 'PR #' + a.pr_number : formatRole(a.role, a.pipeline_variant));
     return '<button onclick="viewLogs(' + a.run_id + ')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
       escapeHtml(tabLabel) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
     '</button>';
@@ -1548,9 +1548,10 @@ async function checkInterrupted() {
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {
+        var label = r.issue_number ? '#' + escapeHtml(r.issue_number) : (r.pr_number ? 'PR #' + escapeHtml(String(r.pr_number)) : '--');
         return '<button onclick="restartInterrupted(\'' + escapeJsStr(String(r.issue_number)) + '\', \'' + escapeJsStr(formatRole(r.role)) + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">' +
-          '#' + escapeHtml(r.issue_number) + ' ' + escapeHtml(formatRole(r.role)) +
+          label + ' ' + escapeHtml(formatRole(r.role)) +
         '</button>';
       }).join('') +
       '</div>' +
@@ -1669,7 +1670,7 @@ function renderHistoryTable(tasks, targetId, showError) {
   el.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden">' +
     '<table class="w-full text-sm">' +
     '<thead><tr class="text-gray-500 text-xs uppercase border-b border-gray-700/50">' +
-      '<th class="text-left p-3">Issue</th>' +
+      '<th class="text-left p-3">Issue / PR</th>' +
       '<th class="text-left p-3">Role</th>' +
       '<th class="text-left p-3">Status</th>' +
       '<th class="text-left p-3">Steps</th>' +
@@ -1690,7 +1691,7 @@ function renderHistoryTable(tasks, targetId, showError) {
         : '<td class="p-3"></td>';
 
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/work/' + t.id + '\'">' +
-        '<td class="p-3">' + issueLink(t.issue_number) + '</td>' +
+        '<td class="p-3">' + issueOrPrLink(t.issue_number, t.pr_number) + '</td>' +
         '<td class="p-3"><span class="px-1.5 py-0.5 rounded text-xs ' + colors.bg + ' ' + colors.text + '">' + escapeHtml(formatRole(t.role, t.pipeline_variant)) + '</span></td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(t.status) + '"></span><span class="' + statusColor(t.status) + '">' + escapeHtml(t.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + stepsText + '</td>' +
@@ -1836,7 +1837,7 @@ function renderPrRow(pr) {
 
   return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
     authorAvatar +
-    '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent hover:underline shrink-0">#' + escapeHtml(String(pr.number)) + '</a>' +
+    '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent-lavender hover:underline shrink-0">PR #' + escapeHtml(String(pr.number)) + '</a>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
     issueRef +
     prDiffHtml +
@@ -2171,7 +2172,7 @@ async function loadKanban() {
 
         return '<a href="' + prefix + '/work/' + run.id + '" class="kanban-card block" draggable="true" data-run-id="' + run.id + '">' +
           '<div class="flex items-center justify-between mb-1.5">' +
-            '<span class="text-sm font-medium text-gray-200">#' + escapeHtml(String(run.issue_number)) + '</span>' +
+            '<span class="text-sm font-medium text-gray-200">' + issueOrPrLabel(run.issue_number, run.pr_number) + '</span>' +
             '<span class="w-2 h-2 rounded-full flex-shrink-0 ' + statusDot(run.status) + '"></span>' +
           '</div>' +
           _buildLabelHtml(run.run_label) +
@@ -2212,7 +2213,7 @@ async function loadKanban() {
     var failedCardsHtml = failedRuns.length
       ? failedRuns.map(function(run) {
           var rc = roleColor(run.role);
-          var issueText = run.issue_number ? '#' + escapeHtml(String(run.issue_number)) : escapeHtml(run.role || 'command');
+          var issueText = (run.issue_number || run.pr_number) ? issueOrPrLabel(run.issue_number, run.pr_number) : escapeHtml(run.role || 'command');
 
           var rerunHtml = run.issue_number
             ? '<button class="rerun-btn px-2 py-0.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors flex-shrink-0" ' +

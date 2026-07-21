@@ -120,7 +120,7 @@ async function loadRunDetail() {
     var run = data.run;
     var steps = data.steps;
 
-    document.getElementById('detail-issue').innerHTML = issueLink(run.issue_number);
+    document.getElementById('detail-issue').innerHTML = issueOrPrLink(run.issue_number, run.pr_number);
 
     var colors = roleColor(run.role);
     var roleEl = document.getElementById('detail-role');
