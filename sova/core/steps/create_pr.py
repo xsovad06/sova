@@ -61,7 +61,7 @@ Issue #{issue_number}: {issue_title}
 """
 
 _PR_BODY_ISSUE_SECTION_JIRA = """
-JIRA: {jira_link}
+{jira_link}
 
 Do NOT use "Closes #N", "Fixes #N", or "Resolves #N" syntax.
 

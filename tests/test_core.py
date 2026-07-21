@@ -1629,6 +1629,7 @@ class TestCreatePRStepJiraPrompt:
         assert "Closes #48928" not in prompt_arg
         assert "RHCLOUD-48928" in prompt_arg
         assert "issues.redhat.com/browse/RHCLOUD-48928" in prompt_arg
+        assert "JIRA: JIRA:" not in prompt_arg
 
     @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
     @patch("sova.core.steps.create_pr.invoke")
