@@ -44,6 +44,11 @@ class MonitorCIStep(BaseStep):
         if ctx.pr_number is None:
             return StepResult(success=False, summary="No PR to monitor", error="pr_number is None")
 
+        if ctx.resume_run_id is not None:
+            resume_result = await self._check_ci_on_resume(ctx)
+            if resume_result is not None:
+                return resume_result
+
         result, failed = await self._poll_ci(ctx)
         if result.success or not failed:
             return result
@@ -99,6 +104,7 @@ class MonitorCIStep(BaseStep):
 
             if checks is None:
                 log.warning("step.monitor_ci.fetch_failed", elapsed=elapsed)
+                self._write_heartbeat(ctx, f"CI poll: {elapsed}s/{max_wait}s elapsed, fetch failed (retrying)")
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
                 continue
@@ -126,6 +132,7 @@ class MonitorCIStep(BaseStep):
                         [],
                     )
                 log.debug("step.monitor_ci.no_checks", elapsed=elapsed)
+                self._write_heartbeat(ctx, f"CI poll: {elapsed}s/{max_wait}s elapsed, no checks registered yet")
                 await asyncio.sleep(poll_interval)
                 elapsed += poll_interval
                 continue
@@ -151,6 +158,12 @@ class MonitorCIStep(BaseStep):
                     [],
                 )
 
+            completed_count = sum(1 for c in checks if c.is_completed)
+            self._write_heartbeat(
+                ctx,
+                f"CI poll: {elapsed}s/{max_wait}s elapsed, "
+                f"{completed_count}/{len(checks)} checks completed",
+            )
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
@@ -162,6 +175,35 @@ class MonitorCIStep(BaseStep):
             ),
             [],
         )
+
+    @staticmethod
+    async def _check_ci_on_resume(ctx: ExecutionContext) -> StepResult | None:
+        """On resume, check CI once. Return a result if CI already completed, else None to continue polling."""
+        checks = await get_ci_checks(
+            ctx.pr_number,
+            repo=ctx.repo,
+            github_user=ctx.config.github_user,
+        )
+        if checks is None or not checks:
+            return None
+        exclude = ctx.config.ci.exclude_checks
+        if exclude:
+            checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
+        if not checks:
+            return None
+        if not all(c.is_completed for c in checks):
+            return None
+        failed = [c for c in checks if c.is_failed]
+        if failed:
+            names = ", ".join(c.name for c in failed)
+            return StepResult(success=False, summary=f"CI failed: {names}", error=f"Failed checks: {names}")
+        return StepResult(success=True, summary=f"CI already passed (resumed after interruption, {len(checks)} checks)")
+
+    @staticmethod
+    def _write_heartbeat(ctx: ExecutionContext, message: str) -> None:
+        """Write a progress line so the watchdog's no-output detector works."""
+        if ctx.output_writer is not None:
+            ctx.output_writer.write_line(message)
 
     @staticmethod
     async def _verify_pr_head_sha(ctx: ExecutionContext, expected_sha: str) -> bool:

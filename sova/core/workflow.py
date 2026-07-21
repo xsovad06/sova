@@ -13,6 +13,7 @@ Key responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass, field
@@ -101,6 +102,7 @@ class WorkflowEngine:
             self._ctx.task_run_id = self._task_run_id
 
         self._output_writer = OutputWriter(self._ctx.project_dir, self._task_run_id)
+        self._ctx.output_writer = self._output_writer
         self._output_writer.write_line(f"=== Workflow started: {self._ctx.display_label}, role={self._ctx.role} ===")
         await self._output_writer.flush()
 
@@ -291,8 +293,16 @@ class WorkflowEngine:
                 record.status = "failed"
                 return record
 
+            timeout_seconds = self._step_timeout(step.name)
             try:
-                step_result = await step.execute(self._ctx)
+                async with asyncio.timeout(timeout_seconds):
+                    step_result = await step.execute(self._ctx)
+            except TimeoutError:
+                step_result = StepResult(
+                    success=False,
+                    summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
+                    error="step_hard_timeout",
+                )
             except Exception as exc:
                 step_result = StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
 
@@ -330,6 +340,16 @@ class WorkflowEngine:
 
         record.status = "failed"
         return record
+
+    def _step_timeout(self, step_name: str) -> int:
+        """Return the hard timeout in seconds for a given step.
+
+        monitor_ci gets ci.max_wait + a 120s grace period;
+        all other steps use agent.step_timeout.
+        """
+        if step_name == "monitor_ci":
+            return self._ctx.config.ci.max_wait + 120
+        return self._ctx.config.agent.step_timeout
 
     # -- Output helpers --
 
