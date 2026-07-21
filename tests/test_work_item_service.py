@@ -24,6 +24,7 @@ from sova.dashboard.services.work_item_service import (
     _index_running_agents,
     _is_verdict_stale,
     _sort_items,
+    clear_verdict_cache,
     compute_work_item_state,
     get_work_items,
 )
@@ -1505,6 +1506,9 @@ class TestParseSovaReviewFromGithub:
 class TestFetchSovaVerdictsGithubFallback:
     """_fetch_sova_verdicts uses GitHub review fallback when DB has no SOVA review."""
 
+    def setup_method(self) -> None:
+        clear_verdict_cache()
+
     @pytest.mark.asyncio()
     async def test_github_fallback_used_when_no_db_review(self) -> None:
         from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
@@ -1602,9 +1606,46 @@ class TestFetchSovaVerdictsGithubFallback:
 
         assert result["42"]["has_sova_review"] is False
 
+    @pytest.mark.asyncio()
+    async def test_cache_suppresses_second_github_call(self) -> None:
+        """After a verdict is cached, the next call returns from cache without API calls."""
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        gh_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        mock_adapter = MagicMock()
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=no_review,
+            ),
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=gh_verdict,
+            ) as mock_fallback,
+        ):
+            # First call: cache miss, hits GitHub.
+            result1 = await _fetch_sova_verdicts({"42": {"number": 100}})
+            assert mock_fallback.call_count == 1
+
+            # Second call: cache hit, no additional GitHub API call.
+            result2 = await _fetch_sova_verdicts({"42": {"number": 100}})
+            assert mock_fallback.call_count == 1
+
+        assert result1["42"]["has_sova_review"] is True
+        assert result2["42"]["verdict"] == "approve"
+
 
 class TestFetchGithubReviewFallback:
     """Direct tests for _fetch_github_review_fallback."""
+
+    def setup_method(self) -> None:
+        clear_verdict_cache()
 
     @pytest.mark.asyncio()
     async def test_returns_parsed_verdict_on_success(self) -> None:
@@ -1676,6 +1717,9 @@ class TestFetchGithubReviewFallback:
 
 class TestFetchSovaVerdictsExceptionHandling:
     """_fetch_sova_verdicts handles per-item exceptions in fetch_one gracefully."""
+
+    def setup_method(self) -> None:
+        clear_verdict_cache()
 
     @pytest.mark.asyncio()
     async def test_exception_in_get_sova_review_verdict_returns_no_review(self) -> None:
