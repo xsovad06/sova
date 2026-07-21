@@ -1174,7 +1174,8 @@ function renderAgentCard(agent) {
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
-  var issueLabel = agent.issue ? issueLink(agent.issue) : (agent.pr_number ? prLink(agent.pr_number) : escapeHtml(formatRole(agent.role, agent.pipeline_variant)));
+  var hasRef = agent.issue || agent.pr_number;
+  var issueLabel = hasRef ? issueOrPrLink(agent.issue, agent.pr_number) : escapeHtml(formatRole(agent.role, agent.pipeline_variant));
   var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
   return '<div id="agent-card-' + agent.run_id + '" class="bg-surface-card rounded-lg border ' + colors.border + ' p-4 transition-all">' +
@@ -1214,7 +1215,8 @@ function renderCompletedCard(agent) {
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
   var detailUrl = prefix + '/work/' + agent.run_id;
 
-  var issueLabel = agent.issue ? issueLink(agent.issue) : (agent.pr_number ? prLink(agent.pr_number) : escapeHtml(formatRole(agent.role)));
+  var hasRef = agent.issue || agent.pr_number;
+  var issueLabel = hasRef ? issueOrPrLink(agent.issue, agent.pr_number) : escapeHtml(formatRole(agent.role));
   var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
   var rerunBtn = '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task" ' +
@@ -1548,8 +1550,8 @@ async function checkInterrupted() {
       '</div>' +
       '<div class="flex flex-wrap gap-2">' +
       data.interrupted.map(function(r) {
-        var label = r.issue_number ? '#' + escapeHtml(r.issue_number) : (r.pr_number ? 'PR #' + escapeHtml(String(r.pr_number)) : '--');
-        return '<button onclick="restartInterrupted(\'' + escapeJsStr(String(r.issue_number)) + '\', \'' + escapeJsStr(formatRole(r.role)) + '\')" ' +
+        var label = r.issue_number ? '#' + escapeHtml(String(r.issue_number)) : (r.pr_number ? 'PR #' + escapeHtml(String(r.pr_number)) : '--');
+        return '<button onclick="restartInterrupted(\'' + escapeJsStr(String(r.issue_number || '')) + '\', \'' + escapeJsStr(formatRole(r.role)) + '\')" ' +
           'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">' +
           label + ' ' + escapeHtml(formatRole(r.role)) +
         '</button>';
