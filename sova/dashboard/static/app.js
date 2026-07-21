@@ -591,9 +591,9 @@ function prLink(prNumber) {
   var repo = window.SOVA_GITHUB_REPO;
   if (repo) {
     return '<a href="https://github.com/' + escapeHtml(repo) + '/pull/' + safe + '" target="_blank" rel="noopener" ' +
-      'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + safe + '</a>';
+      'class="text-accent-lavender hover:underline" onclick="event.stopPropagation()">PR #' + safe + '</a>';
   }
-  return '#' + safe;
+  return 'PR #' + safe;
 }
 
 function issueLink(issueNumber, url) {
@@ -622,6 +622,18 @@ function issueLink(issueNumber, url) {
       'class="text-accent hover:underline" onclick="event.stopPropagation()">#' + safe + '</a>';
   }
   return '#' + safe;
+}
+
+function issueOrPrLink(issueNumber, prNumber, issueUrl) {
+  if (issueNumber) return issueLink(issueNumber, issueUrl);
+  if (prNumber) return prLink(prNumber);
+  return '--';
+}
+
+function issueOrPrLabel(issueNumber, prNumber) {
+  if (issueNumber) return '<span class="text-accent">#' + escapeHtml(String(issueNumber)) + '</span>';
+  if (prNumber) return '<span class="text-accent-lavender">PR #' + escapeHtml(String(prNumber)) + '</span>';
+  return '<span class="text-gray-500">--</span>';
 }
 
 /* ============================================================
@@ -1039,7 +1051,7 @@ function renderRunsTable(runs, targetId) {
   var hasResources = runs.some(function(r) { return r.peak_cpu_percent != null; });
   el.innerHTML = '<table class="w-full text-sm">' +
     '<thead><tr class="text-gray-500 text-xs uppercase">' +
-    '<th class="text-left p-3">Issue</th>' +
+    '<th class="text-left p-3">Issue / PR</th>' +
     '<th class="text-left p-3">Role</th>' +
     '<th class="text-left p-3">Status</th>' +
     '<th class="text-left p-3">Step</th>' +
@@ -1050,7 +1062,7 @@ function renderRunsTable(runs, targetId) {
     '<tbody>' + runs.map(function(r) {
       var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
       return '<tr class="border-t border-gray-700/30 hover:bg-surface-hover cursor-pointer" onclick="window.location=\'' + prefix + '/runs/' + r.id + '\'">' +
-        '<td class="p-3">' + issueLink(r.issue_number) + '</td>' +
+        '<td class="p-3">' + issueOrPrLink(r.issue_number, r.pr_number) + '</td>' +
         '<td class="p-3 text-gray-300">' + escapeHtml(r.role) + '</td>' +
         '<td class="p-3"><span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ' + statusDot(r.status) + '"></span><span class="' + statusColor(r.status) + '">' + escapeHtml(r.status) + '</span></span></td>' +
         '<td class="p-3 text-gray-400">' + escapeHtml(r.current_step || '--') + '</td>' +
