@@ -91,6 +91,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## Command Design
 
 - **Use `--body-file` for `gh issue edit` with multi-line content** -- `--body "..."` breaks on shell quoting. Use `--body-file /tmp/body.md` or `--body-file -`. [confirmed: 1]
+- **Command step instructions override `_HEADLESS_PREAMBLE`** -- the preamble says "don't ask for confirmation" but explicit step instructions like "Ask the user before posting" take precedence because they are more specific and closer to the action. Commands that may run headlessly must never contain approval gates ("ask before", "show draft first", "wait for confirmation"). The agent will follow the step instruction literally, produce a text-only response, and exit the `-p` mode process without completing the action. Audit all command steps for confirmation language before shipping. Files: `commands/review-pr.md`, `.claude/commands/review-pr.md`. PR #404. [confirmed: 1]
 
 ## GitHub API
 

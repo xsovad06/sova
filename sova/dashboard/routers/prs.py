@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
@@ -54,15 +55,13 @@ async def get_open_prs(author_filter: str | None = Query(None, pattern="^(mine|a
 @router.get(
     "/{pr_number}/gates",
     responses={
-        400: {"description": "No project configured"},
+        400: {"description": "Failed to load project configuration"},
         404: {"description": "PR not found"},
     },
 )
 async def get_integration_gates(pr_number: int) -> dict:
     """Check integration gate status for a specific PR."""
-    project_dir = get_project_dir()
-    if not project_dir:
-        raise HTTPException(status_code=400, detail="No project configured")
+    project_dir = get_project_dir() or Path.cwd()
 
     try:
         cfg = load_config(project_dir)
@@ -138,7 +137,7 @@ async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
     from sova.db.models import ActionFeedback
     from sova.db.session import get_session
 
-    project_dir = get_project_dir()
+    project_dir = get_project_dir() or Path.cwd()
     async with await get_session(project_dir) as session:
         record = ActionFeedback(
             pr_number=body.pr_number,
