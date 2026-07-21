@@ -24,7 +24,13 @@ class WorktreeStep(BaseStep):
     async def execute(self, ctx: ExecutionContext) -> StepResult:
         if not ctx.branch_name:
             if ctx.has_issue:
-                ctx.branch_name = f"feat/issue-{ctx.issue_number}"
+                ts = ctx.config.task_source if ctx.config else None
+                if ts and ts.is_jira:
+                    jira_key = ts.jira_issue_key(ctx.issue_number)
+                    slug = _sanitize_label(ctx.task.title) if ctx.task else ""
+                    ctx.branch_name = f"feat/{jira_key}-{slug}" if slug else f"feat/{jira_key}"
+                else:
+                    ctx.branch_name = f"feat/issue-{ctx.issue_number}"
             else:
                 safe_label = _sanitize_label(ctx.run_label) if ctx.run_label else "run"
                 ctx.branch_name = f"feat/{safe_label}"

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 log = get_logger(component="dashboard.pr_service")
 
 _ISSUE_LINK_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
+_JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
+_JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
 
 _PR_CACHE_TTL = 25  # seconds
 _pr_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -45,11 +47,23 @@ _STATE_LABELS: dict[str, str] = {
 
 
 def parse_linked_issue(body: str | None) -> int | None:
-    """Extract the first issue number from Closes/Fixes/Resolves #N in PR body."""
+    """Extract the first issue number from PR body.
+
+    Supports GitHub syntax (Closes/Fixes/Resolves #N) and JIRA syntax
+    ([PROJ-42](https://...) or JIRA: https://.../browse/PROJ-42).
+    """
     if not body:
         return None
     m = _ISSUE_LINK_RE.search(body)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m = _JIRA_MARKDOWN_RE.search(body)
+    if m:
+        return int(m.group(1).split("-")[-1])
+    m = _JIRA_PLAIN_RE.search(body)
+    if m:
+        return int(m.group(1))
+    return None
 
 
 def _extract_linked_issue(raw: dict) -> int | None:

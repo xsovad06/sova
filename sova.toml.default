@@ -69,8 +69,6 @@ format = "conventional"
 pr_title_format = "conventional"
 # Branch naming: "conventional" (feat/fix/refactor-N-slug) or "freeform"
 branch_naming = "conventional"
-# Auto-link issues in PR body ("Closes #N")
-pr_auto_link_issues = true
 # Omit AI co-author lines from commits
 no_ai_coauthor = false
 

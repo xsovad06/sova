@@ -35,7 +35,6 @@ project_key = "xsovad06_sova"
 format = "conventional"
 pr_title_format = "conventional"
 branch_naming = "conventional"
-pr_auto_link_issues = true
 ai_coauthor = false
 
 [monitoring]

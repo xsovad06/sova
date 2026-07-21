@@ -50,11 +50,23 @@ What should a reviewer focus on? Any trade-offs or shortcuts?
 How were these changes verified?
 """
 
-_PR_BODY_ISSUE_SECTION = """
+_PR_BODY_ISSUE_SECTION_GITHUB = """
 Closes #{issue_number}
 
 ---
 Issue #{issue_number}: {issue_title}
+
+{issue_body}
+
+"""
+
+_PR_BODY_ISSUE_SECTION_JIRA = """
+JIRA: {jira_link}
+
+Do NOT use "Closes #N", "Fixes #N", or "Resolves #N" syntax.
+
+---
+{jira_key}: {issue_title}
 
 {issue_body}
 
@@ -94,7 +106,7 @@ def _build_pr_title(
         description = task_title
 
     if task_source and task_source.is_jira and issue_number:
-        jira_key = f"[{task_source.jira_project_key}-{issue_number}]"
+        jira_key = f"[{task_source.jira_issue_key(issue_number)}]"
         return f"{jira_key} {commit_type}: {description}"
 
     if issue_number:
@@ -104,8 +116,21 @@ def _build_pr_title(
 
 def _jira_ticket_link(task_source: TaskSourceConfig, issue_number: str) -> str:
     """Return a markdown JIRA ticket link for the PR body."""
-    base = task_source.jira_base_url.rstrip("/")
-    return f"JIRA: {base}/browse/{task_source.jira_project_key}-{issue_number}"
+    return f"JIRA: {task_source.jira_browse_url(issue_number)}"
+
+
+_BRANCH_PREFIX_RE = re.compile(r"^(?:feat|fix|refactor|chore)/")
+_ISSUE_PREFIX_RE = re.compile(r"^issue-\d+-?")
+_JIRA_KEY_PREFIX_RE = re.compile(r"^[A-Z]+-\d+-?")
+
+
+def _title_from_branch(branch: str) -> str:
+    """Extract a human-readable title from a branch name."""
+    raw = _BRANCH_PREFIX_RE.sub("", branch)
+    raw = _ISSUE_PREFIX_RE.sub("", raw)
+    raw = _JIRA_KEY_PREFIX_RE.sub("", raw)
+    title = raw.replace("-", " ").strip()
+    return title if title else "update"
 
 
 class CreatePRStep(BaseStep):
@@ -119,7 +144,7 @@ class CreatePRStep(BaseStep):
         if adopted:
             return adopted
 
-        task_title = ctx.task.title if ctx.task else ctx.branch_name
+        task_title = ctx.task.title if ctx.task else _title_from_branch(ctx.branch_name)
         title = _build_pr_title(
             task_title,
             ctx.issue_number if ctx.has_issue else None,
@@ -277,11 +302,21 @@ class CreatePRStep(BaseStep):
         ts = ctx.config.task_source
 
         if ctx.has_issue:
-            middle = _PR_BODY_ISSUE_SECTION.format(
-                issue_number=ctx.issue_number,
-                issue_title=task_title,
-                issue_body=issue_body or "(no description)",
-            )
+            if ts.is_jira:
+                jira_key = ts.jira_issue_key(ctx.issue_number)
+                jira_link = _jira_ticket_link(ts, ctx.issue_number)
+                middle = _PR_BODY_ISSUE_SECTION_JIRA.format(
+                    jira_link=jira_link,
+                    jira_key=jira_key,
+                    issue_title=task_title,
+                    issue_body=issue_body or "(no description)",
+                )
+            else:
+                middle = _PR_BODY_ISSUE_SECTION_GITHUB.format(
+                    issue_number=ctx.issue_number,
+                    issue_title=task_title,
+                    issue_body=issue_body or "(no description)",
+                )
         else:
             middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
 
