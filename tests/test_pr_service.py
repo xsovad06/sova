@@ -266,10 +266,16 @@ class TestEnrichPr:
             "author": {"login": "dev"},
             "labels": [{"name": "feature"}],
             "createdAt": "2026-06-01T12:00:00Z",
+            "updatedAt": "2026-06-02T12:00:00Z",
             "body": "Closes #10",
             "state": "OPEN",
             "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
             "mergeable": "MERGEABLE",
+            "additions": 50,
+            "deletions": 10,
+            "changedFiles": 3,
+            "assignees": [{"login": "dev"}],
+            "commits": [{"oid": "abc"}, {"oid": "def"}],
         }
         base.update(overrides)
         return base
@@ -285,6 +291,26 @@ class TestEnrichPr:
         assert result["ci_status"] == "passed"
         assert result["mergeable"] == "MERGEABLE"
         assert result["is_draft"] is False
+
+    def test_diff_stats_enrichment(self) -> None:
+        result = _enrich_pr(self._raw_pr(), time.time())
+        assert result["additions"] == 50
+        assert result["deletions"] == 10
+        assert result["changed_files"] == 3
+        assert result["assignees"] == ["dev"]
+        assert result["commit_count"] == 2
+        assert result["updated_at"] == "2026-06-02T12:00:00Z"
+
+    def test_diff_stats_missing(self) -> None:
+        result = _enrich_pr(
+            self._raw_pr(additions=None, deletions=None, changedFiles=None, assignees=None, commits=None),
+            time.time(),
+        )
+        assert result["additions"] == 0
+        assert result["deletions"] == 0
+        assert result["changed_files"] == 0
+        assert result["assignees"] == []
+        assert result["commit_count"] == 0
 
     def test_draft_state(self) -> None:
         result = _enrich_pr(self._raw_pr(isDraft=True), time.time())
