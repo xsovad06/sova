@@ -86,7 +86,18 @@ Create a pull request for the current branch using the project's standard PR tem
 
    Do not include preamble or commentary before the first heading. Do not use emojis.
 
-   If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body.
+   **Link the issue in the PR body** based on the task source:
+
+   Read `sova.toml` to check `[task_source] type` if it exists.
+
+   **JIRA** (`type = "jira"`):
+   - Do NOT use `Closes #N`, `Fixes #N`, or `Resolves #N` (those are GitHub Issue syntax)
+   - Add a `## JIRA` section at the bottom of the body with a link to the ticket:
+     `[PROJECT_KEY-NUMBER](https://your-jira-instance/browse/PROJECT_KEY-NUMBER)`
+   - The PR title MUST start with `[PROJECT_KEY-NUMBER]` followed by a human-readable description (NOT the branch name)
+
+   **GitHub** (default):
+   - If `$ARGUMENTS` contains a GitHub Issue number (e.g., #42), include `Closes #42` in the body
 
 8. **Run preflight CI checks locally** before pushing:
    Run the full CI-equivalent checks: `{{ check_cmd }}`. This must pass before any push -- it covers linting, tests, formatting, invariants, and any other checks the CI pipeline enforces. Fix any failures before proceeding.
