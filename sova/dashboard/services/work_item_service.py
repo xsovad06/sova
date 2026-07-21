@@ -467,6 +467,12 @@ def _build_task_item(
         jira_key=task.get("jira_key", ""),
         issue_type=task.get("issue_type", ""),
         last_failed=bool(task.get("last_run") and task["last_run"].get("status") == "failed"),
+        story_points=task.get("story_points"),
+        sprint=task.get("sprint", ""),
+        components=task.get("components", []),
+        jira_status=task.get("jira_status", ""),
+        jira_priority=task.get("jira_priority", ""),
+        updated_at=task.get("updated_at", ""),
     )
 
 
@@ -508,10 +514,16 @@ def _build_pr_item(
         priority_label="",
         last_run=None,
         created_at="",
-        assignees=[],
+        assignees=pr.get("assignees", []),
         jira_key="",
         issue_type="",
         last_failed=False,
+        story_points=None,
+        sprint="",
+        components=[],
+        jira_status="",
+        jira_priority="",
+        updated_at=pr.get("updated_at", ""),
     )
 
 
@@ -833,6 +845,18 @@ def _format_pr_details(pr: dict) -> dict:
         "state_label": pr.get("state_label", ""),
         "url": pr.get("url", ""),
         "mergeable": pr.get("mergeable", ""),
+        "author": pr.get("author", ""),
+        "age_seconds": pr.get("age_seconds", 0),
+        "is_draft": pr.get("is_draft", False),
+        "additions": pr.get("additions", 0),
+        "deletions": pr.get("deletions", 0),
+        "changed_files": pr.get("changed_files", 0),
+        "thread_total": pr.get("thread_total", 0),
+        "thread_resolved": pr.get("thread_resolved", 0),
+        "review_logins": pr.get("review_logins", []),
+        "assignees": pr.get("assignees", []),
+        "updated_at": pr.get("updated_at", ""),
+        "commit_count": pr.get("commit_count", 0),
     }
 
 
@@ -862,6 +886,12 @@ def _build_item(**kwargs: object) -> dict:
         "jira_key": kwargs["jira_key"],
         "issue_type": kwargs.get("issue_type", ""),
         "last_failed": kwargs.get("last_failed", False),
+        "story_points": kwargs.get("story_points"),
+        "sprint": kwargs.get("sprint", ""),
+        "components": kwargs.get("components", []),
+        "jira_status": kwargs.get("jira_status", ""),
+        "jira_priority": kwargs.get("jira_priority", ""),
+        "updated_at": kwargs.get("updated_at", ""),
     }
 
 

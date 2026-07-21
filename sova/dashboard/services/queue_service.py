@@ -167,6 +167,10 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
                 "jira_status": t.metadata.get("status", ""),
                 "jira_priority": t.metadata.get("jira_priority", ""),
                 "jira_key": t.metadata.get("key", ""),
+                "story_points": t.story_points,
+                "sprint": t.sprint,
+                "components": t.components,
+                "updated_at": t.metadata.get("updated_at", ""),
             }
         )
 
