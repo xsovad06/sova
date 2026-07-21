@@ -1956,6 +1956,11 @@ class TestDuplicateAgentPrevention:
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=3) as mock_create,
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree",
+                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+            ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
@@ -1996,6 +2001,11 @@ class TestDuplicateAgentPrevention:
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=4),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree",
+                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+            ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
@@ -2034,6 +2044,11 @@ class TestDuplicateAgentPrevention:
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
+            patch.object(
+                agent_lifecycle, "_resolve_issue_worktree",
+                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+            ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
@@ -2523,8 +2538,27 @@ class TestStartCommandWorktreeResolution:
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
         assert spawn_cwd == worktree, f"Expected worktree {worktree}, got {spawn_cwd}"
 
-    async def test_falls_back_to_project_dir_when_no_worktree(self, tmp_path: Path) -> None:
-        """When no worktree exists, cwd should remain the project directory."""
+    async def test_rejects_pr_command_when_worktree_isolation_fails(self, tmp_path: Path) -> None:
+        """PR-based commands should be rejected when worktree resolution falls back to project_dir."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_lifecycle import ProjectAgents, start_command
+
+        pa = ProjectAgents()
+        pa.project_dir = tmp_path
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "_check_issue_conflict", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+
+        assert "error" in result
+        assert "worktree isolation failed" in result["error"]
+
+    async def test_falls_back_to_project_dir_when_no_pr(self, tmp_path: Path) -> None:
+        """Non-PR commands should fall back to project_dir when no worktree exists."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -2549,7 +2583,7 @@ class TestStartCommandWorktreeResolution:
             patch("sova.dashboard.services.agent_output._read_stderr", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_command_prompt", return_value="prompt"),
         ):
-            result = await start_command("address-pr", {"issue": "42", "pr": 10})
+            result = await start_command("address-pr", {"issue": "42"})
 
         assert result.get("status") == "started"
         spawn_cwd = mock_runtime.spawn.call_args[0][1]
