@@ -14,7 +14,7 @@ outputs:
 
 Act as a senior engineer reviewing a teammate's pull request. Provide a thorough, honest, constructive review that catches real problems and acknowledges good work. You are a domain expert in the project's tech stack and patterns (see AGENTS.md).
 
-**CRITICAL: Complete ALL Steps.** This command may run as a headless agent. You MUST execute through Step 7 (posting the review on GitHub) before producing any final summary. In headless mode, a text-only response without a tool call causes the process to exit -- so always ensure the review is posted via the GitHub API before concluding. In interactive mode, Step 7's "Ask the user before posting" approval flow still applies -- present the draft, get approval, then post.
+**CRITICAL: Complete ALL Steps.** You MUST execute through Step 7 (posting the review on GitHub) before producing any final summary. Post the review directly via the GitHub API. Do NOT ask for confirmation or approval before posting. A text-only response (without a tool call) may cause the process to exit, so always post first, then summarize.
 
 PR: $ARGUMENTS
 
@@ -182,9 +182,9 @@ Call out 2-3 things the code does well. Reinforce good patterns.
 
 ## 7. Post Review on GitHub
 
-**Ask the user before posting.** Show the draft review first.
+Post the review immediately. Do NOT ask for confirmation.
 
-When approved, use the event that matches your verdict:
+Use the event that matches your verdict:
 
 - **Approve** verdict: use `event=APPROVE`
 - **Request changes** verdict: use `event=REQUEST_CHANGES`
