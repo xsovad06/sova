@@ -220,9 +220,6 @@ def _enrich_pr(raw: dict, now: float) -> dict:
     labels = [lbl.get("name", "") for lbl in (raw.get("labels") or [])]
     assignee_nodes = raw.get("assignees") or []
     pr_assignees = [a.get("login", "") for a in assignee_nodes if a.get("login")]
-    commits_node = raw.get("commits") or []
-    commit_count = len(commits_node) if isinstance(commits_node, list) else 0
-
     return {
         "number": raw["number"],
         "title": raw.get("title", ""),
@@ -248,7 +245,6 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "deletions": raw.get("deletions") or 0,
         "changed_files": raw.get("changedFiles") or 0,
         "assignees": pr_assignees,
-        "commit_count": commit_count,
     }
 
 

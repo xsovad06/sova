@@ -274,7 +274,7 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
         "number,title,headRefName,url,reviewDecision,isDraft,author,"
         "labels,createdAt,updatedAt,body,state,statusCheckRollup,mergeable,"
         "latestReviews,closingIssuesReferences,"
-        "additions,deletions,changedFiles,assignees,commits",
+        "additions,deletions,changedFiles,assignees",
         "--limit",
         "100",
     ]

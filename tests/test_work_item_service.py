@@ -889,7 +889,6 @@ class TestFormatHelpers:
             "review_logins": ["reviewer1"],
             "assignees": ["dev"],
             "updated_at": "2026-06-02T12:00:00Z",
-            "commit_count": 4,
         }
         result = _format_pr_details(pr)
         assert result["author"] == "dev"
@@ -903,7 +902,6 @@ class TestFormatHelpers:
         assert result["review_logins"] == ["reviewer1"]
         assert result["assignees"] == ["dev"]
         assert result["updated_at"] == "2026-06-02T12:00:00Z"
-        assert result["commit_count"] == 4
 
     def test_format_pr_details_defaults(self) -> None:
         result = _format_pr_details({"number": 42})
@@ -918,7 +916,6 @@ class TestFormatHelpers:
         assert result["review_logins"] == []
         assert result["assignees"] == []
         assert result["updated_at"] == ""
-        assert result["commit_count"] == 0
 
     def test_extract_handoff_summary(self) -> None:
         h = {"status": "awaiting_action", "summary": "All good"}

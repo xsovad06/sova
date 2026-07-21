@@ -949,7 +949,6 @@ def _format_pr_details(pr: dict) -> dict:
         "review_logins": pr.get("review_logins", []),
         "assignees": pr.get("assignees", []),
         "updated_at": pr.get("updated_at", ""),
-        "commit_count": pr.get("commit_count", 0),
     }
 
 
