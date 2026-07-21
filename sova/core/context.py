@@ -9,10 +9,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.adapters.base import Task, TaskAdapter
 from sova.config.models import ProjectConfig
 from sova.core.planning import PlanResult
+
+if TYPE_CHECKING:
+    from sova.core.output import OutputWriter
 
 
 @dataclass
@@ -43,6 +47,9 @@ class ExecutionContext:
     # Resume checkpoint (populated when --resume is used)
     resume_run_id: int | None = None
     completed_steps: frozenset[str] = field(default_factory=frozenset)
+
+    # Output writer (set by WorkflowEngine, used by steps for heartbeats)
+    output_writer: OutputWriter | None = None
 
     # Accumulated during the run
     files_changed: list[str] = field(default_factory=list)
