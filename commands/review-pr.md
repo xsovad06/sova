@@ -123,6 +123,14 @@ Review across these dimensions, in priority order. Reference `AGENTS.md` and `do
 
 ## 6. Present Findings
 
+Always include this as the **first line** of the review body, before any section headers:
+
+```
+<!-- sova-review: {verdict} -->
+```
+
+Where `{verdict}` is `approve`, `revise`, or `block` (lowercase), matching your final verdict. This marker lets the SOVA dashboard detect cross-instance reviews when another SOVA user (on a different machine) posts the review.
+
 ### PR Summary
 One paragraph: what the PR does, who authored it, how many commits/files.
 
