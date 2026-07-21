@@ -1300,11 +1300,18 @@ class TestFetchSovaVerdicts:
 
         mock_verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
 
-        with patch(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            new_callable=AsyncMock,
-            return_value=mock_verdict,
-        ) as mock_call:
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=mock_verdict,
+            ) as mock_call,
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
             result = await _fetch_sova_verdicts({"42": {"number": 100}})
 
         assert "42" in result
@@ -1344,3 +1351,370 @@ class TestFetchSovaVerdicts:
 
         assert result == {}
         mock_verdict.assert_not_called()
+
+
+class TestParseSovaReviewFromGithub:
+    """_parse_sova_review_from_github detects cross-instance SOVA reviews."""
+
+    def _review(
+        self,
+        body: str,
+        state: str = "APPROVED",
+        submitted_at: str = "2026-07-21T10:00:00Z",
+        is_bot: bool = False,
+    ) -> object:
+        """Build a minimal PRReview-like object."""
+        from sova.adapters.base import PRReview
+
+        return PRReview(reviewer="dsova06", state=state, body=body, submitted_at=submitted_at, is_bot=is_bot)
+
+    def test_detects_marker_approve(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: approve -->\n\n## PR Summary\n...")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    def test_detects_marker_revise(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: revise -->\n\n## Review: REVISE")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "revise"
+
+    def test_detects_marker_block(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: block -->\n\n## Review: BLOCK")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "block"
+
+    def test_marker_case_insensitive(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- SOVA-REVIEW: Approve -->")
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "approve"
+
+    def test_skips_dismissed_reviews(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("<!-- sova-review: approve -->", state="DISMISSED")
+        result = _parse_sova_review_from_github([review])
+        assert result is None
+
+    def test_newest_first_ordering(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        old = self._review("<!-- sova-review: revise -->", submitted_at="2026-07-20T10:00:00Z")
+        new = self._review("<!-- sova-review: approve -->", submitted_at="2026-07-21T10:00:00Z")
+        result = _parse_sova_review_from_github([old, new])
+        assert result is not None
+        assert result["verdict"] == "approve"
+
+    def test_returns_none_when_no_sova_review(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        review = self._review("LGTM, nice work!")
+        result = _parse_sova_review_from_github([review])
+        assert result is None
+
+    def test_returns_none_for_empty_list(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        assert _parse_sova_review_from_github([]) is None
+
+    def test_heuristic_fallback_approve(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        body = (
+            "## PR Summary\nThis PR does X.\n\n"
+            "## Findings\n\nNone.\n\n"
+            "## Verdict\n\n**Approve.** Clean implementation.\n\n"
+            "## What's Done Well\nGood tests."
+        )
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    def test_heuristic_fallback_request_changes(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        body = "## PR Summary\nThis PR does X.\n\n## Verdict\n\n**Request changes.** Must fix Y.\n\n"
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "revise"
+
+    def test_heuristic_fallback_block(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        body = "## PR Summary\nX.\n\n## Verdict\n\n**Block.** Critical issue.\n"
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["verdict"] == "block"
+
+    def test_heuristic_requires_both_sections(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        # Only ## Verdict, no ## PR Summary -- not a SOVA review
+        body = "## Verdict\n\n**Approve.** LGTM."
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is None
+
+    def test_heuristic_requires_pr_summary_section(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        # Only ## PR Summary, no ## Verdict -- not a SOVA review
+        body = "## PR Summary\nThis PR does X."
+        review = self._review(body)
+        result = _parse_sova_review_from_github([review])
+        assert result is None
+
+    def test_dismissed_review_skipped_even_when_next_has_no_sova_marker(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        # The dismissed review has the marker; the non-dismissed one is a plain human review.
+        # Expected: None -- the dismissed review is skipped and the human review is not SOVA.
+        dismissed = self._review(
+            "<!-- sova-review: approve -->", state="DISMISSED", submitted_at="2026-07-21T12:00:00Z"
+        )
+        human = self._review("LGTM!", state="APPROVED", submitted_at="2026-07-20T10:00:00Z")
+        result = _parse_sova_review_from_github([dismissed, human])
+        assert result is None
+
+    def test_submitted_at_propagated(self) -> None:
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        ts = "2026-07-21T12:34:56Z"
+        review = self._review("<!-- sova-review: approve -->", submitted_at=ts)
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        assert result["reviewed_at"] == ts
+
+
+class TestFetchSovaVerdictsGithubFallback:
+    """_fetch_sova_verdicts uses GitHub review fallback when DB has no SOVA review."""
+
+    @pytest.mark.asyncio()
+    async def test_github_fallback_used_when_no_db_review(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+        gh_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0, "reviewed_at": None}
+        mock_adapter = MagicMock()
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=no_review,
+            ),
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=gh_verdict,
+            ) as mock_fallback,
+        ):
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        mock_fallback.assert_called_once_with(100, mock_adapter)
+        assert result["42"]["has_sova_review"] is True
+        assert result["42"]["verdict"] == "approve"
+
+    @pytest.mark.asyncio()
+    async def test_github_fallback_not_called_when_db_has_review(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        db_verdict = {"has_sova_review": True, "verdict": "revise", "finding_count": 2, "reviewed_at": None}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=db_verdict,
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fallback,
+        ):
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        mock_fallback.assert_not_called()
+        assert result["42"]["has_sova_review"] is True
+        assert result["42"]["verdict"] == "revise"
+
+    @pytest.mark.asyncio()
+    async def test_github_fallback_not_called_when_no_pr_number(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=no_review,
+            ),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fallback,
+        ):
+            result = await _fetch_sova_verdicts({"42": {}})  # no pr number
+
+        mock_fallback.assert_not_called()
+        assert result["42"]["has_sova_review"] is False
+
+    @pytest.mark.asyncio()
+    async def test_github_fallback_returning_none_preserves_no_review(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=no_review,
+            ),
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        assert result["42"]["has_sova_review"] is False
+
+
+class TestFetchGithubReviewFallback:
+    """Direct tests for _fetch_github_review_fallback."""
+
+    @pytest.mark.asyncio()
+    async def test_returns_parsed_verdict_on_success(self) -> None:
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
+
+        review = PRReview(
+            reviewer="dsova06",
+            state="APPROVED",
+            body="<!-- sova-review: approve -->",
+            submitted_at="2026-07-21T10:00:00Z",
+            is_bot=False,
+        )
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = [review]
+
+        result = await _fetch_github_review_fallback(100, mock_adapter)
+
+        assert result is not None
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+
+    @pytest.mark.asyncio()
+    async def test_returns_none_when_no_sova_review_found(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.return_value = []
+
+        result = await _fetch_github_review_fallback(100, mock_adapter)
+
+        assert result is None
+
+    @pytest.mark.asyncio()
+    async def test_skips_fallback_when_adapter_build_fails(self) -> None:
+        """When adapter build fails in _fetch_sova_verdicts, fallback is not called."""
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        no_review = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=no_review,
+            ),
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("config broken")),
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+            ) as mock_fallback,
+        ):
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        mock_fallback.assert_not_called()
+        assert result["42"]["has_sova_review"] is False
+
+    @pytest.mark.asyncio()
+    async def test_returns_none_on_adapter_api_exception(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_github_review_fallback
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_pr_reviews.side_effect = RuntimeError("API failure")
+
+        result = await _fetch_github_review_fallback(100, mock_adapter)
+
+        assert result is None
+
+
+class TestFetchSovaVerdictsExceptionHandling:
+    """_fetch_sova_verdicts handles per-item exceptions in fetch_one gracefully."""
+
+    @pytest.mark.asyncio()
+    async def test_exception_in_get_sova_review_verdict_returns_no_review(self) -> None:
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("DB error"),
+        ):
+            result = await _fetch_sova_verdicts({"42": {"number": 100}})
+
+        assert "42" in result
+        assert result["42"]["has_sova_review"] is False
+        assert result["42"]["verdict"] is None
+        assert result["42"]["finding_count"] == 0
+
+
+class TestHeuristicVerdictRegexScope:
+    """Heuristic verdict regex is scoped to the ## Verdict section only."""
+
+    def test_bold_line_in_findings_not_matched_as_verdict(self) -> None:
+        """A bold 'Approve' line inside ## Findings must not override the ## Verdict verdict."""
+        from sova.adapters.base import PRReview
+        from sova.dashboard.services.work_item_service import _parse_sova_review_from_github
+
+        body = (
+            "## PR Summary\nThis PR does X.\n\n"
+            "## Findings\n\n**Approve this approach but fix the test.**\n\n"
+            "## Verdict\n\n**Request changes.** Fix the issue.\n"
+        )
+        review = PRReview(
+            reviewer="dsova06",
+            state="CHANGES_REQUESTED",
+            body=body,
+            submitted_at="2026-07-21T10:00:00Z",
+            is_bot=False,
+        )
+        result = _parse_sova_review_from_github([review])
+        assert result is not None
+        # Must be "revise" (from ## Verdict), not "approve" (from ## Findings bold line)
+        assert result["verdict"] == "revise"

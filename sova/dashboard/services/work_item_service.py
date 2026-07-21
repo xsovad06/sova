@@ -10,14 +10,16 @@ Priority cascade: running agent > handoff action > PR state (SOVA-verdict adjust
 from __future__ import annotations
 
 import asyncio
+import re
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sova.core.state import TaskStatus
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.adapters.base import PRReview
     from sova.config.models import ProjectConfig
 
 log = get_logger(component="dashboard.work_item")
@@ -695,6 +697,75 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     }
 
 
+_SOVA_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
+# Matches the natural-language verdict line from /review-pr command output and older pipeline output.
+_SOVA_VERDICT_LINE_RE = re.compile(
+    r"^\*\*(Approve|Request changes|Block|Comment only)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_VERDICT_NORMALIZE = {
+    "approve": "approve",
+    "request changes": "revise",
+    "block": "block",
+    "comment only": "approve",
+}
+
+
+def _parse_sova_review_from_github(reviews: list[PRReview]) -> dict | None:
+    """Scan GitHub PR reviews for a cross-instance SOVA review.
+
+    Processes reviews newest-first. Skips DISMISSED reviews (superseded).
+    Tries the machine-readable marker first, then falls back to detecting
+    SOVA's characteristic body structure for reviews posted before the
+    marker was introduced.
+
+    Returns a verdict dict matching get_sova_review_verdict()'s shape, or None.
+    """
+
+    def _verdict_dict(verdict: str, submitted_at: str) -> dict:
+        return {"has_sova_review": True, "verdict": verdict, "finding_count": 0, "reviewed_at": submitted_at}
+
+    for review in sorted(reviews, key=lambda r: r.submitted_at, reverse=True):
+        if review.state == "DISMISSED":
+            continue
+        body = review.body or ""
+
+        # Marker path: explicit machine-readable tag emitted by _format_findings_body.
+        m = _SOVA_MARKER_RE.search(body)
+        if m:
+            return _verdict_dict(m.group(1).lower(), review.submitted_at)
+
+        # Heuristic fallback: detect SOVA's characteristic review body structure.
+        # Matches reviews from the /review-pr command before the marker was added.
+        if "## PR Summary" in body and "## Verdict" in body:
+            # Scope to the ## Verdict section to avoid matching bold lines in ## Findings.
+            verdict_section = body.split("## Verdict", 1)[-1]
+            verdict_match = _SOVA_VERDICT_LINE_RE.search(verdict_section)
+            if verdict_match:
+                verdict = _VERDICT_NORMALIZE.get(verdict_match.group(1).lower(), "revise")
+                return _verdict_dict(verdict, review.submitted_at)
+
+    return None
+
+
+async def _fetch_github_review_fallback(pr_number: int, adapter: Any) -> dict | None:
+    """Fetch GitHub reviews and scan for a cross-instance SOVA review marker.
+
+    Called only when the local DB has no SOVA review record for this PR.
+    This handles the case where a second SOVA instance (different machine/user)
+    ran the review and its TaskRun lives in a different database.
+
+    The adapter is built once by _fetch_sova_verdicts and shared across all PR lookups
+    so that blocking config/adapter construction does not run per-PR inside asyncio.gather.
+    """
+    try:
+        reviews = await adapter.get_pr_reviews(pr_number)
+        return _parse_sova_review_from_github(reviews)
+    except Exception:
+        log.debug("work_items.github_review_fallback_failed", pr=pr_number, exc_info=True)
+        return None
+
+
 async def _fetch_sova_verdicts(
     prs_by_issue: dict[str, dict],
     unlinked_prs: list[dict] | None = None,
@@ -705,12 +776,34 @@ async def _fetch_sova_verdicts(
     Scoped to the current PR number so verdicts from prior PR revisions are excluded.
     Returns a dict of {issue_number: verdict_dict} for linked PRs and
     {"pr:{number}": verdict_dict} for unlinked standalone PRs.
+
+    When the local DB has no SOVA review, falls back to scanning GitHub reviews
+    for the cross-instance SOVA review marker. This handles the case where a
+    second SOVA instance ran the review and its TaskRun is in a different database.
     """
     from sova.dashboard.services.agent_recovery import get_sova_review_verdict
 
+    # Build the adapter once before the gather so blocking config/adapter construction
+    # does not run per-PR inside asyncio.gather. Non-fatal: if this fails the fallback
+    # is simply skipped for all PRs in this batch.
+    _fallback_adapter: Any = None
+    try:
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        _fallback_adapter = create_adapter(cfg)
+    except Exception:
+        log.debug("work_items.github_fallback_adapter_build_failed", exc_info=True)
+
     async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
         try:
-            return key, await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
+            verdict = await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
+            if not verdict.get("has_sova_review") and pr_number is not None and _fallback_adapter is not None:
+                gh_verdict = await _fetch_github_review_fallback(pr_number, _fallback_adapter)
+                if gh_verdict is not None:
+                    verdict = gh_verdict
+            return key, verdict
         except Exception:
             log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
             return key, {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
