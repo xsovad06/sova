@@ -14,6 +14,7 @@ from sova.core.steps.commit import CommitStep
 from sova.core.steps.create_pr import CreatePRStep
 from sova.core.steps.create_worktree import WorktreeStep
 from sova.core.steps.develop import DevelopStep
+from sova.core.steps.ensure_worktree import EnsureWorktreeStep
 from sova.core.steps.extract_memory import ExtractMemoryStep
 from sova.core.steps.fetch_task import FetchTaskStep
 from sova.core.steps.generate_tasks import GenerateTasksStep
@@ -67,6 +68,7 @@ def get_address_review_steps() -> list[BaseStep]:
     off to the user for final review.
     """
     return [
+        EnsureWorktreeStep(),
         RebaseStep(),
         AddressReviewStep(),
         CommitStep(),

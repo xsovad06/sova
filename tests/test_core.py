@@ -861,6 +861,80 @@ class TestWorktreeStep:
         assert ctx.worktree_dir == Path("/tmp/test/.claude/worktrees/42")
 
 
+
+
+class TestEnsureWorktreeStep:
+    async def test_skips_when_worktree_exists(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        wt = Path("/tmp/test/.claude/worktrees/42")
+        ctx = _make_ctx(worktree_dir=wt, branch_name="feat/issue-42")
+        step = EnsureWorktreeStep()
+
+        with patch.object(Path, "exists", return_value=True):
+            assert await step.can_skip(ctx) is True
+
+    async def test_fails_without_branch_name(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        ctx = _make_ctx(branch_name="")
+        step = EnsureWorktreeStep()
+        result = await step.execute(ctx)
+        assert not result.success
+        assert "branch_name" in result.error
+
+    async def test_finds_existing_worktree_by_branch(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        ctx = _make_ctx(branch_name="feat/issue-42", project_dir=Path("/tmp/proj"))
+        step = EnsureWorktreeStep()
+        wt_path = Path("/tmp/proj/.claude/worktrees/42")
+
+        with patch(
+            "sova.core.steps.ensure_worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=wt_path,
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.worktree_dir == wt_path
+
+    async def test_creates_worktree_for_pr(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        ctx = _make_ctx(
+            issue_number="",
+            pr_number=55,
+            branch_name="fix/standalone",
+            project_dir=Path("/tmp/proj"),
+        )
+        step = EnsureWorktreeStep()
+        wt_path = Path("/tmp/proj/.claude/worktrees/pr-55")
+
+        with (
+            patch(
+                "sova.core.steps.ensure_worktree.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.core.steps.ensure_worktree.create_worktree",
+                new_callable=AsyncMock,
+            ) as mock_create,
+        ):
+            mock_info = MagicMock()
+            mock_info.path = wt_path
+            mock_create.return_value = mock_info
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.worktree_dir == wt_path
+        mock_create.assert_awaited_once()
+        call_kwargs = mock_create.call_args
+        assert call_kwargs[1]["issue_id"] == "pr-55"
+
+
 class TestDevelopStep:
     async def test_gate_check_requires_code_changes(self) -> None:
         from sova.core.steps.develop import DevelopStep
@@ -1794,6 +1868,7 @@ class TestStepRegistry:
         steps = get_address_review_steps()
         names = [s.name for s in steps]
         assert names == [
+            "ensure_worktree",
             "rebase",
             "address_review",
             "commit",

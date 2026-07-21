@@ -2251,7 +2251,7 @@ class TestDuplicateAgentPrevention:
 
         assert result["status"] == "started"
         mock_branch.assert_awaited_once_with(332, pa.project_dir)
-        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55")
+        mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55", pr_number=332)
         spawn_call = mock_runtime_factory.return_value.spawn
         actual_cwd = spawn_call.call_args[0][1]
         assert actual_cwd == worktree_path
@@ -8297,7 +8297,7 @@ class TestStepProgress:
 
         result = get_step_progress("rebase")
         assert result["pipeline_variant"] == "address_review"
-        assert result["step_index"] == 0
+        assert result["step_index"] == 1
 
     def test_none_step_defaults_to_developer(self) -> None:
         from sova.dashboard.services.agent_lifecycle import get_step_progress
@@ -8312,7 +8312,7 @@ class TestStepProgress:
         result = get_step_progress(None, role="developer", pr_number=147)
         assert result["pipeline_variant"] == "address_review"
         assert result["step_index"] == 0
-        assert result["total_steps"] == 9
+        assert result["total_steps"] == 10
 
     def test_agent_step_with_pr_number_is_address_review(self) -> None:
         """Dashboard outer TaskRun (current_step='agent') with pr_number -> address_review."""

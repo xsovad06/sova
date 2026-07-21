@@ -10,6 +10,8 @@ Two pipeline variants:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps import get_address_review_steps, get_developer_steps
@@ -137,12 +139,19 @@ class DeveloperRole(AgentRole):
             except Exception:
                 log.warning("developer.branch_discovery_failed", exc_info=True)
 
-        if ctx.worktree_dir is None and ctx.has_issue:
-            issue_num = ctx.issue_number.lstrip("#").strip()
-            candidate = ctx.project_dir / ".claude" / "worktrees" / issue_num
-            if candidate.exists():
-                ctx.worktree_dir = candidate
-                log.info("developer.discovered_worktree", path=str(candidate))
+        if ctx.worktree_dir is None:
+            wt_base = ctx.project_dir / ".claude" / "worktrees"
+            candidates: list[Path] = []
+            if ctx.has_issue:
+                issue_num = ctx.issue_number.lstrip("#").strip()
+                candidates.append(wt_base / issue_num)
+            if ctx.pr_number:
+                candidates.append(wt_base / f"pr-{ctx.pr_number}")
+            for candidate in candidates:
+                if candidate.exists():
+                    ctx.worktree_dir = candidate
+                    log.info("developer.discovered_worktree", path=str(candidate))
+                    break
 
         if ctx.worktree_dir is None and ctx.branch_name:
             try:
