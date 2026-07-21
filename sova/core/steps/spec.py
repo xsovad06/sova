@@ -29,6 +29,7 @@ from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.dashboard.services.spec_service import find_spec_file
 from sova.ipc.handoff import HandoffAction
 from sova.llm.client import invoke
+from sova.llm.guard import PromptInjectionError
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section as _extract_section
 
@@ -227,12 +228,18 @@ def _build_spec_prompt(issue_number: str, title: str, body: str) -> str:
     )
 
 
+def _sanitize_issue_number(issue_number: str) -> str:
+    """Strip path separators and traversal tokens from issue_number."""
+    return re.sub(r"[/\\]", "", issue_number).lstrip(".")
+
+
 def _write_spec_file(issue_number: str, title: str, content: str, project_dir: Path) -> Path:
     """Write spec content to .claude/specs/{issue}-{slug}.md."""
+    safe_issue = _sanitize_issue_number(issue_number)
     specs_dir = project_dir / ".claude" / "specs"
     specs_dir.mkdir(parents=True, exist_ok=True)
     slug = _make_slug(title)
-    spec_path = specs_dir / f"{issue_number}-{slug}.md"
+    spec_path = specs_dir / f"{safe_issue}-{slug}.md"
     spec_path.write_text(content)
     return spec_path
 
@@ -285,7 +292,7 @@ class SpecStep(BaseStep):
                 timeout=ctx.config.agent.step_timeout,
             )
             ctx.add_cost(result.cost_usd)
-        except RuntimeError as exc:
+        except (RuntimeError, PromptInjectionError) as exc:
             return StepResult(success=False, summary="Spec generation failed", error=str(exc))
 
         spec_content = _extract_spec_content(result.text)
@@ -294,9 +301,18 @@ class SpecStep(BaseStep):
                 success=False,
                 summary="LLM returned no spec content",
                 error="LLM response was empty or could not be parsed into a spec",
+                cost_usd=result.cost_usd,
             )
 
-        spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)
+        try:
+            spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)
+        except IOError as exc:
+            return StepResult(
+                success=False,
+                summary="Failed to write spec file",
+                error=str(exc),
+                cost_usd=result.cost_usd,
+            )
         log.info("step.spec.written", issue=ctx.issue_number, path=str(spec_path))
 
         # Read once, derive everything from text
