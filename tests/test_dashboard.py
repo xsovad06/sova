@@ -1958,8 +1958,10 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
             patch.object(
-                agent_lifecycle, "_resolve_issue_worktree",
-                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/wt"),
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2003,8 +2005,10 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
             patch.object(
-                agent_lifecycle, "_resolve_issue_worktree",
-                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/wt"),
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2046,8 +2050,10 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
             patch.object(
-                agent_lifecycle, "_resolve_issue_worktree",
-                new_callable=AsyncMock, return_value=Path("/tmp/wt"),
+                agent_lifecycle,
+                "_resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=Path("/tmp/wt"),
             ),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock) as mock_transition,
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2160,6 +2166,16 @@ class TestDuplicateAgentPrevention:
                 new_callable=AsyncMock,
                 return_value="55",
             ) as mock_resolve,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_branch_name",
+                new_callable=AsyncMock,
+                return_value="fix/issue-55",
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=pa.project_dir / ".claude" / "worktrees" / "55",
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             result = await start_agent("", role="developer", pr_number=332)
@@ -2189,6 +2205,8 @@ class TestDuplicateAgentPrevention:
         mock_process.stderr_lines = _empty_async_iter
         mock_process.wait = AsyncMock(return_value=0)
 
+        worktree_path = pa.project_dir / ".claude" / "worktrees" / "42"
+
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(
@@ -2205,6 +2223,16 @@ class TestDuplicateAgentPrevention:
                 new_callable=AsyncMock,
                 return_value="99",
             ) as mock_resolve,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_branch_name",
+                new_callable=AsyncMock,
+                return_value="fix/issue-42",
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_worktree",
+                new_callable=AsyncMock,
+                return_value=worktree_path,
+            ),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
             result = await start_agent("42", role="developer", pr_number=332)
