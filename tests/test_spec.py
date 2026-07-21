@@ -19,6 +19,7 @@ from sova.core.steps.spec import (
     _extract_spec_content,
     _make_slug,
     _research_says_implemented,
+    _sanitize_issue_number,
     _text_has_open_questions,
 )
 from sova.dashboard.services.spec_service import find_spec_file
@@ -233,6 +234,23 @@ class TestFindSpecFile:
 # ---------------------------------------------------------------------------
 # SpecStep
 # ---------------------------------------------------------------------------
+
+
+class TestSanitizeIssueNumber:
+    def test_strips_forward_slash(self) -> None:
+        assert _sanitize_issue_number("../etc/passwd") == "etcpasswd"
+
+    def test_strips_backslash(self) -> None:
+        assert _sanitize_issue_number("..\\etc\\passwd") == "etcpasswd"
+
+    def test_strips_leading_dots(self) -> None:
+        assert _sanitize_issue_number("..42") == "42"
+
+    def test_preserves_normal_issue_number(self) -> None:
+        assert _sanitize_issue_number("42") == "42"
+
+    def test_preserves_alphanumeric(self) -> None:
+        assert _sanitize_issue_number("RHCLOUD-42") == "RHCLOUD-42"
 
 
 class TestSpecStep:
@@ -630,6 +648,25 @@ class TestSpecStep:
         assert not result.success
         assert "CLI failed" in result.error
 
+    async def test_execute_prompt_injection_error(self) -> None:
+        from sova.llm.guard import PromptInjectionError, ScanResult
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
+        ctx = _make_ctx(adapter=adapter)
+        step = SpecStep()
+
+        scan = ScanResult(safe=False, risk_score=0.95)
+        with patch(
+            "sova.core.steps.spec.invoke",
+            new_callable=AsyncMock,
+            side_effect=PromptInjectionError(scan),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Spec generation failed" in result.summary
+
     async def test_execute_creates_specs_directory(self, tmp_path: Path) -> None:
         """Step creates .claude/specs/ directory if it doesn't exist."""
         from sova.llm.models import LLMResult
@@ -705,6 +742,47 @@ class TestSpecStep:
 
         assert not result.success
         assert "empty" in result.error.lower()
+
+    async def test_execute_write_spec_ioerror(self, tmp_path: Path) -> None:
+        """IOError during spec file write returns graceful failure with cost."""
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Test", body="body\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        step = SpecStep()
+
+        spec_text = "# Spec: Test\n\n**Status**: draft\n**Complexity**: simple\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.04"), input_tokens=100, output_tokens=50
+        )
+        with (
+            patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.core.steps.spec._write_spec_file", side_effect=IOError("disk full")),
+        ):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "Failed to write spec file" in result.summary
+        assert result.cost_usd == Decimal("0.04")
+
+    async def test_execute_empty_llm_response_preserves_cost(self, tmp_path: Path) -> None:
+        """Empty response failure path reports the accrued cost."""
+        from sova.llm.models import LLMResult
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="42", title="Test", body="body", state=TaskState.TRIAGED)
+        ctx = _make_ctx(project_dir=tmp_path, adapter=adapter)
+        step = SpecStep()
+
+        llm_result = LLMResult(text="", model="sonnet", cost_usd=Decimal("0.03"), input_tokens=100, output_tokens=0)
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert result.cost_usd == Decimal("0.03")
 
     async def test_validate_output_passes(self, tmp_path: Path) -> None:
         specs_dir = tmp_path / ".claude" / "specs"
