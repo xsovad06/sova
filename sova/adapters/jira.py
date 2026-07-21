@@ -156,6 +156,7 @@ class JiraAdapter(TaskAdapter):
                     "customfield_10028",
                     "sprint",
                     "components",
+                    "updated",
                 ],
             },
         )
@@ -444,6 +445,7 @@ class JiraAdapter(TaskAdapter):
                 "status": status.get("name", ""),
                 "jira_priority": priority_name,
                 "created_at": created,
+                "updated_at": fields.get("updated", ""),
             },
             issue_type=issue_type,
             story_points=story_points,
