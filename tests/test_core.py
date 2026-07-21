@@ -921,7 +921,8 @@ class TestEnsureWorktreeStep:
                 new_callable=AsyncMock,
             ) as mock_create,
             patch.object(
-                EnsureWorktreeStep, "_resolve_base_branch",
+                EnsureWorktreeStep,
+                "_resolve_base_branch",
                 new_callable=AsyncMock,
                 return_value="fix/standalone",
             ),
