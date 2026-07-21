@@ -131,6 +131,9 @@ Always include this as the **first line** of the review body, before any section
 
 Where `{verdict}` is `approve`, `revise`, or `block` (lowercase), matching your final verdict. This marker lets the SOVA dashboard detect cross-instance reviews when another SOVA user (on a different machine) posts the review.
 
+Mapping from the Verdict section below to marker values: Approve -> `approve`, Request changes -> `revise`, Comment only -> `approve`.
+
+
 ### PR Summary
 One paragraph: what the PR does, who authored it, how many commits/files.
 

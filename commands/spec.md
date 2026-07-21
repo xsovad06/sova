@@ -74,6 +74,19 @@ Based on the issue, identify the affected areas:
 
 Be thorough here. The spec's value comes from grounding decisions in the actual code, not from generic planning.
 
+**Verification requirement**: For every function, model field, class, or constant referenced in the spec, open the source file and confirm it exists with the stated signature and return type. Do not state "X has field Y" without having read the model. Do not state "function F returns Z" without having read the function body.
+
+### Pre-Write Checklist
+
+Before writing the spec, verify each of the following:
+
+- Every function referenced has been read; signature and return type confirmed
+- Every model field referenced has been verified in the model file
+- Every external dependency (library function, service call) has been checked for actual behavior
+- No item in the planned Open Questions section can be answered by reading code
+
+If any item fails this checklist, go back to Step 3 and read the relevant file before continuing.
+
 ### Step 4: Write the Spec
 
 Create the directory if needed:
@@ -171,9 +184,9 @@ Reference specific functions/classes with file paths.
 
 ## Open Questions
 
-Anything that needs user input before development starts.
+Items that require user input before development can start: business rules, scope boundaries, UX preferences, or external system behavior that cannot be determined from the codebase. Never put code facts here. If uncertain about a code fact, read the relevant file; if it cannot be found, document the assumption in Design Decisions instead.
 
-(Omit this section if there are no open questions.)
+(Omit this section if all uncertainties can be resolved by reading code.)
 ```
 
 **Guidelines for the spec content**:
@@ -248,3 +261,4 @@ If the user declines, skip this step -- the spec file in `.claude/specs/` is the
 - Omit spec sections that don't apply (e.g., no "Data Model" for a pure UI change)
 - Ground every recommendation in actual code found during Step 3
 - If the issue lacks enough detail to spec, list concrete open questions instead of guessing
+- Never populate Open Questions with implementation details findable by reading the codebase. If all uncertainties can be resolved by reading code, the Open Questions section should be omitted entirely.
