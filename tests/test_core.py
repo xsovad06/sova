@@ -861,8 +861,6 @@ class TestWorktreeStep:
         assert ctx.worktree_dir == Path("/tmp/test/.claude/worktrees/42")
 
 
-
-
 class TestEnsureWorktreeStep:
     async def test_skips_when_worktree_exists(self) -> None:
         from sova.core.steps.ensure_worktree import EnsureWorktreeStep
