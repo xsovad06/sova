@@ -51,6 +51,14 @@ class TaskSourceConfig(BaseSettings):
     def is_jira(self) -> bool:
         return self.type == "jira" and bool(self.jira_project_key) and bool(self.jira_base_url)
 
+    def jira_issue_key(self, issue_number: str) -> str:
+        """Return the full JIRA issue key, e.g. ``RHCLOUD-48767``."""
+        return f"{self.jira_project_key}-{issue_number}"
+
+    def jira_browse_url(self, issue_number: str) -> str:
+        """Return the JIRA browse URL for an issue."""
+        return f"{self.jira_base_url.rstrip('/')}/browse/{self.jira_issue_key(issue_number)}"
+
     @field_validator("jira_status_mapping")
     @classmethod
     def _validate_status_mapping(cls, v: dict[str, str]) -> dict[str, str]:
@@ -192,7 +200,6 @@ class CommitConfig(BaseSettings):
     ai_coauthor: bool = True
     author: str = ""
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
-    pr_auto_link_issues: bool = True
     branch_naming: Literal["conventional", "freeform"] = "conventional"
 
     model_config = SettingsConfigDict(env_prefix="SOVA_COMMIT_")
@@ -461,16 +468,23 @@ class WatchdogConfig(BaseSettings):
     no_output_warn_minutes: int = Field(15, gt=0)
     no_output_kill_minutes: int = Field(25, gt=0)
     step_warn_minutes: int = Field(45, gt=0)
+    step_kill_minutes: int = Field(60, gt=0)
     cooldown_minutes: int = Field(10, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_WATCHDOG_")
 
     @model_validator(mode="after")
-    def _validate_no_output_thresholds(self) -> WatchdogConfig:
+    def _validate_thresholds(self) -> WatchdogConfig:
         if self.no_output_kill_minutes <= self.no_output_warn_minutes:
             msg = (
                 f"no_output_kill_minutes ({self.no_output_kill_minutes}) must be "
                 f"greater than no_output_warn_minutes ({self.no_output_warn_minutes})"
+            )
+            raise ValueError(msg)
+        if self.step_kill_minutes <= self.step_warn_minutes:
+            msg = (
+                f"step_kill_minutes ({self.step_kill_minutes}) must be "
+                f"greater than step_warn_minutes ({self.step_warn_minutes})"
             )
             raise ValueError(msg)
         return self
