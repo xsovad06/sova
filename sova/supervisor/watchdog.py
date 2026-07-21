@@ -44,6 +44,7 @@ class AnomalySignal(StrEnum):
     NO_OUTPUT_WARN = "no_output_warn"
     NO_OUTPUT_KILL = "no_output_kill"
     STEP_TIMEOUT_WARN = "step_timeout_warn"
+    STEP_TIMEOUT_KILL = "step_timeout_kill"
     ZOMBIE_PROCESS = "zombie_process"
 
 
@@ -185,19 +186,20 @@ class AgentWatchdog:
                 findings.append(adopt_finding)
                 return findings  # skip other checks if pipeline was never adopted
 
-        # 2. Zombie process: PID is dead but run is not terminal
+        # 2. Zombie process: PID is dead but run is not terminal. Kill to trigger
+        #    DB cleanup via stop_agent (the process is already dead, nothing to warn).
         if run.pid is not None and not _is_process_alive(run.pid):
             findings.append(
                 WatchdogFinding(
                     run_id=run.id,
                     issue_number=run.issue_number,
                     signal=AnomalySignal.ZOMBIE_PROCESS,
-                    action=WatchdogAction.WARN,
+                    action=WatchdogAction.KILL,
                     detail=f"Run {run.id} has dead PID {run.pid} but status '{run.status}'",
                     metadata={"pid": run.pid, "status": run.status},
                 )
             )
-            return findings  # zombie: liveness sweep will handle, just emit event
+            return findings
 
         # 3. No output: check time since last output (or started_at as baseline)
         last_output = last_output_times.get(run.id)
@@ -269,7 +271,7 @@ class AgentWatchdog:
         return None
 
     def _check_step_timeout(self, run: TaskRun) -> WatchdogFinding | None:
-        """Warn if stuck on the same step for too long.
+        """Kill if stuck on the same step beyond kill threshold, warn at warn threshold.
 
         Uses per-step first-seen timestamps so long-running healthy runs (with
         many sequential steps) are not false-positively flagged.
@@ -279,24 +281,39 @@ class AgentWatchdog:
         step_key = (run.id, run.current_step)
         step_first_seen = self._step_started_at.get(step_key)
         if step_first_seen is None:
-            return None  # step just registered this scan; wait for next cycle
-        minutes_on_step = (time.monotonic() - step_first_seen) / 60.0
-        if minutes_on_step < self._config.step_warn_minutes:
             return None
-        return WatchdogFinding(
-            run_id=run.id,
-            issue_number=run.issue_number,
-            signal=AnomalySignal.STEP_TIMEOUT_WARN,
-            action=WatchdogAction.WARN,
-            detail=(
-                f"Run {run.id} has been on step '{run.current_step}' for "
-                f"{minutes_on_step:.0f}m (threshold: {self._config.step_warn_minutes}m)"
-            ),
-            metadata={
-                "current_step": run.current_step,
-                "minutes_on_step": round(minutes_on_step, 1),
-            },
-        )
+        minutes_on_step = (time.monotonic() - step_first_seen) / 60.0
+        if minutes_on_step >= self._config.step_kill_minutes:
+            return WatchdogFinding(
+                run_id=run.id,
+                issue_number=run.issue_number,
+                signal=AnomalySignal.STEP_TIMEOUT_KILL,
+                action=WatchdogAction.KILL,
+                detail=(
+                    f"Run {run.id} has been on step '{run.current_step}' for "
+                    f"{minutes_on_step:.0f}m (kill threshold: {self._config.step_kill_minutes}m)"
+                ),
+                metadata={
+                    "current_step": run.current_step,
+                    "minutes_on_step": round(minutes_on_step, 1),
+                },
+            )
+        if minutes_on_step >= self._config.step_warn_minutes:
+            return WatchdogFinding(
+                run_id=run.id,
+                issue_number=run.issue_number,
+                signal=AnomalySignal.STEP_TIMEOUT_WARN,
+                action=WatchdogAction.WARN,
+                detail=(
+                    f"Run {run.id} has been on step '{run.current_step}' for "
+                    f"{minutes_on_step:.0f}m (warn threshold: {self._config.step_warn_minutes}m)"
+                ),
+                metadata={
+                    "current_step": run.current_step,
+                    "minutes_on_step": round(minutes_on_step, 1),
+                },
+            )
+        return None
 
     def _is_on_cooldown(self, finding: WatchdogFinding) -> bool:
         """Check if this (run_id, signal) pair is within cooldown window."""
