@@ -547,6 +547,10 @@ async def start_agent(
         branch_name = await _resolve_branch_name(pr_number, project_dir)
         cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
 
+        if pr_number and cwd.resolve() == project_dir.resolve():
+            log.error("agent.worktree_isolation_failed", pr=pr_number, issue=issue)
+            return {"error": f"Cannot start PR-based run: worktree isolation failed for PR {pr_number}"}
+
         if not force and issue:
             budget_error = await _check_issue_budget(issue, project_dir)
             if budget_error:
@@ -720,6 +724,11 @@ async def start_command(
 
         branch_name = await _resolve_branch_name(pr_number, project_dir)
         cwd = await _resolve_issue_worktree(issue, project_dir, branch_name=branch_name, pr_number=pr_number)
+
+        if pr_number and cwd.resolve() == project_dir.resolve():
+            log.error("command.worktree_isolation_failed", pr=pr_number, command=command)
+            return {"error": f"Cannot start PR-based command: worktree isolation failed for PR {pr_number}"}
+
         prompt = _resolve_command_prompt(command, args, project_dir)
 
         try:

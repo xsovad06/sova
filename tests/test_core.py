@@ -920,6 +920,11 @@ class TestEnsureWorktreeStep:
                 "sova.core.steps.ensure_worktree.create_worktree",
                 new_callable=AsyncMock,
             ) as mock_create,
+            patch.object(
+                EnsureWorktreeStep, "_resolve_base_branch",
+                new_callable=AsyncMock,
+                return_value="fix/standalone",
+            ),
         ):
             mock_info = MagicMock()
             mock_info.path = wt_path
@@ -931,6 +936,86 @@ class TestEnsureWorktreeStep:
         mock_create.assert_awaited_once()
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["issue_id"] == "pr-55"
+
+    async def test_rejects_project_dir_as_worktree(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        project = Path("/tmp/proj")
+        ctx = _make_ctx(
+            worktree_dir=project,
+            branch_name="feat/issue-42",
+            project_dir=project,
+        )
+        step = EnsureWorktreeStep()
+
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(Path, "resolve", return_value=project),
+        ):
+            assert await step.can_skip(ctx) is False
+
+    async def test_clears_project_dir_worktree_and_discovers(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        project = Path("/tmp/proj")
+        wt_path = Path("/tmp/proj/.claude/worktrees/42")
+        ctx = _make_ctx(
+            worktree_dir=project,
+            branch_name="feat/issue-42",
+            project_dir=project,
+        )
+        step = EnsureWorktreeStep()
+
+        with patch(
+            "sova.core.steps.ensure_worktree.find_worktree_by_branch",
+            new_callable=AsyncMock,
+            return_value=wt_path,
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.worktree_dir == wt_path
+
+    async def test_validate_output_rejects_project_dir(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        project = Path("/tmp/proj")
+        ctx = _make_ctx(worktree_dir=project, project_dir=project)
+        step = EnsureWorktreeStep()
+
+        with patch.object(Path, "exists", return_value=True):
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "project root" in gate.reason
+
+    async def test_resolve_base_branch_prefers_local(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        mock_result = MagicMock(success=True, stdout="abc123\n")
+        with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, return_value=mock_result):
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+
+        assert branch == "feat/test"
+
+    async def test_resolve_base_branch_falls_back_to_origin(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        fail = MagicMock(success=False)
+        ok = MagicMock(success=True, stdout="abc123\n")
+        with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, side_effect=[fail, ok]):
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+
+        assert branch == "origin/feat/test"
+
+    async def test_resolve_base_branch_returns_name_when_unresolved(self) -> None:
+        from sova.core.steps.ensure_worktree import EnsureWorktreeStep
+
+        fail = MagicMock(success=False)
+        with patch("sova.core.steps.ensure_worktree.run", new_callable=AsyncMock, return_value=fail):
+            branch = await EnsureWorktreeStep._resolve_base_branch("feat/test", Path("/tmp"))
+
+        assert branch == "feat/test"
 
 
 class TestDevelopStep:

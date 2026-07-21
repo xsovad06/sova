@@ -167,9 +167,13 @@ class TestCopyWorktreeFilesTraversal:
     def test_rejects_source_path_traversal(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
         project.mkdir()
+        escaped_file = tmp_path / "escaped.txt"
+        escaped_file.write_text("sensitive data")
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        _copy_worktree_files(project, worktree, ["../../etc/passwd"])
+        with patch("sova.git.worktree.shutil.copy2") as mock_copy:
+            _copy_worktree_files(project, worktree, ["../escaped.txt"])
+        mock_copy.assert_not_called()
 
     def test_skips_nonexistent_source(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
