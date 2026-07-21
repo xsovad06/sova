@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from decimal import Decimal
@@ -652,6 +653,31 @@ class TestWorkflowEngine:
         assert written_handoff.status == "awaiting_action"
         assert len(written_handoff.next_actions) == 1
         assert written_handoff.next_actions[0].id == "approve_spec"
+
+    async def test_step_hard_timeout(self) -> None:
+        """Steps exceeding the hard timeout are terminated with a failure."""
+
+        class SlowStep(BaseStep):
+            name = "slow"
+            max_retries = 0
+
+            async def execute(self, ctx: ExecutionContext) -> StepResult:
+                await asyncio.sleep(999)
+                return StepResult(success=True, summary="should not reach here")
+
+            async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
+                return GateCheckResult(passed=True)
+
+        config = ProjectConfig(agent={"step_timeout": 1})
+        ctx = _make_ctx(config=config)
+        step = SlowStep()
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert not result.success
+        assert result.steps_failed == 1
+        assert result.error == "step_hard_timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -1568,6 +1594,75 @@ class TestCreatePRStepJira:
         assert "feat(#42)" in title_arg
 
 
+class TestCreatePRStepJiraPrompt:
+    """Verify the LLM prompt itself is JIRA-aware (not just post-processing)."""
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_jira_prompt_has_no_closes_syntax(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """The LLM prompt for JIRA projects should not contain Closes #N."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(
+            task=Task(id="48928", title="Improve output"),
+            issue_number="48928",
+            branch_name="feat/RHCLOUD-48928-improve-output",
+        )
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert "Closes #48928" not in prompt_arg
+        assert "RHCLOUD-48928" in prompt_arg
+        assert "issues.redhat.com/browse/RHCLOUD-48928" in prompt_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_branch_fallback_title_strips_prefixes(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """When task.title is missing, branch name should be cleaned for PR title."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(
+            task=None,
+            issue_number="48928",
+            branch_name="feat/RHCLOUD-48928-security-logging",
+        )
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "feat/RHCLOUD" not in title_arg
+        assert "security logging" in title_arg.lower() or "security-logging" in title_arg.lower()
+
+
 class TestHandoffToReviewerStep:
     async def test_writes_handoff_and_succeeds(self) -> None:
         from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
@@ -2341,6 +2436,105 @@ class TestMonitorCIStep:
         assert not result.success
         assert "lint" in result.summary
 
+    async def test_resume_skips_poll_when_ci_passed(self) -> None:
+        """On resume, if CI already passed, skip polling entirely."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, resume_run_id=5)
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "resumed after interruption" in result.summary
+
+    async def test_resume_skips_poll_when_ci_failed(self) -> None:
+        """On resume, if CI already failed, return failure immediately."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(pr_number=10, config=config, resume_run_id=5)
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_passed=False, is_failed=True, details_url="")
+        check.name = "lint"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "lint" in result.summary
+
+    async def test_resume_polls_when_ci_incomplete(self) -> None:
+        """On resume, if CI is still running, fall through to normal polling."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, resume_run_id=5)
+        step = MonitorCIStep()
+
+        incomplete = MagicMock(is_completed=False, is_passed=False, is_failed=False, name="CI")
+        passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            # Resume check returns incomplete, then normal poll returns passed
+            mock_checks.side_effect = [[incomplete], [passed]]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1 CI checks passed" in result.summary
+
+    async def test_resume_respects_exclude_checks(self) -> None:
+        """On resume, excluded checks should not cause false failures."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["sonar"]
+        ctx = _make_ctx(pr_number=10, config=config, resume_run_id=5)
+        step = MonitorCIStep()
+
+        passed = MagicMock(is_completed=True, is_passed=True, is_failed=False)
+        passed.name = "Tests"
+        excluded_fail = MagicMock(is_completed=True, is_passed=False, is_failed=True)
+        excluded_fail.name = "sonar-quality-gate"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [passed, excluded_fail]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "resumed after interruption" in result.summary
+
+    async def test_heartbeat_writes_during_poll(self) -> None:
+        """CI polling should write heartbeat messages to the output writer."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 30
+        ctx = _make_ctx(pr_number=10, config=config)
+        mock_writer = MagicMock()
+        ctx.output_writer = mock_writer
+        step = MonitorCIStep()
+
+        incomplete = MagicMock(is_completed=False, is_passed=False, is_failed=False, name="CI")
+        passed = MagicMock(is_completed=True, is_passed=True, is_failed=False, name="CI")
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [[incomplete], [passed]]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_writer.write_line.called
+        heartbeat_msg = mock_writer.write_line.call_args_list[0][0][0]
+        assert "CI poll:" in heartbeat_msg
+
 
 # ---------------------------------------------------------------------------
 # MonitorCIStep -- CI fix loop
@@ -3020,6 +3214,173 @@ class TestCommitStepIssueless:
 
         assert not result.success
         assert "Commit failed" in result.summary
+
+
+# ---------------------------------------------------------------------------
+# CommitStep -- JIRA-aware linking
+# ---------------------------------------------------------------------------
+
+
+class TestCommitStepJira:
+    async def test_jira_commit_message_has_ticket_link(self) -> None:
+        """JIRA projects should emit JIRA: link instead of Closes #N."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(
+            worktree_dir=Path("/tmp/worktree"),
+            issue_number="48767",
+            config=ProjectConfig(
+                task_source=TaskSourceConfig(
+                    type="jira",
+                    jira_project_key="RHCLOUD",
+                    jira_base_url="https://issues.redhat.com",
+                )
+            ),
+        )
+        ctx.task = Task(id="48767", title="Add security logging")
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" security.py | 5 +++++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48767" in msg
+        assert "Closes #" not in msg
+
+    async def test_github_commit_message_unchanged(self) -> None:
+        """GitHub projects should still produce Closes #N."""
+        from sova.core.steps.commit import CommitStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        ctx.task = Task(id="42", title="Fix login bug")
+        ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
+        step = CommitStep()
+
+        with (
+            patch("sova.core.steps.commit.run") as mock_run,
+            patch("sova.core.steps.commit.git_ops.commit", new_callable=AsyncMock) as mock_commit,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" login.py | 3 +++\n"),
+                MagicMock(success=True, stdout=""),
+                MagicMock(success=True, stdout=""),
+            ]
+            result = await step.execute(ctx)
+
+        assert result.success
+        msg = mock_commit.call_args[0][0]
+        assert "Closes #42" in msg
+        assert "JIRA:" not in msg
+
+
+# ---------------------------------------------------------------------------
+# WorktreeStep -- JIRA-aware branch naming
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeStepJira:
+    async def test_jira_branch_name_uses_project_key(self) -> None:
+        """JIRA projects should produce feat/PROJKEY-N-slug branch names."""
+        from sova.core.steps.create_worktree import WorktreeStep
+
+        ctx = _make_ctx(issue_number="48767")
+        ctx.task = Task(id="48767", title="Add security logging")
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = WorktreeStep()
+
+        with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
+            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            await step.execute(ctx)
+
+        assert ctx.branch_name == "feat/RHCLOUD-48767-Add-security-logging"
+
+    async def test_jira_branch_name_without_task_title(self) -> None:
+        """JIRA branch name without task title should use bare JIRA key."""
+        from sova.core.steps.create_worktree import WorktreeStep
+
+        ctx = _make_ctx(issue_number="48767")
+        ctx.task = None
+        ctx.config = ProjectConfig(
+            task_source=TaskSourceConfig(
+                type="jira",
+                jira_project_key="RHCLOUD",
+                jira_base_url="https://issues.redhat.com",
+            )
+        )
+        step = WorktreeStep()
+
+        with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
+            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            await step.execute(ctx)
+
+        assert ctx.branch_name == "feat/RHCLOUD-48767"
+
+    async def test_github_branch_name_unchanged(self) -> None:
+        """GitHub projects should still produce feat/issue-N branch names."""
+        from sova.core.steps.create_worktree import WorktreeStep
+
+        ctx = _make_ctx(issue_number="42")
+        ctx.config = ProjectConfig(task_source=TaskSourceConfig(type="github"))
+        step = WorktreeStep()
+
+        with patch("sova.core.steps.create_worktree.worktree.create_worktree", new_callable=AsyncMock) as mock_wt:
+            mock_wt.return_value = MagicMock(path=Path("/tmp/wt"))
+            await step.execute(ctx)
+
+        assert ctx.branch_name == "feat/issue-42"
+
+
+# ---------------------------------------------------------------------------
+# CreatePRStep -- branch name to title fallback
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePRTitleFromBranch:
+    def test_bare_issue_branch_returns_update_fallback(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        assert _title_from_branch("feat/issue-48767") == "update"
+
+    def test_strips_jira_key_prefix(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        result = _title_from_branch("feat/RHCLOUD-48767-security-logging")
+        assert result == "security logging"
+
+    def test_strips_fix_prefix(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        assert _title_from_branch("fix/issue-42-login-bug") == "login bug"
+
+    def test_bare_branch_returned_unchanged(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        assert _title_from_branch("main") == "main"
+
+    def test_prefix_only_returns_update_fallback(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        assert _title_from_branch("feat/") == "update"
+
+    def test_empty_branch_returns_update_fallback(self) -> None:
+        from sova.core.steps.create_pr import _title_from_branch
+
+        assert _title_from_branch("") == "update"
 
 
 # ---------------------------------------------------------------------------

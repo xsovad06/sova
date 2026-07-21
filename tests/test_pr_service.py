@@ -133,6 +133,22 @@ class TestParseLinkedIssue:
     def test_first_match(self) -> None:
         assert parse_linked_issue("Closes #10\nFixes #20") == 10
 
+    def test_jira_markdown_link(self) -> None:
+        body = "## JIRA\n[RHCLOUD-48767](https://issues.redhat.com/browse/RHCLOUD-48767)"
+        assert parse_linked_issue(body) == 48767
+
+    def test_jira_plain_link(self) -> None:
+        body = "JIRA: https://issues.redhat.com/browse/RHCLOUD-48767"
+        assert parse_linked_issue(body) == 48767
+
+    def test_github_preferred_over_jira(self) -> None:
+        body = "Closes #42\nJIRA: https://issues.redhat.com/browse/RHCLOUD-48767"
+        assert parse_linked_issue(body) == 42
+
+    def test_jira_multi_letter_project(self) -> None:
+        body = "[ABC-123](https://jira.example.com/browse/ABC-123)"
+        assert parse_linked_issue(body) == 123
+
 
 class TestSummarizeCi:
     def test_empty(self) -> None:
