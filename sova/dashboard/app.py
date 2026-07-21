@@ -82,6 +82,7 @@ BASE = Path(__file__).parent
 
 _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
+_RECOVERY_INTERVAL = 300  # 5 minutes
 
 
 async def _mark_dead_run(run: object, project_dir: Path) -> None:
@@ -158,12 +159,31 @@ async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None
             log.warning("sweep.error", exc_info=True)
 
 
+async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> None:
+    """Run recover_stale_runs periodically (every 5 minutes) to catch zombie runs.
+
+    Complements the fast liveness sweep (5s) which only handles the simple dead-PID
+    case. recover_stale_runs additionally checks handoff files and PR merge status
+    to decide between "done" and "interrupted" outcomes.
+    """
+    while True:
+        await asyncio.sleep(_RECOVERY_INTERVAL)
+        try:
+            for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
+                await recover_stale_runs(d)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.warning("periodic_recovery.error", exc_info=True)
+
+
 async def _shutdown_tasks(
     sweep_task: asyncio.Task,
     pr_throttle_tasks: list[asyncio.Task],
     pr_monitor_tasks: list[asyncio.Task],
     metrics_writer: MetricsSnapshotWriter | None,
     watchdog: AgentWatchdog | None = None,
+    recovery_task: asyncio.Task | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -182,8 +202,12 @@ async def _shutdown_tasks(
         t.cancel()
     if bg_tasks:
         await asyncio.gather(*bg_tasks, return_exceptions=True)
-    sweep_task.cancel()
-    await asyncio.gather(sweep_task, return_exceptions=True)
+    cancel_tasks = [sweep_task]
+    if recovery_task is not None:
+        cancel_tasks.append(recovery_task)
+    for t in cancel_tasks:
+        t.cancel()
+    await asyncio.gather(*cancel_tasks, return_exceptions=True)
 
 
 def create_app(
@@ -311,6 +335,7 @@ def create_app(
                 )
 
         sweep_task = asyncio.create_task(_liveness_sweep_loop(project_dir, is_multi))
+        recovery_task = asyncio.create_task(_periodic_recovery_loop(project_dir, is_multi))
 
         # PR monitor background loop
         pr_monitor_tasks: list[asyncio.Task] = []
@@ -357,7 +382,14 @@ def create_app(
         finally:
             try:
                 await asyncio.wait_for(
-                    _shutdown_tasks(sweep_task, pr_throttle_tasks, pr_monitor_tasks, metrics_writer, watchdog),
+                    _shutdown_tasks(
+                        sweep_task,
+                        pr_throttle_tasks,
+                        pr_monitor_tasks,
+                        metrics_writer,
+                        watchdog,
+                        recovery_task=recovery_task,
+                    ),
                     timeout=5.0,
                 )
             except TimeoutError:
