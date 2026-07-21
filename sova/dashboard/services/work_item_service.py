@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -697,6 +698,19 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     }
 
 
+# Verdict cache: {pr_number: (monotonic_timestamp, verdict_dict)}
+# Positive results (has_sova_review=True) are stable -- a review verdict doesn't change.
+# Negative results expire quickly so newly posted reviews are detected within 30s.
+_sova_verdict_cache: dict[int, tuple[float, dict]] = {}
+_VERDICT_CACHE_POSITIVE_TTL = 300.0  # 5 minutes
+_VERDICT_CACHE_NEGATIVE_TTL = 30.0  # 30 seconds
+
+
+def clear_verdict_cache() -> None:
+    """Clear the SOVA verdict cache. Intended for testing and cache invalidation."""
+    _sova_verdict_cache.clear()
+
+
 _SOVA_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
 # Matches the natural-language verdict line from /review-pr command output and older pipeline output.
 _SOVA_VERDICT_LINE_RE = re.compile(
@@ -798,11 +812,25 @@ async def _fetch_sova_verdicts(
 
     async def fetch_one(key: str, issue_num: str | None, pr_number: int | None) -> tuple[str, dict]:
         try:
+            if pr_number is not None:
+                cached_entry = _sova_verdict_cache.get(pr_number)
+                if cached_entry is not None:
+                    ts, cached = cached_entry
+                    ttl = _VERDICT_CACHE_POSITIVE_TTL if cached.get("has_sova_review") else _VERDICT_CACHE_NEGATIVE_TTL
+                    if time.monotonic() - ts < ttl:
+                        return key, dict(cached)
+
             verdict = await get_sova_review_verdict(issue_num, pr_number=pr_number, project_dir=project_dir)
             if not verdict.get("has_sova_review") and pr_number is not None and _fallback_adapter is not None:
                 gh_verdict = await _fetch_github_review_fallback(pr_number, _fallback_adapter)
                 if gh_verdict is not None:
                     verdict = gh_verdict
+
+            if pr_number is not None:
+                if len(_sova_verdict_cache) > 1000:
+                    _sova_verdict_cache.clear()
+                _sova_verdict_cache[pr_number] = (time.monotonic(), verdict)
+
             return key, verdict
         except Exception:
             log.debug("work_items.verdict_fetch_failed", issue=issue_num, pr=pr_number, exc_info=True)
