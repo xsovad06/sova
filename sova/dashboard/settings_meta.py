@@ -421,13 +421,6 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("commit.pr_title_format", "PR title format", "PR title style: conventional or freeform", "commit"),
     SettingMeta(
-        "commit.pr_auto_link_issues",
-        "Auto-link issues in PR",
-        "Add 'Closes #N' to PR bodies automatically",
-        "commit",
-        "boolean",
-    ),
-    SettingMeta(
         "commit.branch_naming",
         "Branch naming",
         "Branch name style: conventional (feat/fix/refactor) or freeform",
@@ -917,6 +910,13 @@ _REGISTRY: list[SettingMeta] = [
         "watchdog.step_warn_minutes",
         "Step warn (min)",
         "Minutes on a single pipeline step before emitting a warning feed event",
+        "watchdog",
+        "number",
+    ),
+    SettingMeta(
+        "watchdog.step_kill_minutes",
+        "Step kill (min)",
+        "Minutes on a single pipeline step before killing the agent process",
         "watchdog",
         "number",
     ),
