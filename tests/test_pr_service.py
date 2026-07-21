@@ -817,17 +817,29 @@ class TestCheckThreadsFromPrData:
 
 class TestPRGatesRouter:
     @pytest.mark.asyncio
-    async def test_gates_endpoint_no_project(self, monkeypatch) -> None:
+    async def test_gates_endpoint_no_project_falls_back_to_cwd(self, monkeypatch) -> None:
+        from pathlib import Path
+
         from httpx import ASGITransport, AsyncClient
 
         from sova.dashboard.app import create_app
 
         monkeypatch.setattr("sova.dashboard.routers.prs.get_project_dir", lambda: None)
+
+        seen_paths: list[Path] = []
+
+        def _raise_no_config(path: Path) -> None:
+            seen_paths.append(path)
+            raise RuntimeError
+
+        monkeypatch.setattr("sova.dashboard.routers.prs.load_config", _raise_no_config)
         app = create_app(multi_project=False)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/api/prs/42/gates")
             assert resp.status_code == 400
+            assert resp.json()["detail"] == "Failed to load project configuration"
+            assert seen_paths == [Path.cwd()]
 
     @pytest.mark.asyncio
     async def test_gates_endpoint_config_load_failure(self, monkeypatch, tmp_path) -> None:

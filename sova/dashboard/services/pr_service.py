@@ -6,6 +6,7 @@ import re
 import time
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from sova.utils.logging import get_logger
@@ -359,9 +360,7 @@ async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"
     from sova.dashboard.project_context import get_project_dir
     from sova.git.pr import get_review_thread_counts, list_open_prs
 
-    project_dir = get_project_dir()
-    if not project_dir:
-        return []
+    project_dir = get_project_dir() or Path.cwd()
 
     try:
         cfg = load_config(project_dir)
