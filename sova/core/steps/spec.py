@@ -6,9 +6,9 @@ design decisions, and scope boundaries.
 
 The step generates specs by sending a focused prompt to the LLM via
 ``invoke()`` and writing the response to disk. This avoids the
-interactive ``/spec`` command which expects user input (Steps 5-7:
-"ask the user", "iterate on feedback") and fails silently in headless
-pipeline mode.
+interactive ``/spec`` command which expects user input (Steps 5-8:
+"ask the user", "iterate on feedback", "pre-write checklist") and
+fails silently in headless pipeline mode.
 
 Behavior depends on complexity threshold, research findings, and open questions:
 - Issues whose Research section indicates already implemented: skip entirely
