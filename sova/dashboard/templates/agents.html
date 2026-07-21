@@ -455,10 +455,64 @@ function renderTaskCard(item) {
     ? 'group hover:bg-surface-hover transition-colors relative border-l-2 border-accent-peach'
     : 'group hover:bg-surface-hover transition-colors relative';
 
+  // Metadata indicators
+  var assigneeHtml = '';
+  var assignees = item.assignees || [];
+  var prAuthor = (item.pr_details || {}).author || '';
+  if (assignees.length) {
+    var isGithub = !item.jira_key;
+    assigneeHtml = '<span class="flex items-center shrink-0">' +
+      (isGithub ? renderAssigneeAvatar(assignees[0]) : renderJiraInitial(assignees[0])) +
+      (assignees.length > 1 ? '<span class="text-[9px] text-gray-500 ml-0.5">+' + (assignees.length - 1) + '</span>' : '') +
+      '</span>';
+  } else if (prAuthor) {
+    assigneeHtml = '<span class="flex items-center shrink-0">' + renderAssigneeAvatar(prAuthor) + '</span>';
+  }
+
+  var pd = item.pr_details || {};
+
+  var ageHtml = '';
+  var ageSource = item.created_at || '';
+  if (ageSource) {
+    var ageStr = formatIsoAge(ageSource);
+    if (ageStr) {
+      ageHtml = '<span class="text-[10px] shrink-0 ' + ageColor(ageSource) + '" data-tooltip="Created ' + escapeHtml(ageSource.split('T')[0] || '') + '">' + ageStr + '</span>';
+    }
+  } else if (pd.age_seconds > 0) {
+    var prAgeDays = pd.age_seconds / 86400;
+    var prAgeColor = prAgeDays > 14 ? 'text-accent-red' : prAgeDays > 7 ? 'text-accent-yellow' : 'text-gray-600';
+    ageHtml = '<span class="text-[10px] shrink-0 ' + prAgeColor + '">' + formatAge(pd.age_seconds) + '</span>';
+  }
+
+  var diffHtml = '';
+  if (pd.additions || pd.deletions) {
+    var sz = diffSizeLabel(pd.additions, pd.deletions);
+    diffHtml = '<span class="text-[10px] shrink-0 ' + diffSizeColor(pd.additions, pd.deletions) + '" ' +
+      'data-tooltip="+' + pd.additions + ' / -' + pd.deletions + ' in ' + (pd.changed_files || '?') + ' files">' + sz + '</span>';
+  }
+
+  var draftHtml = '';
+  if (pd.is_draft) {
+    draftHtml = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-600/30 text-gray-400 shrink-0">Draft</span>';
+  }
+
+  var threadHtml = '';
+  if (pd.thread_total > 0) {
+    var trColor = pd.thread_resolved >= pd.thread_total ? 'text-accent-green' : 'text-accent-yellow';
+    threadHtml = '<span class="text-[10px] shrink-0 ' + trColor + '" ' +
+      'data-tooltip="' + pd.thread_resolved + '/' + pd.thread_total + ' review threads resolved">' +
+      pd.thread_resolved + '/' + pd.thread_total + '</span>';
+  }
+
+  var metaStrip = (assigneeHtml || ageHtml || diffHtml || draftHtml || threadHtml)
+    ? '<span class="flex items-center gap-1.5 shrink-0">' + assigneeHtml + ageHtml + diffHtml + draftHtml + threadHtml + '</span>'
+    : '';
+
   var mainRow = '<div class="flex items-center gap-3 px-4 py-2.5">' +
     (needsAttention ? attentionDot : pDot) +
     issueRef +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(item.title) + '</span>' +
+    metaStrip +
     failedDot +
     '<div class="flex items-center gap-2 shrink-0" style="width:340px">' +
       '<div class="w-20 flex justify-end">' + prBadge + '</div>' +
@@ -1684,6 +1738,54 @@ function formatAge(seconds) {
   return Math.floor(seconds / 86400) + 'd';
 }
 
+function formatIsoAge(isoStr) {
+  if (!isoStr) return '';
+  var ms = Date.now() - new Date(isoStr).getTime();
+  if (isNaN(ms) || ms < 0) return '';
+  return formatAge(Math.floor(ms / 1000));
+}
+
+function ageColor(isoStr) {
+  if (!isoStr) return 'text-gray-600';
+  var days = (Date.now() - new Date(isoStr).getTime()) / 86400000;
+  if (isNaN(days)) return 'text-gray-600';
+  if (days > 14) return 'text-accent-red';
+  if (days > 7) return 'text-accent-yellow';
+  return 'text-gray-600';
+}
+
+function diffSizeLabel(additions, deletions) {
+  var total = (additions || 0) + (deletions || 0);
+  if (total === 0) return '';
+  if (total <= 50) return 'S';
+  if (total <= 200) return 'M';
+  if (total <= 500) return 'L';
+  return 'XL';
+}
+
+function diffSizeColor(additions, deletions) {
+  var total = (additions || 0) + (deletions || 0);
+  if (total <= 50) return 'text-accent-green';
+  if (total <= 200) return 'text-accent';
+  if (total <= 500) return 'text-accent-yellow';
+  return 'text-accent-red';
+}
+
+function renderAssigneeAvatar(login) {
+  if (!login) return '';
+  return '<img src="https://avatars.githubusercontent.com/' + encodeURIComponent(login) + '?size=20" ' +
+    'alt="" width="16" height="16" loading="lazy" ' +
+    'class="rounded-full shrink-0" data-tooltip="' + escapeHtml(login) + '" ' +
+    'onerror="this.style.display=\'none\'">';
+}
+
+function renderJiraInitial(name) {
+  if (!name) return '';
+  var initial = name.charAt(0).toUpperCase();
+  return '<span class="w-4 h-4 rounded-full bg-gray-600 flex items-center justify-center text-[9px] text-gray-300 shrink-0" ' +
+    'data-tooltip="' + escapeHtml(name) + '">' + escapeHtml(initial) + '</span>';
+}
+
 function renderPrRow(pr) {
   var stateClass = _prStateColors[pr.computed_state] || 'bg-gray-600/30 text-gray-400';
 
@@ -1712,11 +1814,34 @@ function renderPrRow(pr) {
     '</div>';
   }
 
+  var prDiffHtml = '';
+  if (pr.additions || pr.deletions) {
+    prDiffHtml = '<span class="text-[10px] shrink-0 ' + diffSizeColor(pr.additions, pr.deletions) + '" ' +
+      'data-tooltip="+' + (pr.additions || 0) + ' / -' + (pr.deletions || 0) + ' in ' + (pr.changed_files || '?') + ' files">' +
+      diffSizeLabel(pr.additions, pr.deletions) + '</span>';
+  }
+
+  var prDraftBadge = '';
+  if (pr.is_draft) {
+    prDraftBadge = '<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-600/30 text-gray-400 shrink-0">Draft</span>';
+  }
+
+  var prThreadHtml = '';
+  if (pr.thread_total > 0) {
+    var trClr = pr.thread_resolved >= pr.thread_total ? 'text-accent-green' : 'text-accent-yellow';
+    prThreadHtml = '<span class="text-[10px] shrink-0 ' + trClr + '" ' +
+      'data-tooltip="' + pr.thread_resolved + '/' + pr.thread_total + ' review threads resolved">' +
+      pr.thread_resolved + '/' + pr.thread_total + '</span>';
+  }
+
   return '<div class="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-hover transition-colors">' +
     authorAvatar +
     '<a href="' + (pr.url && pr.url.startsWith('https://') ? escapeHtml(pr.url) : '#') + '" target="_blank" rel="noopener" class="text-xs font-medium text-accent hover:underline shrink-0">#' + escapeHtml(String(pr.number)) + '</a>' +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(pr.title) + '</span>' +
     issueRef +
+    prDiffHtml +
+    prDraftBadge +
+    prThreadHtml +
     ciDot +
     conflictBadge +
     '<span class="px-2 py-0.5 rounded-full text-xs ' + stateClass + '">' + escapeHtml(pr.state_label) + '</span>' +
