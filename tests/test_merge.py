@@ -9,6 +9,7 @@ from sova.config.models import IntegrationConfig
 from sova.git.merge import (
     MergeQueueStatus,
     _build_merge_args,
+    _get_pr_base_branch,
     delete_remote_branch,
     detect_merge_queue,
     get_merge_queue_status,
@@ -298,13 +299,90 @@ class TestPollMergeQueue:
     async def test_timeout(self) -> None:
         cfg = IntegrationConfig(merge_queue_poll_interval=1, merge_queue_timeout=2)
         queued = MergeQueueStatus(in_queue=True, state="QUEUED", position=5, estimated_time="10m")
+        call_count = 0
+
+        def advancing_time():
+            nonlocal call_count
+            call_count += 1
+            return float(call_count)
+
+        mock_loop = AsyncMock()
+        mock_loop.time = advancing_time
         with (
             patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock) as mock_status,
             patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("asyncio.get_event_loop", return_value=mock_loop),
         ):
             mock_status.return_value = queued
             result = await poll_merge_queue(42, repo="owner/repo", cfg=cfg)
         assert result.state == "TIMEOUT"
+
+    async def test_timeout_with_large_interval(self) -> None:
+        cfg = IntegrationConfig(merge_queue_poll_interval=100, merge_queue_timeout=30)
+        queued = MergeQueueStatus(in_queue=True, state="QUEUED", position=5, estimated_time="10m")
+        time_values = iter([0.0, 0.0, 0.5, 29.0, 31.0])
+
+        mock_loop = AsyncMock()
+        mock_loop.time = lambda: next(time_values)
+        sleep_durations = []
+
+        async def capture_sleep(duration):
+            sleep_durations.append(duration)
+
+        with (
+            patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock) as mock_status,
+            patch("asyncio.sleep", side_effect=capture_sleep),
+            patch("asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_status.return_value = queued
+            result = await poll_merge_queue(42, repo="owner/repo", cfg=cfg)
+        assert result.state == "TIMEOUT"
+        for d in sleep_durations:
+            assert d <= 30, f"Sleep duration {d} exceeded timeout of 30"
+
+    async def test_consecutive_api_failures_early_exit(self) -> None:
+        cfg = IntegrationConfig(merge_queue_poll_interval=1, merge_queue_timeout=600)
+        unknown = MergeQueueStatus(in_queue=True, state="UNKNOWN", position=None, estimated_time="")
+        time_val = [0.0]
+
+        def advancing_time():
+            time_val[0] += 0.1
+            return time_val[0]
+
+        mock_loop = AsyncMock()
+        mock_loop.time = advancing_time
+        with (
+            patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock) as mock_status,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_status.return_value = unknown
+            result = await poll_merge_queue(42, repo="owner/repo", cfg=cfg)
+        assert result.state == "TIMEOUT"
+        assert mock_status.call_count == 5
+
+    async def test_intermittent_api_failures(self) -> None:
+        cfg = IntegrationConfig(merge_queue_poll_interval=1, merge_queue_timeout=600)
+        queued = MergeQueueStatus(in_queue=True, state="QUEUED", position=3, estimated_time="5m")
+        unknown = MergeQueueStatus(in_queue=True, state="UNKNOWN", position=None, estimated_time="")
+        merged = MergeQueueStatus(in_queue=False, state="MERGED", position=None, estimated_time="")
+        time_val = [0.0]
+
+        def advancing_time():
+            time_val[0] += 0.1
+            return time_val[0]
+
+        mock_loop = AsyncMock()
+        mock_loop.time = advancing_time
+        with (
+            patch("sova.git.merge.get_merge_queue_status", new_callable=AsyncMock) as mock_status,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("asyncio.get_event_loop", return_value=mock_loop),
+        ):
+            mock_status.side_effect = [queued, unknown, queued, merged]
+            result = await poll_merge_queue(42, repo="owner/repo", cfg=cfg)
+        assert result.is_merged
+        assert mock_status.call_count == 4
 
 
 class TestDeleteRemoteBranch:
@@ -387,3 +465,66 @@ class TestIntegrationConfigDefaults:
         assert cfg.delete_branch is False
         assert cfg.merge_queue_enabled == "true"
         assert cfg.post_merge_state == "on_qa"
+
+
+class TestGetPrBaseBranch:
+    async def test_success(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_run.return_value = _shell_ok(stdout="develop\n")
+            result = await _get_pr_base_branch(42, repo="owner/repo")
+        assert result == "develop"
+
+    async def test_fallback_on_failure(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_run.return_value = _shell_fail(stderr="not found")
+            result = await _get_pr_base_branch(42, repo="owner/repo")
+        assert result == "main"
+
+    async def test_fallback_on_empty_stdout(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_run.return_value = _shell_ok(stdout="")
+            result = await _get_pr_base_branch(42, repo="owner/repo")
+        assert result == "main"
+
+
+class TestMergePrBaseBranch:
+    async def test_auto_detects_base_branch(self) -> None:
+        cfg = IntegrationConfig(merge_method="squash", merge_queue_enabled="false")
+        with (
+            patch("sova.git.merge._get_pr_base_branch", new_callable=AsyncMock) as mock_base,
+            patch("sova.git.merge.should_use_merge_queue", new_callable=AsyncMock) as mock_q,
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_base.return_value = "develop"
+            mock_q.return_value = False
+            mock_run.return_value = _shell_ok(stdout="Merged")
+            result = await merge_pr(42, repo="owner/repo", cfg=cfg)
+        mock_base.assert_called_once()
+        mock_q.assert_called_once()
+        assert mock_q.call_args.kwargs["base_branch"] == "develop"
+        assert result.success
+
+    async def test_explicit_base_branch_skips_lookup(self) -> None:
+        cfg = IntegrationConfig(merge_method="squash", merge_queue_enabled="false")
+        with (
+            patch("sova.git.merge._get_pr_base_branch", new_callable=AsyncMock) as mock_base,
+            patch("sova.git.merge.should_use_merge_queue", new_callable=AsyncMock) as mock_q,
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_q.return_value = False
+            mock_run.return_value = _shell_ok(stdout="Merged")
+            result = await merge_pr(42, repo="owner/repo", cfg=cfg, base_branch="master")
+        mock_base.assert_not_called()
+        assert mock_q.call_args.kwargs["base_branch"] == "master"
+        assert result.success

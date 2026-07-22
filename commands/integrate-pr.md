@@ -165,11 +165,17 @@ If merge queue is detected:
 
 If merge queue is NOT detected:
 
+First, query the PR to determine the base branch:
+```bash
+gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName'
+```
+Use this base branch for queue detection and rebase operations.
+
 ```bash
 gh pr merge <PR_NUMBER> --rebase --delete-branch
 ```
 
-If `merge_method` is "auto", fall back through rebase, squash, merge. Otherwise use the configured method.
+If `merge_method` is "auto", omit strategy flags to use the GitHub repo default. Otherwise use the configured method.
 
 **Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 
@@ -239,7 +245,7 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 ## Rules
 
 - Never stop between phases unless there is a hard failure
-- Use the merge method from `[integration]` config (default: auto, with rebase/squash/merge fallback)
+- Use the merge method from `[integration]` config (default: auto, uses GitHub repo default)
 - Handle merge queue when detected or configured
 - Use `--force-with-lease` for pushes, never `--force`
 - Only record actionable, specific lessons in memory -- not generic advice

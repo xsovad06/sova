@@ -150,14 +150,43 @@ def _build_merge_args(
     return args
 
 
+async def _get_pr_base_branch(
+    pr_number: int,
+    *,
+    repo: str,
+    github_user: str = "",
+) -> str:
+    env = await resolve_gh_env(github_user)
+    result = await run(
+        "gh",
+        "pr",
+        "view",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--json",
+        "baseRefName",
+        "--jq",
+        ".baseRefName",
+        env=env,
+    )
+    if result.success and result.stdout.strip():
+        return result.stdout.strip()
+    log.warning("git.merge.base_branch_lookup_failed", pr=pr_number, msg="Falling back to 'main'")
+    return "main"
+
+
 async def merge_pr(
     pr_number: int,
     *,
     repo: str,
     cfg: IntegrationConfig,
     github_user: str = "",
-    base_branch: str = "main",
+    base_branch: str = "",
 ) -> MergeResult:
+    if not base_branch:
+        base_branch = await _get_pr_base_branch(pr_number, repo=repo, github_user=github_user)
+
     use_queue = await should_use_merge_queue(
         cfg,
         repo=repo,
@@ -262,11 +291,18 @@ async def poll_merge_queue(
     cfg: IntegrationConfig,
     github_user: str = "",
 ) -> MergeQueueStatus:
-    elapsed = 0
+    loop = asyncio.get_event_loop()
+    start_time = loop.time()
     interval = cfg.merge_queue_poll_interval
     timeout = cfg.merge_queue_timeout
+    consecutive_unknown = 0
+    max_consecutive_unknown = 5
 
-    while elapsed < timeout:
+    while True:
+        elapsed = loop.time() - start_time
+        if elapsed >= timeout:
+            break
+
         status = await get_merge_queue_status(pr_number, repo=repo, github_user=github_user)
 
         if status.is_merged:
@@ -281,11 +317,31 @@ async def poll_merge_queue(
             log.info("git.merge.queue_left", pr=pr_number, state=status.state)
             return status
 
+        if status.state == "UNKNOWN":
+            consecutive_unknown += 1
+            if consecutive_unknown >= max_consecutive_unknown:
+                log.warning(
+                    "git.merge.queue_api_unavailable",
+                    pr=pr_number,
+                    failures=consecutive_unknown,
+                    msg="Too many consecutive API failures, stopping poll",
+                )
+                return MergeQueueStatus(
+                    in_queue=True,
+                    state="TIMEOUT",
+                    position=None,
+                    estimated_time="",
+                )
+        else:
+            consecutive_unknown = 0
+
         position_info = f" (position {status.position})" if status.position is not None else ""
         log.info("git.merge.queue_waiting", pr=pr_number, state=status.state, position=position_info)
 
-        await asyncio.sleep(interval)
-        elapsed += interval
+        remaining = timeout - (loop.time() - start_time)
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(interval, remaining))
 
     log.warning("git.merge.queue_timeout", pr=pr_number, timeout=timeout)
     return MergeQueueStatus(
