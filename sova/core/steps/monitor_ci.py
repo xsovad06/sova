@@ -44,6 +44,11 @@ class MonitorCIStep(BaseStep):
         if ctx.pr_number is None:
             return StepResult(success=False, summary="No PR to monitor", error="pr_number is None")
 
+        if ctx.no_new_commits:
+            skip_result = await self._check_existing_ci(ctx)
+            if skip_result is not None:
+                return skip_result
+
         if ctx.resume_run_id is not None:
             resume_result = await self._check_ci_on_resume(ctx)
             if resume_result is not None:
@@ -61,6 +66,51 @@ class MonitorCIStep(BaseStep):
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
         return GateCheckResult(passed=True)
+
+    # ------------------------------------------------------------------
+    # Fast path: no new push, check if CI already passed for current SHA
+    # ------------------------------------------------------------------
+
+    async def _check_existing_ci(self, ctx: ExecutionContext) -> StepResult | None:
+        """When no new commits were produced, check if CI already passed.
+
+        Returns a StepResult to short-circuit polling, or None to fall
+        through to the normal poll loop.
+        """
+        log.info("step.monitor_ci.no_new_commits", pr=ctx.pr_number)
+        try:
+            checks = await get_ci_checks(
+                ctx.pr_number,
+                repo=ctx.repo,
+                github_user=ctx.config.github_user,
+            )
+        except Exception:
+            log.warning("step.monitor_ci.existing_check_failed", exc_info=True)
+            return None
+
+        if checks is None:
+            return None
+
+        if not checks:
+            log.info("step.monitor_ci.no_existing_checks")
+            return StepResult(success=True, summary="No new commits and no CI checks configured")
+
+        exclude = ctx.config.ci.exclude_checks
+        if exclude:
+            checks = [c for c in checks if not any(pat in c.name for pat in exclude)]
+        if not checks:
+            return StepResult(success=True, summary="No new commits and all CI checks excluded")
+
+        completed = [c for c in checks if c.is_completed]
+        if len(completed) < len(checks):
+            return None
+
+        failed = [c for c in completed if c.is_failed]
+        if failed:
+            names = ", ".join(c.name for c in failed)
+            return StepResult(success=False, summary=f"CI already failed: {names}", error=f"Failed checks: {names}")
+
+        return StepResult(success=True, summary=f"All {len(checks)} CI checks already passed (no new push)")
 
     # ------------------------------------------------------------------
     # CI polling (shared between initial check and post-fix re-checks)

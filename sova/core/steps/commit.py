@@ -91,6 +91,7 @@ class CommitStep(BaseStep):
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
         if has_commits:
+            ctx.no_new_commits = True
             return StepResult(success=True, summary="Nothing to commit, commits already exist")
         return StepResult(success=False, summary="No changes to commit", error="No changes to commit")
 

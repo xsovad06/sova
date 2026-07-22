@@ -2697,6 +2697,126 @@ class TestMonitorCIStep:
 
 
 # ---------------------------------------------------------------------------
+class TestCheckExistingCI:
+    """Tests for MonitorCIStep._check_existing_ci fast path."""
+
+    async def test_no_new_commits_all_passed(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_failed=False)
+        check.name = "CI"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "already passed" in result.summary
+
+    async def test_no_new_commits_some_failed(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.max_fix_attempts = 0
+        ctx = _make_ctx(pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        check = MagicMock(is_completed=True, is_failed=True)
+        check.name = "lint"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [check]
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "already failed" in result.summary
+        assert "lint" in result.summary
+
+    async def test_no_new_commits_still_running_falls_through(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        running = MagicMock(is_completed=False, is_failed=False)
+        running.name = "CI"
+        passed = MagicMock(is_completed=True, is_failed=False)
+        passed.name = "CI"
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [[running], [passed]]
+            result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_no_new_commits_no_checks(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = []
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "no ci checks" in result.summary.lower() or "No new commits" in result.summary
+
+    async def test_no_new_commits_fetch_failure_falls_through(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.no_checks_grace_period = 0
+        config.ci.poll_interval = 10
+        config.ci.max_wait = 20
+        ctx = _make_ctx(pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        passed = MagicMock(is_completed=True, is_failed=False)
+        passed.name = "CI"
+        with (
+            patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks,
+            patch("sova.core.steps.monitor_ci.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_checks.side_effect = [None, [passed]]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert mock_checks.call_count == 2
+
+    async def test_no_new_commits_respects_exclude_checks(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        config = ProjectConfig()
+        config.ci.exclude_checks = ["flaky-sonar"]
+        ctx = _make_ctx(pr_number=10, config=config)
+        ctx.no_new_commits = True
+        step = MonitorCIStep()
+
+        good = MagicMock(is_completed=True, is_failed=False)
+        good.name = "tests"
+        flaky = MagicMock(is_completed=True, is_failed=True)
+        flaky.name = "flaky-sonar-check"
+        with patch("sova.core.steps.monitor_ci.get_ci_checks", new_callable=AsyncMock) as mock_checks:
+            mock_checks.return_value = [good, flaky]
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "1" in result.summary
+
+
 # MonitorCIStep -- CI fix loop
 # ---------------------------------------------------------------------------
 
