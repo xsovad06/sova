@@ -41,6 +41,7 @@ from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_db import (
+    _capture_pr_head_sha,
     _create_task_run,
     _downgrade_to_failed,
     _fetch_run_states,
@@ -529,6 +530,12 @@ async def start_agent(
         if mem_warn:
             log.warning("start_agent.memory_pressure_warning", message=mem_warn)
 
+    # Capture PR head SHA before acquiring the lock: the GitHub API call
+    # can take up to 10s and would block all other agent/command starts.
+    pre_run_sha = None
+    if pr_number:
+        pre_run_sha = await _capture_pr_head_sha(pr_number, pa.project_dir)
+
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
             return {
@@ -620,6 +627,8 @@ async def start_agent(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
+            pre_run_sha=pre_run_sha,
+            prompt=prompt,
             project_dir=project_dir,
         )
         pa.agents[run_id] = agent
@@ -706,6 +715,12 @@ async def start_command(
     if mem_warn:
         log.warning("start_command.memory_pressure_warning", message=mem_warn)
 
+    # Capture PR head SHA before acquiring the lock: the GitHub API call
+    # can take up to 10s and would block all other agent/command starts.
+    pre_run_sha = None
+    if pr_number:
+        pre_run_sha = await _capture_pr_head_sha(pr_number, pa.project_dir)
+
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
             return {
@@ -762,6 +777,8 @@ async def start_command(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
+            pre_run_sha=pre_run_sha,
+            prompt=prompt,
             project_dir=project_dir,
         )
         pa.agents[run_id] = agent

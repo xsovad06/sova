@@ -213,12 +213,12 @@ async def _deduplicate_and_store(
         existing_mem, _score = similar[0]
         return await _confirm_existing(existing_mem)
 
-    # Lexical fallback only when embeddings are unavailable
-    if embedding is None:
-        existing = await memory.search(category=mem.category, query=mem.title[:50])
-        for existing_mem in existing:
-            if titles_match(existing_mem.title, mem.title):
-                return await _confirm_existing(existing_mem)
+    # Lexical fallback: title substring match catches duplicates that
+    # semantic search misses (different content but identical titles)
+    existing = await memory.search(category=mem.category, query=mem.title[:50], limit=20)
+    for existing_mem in existing:
+        if titles_match(existing_mem.title, mem.title):
+            return await _confirm_existing(existing_mem)
 
     content_with_counter = f"{mem.content}\n\n[confirmed: 0]"
     await memory.store(

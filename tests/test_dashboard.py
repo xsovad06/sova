@@ -7586,6 +7586,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 100
+        agent.pre_run_sha = None
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
         assert result is not None
@@ -7612,6 +7613,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 101
+        agent.pre_run_sha = None
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
         assert result is None
@@ -7633,6 +7635,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 102
+        agent.pre_run_sha = None
         agent.project_dir = None
         with patch(
             "sova.dashboard.services.agent_db._check_pr_branch_pushed",
@@ -7659,6 +7662,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 103
+        agent.pre_run_sha = None
         agent.project_dir = None
         with patch(
             "sova.dashboard.services.agent_db._check_pr_branch_pushed",
@@ -7741,6 +7745,7 @@ class TestCommandOutcomeValidation:
         agent = MagicMock(spec=AgentState)
         agent.role = "command:address-pr"
         agent.pr_number = 104
+        agent.pre_run_sha = None
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
         assert result is None
@@ -8033,6 +8038,40 @@ class TestPipelineOutcomeValidation:
         agent.project_dir = None
         result = await _validate_pipeline_outcome(run_id, agent)
         assert result is None
+
+    async def test_logs_prompt_on_bypass(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="412",
+                    role="developer",
+                    status="done",
+                    current_step="agent",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        agent.prompt = "Run sova run 99 --run-id 500"
+
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            result = await _validate_pipeline_outcome(run_id, agent)
+
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        mock_log.warning.assert_called_once()
+        call_args = mock_log.warning.call_args
+        assert call_args[0][0] == "validate_pipeline.bypass_diagnostic"
+        assert "Run sova run 99" in call_args[1]["prompt_sent"]
 
 
 class TestReadFileHandoff:
@@ -8428,6 +8467,419 @@ class TestCheckPrBranchPushed:
 
         monkeypatch.setattr("sova.utils.shell.run", mock_run)
         assert await _check_pr_branch_pushed(agent) is False
+
+
+class TestCapturePrHeadSha:
+    """Unit tests for _capture_pr_head_sha."""
+
+    async def test_returns_sha_on_success(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_pr_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "abc123def456\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_pr_head_sha(42, tmp_path)
+        assert sha == "abc123def456"
+
+    async def test_returns_none_on_failure(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_pr_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = False
+            result.stdout = ""
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_pr_head_sha(42, tmp_path)
+        assert sha is None
+
+    async def test_returns_none_on_exception(self, tmp_path: Path, monkeypatch) -> None:
+        from sova.dashboard.services.agent_db import _capture_pr_head_sha
+
+        async def mock_run(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_pr_head_sha(42, tmp_path)
+        assert sha is None
+
+    async def test_returns_none_on_empty_stdout(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _capture_pr_head_sha
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "   \n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        sha = await _capture_pr_head_sha(42, tmp_path)
+        assert sha is None
+
+
+class TestCheckPrPushedViaSha:
+    """Unit tests for _check_pr_pushed_via_sha."""
+
+    async def test_returns_none_when_no_pre_run_sha(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = None
+        agent.pr_number = 42
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_none_when_no_pr_number(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "abc123"
+        agent.pr_number = None
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_true_when_sha_changed(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "aaa111"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "bbb222\tOPEN\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is True
+
+    async def test_returns_true_when_pr_merged(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "aaa111"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "aaa111\tMERGED\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is True
+
+    async def test_returns_none_when_sha_unchanged(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "aaa111"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "aaa111\tOPEN\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_none_on_api_failure(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "aaa111"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = False
+            result.stdout = ""
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_none_on_exception(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "aaa111"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_none_when_sha_empty(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "abc123"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "\tOPEN\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+    async def test_returns_none_when_state_empty(self, tmp_path: Path, monkeypatch) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _check_pr_pushed_via_sha
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pre_run_sha = "abc123"
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        async def mock_run(*args, **kwargs):
+            result = MagicMock()
+            result.success = True
+            result.stdout = "deadbeef\t\n"
+            return result
+
+        monkeypatch.setattr("sova.utils.shell.run", mock_run)
+        assert await _check_pr_pushed_via_sha(agent) is None
+
+
+class TestValidateAddressPrWithSha:
+    """Tests that _validate_address_pr uses SHA comparison as primary check."""
+
+    async def test_sha_check_short_circuits_on_push_detected(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as sha_mock,
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+            ) as branch_mock,
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is None
+        sha_mock.assert_awaited_once_with(agent)
+        branch_mock.assert_not_awaited()
+
+    async def test_falls_through_to_branch_check_when_sha_inconclusive(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is None
+
+
+class TestPipelineBypassDiagnosticLogging:
+    """Tests that _validate_pipeline_outcome logs prompt on bypass."""
+
+    async def test_logs_prompt_on_bypass(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="99",
+                    role="developer",
+                    status="done",
+                    current_step="agent",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        agent.prompt = "Run sova run 99"
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "Pipeline bypassed" in result
+        mock_log.warning.assert_any_call(
+            "validate_pipeline.bypass_diagnostic",
+            run_id=run_id,
+            role="developer",
+            prompt_sent="Run sova run 99",
+        )
+
+
+class TestBuildBypassMessage:
+    """Tests for _build_bypass_message helper."""
+
+    def test_developer_no_pr(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("developer", None, "some prompt", 1)
+        assert "Pipeline bypassed" in msg
+        assert "no PR was created" in msg
+
+    def test_developer_with_pr(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("developer", 42, "some prompt", 1)
+        assert "Pipeline bypassed" in msg
+        assert "no PR was created" not in msg
+
+    def test_researcher_role(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("researcher", None, None, 1)
+        assert "researcher" in msg
+        assert "no PR was created" not in msg
+
+    def test_no_prompt_skips_log(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            _build_bypass_message("developer", None, None, 1)
+        mock_log.warning.assert_not_called()
+
+    def test_prompt_truncated_to_500(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        long_prompt = "x" * 1000
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            _build_bypass_message("developer", None, long_prompt, 5)
+        mock_log.warning.assert_called_once()
+        call_kwargs = mock_log.warning.call_args
+        assert len(call_kwargs[1]["prompt_sent"]) == 500
+
+
+@pytest.mark.asyncio
+class TestCheckIncompletePr:
+    """Tests for _check_incomplete_pr helper."""
+
+    async def test_returns_none_when_no_pr_steps(self) -> None:
+        from sova.dashboard.services.agent_db import _check_incomplete_pr
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="1", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        async with await get_session() as session:
+            async with session.begin():
+                result = await _check_incomplete_pr(run_id, session)
+        assert result is None
+
+    async def test_returns_message_when_create_pr_done(self) -> None:
+        from sova.core.state import STEP_DONE_STATUSES
+        from sova.dashboard.services.agent_db import _check_incomplete_pr
+        from sova.db.models import StepExecution
+
+        done_status = next(iter(STEP_DONE_STATUSES))
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="2", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                step = StepExecution(task_run_id=run_id, step_name="create_pr", status=done_status)
+                session.add(step)
+
+        async with await get_session() as session:
+            async with session.begin():
+                result = await _check_incomplete_pr(run_id, session)
+        assert result is not None
+        assert "pr_number is still None" in result
 
 
 class TestStepProgress:

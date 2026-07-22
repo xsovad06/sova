@@ -216,6 +216,87 @@ async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str
         return None
 
 
+async def _fetch_pr_fields(pr_number: int, project_dir: Path, fields: str, jq_expr: str) -> str | None:
+    """Fetch PR fields via gh CLI with standard timeout and error handling.
+
+    Returns the stripped stdout on success, None on any error.
+    """
+    from sova.utils.shell import run as run_shell
+
+    try:
+        result = await run_shell(
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--json",
+            fields,
+            "--jq",
+            jq_expr,
+            cwd=project_dir,
+            timeout=10,
+        )
+        if result.success and (output := result.stdout.strip()):
+            return output
+    except Exception:
+        log.debug("fetch_pr_fields.failed", pr=pr_number, fields=fields, exc_info=True)
+    return None
+
+
+async def _capture_pr_head_sha(pr_number: int, project_dir: Path) -> str | None:
+    """Capture the current headRefOid of a PR before an agent run starts.
+
+    Returns None on any error (API failure, timeout, missing PR) so callers
+    can fall through to existing validation logic.
+    """
+    sha = await _fetch_pr_fields(pr_number, project_dir, "headRefOid", ".headRefOid")
+    if sha:
+        log.debug("capture_pr_head_sha.ok", pr=pr_number, sha=sha[:12])
+    return sha
+
+
+async def _check_pr_pushed_via_sha(agent: AgentState) -> bool | None:
+    """Compare the PR's current headRefOid against the pre-run snapshot.
+
+    Returns:
+        True  -- SHA changed (agent pushed) or PR is merged
+        None  -- inconclusive (no pre_run_sha, API error, or SHAs match)
+        Never returns False; matching SHAs fall through as inconclusive.
+    """
+    if agent.pre_run_sha is None or not agent.pr_number:
+        return None
+
+    output = await _fetch_pr_fields(
+        agent.pr_number, agent.project_dir, "headRefOid,state", "[.headRefOid, .state] | @tsv"
+    )
+    if not output:
+        return None
+
+    parts = output.split("\t")
+    if len(parts) < 2:
+        return None
+    current_sha, state = parts[0], parts[1]
+
+    if not current_sha or not state:
+        return None
+
+    if state == "MERGED":
+        log.info("check_pr_pushed_via_sha.merged", pr=agent.pr_number)
+        return True
+
+    if current_sha != agent.pre_run_sha:
+        log.info(
+            "check_pr_pushed_via_sha.sha_changed",
+            pr=agent.pr_number,
+            before=agent.pre_run_sha[:12],
+            after=current_sha[:12],
+        )
+        return True
+
+    log.debug("check_pr_pushed_via_sha.unchanged", pr=agent.pr_number)
+    return None
+
+
 async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
     """Check that address-pr actually committed and pushed changes.
 
@@ -224,6 +305,10 @@ async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
     is inconclusive (e.g., worktree already cleaned up).
     """
     if agent.pr_number is None:
+        return None
+
+    sha_pushed = await _check_pr_pushed_via_sha(agent)
+    if sha_pushed is True:
         return None
 
     pushed = await _check_pr_branch_pushed(agent)
@@ -251,21 +336,9 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
     if not agent.pr_number:
         return None
     try:
-        branch_result = await run_shell(
-            "gh",
-            "pr",
-            "view",
-            str(agent.pr_number),
-            "--json",
-            "headRefName",
-            "--jq",
-            ".headRefName",
-            cwd=agent.project_dir,
-            timeout=10,
-        )
-        if not branch_result.success or not branch_result.stdout.strip():
+        branch = await _fetch_pr_fields(agent.pr_number, agent.project_dir, "headRefName", ".headRefName")
+        if not branch:
             return None
-        branch = branch_result.stdout.strip()
 
         fetch_result = await run_shell("git", "fetch", "origin", branch, cwd=agent.project_dir, timeout=15)
         if not fetch_result.success:
@@ -339,6 +412,43 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
         return None
 
 
+def _build_bypass_message(role: str, pr_number: int | None, prompt: str | None, run_id: int) -> str:
+    """Build the error message for a pipeline bypass detection."""
+    msg = (
+        f"Pipeline bypassed: {role} agent completed without "
+        f"executing workflow steps (current_step still 'agent', "
+        f"0 step executions)"
+    )
+    if role == "developer" and pr_number is None:
+        msg += " and no PR was created"
+    if prompt:
+        log.warning(
+            "validate_pipeline.bypass_diagnostic",
+            run_id=run_id,
+            role=role,
+            prompt_sent=prompt[:500],
+        )
+    return msg
+
+
+async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
+    """Check if a developer run reached push/create_pr but has no pr_number."""
+    from sqlalchemy import select
+
+    from sova.core.state import STEP_DONE_STATUSES
+    from sova.db.models import StepExecution
+
+    done_steps_stmt = select(StepExecution.step_name).where(
+        StepExecution.task_run_id == run_id,
+        StepExecution.status.in_(STEP_DONE_STATUSES),
+    )
+    result = await session.execute(done_steps_stmt)
+    done_names = {row[0] for row in result.fetchall()}
+    if "create_pr" in done_names or "push" in done_names:
+        return "Pipeline incomplete: developer agent reached push/create_pr step but pr_number is still None"
+    return None
+
+
 async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | None:
     """Validate that a pipeline-based role actually executed its workflow steps.
 
@@ -367,29 +477,10 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
                 step_count = result.scalar() or 0
 
                 if sentinel_active and step_count == 0:
-                    msg = (
-                        f"Pipeline bypassed: {agent.role} agent completed without "
-                        f"executing workflow steps (current_step still 'agent', "
-                        f"0 step executions)"
-                    )
-                    if agent.role == "developer" and task_run.pr_number is None:
-                        msg += " and no PR was created"
-                    return msg
+                    return _build_bypass_message(agent.role, task_run.pr_number, agent.prompt, run_id)
 
                 if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
-                    from sova.core.state import STEP_DONE_STATUSES
-
-                    done_steps_stmt = select(StepExecution.step_name).where(
-                        StepExecution.task_run_id == run_id,
-                        StepExecution.status.in_(STEP_DONE_STATUSES),
-                    )
-                    result = await session.execute(done_steps_stmt)
-                    done_names = {row[0] for row in result.fetchall()}
-                    if "create_pr" in done_names or "push" in done_names:
-                        return (
-                            f"Pipeline incomplete: {agent.role} agent reached "
-                            f"push/create_pr step but pr_number is still None"
-                        )
+                    return await _check_incomplete_pr(run_id, session)
 
         return None
     except Exception:
