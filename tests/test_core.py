@@ -2896,18 +2896,35 @@ class TestParseReviewBody:
 
 
 # ---------------------------------------------------------------------------
+def _gh_reviews_json(*reviews: dict) -> str:
+    """Build a JSON string mimicking ``gh api repos/.../pulls/N/reviews``."""
+    return json.dumps(reviews)
+
+
 class TestLoadFindingsFromGithubReviews:
-    """Tests for _load_findings_from_github_reviews loader filtering."""
+    """Tests for _load_findings_from_github_reviews (calls gh api directly)."""
+
+    def _patch_run(self, gh_json: str):
+        return patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            return_value=MagicMock(success=True, stdout=gh_json),
+        )
 
     async def test_filters_bot_reviews(self) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
         ctx = _make_ctx(pr_number=10)
-        bot_review = MagicMock(state="COMMENTED", is_bot=True, body="[HIGH] Bug -- some issue")
-        human_review = MagicMock(state="COMMENTED", is_bot=False, body="[HIGH] Bug -- real issue\nLocation: a.py:1")
-        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[bot_review, human_review])
-
-        findings = await _load_findings_from_github_reviews(ctx)
+        gh_json = _gh_reviews_json(
+            {"user": {"login": "bot", "type": "Bot"}, "state": "COMMENTED", "body": "[HIGH] Bug -- some issue"},
+            {
+                "user": {"login": "dev", "type": "User"},
+                "state": "COMMENTED",
+                "body": "[HIGH] Bug -- real issue\nLocation: a.py:1",
+            },
+        )
+        with self._patch_run(gh_json):
+            findings = await _load_findings_from_github_reviews(ctx)
         assert len(findings) == 1
         assert findings[0]["description"] == "real issue"
 
@@ -2915,30 +2932,57 @@ class TestLoadFindingsFromGithubReviews:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
         ctx = _make_ctx(pr_number=10)
-        dismissed = MagicMock(state="DISMISSED", is_bot=False, body="[HIGH] Bug -- old issue")
-        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[dismissed])
-
-        findings = await _load_findings_from_github_reviews(ctx)
+        gh_json = _gh_reviews_json(
+            {"user": {"login": "dev", "type": "User"}, "state": "DISMISSED", "body": "[HIGH] Bug -- old issue"},
+        )
+        with self._patch_run(gh_json):
+            findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
     async def test_filters_empty_body(self) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
         ctx = _make_ctx(pr_number=10)
-        empty = MagicMock(state="COMMENTED", is_bot=False, body="  ")
-        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[empty])
-
-        findings = await _load_findings_from_github_reviews(ctx)
+        gh_json = _gh_reviews_json(
+            {"user": {"login": "dev", "type": "User"}, "state": "COMMENTED", "body": "  "},
+        )
+        with self._patch_run(gh_json):
+            findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
 
-    async def test_adapter_exception_returns_empty(self) -> None:
+    async def test_gh_api_failure_returns_empty(self) -> None:
         from sova.core.steps.address_review import _load_findings_from_github_reviews
 
         ctx = _make_ctx(pr_number=10)
-        ctx.adapter.get_pr_reviews = AsyncMock(side_effect=RuntimeError("API down"))
-
-        findings = await _load_findings_from_github_reviews(ctx)
+        mock_result = MagicMock(success=False, stdout="", stderr="API error")
+        with patch(
+            "sova.core.steps.address_review.run",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            findings = await _load_findings_from_github_reviews(ctx)
         assert findings == []
+
+    async def test_parses_bold_wrapped_findings(self) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        ctx = _make_ctx(pr_number=10)
+        body = (
+            "**[HIGH] Security -- XSS vulnerability**\n"
+            "Location: app.py:42\n"
+            "Problem: Unsanitized input\n"
+            "Suggestion: Use escape()"
+        )
+        gh_json = _gh_reviews_json(
+            {"user": {"login": "reviewer", "type": "User"}, "state": "COMMENTED", "body": body},
+        )
+        with self._patch_run(gh_json):
+            findings = await _load_findings_from_github_reviews(ctx)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == 9
+        assert findings[0]["file"] == "app.py"
+        assert findings[0]["line"] == 42
+        assert findings[0]["category"] == "security"
 
 
 # MonitorCIStep -- CI fix loop

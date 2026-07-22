@@ -76,7 +76,7 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
 
 _SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
 
-_FINDING_HEADER_RE = re.compile(r"\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*)")
+_FINDING_HEADER_RE = re.compile(r"\*{0,2}\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*?)\*{0,2}\s*$", re.MULTILINE)
 _LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
 _PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
 _SUGGESTION_RE = re.compile(r"Suggestion:\s*(.*?)(?:\n\[|```|\Z)", re.DOTALL)
@@ -92,7 +92,7 @@ def _parse_review_body(body: str) -> list[dict]:
     no structured findings are found and the body is non-trivial.
     """
     structured: list[dict] = []
-    blocks = re.split(r"\n(?=\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])", body)
+    blocks = re.split(r"\n(?=\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])", body)
     for block in blocks:
         m = _FINDING_HEADER_RE.match(block.strip())
         if not m:
@@ -151,22 +151,42 @@ def _parse_review_body(body: str) -> list[dict]:
 async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict]:
     """Fetch review findings from GitHub PR review bodies.
 
-    Uses the adapter's get_pr_reviews() for the API call, then parses
-    structured findings from review bodies. Covers reviews posted as
-    body comments (not inline file comments) that handoff-based loaders miss.
+    Calls ``gh api`` directly (bypassing the adapter) so this works for
+    both GitHub-Issues and JIRA task sources -- PRs always live on GitHub.
     """
     if not ctx.pr_number:
         return []
     try:
-        reviews = await ctx.adapter.get_pr_reviews(ctx.pr_number)
-        if not reviews:
+        import json as _json
+
+        from sova.utils.gh import resolve_gh_env
+
+        env = await resolve_gh_env(ctx.config.github_user)
+        result = await run(
+            "gh",
+            "api",
+            f"repos/{ctx.repo}/pulls/{ctx.pr_number}/reviews",
+            "--paginate",
+            cwd=ctx.working_dir,
+            env=env,
+        )
+        if not result.success or not result.stdout.strip():
+            return []
+
+        raw_reviews = _json.loads(result.stdout)
+        if not isinstance(raw_reviews, list):
             return []
 
         findings: list[dict] = []
-        for review in reviews:
-            if review.state == "DISMISSED" or review.is_bot or not review.body.strip():
+        for r in raw_reviews:
+            if not isinstance(r, dict):
                 continue
-            findings.extend(_parse_review_body(review.body))
+            state = r.get("state", "")
+            body = r.get("body", "") or ""
+            is_bot = r.get("user", {}).get("type", "") == "Bot"
+            if state == "DISMISSED" or is_bot or not body.strip():
+                continue
+            findings.extend(_parse_review_body(body))
 
         if findings:
             log.info("address_review.github_review_findings", count=len(findings))
