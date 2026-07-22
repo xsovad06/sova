@@ -2,11 +2,9 @@
 
 SHELL := /bin/bash
 
-# Prefer tools already on PATH (virtualenv, Homebrew, etc.);
-# fall back to the Python user-base bin for pip --user installs.
-PYTHON_USER_BIN := $(shell python3 -m site --user-base)/bin
-RUFF := $(or $(shell which ruff 2>/dev/null),$(PYTHON_USER_BIN)/ruff)
-PYTEST := $(or $(shell which pytest 2>/dev/null),$(PYTHON_USER_BIN)/pytest)
+# Prefer tools on PATH (virtualenv, pipx); fall back to user-base.
+RUFF := $(or $(shell command -v ruff 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/ruff)
+PYTEST := $(or $(shell command -v pytest 2>/dev/null),$(shell python3 -m site --user-base 2>/dev/null)/bin/pytest)
 
 # ── Main targets ──────────────────────────────────────────────
 

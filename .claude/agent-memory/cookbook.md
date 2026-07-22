@@ -21,6 +21,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Functions locally-imported in a helper (`from x import y as z` inside a function) must be patched at the import source, not at the module** -- `run_shell` imported as `from sova.utils.shell import run as run_shell` inside `_check_pr_branch_pushed()` creates a local name that `monkeypatch.setattr("sova.dashboard.services.agent_db.run_shell", ...)` cannot reach. Patch `sova.utils.shell.run` instead. PR #347. [confirmed: 1]
 - **Add direct unit tests for functions that are mocked in higher-level tests, or SonarCloud will flag 0% coverage** -- if `_is_issue()` and `_check_pr_branch_pushed()` are always mocked in integration tests, SonarCloud sees 0% new coverage even though the feature is tested indirectly. Add `TestIsIssue` / `TestCheckPrBranchPushed` with direct calls to cover the actual implementation paths. Same pattern in PR #400: `_fetch_github_review_fallback` was always mocked in `TestFetchSovaVerdictsGithubFallback`; adding `TestFetchGithubReviewFallback` (4 direct tests) fixed the SonarCloud gate. PR #347, #400. [confirmed: 3]
+- **Fallback-chain tests must include conflicting values in lower-priority fields** -- testing each fallback layer in isolation (only one source populated) passes even if priority order is swapped. Add conflicting values in lower-priority fields so tests fail if precedence is wrong (e.g., body=88, title=99, branch=77 for a body-wins test). Applies to any multi-source extraction with priority: issue linking, config resolution, persona detection. PR #417 CodeRabbit. [confirmed: 1]
 - **Heuristic regex searches must be scoped to the relevant section, not the full document** -- `_SOVA_VERDICT_LINE_RE.search(body)` in the heuristic fallback ran on the whole review body. A bold line starting with `**Approve...` in `## Findings` would match before the actual `## Verdict` entry. Fix: `verdict_section = body.split("## Verdict", 1)[-1]` before searching. General pattern: when scanning for a value that appears in a named section, split on the section header first. PR #400. [confirmed: 1]
 - **Update hardcoded Alembic head revision in tests after adding a migration** -- `test_get_alembic_head_returns_current_head` asserts a specific revision string (e.g., `"020"`). After adding a new migration, update the assertion. File: `tests/test_db.py`. PR #354, #399. [confirmed: 2]
 - **Type DB session parameters with `AsyncSession`, not `Any`** -- internal helpers that accept a SQLAlchemy session (e.g., `_count_nonterminal_for_issue`) must use `session: AsyncSession` not `session: Any`. `Any` triggers Ruff ANN401 and loses type-checker benefits. Import from `sqlalchemy.ext.asyncio`. Remove `from typing import Any` if no other `Any` usage remains. PR #354. [confirmed: 1]
@@ -88,6 +89,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Decouple display metadata from config models** -- create `SettingMeta` dataclass registry rather than embedding display concerns in config models. Module: `sova/dashboard/settings_meta.py`. [confirmed: 1]
 - **Disable inline editing for non-scalar config types** -- list/object settings saved through scalar edit path corrupt TOML structure. Gate behind `isStructured` check. [confirmed: 1]
+- **Validation function must use the same parsing logic as the casting function** -- `_validate_value_type()` used `isdigit()` which accepted `--1` (double negative stripped by `lstrip("-")`) and rejected `1e3` (scientific notation). `_cast_value()` uses `float()`. Mismatched validation/casting means invalid values pass validation but write wrong TOML types, and valid values get rejected. Use the same parser (e.g., `float()`) in both. Files: `sova/dashboard/services/settings_service.py`. PR #417 CodeRabbit. [confirmed: 1]
 
 ## Command Design
 
@@ -101,6 +103,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **GitHub project board Phase field is independent of milestones** -- updating milestone does NOT update Projects V2 board Phase field. Separate API mutations required. [confirmed: 1]
 - **Always use `_gh()` helper in GitHubAdapter** -- never call `run()` directly; `_gh()` resolves per-project auth. [confirmed: 1]
 - **`gh pr merge --delete-branch` fails with merge queue** -- omit flags, use `enqueuePullRequest` GraphQL, delete branch after merge. Issue #393. [confirmed: 1]
+- **GraphQL queries must use variables, not string interpolation** -- `branch: "%s" % base_branch` allows injection via crafted branch names. Use `$branch: String!` variable. File: `sova/git/merge.py`. PR #421 CodeRabbit. [confirmed: 1]
+- **Poll loops must cap sleep to remaining timeout** -- `asyncio.sleep(interval)` when `interval > timeout` overshoots. Use `asyncio.sleep(min(interval, remaining))` with `loop.time()` for elapsed tracking. Track consecutive API failures (5+) for early exit. PR #421. [confirmed: 1]
 - **Use `urlparse` before splitting API URLs for ID extraction** -- `details_url` can include query params. Use `urlparse(url).path` first. File: `sova/git/pr.py:_parse_run_id()`. [confirmed: 1]
 - **Hoist shared adapter/config creation outside `asyncio.gather` loops** -- build adapter once before fan-out, not per-item. PR #400. [confirmed: 1]
 - **`gh pr list --json commits` triggers GitHub 500K-node limit** -- `commits` field multiplies; remove from `--json` fields. PR #407. [confirmed: 1]
@@ -229,6 +233,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Sync gates in asyncio.gather produce GC warnings** -- use bare `return_value=` patching for sync methods, not `new_callable=AsyncMock`. PR #345. [confirmed: 1]
 - **frozen=True on dataclasses does not freeze mutable field contents** -- use `tuple`/`frozenset` for truly immutable fields. PR #345. [confirmed: 1]
 - **Include PID-less nonterminal runs as active slot reservations** -- `pid.isnot(None)` filter misses the creation-to-spawn window, allowing duplicate spawns. PR #345. [confirmed: 1]
+- **`evaluate_task()` must fetch the same precomputed data as `evaluate_all()`** -- gate checks that default to `None` (e.g., `precomputed_conflicts`) are silently skipped when the caller doesn't pass them. Both batch and single-task paths must pre-fetch merge conflict state. The `None` default is correct for "not computed" in `_collect_gate_blockers`, but the caller must compute it. PR #415. [confirmed: 1]
 
 ## Auto-Retry / Failure Classification
 

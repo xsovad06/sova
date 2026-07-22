@@ -8,6 +8,16 @@ from sova.git.branch import (
     rebase,
     sync_branch,
 )
+from sova.git.merge import (
+    MergeQueueStatus,
+    MergeResult,
+    delete_remote_branch,
+    detect_merge_queue,
+    handle_post_merge_state,
+    merge_pr,
+    poll_merge_queue,
+    should_use_merge_queue,
+)
 from sova.git.pr import (
     CheckConclusion,
     CheckStatus,
@@ -55,6 +65,14 @@ __all__ = [
     "get_pr_diff",
     "get_pr_files",
     "get_pr_status",
+    "MergeQueueStatus",
+    "MergeResult",
+    "delete_remote_branch",
+    "detect_merge_queue",
+    "handle_post_merge_state",
+    "merge_pr",
+    "poll_merge_queue",
+    "should_use_merge_queue",
     # Rebase
     "rebase_with_conflict_resolution",
     # Worktree

@@ -92,13 +92,51 @@ Act on the result:
 
 ### 3. Merge
 
+Read `sova.toml` to determine merge settings from the `[integration]` section:
+
+- `merge_method`: "auto" (repo default), "squash", "rebase", or "merge"
+- `delete_branch`: true/false (default true)
+- `merge_queue_enabled`: "auto" (detect via GraphQL), "true", "false"
+- `post_merge_state`: "done" (close issue) or "on_qa" (add label, keep open)
+
+**Merge queue detection** (when `merge_queue_enabled = "auto"` or `"true"`):
+
+Query the GraphQL API to check if a merge queue is configured on the base branch.
+
+If merge queue is detected (or forced via config):
+- Omit merge strategy flags, GitHub merge queues control the strategy
+- Omit `--delete-branch` (branch deletion handled separately after queue processing)
+- Run: `gh pr merge <PR_NUMBER> --repo <OWNER/REPO>`
+- If output contains "already queued" or "added to merge queue", proceed to queue polling (step 3b)
+
+If merge queue is NOT detected:
+- Apply the configured merge method flag (or omit for "auto" to use repo default)
+- Include `--delete-branch` if configured
+
 ```bash
 gh pr merge <PR_NUMBER> --squash --delete-branch
 ```
 
 If merge fails, write a failed handoff with the error and stop.
 
-### 4. Local Cleanup
+#### 3b. Merge Queue Polling (only if PR was enqueued)
+
+Poll merge queue status via GraphQL until merged, ejected, or timeout.
+Poll every `merge_queue_poll_interval` seconds (default 30), up to `merge_queue_timeout` seconds (default 1800).
+
+- **MERGED**: proceed to cleanup. If `delete_branch = true`, delete the remote branch explicitly via GitHub API
+- **UNMERGEABLE**: report ejection with position info and stop (do not retry)
+- **TIMEOUT**: report that the PR is still enqueued. Stop, user must run `/after-merge` manually.
+
+### 4. Post-Merge Issue State
+
+Handle the issue based on `post_merge_state` from config:
+
+- **"done"** (default): close the linked issue (`gh issue close <ISSUE_NUMBER>`)
+- **"on_qa"**: add `agent:on-qa` label, do NOT close the issue
+- **Other value**: log a warning and skip the state transition
+
+### 5. Local Cleanup
 
 ```bash
 # Switch to base branch
@@ -113,7 +151,7 @@ git worktree list
 # Remove any worktrees matching the issue pattern
 ```
 
-### 5. Suggest Follow-Up
+### 6. Suggest Follow-Up
 
 Check if there are review learnings worth capturing:
 
@@ -125,7 +163,7 @@ gh api repos/<OWNER>/<REPO>/pulls/<PR_NUMBER>/reviews --jq '[.[] | select(.state
 
 If there were substantive review comments (more than 2), include an "Ingest review feedback" action in the handoff.
 
-### 6. Write Handoff
+### 7. Write Handoff
 
 Write the completion handoff to `.claude/agent-control/handoff.json`:
 
@@ -136,7 +174,7 @@ Write the completion handoff to `.claude/agent-control/handoff.json`:
 - `next_actions`: empty for completed, or:
   - **Ingest review feedback** (style: `neutral`) -- if there were review comments worth learning from
 
-### 7. Report
+### 8. Report
 
 Output a summary including:
 - Merge status
@@ -146,7 +184,7 @@ Output a summary including:
 ## Rules
 
 - Never merge if CI is failing -- write a handoff instead
-- Always use `--squash` merge to keep history clean
-- Always use `--delete-branch` to clean up the remote branch
+- Use the merge method from `[integration]` config (default: auto)
+- Handle merge queue when detected or configured
 - Always write a handoff file, even on completion (with `status: completed`)
 - NEVER use emojis in any output

@@ -30,6 +30,30 @@ from sova.git.branch import (
 from sova.git.diff import (
     parse_diff_lines as parse_diff_lines,
 )
+from sova.git.merge import (
+    MergeQueueStatus as MergeQueueStatus,
+)
+from sova.git.merge import (
+    MergeResult as MergeResult,
+)
+from sova.git.merge import (
+    delete_remote_branch as delete_remote_branch,
+)
+from sova.git.merge import (
+    detect_merge_queue as detect_merge_queue,
+)
+from sova.git.merge import (
+    handle_post_merge_state as handle_post_merge_state,
+)
+from sova.git.merge import (
+    merge_pr as merge_pr,
+)
+from sova.git.merge import (
+    poll_merge_queue as poll_merge_queue,
+)
+from sova.git.merge import (
+    should_use_merge_queue as should_use_merge_queue,
+)
 from sova.git.pr import (
     _GH_STATE_MAP as _GH_STATE_MAP,
 )
