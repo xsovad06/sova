@@ -12872,21 +12872,54 @@ class TestSyncBranchWorktreeConflict:
         fetch_ref_ok = MagicMock()
         fetch_ref_ok.success = True
 
+        stash_ok = MagicMock()
+        stash_ok.success = True
+        stash_ok.stdout = "No local changes to save"
+
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_fetch,
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
-            # First call: git fetch origin main (run_checked)
-            # Second call: git checkout main -> fails with "already used by worktree"
-            # Third call: git fetch origin main:main -> succeeds
-            mock_run.side_effect = [checkout_fail, fetch_ref_ok]
+            mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_ok]
 
             await sync_branch("main", cwd=Path("/tmp/worktree"))
 
         mock_fetch.assert_awaited_once_with("git", "fetch", "origin", "main", cwd=Path("/tmp/worktree"))
-        assert mock_run.await_count == 2
-        # Second run call should be the fetch refspec
+        assert mock_run.await_count == 3
         mock_run.assert_any_await("git", "fetch", "origin", "main:main", cwd=Path("/tmp/worktree"))
+        stash_pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
+        assert len(stash_pop_calls) == 0, "No stash pop when nothing was stashed"
+
+    async def test_already_used_by_worktree_pops_stash_when_dirty(self) -> None:
+        """When branch is in active use by another worktree and we stashed, stash must be popped."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.git.branch import sync_branch
+
+        checkout_fail = MagicMock()
+        checkout_fail.success = False
+        checkout_fail.stderr = "fatal: 'main' is already used by worktree at '/some/path'"
+
+        fetch_ref_ok = MagicMock()
+        fetch_ref_ok.success = True
+
+        stash_dirty = MagicMock()
+        stash_dirty.success = True
+        stash_dirty.stdout = "Saved working directory and index state WIP on feat: abc1234"
+
+        pop_ok = MagicMock()
+        pop_ok.success = True
+
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock),
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_run.side_effect = [stash_dirty, checkout_fail, fetch_ref_ok, pop_ok]
+
+            await sync_branch("main", cwd=Path("/tmp/worktree"))
+
+        assert mock_run.await_count == 4
+        mock_run.assert_any_await("git", "stash", "pop", cwd=Path("/tmp/worktree"))
 
     async def test_already_used_by_worktree_ref_update_fails(self) -> None:
         """When fetch refspec fails, should log warning but not raise."""
@@ -12902,11 +12935,15 @@ class TestSyncBranchWorktreeConflict:
         fetch_ref_fail.success = False
         fetch_ref_fail.stderr = "non-fast-forward update"
 
+        stash_ok = MagicMock()
+        stash_ok.success = True
+        stash_ok.stdout = "No local changes to save"
+
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock),
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
-            mock_run.side_effect = [checkout_fail, fetch_ref_fail]
+            mock_run.side_effect = [stash_ok, checkout_fail, fetch_ref_fail]
             # Should not raise
             await sync_branch("main", cwd=Path("/tmp/worktree"))
 

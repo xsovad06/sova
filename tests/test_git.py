@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -28,6 +29,7 @@ from sova.git.operations import (
     get_pr_status,
     push,
     rebase,
+    rebase_with_conflict_resolution,
     sync_branch,
 )
 from sova.git.pr import _parse_run_id
@@ -110,18 +112,69 @@ class TestCreateBranch:
 
 
 class TestSyncBranch:
-    async def test_fetches_and_pulls(self) -> None:
+    async def test_fetches_and_resets(self) -> None:
         with (
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
         ):
             mock_checked.return_value = _shell_ok()
-            mock_run.return_value = _shell_ok()  # checkout
+            mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash
+                _shell_ok(),  # checkout
+            ]
 
             await sync_branch("main", cwd=Path("/repo"))
 
             checked_calls = [c[0] for c in mock_checked.call_args_list]
             assert any("fetch" in args for args in checked_calls)
+            assert any("reset" in args and "--hard" in args for args in checked_calls)
+
+    async def test_stashes_and_restores_dirty_worktree(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [
+                _shell_ok(stdout="Saved working directory"),  # stash (dirty)
+                _shell_ok(),  # checkout
+                _shell_ok(),  # stash pop
+            ]
+
+            await sync_branch("main", cwd=Path("/repo"))
+
+            stash_pop_call = mock_run.call_args_list[-1][0]
+            assert "stash" in stash_pop_call and "pop" in stash_pop_call
+
+    async def test_skips_stash_pop_when_worktree_clean(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash (clean)
+                _shell_ok(),  # checkout
+            ]
+
+            await sync_branch("main", cwd=Path("/repo"))
+
+            run_calls = [c[0] for c in mock_run.call_args_list]
+            assert not any("pop" in args for args in run_calls)
+
+    async def test_stash_pop_failure_warns_but_does_not_raise(self) -> None:
+        with (
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [
+                _shell_ok(stdout="Saved working directory"),  # stash (dirty)
+                _shell_ok(),  # checkout
+                _shell_fail(stderr="CONFLICT in file.py"),  # stash pop conflict
+            ]
+
+            await sync_branch("main", cwd=Path("/repo"))  # must not raise
 
 
 class TestRebase:
@@ -134,6 +187,124 @@ class TestRebase:
             call_args = mock_run.call_args[0]
             assert "rebase" in call_args
             assert "main" in call_args
+
+
+class TestRebaseWithConflictResolution:
+    async def test_clean_rebase_succeeds(self) -> None:
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_ok(),  # rebase (no conflicts)
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+            assert result.success
+            assert cost == Decimal("0")
+
+    async def test_multi_commit_rebase_resolves_each_commit(self) -> None:
+        from sova.llm.models import LLMResult
+
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout="file1.py"),  # commit 1 conflicted
+                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_fail(stderr="could not apply"),  # continue pauses on commit 2
+                _shell_ok(stdout="file2.py"),  # commit 2 conflicted
+                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_fail(stderr="could not apply"),  # continue pauses on commit 3
+                _shell_ok(stdout="file3.py"),  # commit 3 conflicted
+                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_ok(),  # final continue succeeds (rebase done)
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"), max_attempts=3)
+
+            assert result.success
+            assert result.conflicts_resolved == 3
+            assert mock_llm.await_count == 3
+            assert cost == Decimal("0.03")
+
+            continue_calls = [
+                c for c in mock_run.call_args_list if len(c[0]) >= 3 and c[0][1] == "rebase" and "--continue" in c[0]
+            ]
+            assert len(continue_calls) == 3
+            assert mock_run.call_args_list[-1][0][2] == "--continue"
+
+    async def test_max_commits_cap_aborts(self) -> None:
+        from sova.llm.models import LLMResult
+
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout="file.py"),  # commit 1 conflicted
+                _shell_ok(stdout=""),  # resolved
+                _shell_fail(stderr="could not apply"),  # continue pauses
+                _shell_ok(stdout="file.py"),  # commit 2 conflicted
+                _shell_ok(stdout=""),  # resolved
+                _shell_fail(stderr="could not apply"),  # continue pauses (loop ends)
+                _shell_ok(),  # abort
+            ]
+
+            result, cost = await rebase_with_conflict_resolution(
+                "main", cwd=Path("/repo"), max_attempts=3, max_commits=2
+            )
+
+            assert not result.success
+            assert "commits" in result.error.lower()
+
+    async def test_per_commit_retry_exhaustion_aborts(self) -> None:
+        from sova.llm.models import LLMResult
+
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_llm.return_value = LLMResult(text="tried", model="test", cost_usd=Decimal("0.01"))
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout="file.py"),  # attempt 1 conflicted
+                _shell_ok(stdout="file.py"),  # still conflicted after LLM
+                _shell_ok(stdout="file.py"),  # attempt 2 still conflicted
+                _shell_ok(stdout="file.py"),  # attempt 3 still conflicted
+                _shell_ok(),  # abort
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"), max_attempts=3)
+
+            assert not result.success
+            assert "file.py" in result.error
+
+    async def test_llm_failure_aborts_immediately(self) -> None:
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch(
+                "sova.git.rebase.invoke_command",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("LLM unavailable"),
+            ),
+        ):
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout="file.py"),  # conflicted
+                _shell_ok(),  # abort
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+
+            assert not result.success
+            assert "LLM unavailable" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -1318,11 +1489,15 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
         ):
             mock_checked.return_value = _shell_ok()  # fetch
-            mock_run.return_value = _shell_fail(stderr="fatal: 'main' is already used by worktree '/repo'")
+            mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash
+                _shell_fail(stderr="fatal: 'main' is already used by worktree '/repo'"),
+                _shell_ok(),  # fetch refspec
+            ]
 
             await sync_branch("main", cwd=Path("/repo"))  # must not raise
 
-        mock_checked.assert_awaited_once()  # only the fetch, no pull
+        mock_checked.assert_awaited_once()  # only the fetch, no reset
 
     async def test_retries_after_worktree_conflict(self) -> None:
         with (
@@ -1330,8 +1505,9 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
             patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock) as mock_resolve,
         ):
-            mock_checked.return_value = _shell_ok()  # fetch + pull
+            mock_checked.return_value = _shell_ok()  # fetch + reset
             mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/login' is already checked out at '/worktree'"),
                 _shell_ok(),  # retry checkout
             ]
@@ -1340,7 +1516,7 @@ class TestSyncBranchWorktreeConflict:
             await sync_branch("feat/login", cwd=Path("/repo"))
 
             mock_resolve.assert_awaited_once_with("feat/login", cwd=Path("/repo"))
-            assert mock_run.call_count == 2
+            assert mock_run.call_count == 3
 
     async def test_raises_if_retry_still_fails(self) -> None:
         with (
@@ -1349,6 +1525,7 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.worktree.resolve_worktree_conflict", new_callable=AsyncMock),
         ):
             mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'"),
                 _shell_fail(stderr="fatal: still checked out"),
             ]
@@ -1356,21 +1533,55 @@ class TestSyncBranchWorktreeConflict:
             with pytest.raises(RuntimeError):
                 await sync_branch("feat/x", cwd=Path("/repo"))
 
-    async def test_propagates_resolve_exception(self) -> None:
-        """sync_branch() wraps and propagates errors from resolve_worktree_conflict()."""
+    async def test_resolve_runtime_error_falls_back_to_fetch_refspec(self) -> None:
+        """When resolve_worktree_conflict() raises RuntimeError (e.g. branch is main),
+        sync_branch falls back to fetch refspec instead of re-raising."""
         with (
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
-            patch("sova.git.branch.run_checked", new_callable=AsyncMock),
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
             patch(
                 "sova.git.worktree.resolve_worktree_conflict",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("Worktree in use by PID 12345"),
+                side_effect=RuntimeError("Branch checked out in main worktree"),
             ),
         ):
-            mock_run.return_value = _shell_fail(stderr="fatal: 'feat/x' is already checked out at '/wt'")
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),
+                _shell_fail(stderr="fatal: already checked out at /repo"),
+                _shell_ok(),
+            ]
 
-            with pytest.raises(RuntimeError, match="Failed to resolve worktree conflict"):
-                await sync_branch("feat/x", cwd=Path("/repo"))
+            await sync_branch("main", cwd=Path("/repo"))
+
+            run_calls = [c[0] for c in mock_run.call_args_list]
+            assert any("fetch" in args for args in run_calls)
+
+    async def test_resolve_runtime_error_pops_stash_when_dirty(self) -> None:
+        """When resolve_worktree_conflict() raises RuntimeError and we stashed
+        dirty changes, the stash must be popped before returning."""
+        with (
+            patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
+            patch(
+                "sova.git.worktree.resolve_worktree_conflict",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Branch checked out in main worktree"),
+            ),
+        ):
+            mock_checked.return_value = _shell_ok()
+            mock_run.side_effect = [
+                _shell_ok(stdout="Saved working directory"),  # stash (dirty)
+                _shell_fail(stderr="fatal: already checked out at /repo"),
+                _shell_ok(),  # fetch refspec
+                _shell_ok(),  # stash pop
+            ]
+
+            await sync_branch("main", cwd=Path("/repo"))
+
+            assert mock_run.await_count == 4
+            pop_calls = [c for c in mock_run.call_args_list if c[0] == ("git", "stash", "pop")]
+            assert len(pop_calls) == 1
 
     async def test_returns_cleanly_when_active_in_another_worktree(self) -> None:
         """sync_branch must return without error when the branch is checked out in another
@@ -1380,19 +1591,18 @@ class TestSyncBranchWorktreeConflict:
             patch("sova.git.branch.run", new_callable=AsyncMock) as mock_run,
             patch("sova.git.branch.run_checked", new_callable=AsyncMock) as mock_checked,
         ):
-            # First call: checkout fails with 'already used by worktree'
-            # Second call: fetch refspec succeeds
+            # stash, checkout fails with 'already used by worktree', fetch refspec succeeds
             mock_run.side_effect = [
+                _shell_ok(stdout="No local changes to save"),  # stash
                 _shell_fail(stderr="fatal: 'main' is already used by worktree '/home/user/proj'"),
-                _shell_ok(),
+                _shell_ok(),  # fetch refspec
             ]
             mock_checked.return_value = _shell_ok()  # initial fetch
 
             await sync_branch("main", cwd=Path("/worktree"))
 
-        # Initial fetch via run_checked, then checkout + fetch-refspec via run
         mock_checked.assert_awaited_once()
-        assert mock_run.await_count == 2
+        assert mock_run.await_count == 3
 
 
 # ---------------------------------------------------------------------------
