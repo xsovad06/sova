@@ -2858,6 +2858,81 @@ class TestQualityGateIntegration:
 
 
 # ---------------------------------------------------------------------------
+# _collect_missing_sections helper
+# ---------------------------------------------------------------------------
+
+
+class TestCollectMissingSections:
+    """Tests for the _collect_missing_sections helper extracted from _enrich_body."""
+
+    def test_all_present_returns_empty(self) -> None:
+        from sova.roles.triage import QualityScore, _collect_missing_sections
+
+        score = QualityScore(
+            has_objective=True,
+            has_description=True,
+            has_acceptance_criteria=True,
+            has_files_to_change=True,
+            has_scope_boundaries=True,
+            has_references=True,
+            no_llm_leaks=True,
+        )
+        assert _collect_missing_sections(score) == []
+
+    def test_all_missing_returns_six_headings(self) -> None:
+        from sova.roles.triage import QualityScore, _collect_missing_sections
+
+        score = QualityScore(
+            has_objective=False,
+            has_description=False,
+            has_acceptance_criteria=False,
+            has_files_to_change=False,
+            has_scope_boundaries=False,
+            has_references=False,
+            no_llm_leaks=True,
+        )
+        result = _collect_missing_sections(score)
+        assert len(result) == 6
+        assert "## Objective" in result
+        assert "## References" in result
+
+    def test_partial_missing(self) -> None:
+        from sova.roles.triage import QualityScore, _collect_missing_sections
+
+        score = QualityScore(
+            has_objective=True,
+            has_description=False,
+            has_acceptance_criteria=True,
+            has_files_to_change=True,
+            has_scope_boundaries=False,
+            has_references=True,
+            no_llm_leaks=True,
+        )
+        result = _collect_missing_sections(score)
+        assert len(result) == 2
+        assert "## Detailed Description" in result
+        assert "## Out of Scope / Constraints" in result
+
+
+class TestRegexPerformance:
+    """Tests for the heading regex in compute_quality_score (no backtracking)."""
+
+    def test_heading_with_trailing_spaces(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Objective   \nDo the thing.\n"
+        score = compute_quality_score(body)
+        assert score.has_objective
+
+    def test_heading_with_special_chars(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Acceptance Criteria\n- [ ] It works (really!)\n"
+        score = compute_quality_score(body)
+        assert score.has_acceptance_criteria
+
+
+# ---------------------------------------------------------------------------
 # ReviewerRole -- LLM-based review
 # ---------------------------------------------------------------------------
 

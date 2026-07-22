@@ -98,7 +98,7 @@ def compute_quality_score(body: str) -> QualityScore:
         )
 
     body_lower = body.lower()
-    headings = {h.strip() for h in re.findall(r"^##\s+(.+)$", body_lower, re.MULTILINE)}
+    headings = {h.strip() for h in re.findall(r"^##\s+([^\n]+)", body_lower, re.MULTILINE)}
 
     has_objective = "objective" in headings
     has_description = "detailed description" in headings
@@ -131,6 +131,19 @@ def compute_quality_score(body: str) -> QualityScore:
         has_references=has_references,
         no_llm_leaks=no_llm_leaks,
     )
+
+
+def _collect_missing_sections(quality: QualityScore) -> list[str]:
+    """Return headings for quality dimensions the issue body is missing."""
+    _SECTION_MAP = [
+        (quality.has_objective, "## Objective"),
+        (quality.has_description, "## Detailed Description"),
+        (quality.has_acceptance_criteria, "## Acceptance Criteria (with - [ ] checkboxes)"),
+        (quality.has_files_to_change, "## Files / Modules to Change"),
+        (quality.has_scope_boundaries, "## Out of Scope / Constraints"),
+        (quality.has_references, "## References"),
+    ]
+    return [heading for present, heading in _SECTION_MAP if not present]
 
 
 # Prompt template for Claude-based assessment
@@ -590,19 +603,7 @@ class TriageRole(AgentRole):
 
     async def _enrich_body(self, ctx: ExecutionContext, task: Task, quality: QualityScore) -> str | None:
         """Use a focused LLM call to add missing structural sections."""
-        missing = []
-        if not quality.has_objective:
-            missing.append("## Objective")
-        if not quality.has_description:
-            missing.append("## Detailed Description")
-        if not quality.has_acceptance_criteria:
-            missing.append("## Acceptance Criteria (with - [ ] checkboxes)")
-        if not quality.has_files_to_change:
-            missing.append("## Files / Modules to Change")
-        if not quality.has_scope_boundaries:
-            missing.append("## Out of Scope / Constraints")
-        if not quality.has_references:
-            missing.append("## References")
+        missing = _collect_missing_sections(quality)
 
         prompt = _ENRICHMENT_PROMPT.format(
             issue_id=task.id,
