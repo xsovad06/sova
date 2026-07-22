@@ -445,10 +445,7 @@ async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
     result = await session.execute(done_steps_stmt)
     done_names = {row[0] for row in result.fetchall()}
     if "create_pr" in done_names or "push" in done_names:
-        return (
-            f"Pipeline incomplete: developer agent reached "
-            f"push/create_pr step but pr_number is still None"
-        )
+        return "Pipeline incomplete: developer agent reached push/create_pr step but pr_number is still None"
     return None
 
 
