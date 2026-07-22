@@ -2817,6 +2817,130 @@ class TestCheckExistingCI:
         assert "1" in result.summary
 
 
+class TestParseReviewBody:
+    """Tests for _parse_review_body structured finding parser."""
+
+    def test_structured_finding(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = (
+            "[HIGH] Correctness -- Missing null check\n"
+            "Location: sova/core/steps/commit.py:42\n"
+            "Problem: The variable could be None when accessed.\n"
+            "Suggestion: Add an explicit None check before use."
+        )
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == 9
+        assert findings[0]["category"] == "correctness"
+        assert findings[0]["file"] == "sova/core/steps/commit.py"
+        assert findings[0]["line"] == 42
+        assert "None" in findings[0]["description"]
+        assert "check" in findings[0]["suggestion"]
+
+    def test_critical_severity(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = "[CRITICAL] Security -- SQL injection risk\nLocation: app.py:10"
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == 10
+
+    def test_unstructured_fallback(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = "This code has several issues that need addressing. " * 3
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["category"] == "review"
+        assert findings[0]["severity"] == 7
+
+    def test_short_body_returns_empty(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        findings = _parse_review_body("LGTM")
+        assert findings == []
+
+    def test_empty_body_returns_empty(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        findings = _parse_review_body("")
+        assert findings == []
+
+    def test_line_range_location_preserves_file_path(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = "[HIGH] Correctness -- Range location\nLocation: foo.py:10-15\nProblem: Something is wrong."
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "foo.py"
+        assert findings[0]["line"] is None
+
+    def test_multiple_findings(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = "[HIGH] Correctness -- First issue\nLocation: a.py:1\n\n[LOW] Style -- Second issue\nLocation: b.py:2"
+        findings = _parse_review_body(body)
+        assert len(findings) == 2
+        assert findings[0]["severity"] == 9
+        assert findings[1]["severity"] == 3
+
+    def test_multi_word_category(self) -> None:
+        from sova.core.steps.address_review import _parse_review_body
+
+        body = "[HIGH] Type Safety -- Missing type annotation\nLocation: sova/core/context.py:55"
+        findings = _parse_review_body(body)
+        assert len(findings) == 1
+        assert findings[0]["category"] == "type safety"
+        assert findings[0]["severity"] == 9
+
+
+# ---------------------------------------------------------------------------
+class TestLoadFindingsFromGithubReviews:
+    """Tests for _load_findings_from_github_reviews loader filtering."""
+
+    async def test_filters_bot_reviews(self) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        ctx = _make_ctx(pr_number=10)
+        bot_review = MagicMock(state="COMMENTED", is_bot=True, body="[HIGH] Bug -- some issue")
+        human_review = MagicMock(state="COMMENTED", is_bot=False, body="[HIGH] Bug -- real issue\nLocation: a.py:1")
+        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[bot_review, human_review])
+
+        findings = await _load_findings_from_github_reviews(ctx)
+        assert len(findings) == 1
+        assert findings[0]["description"] == "real issue"
+
+    async def test_filters_dismissed_reviews(self) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        ctx = _make_ctx(pr_number=10)
+        dismissed = MagicMock(state="DISMISSED", is_bot=False, body="[HIGH] Bug -- old issue")
+        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[dismissed])
+
+        findings = await _load_findings_from_github_reviews(ctx)
+        assert findings == []
+
+    async def test_filters_empty_body(self) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        ctx = _make_ctx(pr_number=10)
+        empty = MagicMock(state="COMMENTED", is_bot=False, body="  ")
+        ctx.adapter.get_pr_reviews = AsyncMock(return_value=[empty])
+
+        findings = await _load_findings_from_github_reviews(ctx)
+        assert findings == []
+
+    async def test_adapter_exception_returns_empty(self) -> None:
+        from sova.core.steps.address_review import _load_findings_from_github_reviews
+
+        ctx = _make_ctx(pr_number=10)
+        ctx.adapter.get_pr_reviews = AsyncMock(side_effect=RuntimeError("API down"))
+
+        findings = await _load_findings_from_github_reviews(ctx)
+        assert findings == []
+
+
 # MonitorCIStep -- CI fix loop
 # ---------------------------------------------------------------------------
 

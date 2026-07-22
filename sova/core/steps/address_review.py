@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
@@ -71,6 +72,108 @@ async def _load_review_findings_by_issue(issue_number: str) -> list[dict]:
     except Exception:
         log.debug("address_review.issue_findings_failed", exc_info=True)
     return []
+
+
+_SEVERITY_MAP = {"CRITICAL": 10, "HIGH": 9, "MEDIUM": 6, "LOW": 3}
+
+_FINDING_HEADER_RE = re.compile(r"\[(\w+)\]\s*([\w][\w ]*?)\s*--\s*(.*)")
+_LOCATION_RE = re.compile(r"Location:\s*(\S+?)(?:\n|$)")
+_PROBLEM_RE = re.compile(r"Problem:\s*(.*?)(?:\nSuggestion:|\Z)", re.DOTALL)
+_SUGGESTION_RE = re.compile(r"Suggestion:\s*(.*?)(?:\n\[|```|\Z)", re.DOTALL)
+
+
+def _parse_review_body(body: str) -> list[dict]:
+    """Parse structured findings from a single review body.
+
+    Expected format: ``[HIGH/MEDIUM/LOW] Category -- Description``
+    with optional ``Location:``, ``Problem:``, and ``Suggestion:`` fields.
+
+    Falls back to treating the whole body as a single finding when
+    no structured findings are found and the body is non-trivial.
+    """
+    structured: list[dict] = []
+    blocks = re.split(r"\n(?=\[(?:CRITICAL|HIGH|MEDIUM|LOW)\])", body)
+    for block in blocks:
+        m = _FINDING_HEADER_RE.match(block.strip())
+        if not m:
+            continue
+
+        severity = _SEVERITY_MAP.get(m.group(1).upper(), 5)
+        file_path = ""
+        line = None
+
+        loc_m = _LOCATION_RE.search(block)
+        if loc_m:
+            loc = loc_m.group(1)
+            if ":" in loc:
+                parts = loc.rsplit(":", 1)
+                file_path = parts[0]
+                try:
+                    line = int(parts[1])
+                except ValueError:
+                    file_path = parts[0]
+            else:
+                file_path = loc
+
+        problem_m = _PROBLEM_RE.search(block)
+        suggestion_m = _SUGGESTION_RE.search(block)
+
+        structured.append(
+            {
+                "file": file_path,
+                "line": line,
+                "severity": severity,
+                "category": m.group(2).lower(),
+                "description": problem_m.group(1).strip() if problem_m else m.group(3),
+                "suggestion": suggestion_m.group(1).strip() if suggestion_m else "",
+                "source": "github-review",
+            }
+        )
+
+    if structured:
+        return structured
+
+    if len(body) > 50:
+        return [
+            {
+                "file": "",
+                "line": None,
+                "severity": 7,
+                "category": "review",
+                "description": body[:3000],
+                "suggestion": "",
+                "source": "github-review",
+            }
+        ]
+    return []
+
+
+async def _load_findings_from_github_reviews(ctx: ExecutionContext) -> list[dict]:
+    """Fetch review findings from GitHub PR review bodies.
+
+    Uses the adapter's get_pr_reviews() for the API call, then parses
+    structured findings from review bodies. Covers reviews posted as
+    body comments (not inline file comments) that handoff-based loaders miss.
+    """
+    if not ctx.pr_number:
+        return []
+    try:
+        reviews = await ctx.adapter.get_pr_reviews(ctx.pr_number)
+        if not reviews:
+            return []
+
+        findings: list[dict] = []
+        for review in reviews:
+            if review.state == "DISMISSED" or review.is_bot or not review.body.strip():
+                continue
+            findings.extend(_parse_review_body(review.body))
+
+        if findings:
+            log.info("address_review.github_review_findings", count=len(findings))
+        return findings
+    except Exception:
+        log.warning("address_review.github_review_fetch_failed", exc_info=True)
+        return []
 
 
 async def _load_coderabbit_findings(ctx: ExecutionContext) -> tuple[list[dict], list[str]]:
@@ -175,6 +278,11 @@ class AddressReviewStep(BaseStep):
             findings = await _load_review_findings_from_db(ctx.resume_run_id)
         if not findings:
             findings = await _load_review_findings_by_issue(ctx.issue_number)
+
+        # Fetch findings from GitHub PR review bodies (covers reviews not
+        # posted via Sova's own handoff mechanism).
+        if not findings:
+            findings = await _load_findings_from_github_reviews(ctx)
 
         # Also fetch CodeRabbit findings from the PR
         cr_findings, _thread_ids = await _load_coderabbit_findings(ctx)
