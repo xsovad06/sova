@@ -145,13 +145,31 @@ Act on the result:
 
 ### Phase 5: Merge
 
-Try merge strategies in order until one succeeds (repo settings may restrict some):
+Read `sova.toml` to determine merge settings from the `[integration]` section:
+
+- `merge_method`: "auto" (repo default), "squash", "rebase", or "merge"
+- `delete_branch`: true/false (default true)
+- `merge_queue_enabled`: "auto" (detect via GraphQL), "true", "false"
+- `post_merge_state`: "done" (close issue) or "on_qa" (add label, keep open)
+
+**Merge queue detection**: query the GraphQL API to check if a merge queue is configured.
+
+If merge queue is detected:
+- Omit merge strategy flags (queue controls strategy)
+- Omit `--delete-branch` (handled after queue processing)
+- Run: `gh pr merge <PR_NUMBER>`
+- If enqueued, poll merge queue status via GraphQL every `merge_queue_poll_interval` seconds (default 30)
+- On MERGED: proceed to Phase 6. If `delete_branch = true`, delete remote branch via GitHub API
+- On UNMERGEABLE: report ejection and stop
+- On TIMEOUT: report the PR is still enqueued, stop
+
+If merge queue is NOT detected:
 
 ```bash
 gh pr merge <PR_NUMBER> --rebase --delete-branch
 ```
 
-If rebase merge is not allowed, fall back to squash, then regular merge. If all fail, report the error.
+If `merge_method` is "auto", fall back through rebase, squash, merge. Otherwise use the configured method.
 
 **Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 
@@ -173,11 +191,11 @@ git worktree list
 git worktree remove <WORKTREE_PATH> --force 2>/dev/null || true
 ```
 
-Close the linked issue if one was found and it was not auto-closed:
+Handle the linked issue based on `post_merge_state` from `[integration]` config:
 
-```bash
-gh issue close <ISSUE_NUMBER> 2>/dev/null || true
-```
+- **"done"** (default): close the issue (`gh issue close <ISSUE_NUMBER>`)
+- **"on_qa"**: add `agent:on-qa` label, keep the issue open
+- **Other value**: log a warning and skip the state transition
 
 Check for stale stashes that belong to the merged branch:
 
@@ -221,8 +239,8 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 ## Rules
 
 - Never stop between phases unless there is a hard failure
-- Try `--rebase` merge first, fall back to `--squash`, then `--merge`
-- Always use `--delete-branch` to clean up the remote branch
+- Use the merge method from `[integration]` config (default: auto, with rebase/squash/merge fallback)
+- Handle merge queue when detected or configured
 - Use `--force-with-lease` for pushes, never `--force`
 - Only record actionable, specific lessons in memory -- not generic advice
 - Do not duplicate existing memory entries

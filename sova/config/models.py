@@ -404,6 +404,19 @@ class IntegrationGatesConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_GATES_")
 
 
+class IntegrationConfig(BaseSettings):
+    """Merge execution and post-merge behavior configuration."""
+
+    merge_method: Literal["auto", "squash", "rebase", "merge"] = "auto"
+    delete_branch: bool = True
+    merge_queue_enabled: Literal["auto", "true", "false"] = "auto"
+    merge_queue_poll_interval: int = Field(30, gt=0)
+    merge_queue_timeout: int = Field(1800, gt=0)
+    post_merge_state: str = "done"
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_")
+
+
 class PRMonitorConfig(BaseSettings):
     """PR monitoring background loop configuration."""
 
@@ -586,6 +599,7 @@ class ProjectConfig(BaseSettings):
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     integration_gates: IntegrationGatesConfig = Field(default_factory=IntegrationGatesConfig)
+    integration: IntegrationConfig = Field(default_factory=IntegrationConfig)
     rtk: RTKConfig = Field(default_factory=RTKConfig)
     coderabbit_quota: CodeRabbitQuotaConfig = Field(default_factory=CodeRabbitQuotaConfig)
     pr_monitor: PRMonitorConfig = Field(default_factory=PRMonitorConfig)

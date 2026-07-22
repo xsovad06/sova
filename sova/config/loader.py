@@ -77,6 +77,7 @@ _NESTED_SECTIONS = (
     "monitoring",
     "knowledge",
     "integration_gates",
+    "integration",
     "rtk",
     "coderabbit_quota",
     "pr_monitor",

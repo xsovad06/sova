@@ -42,6 +42,7 @@ GROUPS: dict[str, str] = {
     "monitoring": "Resource Monitoring",
     "knowledge": "Knowledge Retrieval",
     "integration_gates": "Integration Gates",
+    "integration": "Integration",
     "rtk": "RTK Compression",
     "coderabbit_quota": "CodeRabbit Quota",
     "pr_monitor": "PR Monitor",
@@ -78,6 +79,7 @@ GROUP_ORDER: list[str] = [
     "monitoring",
     "knowledge",
     "integration_gates",
+    "integration",
     "rtk",
     "coderabbit_quota",
     "pr_monitor",
@@ -695,6 +697,46 @@ _REGISTRY: list[SettingMeta] = [
         "Block PR integration unless all review conversation threads are resolved",
         "integration_gates",
         "boolean",
+    ),
+    # -- Integration --
+    SettingMeta(
+        "integration.merge_method",
+        "Merge method",
+        "PR merge strategy: auto (repo default), squash, rebase, or merge",
+        "integration",
+    ),
+    SettingMeta(
+        "integration.delete_branch",
+        "Delete branch after merge",
+        "Remove the remote branch after successful merge",
+        "integration",
+        "boolean",
+    ),
+    SettingMeta(
+        "integration.merge_queue_enabled",
+        "Merge queue",
+        "Merge queue handling: auto (detect via GraphQL), true (always use), false (never use)",
+        "integration",
+    ),
+    SettingMeta(
+        "integration.merge_queue_poll_interval",
+        "Queue poll interval (s)",
+        "Seconds between merge queue status checks",
+        "integration",
+        "number",
+    ),
+    SettingMeta(
+        "integration.merge_queue_timeout",
+        "Queue timeout (s)",
+        "Maximum seconds to wait for merge queue processing before timing out",
+        "integration",
+        "number",
+    ),
+    SettingMeta(
+        "integration.post_merge_state",
+        "Post-merge state",
+        "Issue state after merge: done (close) or on_qa (add label, keep open). Jira accepts arbitrary state names.",
+        "integration",
     ),
     # -- RTK Compression --
     SettingMeta(
