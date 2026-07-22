@@ -2,11 +2,11 @@
 
 SHELL := /bin/bash
 
-# GNU Make 3.81 (macOS default) skips the shell for simple commands,
-# bypassing exported PATH. Use full paths for pip-installed tools.
+# Prefer tools already on PATH (virtualenv, Homebrew, etc.);
+# fall back to the Python user-base bin for pip --user installs.
 PYTHON_USER_BIN := $(shell python3 -m site --user-base)/bin
-RUFF := $(PYTHON_USER_BIN)/ruff
-PYTEST := $(PYTHON_USER_BIN)/pytest
+RUFF := $(or $(shell which ruff 2>/dev/null),$(PYTHON_USER_BIN)/ruff)
+PYTEST := $(or $(shell which pytest 2>/dev/null),$(PYTHON_USER_BIN)/pytest)
 
 # ── Main targets ──────────────────────────────────────────────
 

@@ -79,6 +79,17 @@ def _extract_linked_issue(raw: dict) -> int | None:
     return parse_linked_issue(raw.get("body"))
 
 
+def _extract_all_linked_issues(raw: dict) -> list[int]:
+    """Return all issue numbers linked to a PR from closingIssuesReferences or body."""
+    refs = raw.get("closingIssuesReferences") or []
+    if refs:
+        return [r.get("number") for r in refs if r.get("number") is not None]
+    single = parse_linked_issue(raw.get("body"))
+    if single is not None:
+        return [single]
+    return []
+
+
 def _summarize_ci(rollup: list[dict] | None) -> str:
     """Summarize statusCheckRollup contexts into a single CI status string.
 
@@ -238,6 +249,7 @@ def _enrich_pr(raw: dict, now: float) -> dict:
         "is_draft": is_draft,
         "author": author.get("login", ""),
         "linked_issue": _extract_linked_issue(raw),
+        "linked_issues": _extract_all_linked_issues(raw),
         "age_seconds": _age_seconds(raw.get("createdAt") or "", now),
         "updated_at": raw.get("updatedAt") or "",
         "labels": labels,
@@ -348,6 +360,33 @@ async def check_integration_gates(
 
     gates = [ci_gate, sova_gate, cr_gate, thr_gate]
     return {"passed": all(g["passed"] for g in gates), "gates": gates}
+
+
+async def get_pr_mergeability_map() -> dict[int, str]:
+    """Build {issue_number: mergeable_status} from open PRs.
+
+    A PR may close multiple issues (via closingIssuesReferences); all linked
+    issues receive the PR's mergeable status.  When multiple PRs reference the
+    same issue, CONFLICTING wins (worst-case: if any PR conflicts, the issue is
+    blocked).
+
+    Returns an empty dict on any failure (fail-open).
+    """
+    try:
+        prs = await list_open_prs_with_state(author_filter_override="all")
+    except Exception:
+        log.debug("mergeability_map.fetch_failed", exc_info=True)
+        return {}
+    result: dict[int, str] = {}
+    for pr in prs:
+        status = pr.get("mergeable", "")
+        for issue_num in pr.get("linked_issues") or []:
+            existing = result.get(issue_num)
+            if existing == "CONFLICTING" or status == "CONFLICTING":
+                result[issue_num] = "CONFLICTING"
+            else:
+                result[issue_num] = status
+    return result
 
 
 async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"] | None = None) -> list[dict]:

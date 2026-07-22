@@ -504,8 +504,17 @@ function renderTaskCard(item) {
       pd.thread_resolved + '/' + pd.thread_total + '</span>';
   }
 
-  var metaStrip = (assigneeHtml || ageHtml || diffHtml || draftHtml || threadHtml)
-    ? '<span class="flex items-center gap-1.5 shrink-0">' + assigneeHtml + ageHtml + diffHtml + draftHtml + threadHtml + '</span>'
+  var conflictHtml = '';
+  if (pd.mergeable === 'CONFLICTING') {
+    var cUrl = pd.url ? escapeHtml(pd.url) + '/conflicts' : '#';
+    conflictHtml = '<a href="' + cUrl + '" target="_blank" rel="noopener" ' +
+      'onclick="event.stopPropagation()" ' +
+      'class="px-2 py-0.5 rounded-full text-[10px] bg-accent-red/20 text-accent-red hover:bg-accent-red/30 shrink-0" ' +
+      'data-tooltip="This PR has merge conflicts that must be resolved">Conflicts</a>';
+  }
+
+  var metaStrip = (assigneeHtml || ageHtml || diffHtml || draftHtml || threadHtml || conflictHtml)
+    ? '<span class="flex items-center gap-1.5 shrink-0">' + assigneeHtml + ageHtml + diffHtml + draftHtml + threadHtml + conflictHtml + '</span>'
     : '';
 
   var mainRow = '<div class="flex items-center gap-3 px-4 py-2.5">' +
