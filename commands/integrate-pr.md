@@ -152,7 +152,12 @@ Read `sova.toml` to determine merge settings from the `[integration]` section:
 - `merge_queue_enabled`: "auto" (detect via GraphQL), "true", "false"
 - `post_merge_state`: "done" (close issue) or "on_qa" (add label, keep open)
 
-**Merge queue detection**: query the GraphQL API to check if a merge queue is configured.
+First, query the PR to determine the base branch for queue detection:
+```bash
+gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName'
+```
+
+**Merge queue detection**: using the base branch from above, query the GraphQL API to check if a merge queue is configured.
 
 If merge queue is detected:
 - Omit merge strategy flags (queue controls strategy)
@@ -165,17 +170,11 @@ If merge queue is detected:
 
 If merge queue is NOT detected:
 
-First, query the PR to determine the base branch:
 ```bash
-gh pr view <PR_NUMBER> --json baseRefName --jq '.baseRefName'
-```
-Use this base branch for queue detection and rebase operations.
-
-```bash
-gh pr merge <PR_NUMBER> --rebase --delete-branch
+gh pr merge <PR_NUMBER> [--squash|--rebase|--merge] [--delete-branch]
 ```
 
-If `merge_method` is "auto", omit strategy flags to use the GitHub repo default. Otherwise use the configured method.
+If `merge_method` is "auto", omit strategy flags to use the GitHub repo default. Otherwise use the configured method. Only include `--delete-branch` when `delete_branch = true`.
 
 **Stop if merge fails** -- report the error (usually merge conflicts, branch protection, or required reviews).
 

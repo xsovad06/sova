@@ -103,6 +103,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **GitHub project board Phase field is independent of milestones** -- updating milestone does NOT update Projects V2 board Phase field. Separate API mutations required. [confirmed: 1]
 - **Always use `_gh()` helper in GitHubAdapter** -- never call `run()` directly; `_gh()` resolves per-project auth. [confirmed: 1]
 - **`gh pr merge --delete-branch` fails with merge queue** -- omit flags, use `enqueuePullRequest` GraphQL, delete branch after merge. Issue #393. [confirmed: 1]
+- **GraphQL queries must use variables, not string interpolation** -- `branch: "%s" % base_branch` allows injection via crafted branch names. Use `$branch: String!` variable. File: `sova/git/merge.py`. PR #421 CodeRabbit. [confirmed: 1]
+- **Poll loops must cap sleep to remaining timeout** -- `asyncio.sleep(interval)` when `interval > timeout` overshoots. Use `asyncio.sleep(min(interval, remaining))` with `loop.time()` for elapsed tracking. Track consecutive API failures (5+) for early exit. PR #421. [confirmed: 1]
 - **Use `urlparse` before splitting API URLs for ID extraction** -- `details_url` can include query params. Use `urlparse(url).path` first. File: `sova/git/pr.py:_parse_run_id()`. [confirmed: 1]
 - **Hoist shared adapter/config creation outside `asyncio.gather` loops** -- build adapter once before fan-out, not per-item. PR #400. [confirmed: 1]
 - **`gh pr list --json commits` triggers GitHub 500K-node limit** -- `commits` field multiplies; remove from `--json` fields. PR #407. [confirmed: 1]

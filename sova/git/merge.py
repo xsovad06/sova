@@ -40,9 +40,9 @@ class MergeResult:
 
 
 _MERGE_QUEUE_DETECTION_QUERY = """
-query($owner: String!, $name: String!) {
+query($owner: String!, $name: String!, $branch: String!) {
   repository(owner: $owner, name: $name) {
-    mergeQueue(branch: "%s") {
+    mergeQueue(branch: $branch) {
       configuration {
         mergeMethod
       }
@@ -74,7 +74,7 @@ async def detect_merge_queue(
     github_user: str = "",
 ) -> bool | None:
     owner, name = repo.split("/", 1)
-    query = _MERGE_QUEUE_DETECTION_QUERY % base_branch
+    query = _MERGE_QUEUE_DETECTION_QUERY
     env = await resolve_gh_env(github_user)
 
     result = await run(
@@ -85,6 +85,8 @@ async def detect_merge_queue(
         f"owner={owner}",
         "-f",
         f"name={name}",
+        "-f",
+        f"branch={base_branch}",
         "-f",
         f"query={query}",
         env=env,
@@ -265,6 +267,7 @@ async def get_merge_queue_status(
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
+        log.warning("git.merge.queue_status_parse_failed", pr=pr_number, exc_info=True)
         return MergeQueueStatus(in_queue=True, state="UNKNOWN", position=None, estimated_time="")
 
     pr_data = ((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {}
@@ -420,5 +423,5 @@ async def handle_post_merge_state(
         "git.merge.unknown_post_merge_state",
         state=post_merge_state,
         issue=issue_number,
-        msg=f"Unknown post_merge_state {post_merge_state!r} for GitHub adapter, skipping state transition",
+        msg="Unknown post_merge_state for GitHub adapter, skipping state transition",
     )
