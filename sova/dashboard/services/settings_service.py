@@ -55,18 +55,27 @@ def get_config_file_path(project_dir: Path | None = None) -> Path:
 def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
     """Update a single config key in sova.toml using tomlkit for round-trip.
 
-    Falls back to simple string replacement if tomlkit is not available.
+    Validates the value type against settings metadata before writing.
+    Only registered settings (present in settings_meta) can be updated.
     """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    if key not in _META_BY_KEY:
+        return {"error": f"Unknown setting: '{key}'"}
+
     toml_path = get_config_file_path(project_dir)
     if not toml_path.exists():
         return {"error": "sova.toml not found"}
+
+    validation_error = _validate_value_type(key, value)
+    if validation_error:
+        return {"error": validation_error}
 
     try:
         import tomlkit
 
         doc = tomlkit.parse(toml_path.read_text())
 
-        # Handle dotted keys (e.g., "task_source.type")
         parts = key.split(".")
         target = doc
         for part in parts[:-1]:
@@ -74,7 +83,6 @@ def update_config(project_dir: Path | None = None, *, key: str, value: str) -> d
                 target[part] = tomlkit.table()
             target = target[part]
 
-        # Try to cast the value appropriately
         target[parts[-1]] = _cast_value(value)
         toml_path.write_text(tomlkit.dumps(doc))
         return {"status": "ok", "key": key, "value": value}
@@ -83,6 +91,32 @@ def update_config(project_dir: Path | None = None, *, key: str, value: str) -> d
         return {"error": "tomlkit not installed -- cannot update config"}
     except Exception as e:
         return {"error": str(e)}
+
+
+def _validate_value_type(key: str, value: str) -> str | None:
+    """Validate the value against the expected type from settings metadata.
+
+    Returns an error message string if invalid, None if valid.
+    """
+    from sova.dashboard.settings_meta import _META_BY_KEY
+
+    meta = _META_BY_KEY.get(key)
+    if meta is None:
+        return None
+
+    if meta.value_type == "number":
+        stripped = value.strip()
+        if not stripped:
+            return f"'{key}' expects a number, got '{value}'"
+        try:
+            float(stripped)
+        except ValueError:
+            return f"'{key}' expects a number, got '{value}'"
+    elif meta.value_type == "boolean":
+        if value.lower() not in ("true", "false"):
+            return f"'{key}' expects true or false, got '{value}'"
+
+    return None
 
 
 def _cast_value(value: str) -> object:

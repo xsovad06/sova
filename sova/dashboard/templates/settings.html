@@ -133,7 +133,12 @@ function toggleGroup(groupId) {
 
 async function loadConfig() {
   try {
-    var data = await fetchAPI(apiUrl('/settings/config/grouped'));
+    var res = await fetch(apiUrl('/settings/config/grouped'));
+    if (!res.ok) {
+      var detail = await getErrorDetail(res, 'Failed to fetch configuration');
+      throw new Error(detail);
+    }
+    var data = await res.json();
     var container = document.getElementById('config-groups');
     var groups = data.groups;
 
@@ -223,8 +228,18 @@ async function loadConfig() {
     loadInstallationStatus();
   } catch (e) {
     console.error('Failed to load config:', e);
-    document.getElementById('config-groups').innerHTML =
-      '<p class="text-gray-500 text-sm lg:col-span-2">Failed to load configuration</p>';
+    var detail = (e.message || '').replace('HTTP 500: ', '');
+    if (detail.startsWith('Invalid configuration:')) {
+      document.getElementById('config-groups').innerHTML =
+        '<div class="lg:col-span-2 p-4 rounded-lg" style="background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3)">' +
+        '<p class="text-red-400 text-sm font-medium mb-1">Configuration Error</p>' +
+        '<p class="text-red-300 text-xs font-mono">' + escapeHtml(detail) + '</p>' +
+        '<p class="text-gray-500 text-xs mt-2">Fix the value in sova.toml and reload.</p>' +
+        '</div>';
+    } else {
+      document.getElementById('config-groups').innerHTML =
+        '<p class="text-gray-500 text-sm lg:col-span-2">Failed to load configuration</p>';
+    }
   }
 }
 
@@ -260,7 +275,16 @@ function editConfig(key) {
   if (currentVal === 'null' || currentVal === 'not set') currentVal = '';
 
   var input = document.createElement('input');
-  input.type = (span.dataset.type === 'secret') ? 'password' : 'text';
+  var fieldType = span.dataset.type || 'string';
+  if (fieldType === 'secret') {
+    input.type = 'password';
+  } else if (fieldType === 'number') {
+    input.type = 'number';
+    input.step = 'any';
+    input.min = '0';
+  } else {
+    input.type = 'text';
+  }
   input.value = currentVal;
   input.className = 'sova-input text-xs py-1';
   var saving = false;

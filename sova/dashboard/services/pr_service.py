@@ -19,6 +19,8 @@ log = get_logger(component="dashboard.pr_service")
 _ISSUE_LINK_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 _JIRA_MARKDOWN_RE = re.compile(r"\[([A-Z]+-\d+)\]\(https?://")
 _JIRA_PLAIN_RE = re.compile(r"JIRA:\s*https?://\S+/browse/[A-Z]+-(\d+)")
+_TITLE_ISSUE_RE = re.compile(r"[(\[]#(\d+)[)\]]")
+_BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
 
 _PR_CACHE_TTL = 25  # seconds
 _pr_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -68,15 +70,26 @@ def parse_linked_issue(body: str | None) -> int | None:
 
 
 def _extract_linked_issue(raw: dict) -> int | None:
-    """Extract linked issue from closingIssuesReferences (accurate) or PR body (fallback).
+    """Extract linked issue from closingIssuesReferences, PR body, title, or branch.
 
-    closingIssuesReferences only contains real issues, not PRs, so it avoids
-    the false positive where 'Closes #N' references another PR.
+    Priority: closingIssuesReferences (accurate, excludes PR-to-PR refs)
+    > body keywords (Closes/Fixes/Resolves #N) > title pattern (feat(#N))
+    > branch pattern (issue-N).
     """
     refs = raw.get("closingIssuesReferences") or []
     if refs:
         return refs[0].get("number")
-    return parse_linked_issue(raw.get("body"))
+    from_body = parse_linked_issue(raw.get("body"))
+    if from_body is not None:
+        return from_body
+    title = raw.get("title") or ""
+    m = _TITLE_ISSUE_RE.search(title)
+    if m:
+        return int(m.group(1))
+    branch = raw.get("headRefName") or ""
+    m = _BRANCH_ISSUE_RE.search(branch)
+    if m:
+        return int(m.group(1))
 
 
 def _extract_all_linked_issues(raw: dict) -> list[int]:

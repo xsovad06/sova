@@ -16,6 +16,7 @@ from sova.dashboard.services.pr_service import (
     _check_threads_from_pr_data,
     _enrich_pr,
     _extract_latest_approval_at,
+    _extract_linked_issue,
     _extract_review_logins,
     _summarize_ci,
     check_integration_gates,
@@ -148,6 +149,67 @@ class TestParseLinkedIssue:
     def test_jira_multi_letter_project(self) -> None:
         body = "[ABC-123](https://jira.example.com/browse/ABC-123)"
         assert parse_linked_issue(body) == 123
+
+
+class TestExtractLinkedIssue:
+    def test_closing_references_preferred(self) -> None:
+        raw = {"closingIssuesReferences": [{"number": 42}], "body": "Fixes #99", "title": "feat(#77)"}
+        assert _extract_linked_issue(raw) == 42
+
+    def test_body_fallback(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "Closes #88",
+            "title": "feat(#99)",
+            "headRefName": "feat/issue-77",
+        }
+        assert _extract_linked_issue(raw) == 88
+
+    def test_title_fallback_parens(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "No link here",
+            "title": "feat(#374): merge conflict gate",
+            "headRefName": "feat/issue-111",
+        }
+        assert _extract_linked_issue(raw) == 374
+
+    def test_title_fallback_brackets(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "[#55] fix something",
+            "headRefName": "feat/issue-222",
+        }
+        assert _extract_linked_issue(raw) == 55
+
+    def test_branch_fallback(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314"}
+        assert _extract_linked_issue(raw) == 314
+
+    def test_branch_requires_segment_boundary(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/notissue-314"}
+        assert _extract_linked_issue(raw) is None
+
+    def test_branch_requires_suffix_boundary(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314draft"}
+        assert _extract_linked_issue(raw) is None
+
+    def test_branch_with_suffix_delimiter(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "", "title": "some fix", "headRefName": "feat/issue-314-fix"}
+        assert _extract_linked_issue(raw) == 314
+
+    def test_no_match(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "nothing", "title": "generic", "headRefName": "main"}
+        assert _extract_linked_issue(raw) is None
+
+    def test_empty_closing_refs_is_none(self) -> None:
+        raw = {"closingIssuesReferences": None, "body": "Fixes #10"}
+        assert _extract_linked_issue(raw) == 10
+
+    def test_title_number_in_parens_without_hash_is_not_issue(self) -> None:
+        raw = {"closingIssuesReferences": [], "body": "", "title": "fix: handle (500) errors"}
+        assert _extract_linked_issue(raw) is None
 
 
 class TestSummarizeCi:

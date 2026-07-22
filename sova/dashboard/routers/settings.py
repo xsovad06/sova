@@ -18,6 +18,25 @@ router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
 
 
+def _extract_validation_detail(exc: Exception) -> str:
+    """Extract a user-readable message from a Pydantic ValidationError, or fall back to generic."""
+    try:
+        from pydantic import ValidationError
+
+        if isinstance(exc, ValidationError) or (exc.__cause__ and isinstance(exc.__cause__, ValidationError)):
+            ve = exc if isinstance(exc, ValidationError) else exc.__cause__
+            fields = []
+            for err in ve.errors():
+                loc = ".".join(str(p) for p in err.get("loc", []))
+                msg = err.get("msg", "")
+                fields.append(f"{loc}: {msg}")
+            if fields:
+                return f"Invalid configuration: {'; '.join(fields[:3])}"
+    except ImportError:
+        pass
+    return "Failed to fetch configuration"
+
+
 class ConfigUpdateRequest(BaseModel):
     key: str
     value: str
@@ -29,9 +48,10 @@ async def get_config():
     try:
         project_dir = get_project_dir()
         return {"config": settings_service.get_config(project_dir)}
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - route boundary translates config/pydantic/IO errors to HTTP 500
         log.warning("settings.config.get.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch configuration")
+        detail = _extract_validation_detail(exc)
+        raise HTTPException(status_code=500, detail=detail) from None
 
 
 @router.get(
@@ -44,9 +64,10 @@ async def get_config_grouped():
         project_dir = get_project_dir()
         flat = settings_service.get_config(project_dir)
         return {"groups": get_grouped_config(flat)}
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - route boundary translates config/pydantic/IO errors to HTTP 500
         log.warning("settings.config.grouped.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch configuration")
+        detail = _extract_validation_detail(exc)
+        raise HTTPException(status_code=500, detail=detail) from None
 
 
 @router.post("/settings/config", responses={500: {"description": "Failed to update configuration"}})
