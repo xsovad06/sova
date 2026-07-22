@@ -66,11 +66,14 @@ async def _resolve_issue_worktree(
             return candidate
 
     if branch_name:
+        branch_on_main = False
         try:
             wt_path = await find_worktree_by_branch(branch_name, cwd=project_dir)
             if wt_path is not None and wt_path.resolve() != project_dir.resolve():
                 log.info("command.using_branch_worktree", branch=branch_name, path=str(wt_path))
                 return wt_path
+            if wt_path is not None:
+                branch_on_main = True
         except (RuntimeError, FileNotFoundError, subprocess.CalledProcessError):
             log.debug("command.branch_worktree_lookup_failed", branch=branch_name, exc_info=True)
 
@@ -93,6 +96,18 @@ async def _resolve_issue_worktree(
                 log.warning("command.worktree_skipped_no_id", branch=branch_name, pr=pr_number)
                 return project_dir
 
+            # If the branch is checked out in the main repo, switch the main
+            # repo to the default branch so git allows creating a worktree for
+            # that branch.
+            if branch_on_main:
+                default_branch = await _get_default_branch(project_dir)
+                switch = await run_shell("git", "checkout", default_branch, cwd=project_dir, timeout=10)
+                if switch.success:
+                    log.info("command.freed_branch_for_worktree", branch=branch_name, target=default_branch)
+                else:
+                    log.warning("command.branch_switch_failed", branch=branch_name, stderr=switch.stderr[:200])
+                    return project_dir
+
             wt_info = await create_worktree(
                 issue_id=wt_id,
                 branch=branch_name,
@@ -105,6 +120,34 @@ async def _resolve_issue_worktree(
             log.warning("command.create_worktree_failed", branch=branch_name, exc_info=True)
 
     return project_dir
+
+
+async def _get_default_branch(project_dir: Path) -> str:
+    """Return the default branch name (main/master) for the repo."""
+    result = await run_shell(
+        "git",
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "--short",
+        cwd=project_dir,
+        timeout=5,
+    )
+    ref = result.stdout.strip() if result.success else ""
+    if ref:
+        return ref.removeprefix("origin/")
+    for branch in ("main", "master"):
+        exists = await run_shell(
+            "git",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{branch}",
+            cwd=project_dir,
+            timeout=5,
+        )
+        if exists.success:
+            return branch
+    return "main"
 
 
 def _strip_frontmatter(content: str) -> str:

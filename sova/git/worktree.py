@@ -95,7 +95,8 @@ async def create_worktree(
     )
 
     if not result.success:
-        if "a branch named" in result.stderr and "already exists" in result.stderr:
+        stderr = result.stderr
+        if "a branch named" in stderr and "already exists" in stderr:
             # Branch exists from a previous run -- check it out into the worktree
             log.info("worktree.existing_branch", branch=branch)
             await run_checked(
@@ -107,6 +108,8 @@ async def create_worktree(
                 cwd=project_dir,
             )
         else:
+            if "is already checked out at" in stderr or "is already used by worktree" in stderr:
+                log.warning("worktree.branch_checked_out_elsewhere", branch=branch, stderr=stderr[:200])
             raise subprocess_error(
                 ("git", "worktree", "add", str(worktree_path), "-b", branch, base_branch),
                 result,

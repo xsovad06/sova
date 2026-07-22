@@ -2689,6 +2689,92 @@ class TestStartCommandWorktreeResolution:
             result = await _resolve_issue_worktree("standup", tmp_path, branch_name="broken")
         assert result == tmp_path
 
+    async def test_resolve_issue_worktree_frees_branch_from_main(self, tmp_path: Path) -> None:
+        """When branch is checked out in main repo, switch main to default branch and create worktree."""
+        from dataclasses import dataclass
+        from unittest.mock import AsyncMock, call, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        @dataclass
+        class FakeWorktreeInfo:
+            path: Path
+            branch: str
+            issue_id: str
+
+        wt_path = tmp_path / ".claude" / "worktrees" / "pr-99"
+        fake_info = FakeWorktreeInfo(path=wt_path, branch="fix/stuff", issue_id="pr-99")
+        mock_shell = AsyncMock()
+
+        # First call (git checkout main) succeeds
+        success_result = AsyncMock()
+        success_result.success = True
+        success_result.stdout = "origin/main\n"
+        mock_shell.return_value = success_result
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=tmp_path,  # branch found in main repo
+            ),
+            patch(
+                "sova.dashboard.services.agent_context.run_shell",
+                mock_shell,
+            ),
+            patch(
+                "sova.git.worktree.create_worktree",
+                new_callable=AsyncMock,
+                return_value=fake_info,
+            ),
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="fix/stuff", pr_number=99)
+
+        assert result == wt_path
+        assert mock_shell.await_args_list == [
+            call(
+                "git",
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "--short",
+                cwd=tmp_path,
+                timeout=5,
+            ),
+            call("git", "checkout", "main", cwd=tmp_path, timeout=10),
+        ]
+
+    async def test_resolve_issue_worktree_returns_project_dir_on_switch_failure(self, tmp_path: Path) -> None:
+        """When git checkout fails (e.g. uncommitted changes), return project_dir without attempting create_worktree."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        mock_shell = AsyncMock()
+        symbolic_ref_result = AsyncMock()
+        symbolic_ref_result.success = True
+        symbolic_ref_result.stdout = "origin/main\n"
+
+        checkout_result = AsyncMock()
+        checkout_result.success = False
+        checkout_result.stderr = "error: Your local changes would be overwritten"
+
+        mock_shell.side_effect = [symbolic_ref_result, checkout_result]
+
+        mock_create = AsyncMock()
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=tmp_path,
+            ),
+            patch("sova.dashboard.services.agent_context.run_shell", mock_shell),
+            patch("sova.git.worktree.create_worktree", mock_create),
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="fix/stuff", pr_number=99)
+
+        assert result == tmp_path
+        mock_create.assert_not_awaited()
+
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
         from unittest.mock import AsyncMock, MagicMock, patch
