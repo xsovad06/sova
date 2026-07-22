@@ -277,6 +277,9 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> bool | None:
         return None
     current_sha, state = parts[0], parts[1]
 
+    if not current_sha or not state:
+        return None
+
     if state == "MERGED":
         log.info("check_pr_pushed_via_sha.merged", pr=agent.pr_number)
         return True
