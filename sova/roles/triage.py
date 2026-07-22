@@ -646,6 +646,14 @@ class TriageRole(AgentRole):
             if enriched and len(enriched) > len(task.body or ""):
                 return enriched
 
+            if enriched:
+                log.warning(
+                    "triage.enrich_too_short",
+                    issue=task.id,
+                    original_len=len(task.body or ""),
+                    enriched_len=len(enriched),
+                )
+
         except Exception as exc:
             log.warning("triage.enrich_failed", error=str(exc))
 
