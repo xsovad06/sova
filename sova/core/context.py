@@ -51,6 +51,10 @@ class ExecutionContext:
     # Output writer (set by WorkflowEngine, used by steps for heartbeats)
     output_writer: OutputWriter | None = None
 
+    # Set by CommitStep when working tree is clean but commits exist ahead of base.
+    # MonitorCIStep uses this to check existing CI status instead of polling.
+    no_new_commits: bool = False
+
     # Accumulated during the run
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
