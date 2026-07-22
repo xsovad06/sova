@@ -7,11 +7,6 @@ on:
   # runs on fork code; secrets are scoped to individual steps.
   pull_request_target:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
   push:
     branches:
       - main
