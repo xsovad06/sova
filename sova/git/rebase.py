@@ -58,8 +58,14 @@ async def rebase_with_conflict_resolution(
     model: str | None = None,
     max_budget_usd: Decimal | None = None,
     max_attempts: int = 3,
+    max_commits: int = 5,
 ) -> tuple[RebaseResult, Decimal]:
     """Rebase onto *base*, using the LLM to resolve conflicts if needed.
+
+    Uses a two-level loop: the outer loop iterates over conflicting commits
+    (capped by *max_commits*), while the inner loop retries LLM resolution
+    for each commit (capped by *max_attempts*). This prevents a multi-commit
+    rebase from exhausting all retry attempts on the first commit.
 
     Returns a (RebaseResult, cost_usd) tuple.  On unrecoverable failure the
     rebase is aborted so the worktree is never left in a broken state.
@@ -75,46 +81,63 @@ async def rebase_with_conflict_resolution(
         return RebaseResult(success=True), cost
 
     conflicts_resolved = 0
-    for attempt in range(1, max_attempts + 1):
+    hit_commit_cap = False
+    for commit_idx in range(max_commits):
         conflicted = await _get_conflicted_files(cwd=cwd)
         if not conflicted:
-            cont = await run("git", "rebase", "--continue", cwd=cwd)
+            env = {**os.environ, "GIT_EDITOR": "true"}
+            cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
             if cont.success:
                 return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+            log.warning(
+                "git.rebase.continue_failed",
+                commit=commit_idx + 1,
+                stdout=(cont.stdout or "")[:200],
+                stderr=(cont.stderr or "")[:200],
+            )
             break
 
-        log.info("git.rebase.resolving_conflicts", files=conflicted, attempt=attempt)
-        try:
-            llm_result = await _resolve_conflicts_with_llm(
-                conflicted,
-                cwd=cwd,
-                model=model,
-                max_budget_usd=max_budget_usd,
-            )
-            cost += llm_result.cost_usd
-        except RuntimeError as exc:
-            log.warning("git.rebase.llm_failed", attempt=attempt, error=str(exc))
-            await run("git", "rebase", "--abort", cwd=cwd)
-            return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
-
-        remaining = await _get_conflicted_files(cwd=cwd)
-        if remaining:
-            log.warning("git.rebase.unresolved", remaining=remaining, attempt=attempt)
-            if attempt == max_attempts:
+        remaining: list[str] = []
+        for attempt in range(1, max_attempts + 1):
+            log.info("git.rebase.resolving_conflicts", files=conflicted, commit=commit_idx + 1, attempt=attempt)
+            try:
+                llm_result = await _resolve_conflicts_with_llm(
+                    conflicted,
+                    cwd=cwd,
+                    model=model,
+                    max_budget_usd=max_budget_usd,
+                )
+                cost += llm_result.cost_usd
+            except RuntimeError as exc:
+                log.warning("git.rebase.llm_failed", commit=commit_idx + 1, attempt=attempt, error=str(exc))
                 await run("git", "rebase", "--abort", cwd=cwd)
-                return RebaseResult(
-                    success=False,
-                    conflicts_resolved=conflicts_resolved,
-                    error=f"Unresolved conflicts after {max_attempts} attempts: {', '.join(remaining)}",
-                ), cost
-            continue
+                return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
+
+            remaining = await _get_conflicted_files(cwd=cwd)
+            if not remaining:
+                break
+            conflicted = remaining
+
+        if remaining:
+            log.warning("git.rebase.unresolved", remaining=remaining, commit=commit_idx + 1)
+            await run("git", "rebase", "--abort", cwd=cwd)
+            return RebaseResult(
+                success=False,
+                conflicts_resolved=conflicts_resolved,
+                error=f"Unresolved conflicts after {max_attempts} attempts: {', '.join(remaining)}",
+            ), cost
 
         conflicts_resolved += len(conflicted)
         env = {**os.environ, "GIT_EDITOR": "true"}
         cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+    else:
+        hit_commit_cap = True
 
     await run("git", "rebase", "--abort", cwd=cwd)
-    error = "Rebase could not be completed"
+    if hit_commit_cap:
+        error = f"Exceeded max commits cap ({max_commits}, processed {commit_idx + 1} commits) during rebase"
+    else:
+        error = f"Rebase could not be completed: {(cont.stderr or '')[:200]}".rstrip(": ")
     return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=error), cost

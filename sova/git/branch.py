@@ -25,20 +25,27 @@ async def create_branch(name: str, base: str, cwd: Path | None = None) -> None:
     await run_checked("git", "checkout", "-b", name, cwd=cwd)
 
 
+async def _restore_stash(stashed: bool, cwd: Path | None = None) -> None:
+    """Pop the stash if we stashed earlier; log a warning on failure."""
+    if not stashed:
+        return
+    pop_result = await run("git", "stash", "pop", cwd=cwd)
+    if not pop_result.success:
+        log.warning("git.sync_branch.stash_pop_failed", stderr=(pop_result.stderr or "")[:200])
+
+
 async def sync_branch(branch: str, cwd: Path | None = None) -> None:
-    """Fetch from origin and pull the latest changes for a branch.
+    """Fetch from origin and reset the local base branch to match origin.
 
-    If the checkout fails because the branch is already checked out in a
-    worktree, automatically resolves the conflict by removing the stale
-    worktree and retrying.
-
-    If the branch is actively checked out in another worktree, returns early
-    after the fetch: git forbids updating a branch via refspec while it is
-    checked out anywhere, but the plain fetch already updated origin/{branch},
-    which is sufficient for rebase steps that target origin/{branch} directly.
+    Stashes uncommitted changes before checkout and restores them after.
+    Uses ``git reset --hard`` instead of pull because this only targets the
+    base branch (e.g. main) which should always match origin.
     """
     log.info("git.sync_branch", branch=branch)
     await run_checked("git", "fetch", "origin", branch, cwd=cwd)
+
+    stash_result = await run("git", "stash", "--include-untracked", cwd=cwd)
+    stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
 
     checkout_result = await run("git", "checkout", branch, cwd=cwd)
     if not checkout_result.success:
@@ -54,6 +61,7 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
                 # origin/{branch} was updated by the first fetch, which is
                 # sufficient for rebase steps that target origin/{branch}.
                 log.warning("git.sync_branch.ref_update_failed", branch=branch, stderr=(fetch_ref.stderr or "")[:200])
+            await _restore_stash(stashed, cwd)
             return
 
         if "already checked out" in stderr:
@@ -63,16 +71,25 @@ async def sync_branch(branch: str, cwd: Path | None = None) -> None:
             try:
                 await resolve_worktree_conflict(branch, cwd=cwd)
             except RuntimeError as exc:
-                raise RuntimeError(f"Failed to resolve worktree conflict for branch {branch}: {exc}") from exc
+                log.warning("git.sync_branch.resolve_failed", branch=branch, error=str(exc))
+                fetch_ref = await run("git", "fetch", "origin", f"{branch}:{branch}", cwd=cwd)
+                if not fetch_ref.success:
+                    stderr = (fetch_ref.stderr or "")[:200]
+                    log.warning("git.sync_branch.ref_update_failed", branch=branch, stderr=stderr)
+                await _restore_stash(stashed, cwd)
+                return
             checkout_result = await run("git", "checkout", branch, cwd=cwd)
 
         if not checkout_result.success:
+            await _restore_stash(stashed, cwd)
             raise subprocess_error(
                 ("git", "checkout", branch),
                 checkout_result,
             )
 
-    await run_checked("git", "pull", "origin", branch, cwd=cwd)
+    await run_checked("git", "reset", "--hard", f"origin/{branch}", cwd=cwd)
+
+    await _restore_stash(stashed, cwd)
 
 
 async def rebase(base: str, cwd: Path | None = None) -> None:
