@@ -3,12 +3,15 @@
 Reads BACKLOG issues, evaluates them for agent suitability, applies
 labels, appends assessment to the issue body, and moves them to TRIAGED.
 
-Uses heuristic pre-checks and optional Claude-based deep assessment.
+Uses heuristic pre-checks, deterministic quality scoring, optional
+LLM-based enrichment, and optional Claude-based deep assessment.
 """
 
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
 
 from sova.adapters.base import Task, TaskState
 from sova.config.models import TriageConfig
@@ -19,6 +22,116 @@ from sova.utils.logging import get_logger
 log = get_logger(component="role.triage")
 
 _ACCEPTANCE_CRITERIA = "acceptance criteria"
+
+# Line-initial patterns that indicate LLM-generated preamble/postamble.
+# Anchored to line start (after stripping) to avoid false positives on
+# legitimate mid-sentence occurrences like "Let me know if you have questions".
+_LLM_LEAK_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^here(?:'s| is) (?:a |an |the )", re.IGNORECASE),
+    re.compile(r"^i(?:'ve| have) (?:created|written|drafted|prepared|updated)", re.IGNORECASE),
+    re.compile(r"^let me (?!know\b)", re.IGNORECASE),
+    re.compile(r"^(?:sure|certainly|absolutely)[,!.]", re.IGNORECASE),
+    re.compile(r"^i'll ", re.IGNORECASE),
+    re.compile(r"^(?:feel free|don't hesitate) to ", re.IGNORECASE),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityScore:
+    """Deterministic quality assessment of an issue body.
+
+    Evaluates 7 structural dimensions (max 8 points):
+      1. has_objective (1 pt): ## Objective section present
+      2. has_description (1 pt): ## Detailed Description present
+      3. has_acceptance_criteria (2 pts): ## Acceptance Criteria with checkboxes
+      4. has_files_to_change (1 pt): ## Files / Modules to Change present
+      5. has_scope_boundaries (1 pt): ## Out of Scope section present
+      6. has_references (1 pt): links or code paths referenced
+      7. no_llm_leaks (1 pt): no LLM preamble/postamble detected
+    """
+
+    has_objective: bool
+    has_description: bool
+    has_acceptance_criteria: bool
+    has_files_to_change: bool
+    has_scope_boundaries: bool
+    has_references: bool
+    no_llm_leaks: bool
+
+    @property
+    def total(self) -> int:
+        score = 0
+        if self.has_objective:
+            score += 1
+        if self.has_description:
+            score += 1
+        if self.has_acceptance_criteria:
+            score += 2
+        if self.has_files_to_change:
+            score += 1
+        if self.has_scope_boundaries:
+            score += 1
+        if self.has_references:
+            score += 1
+        if self.no_llm_leaks:
+            score += 1
+        return score
+
+    def meets_threshold(self, min_score: int = 4) -> bool:
+        return self.total >= min_score and self.has_acceptance_criteria
+
+
+def compute_quality_score(body: str) -> QualityScore:
+    """Score an issue body against structural quality dimensions.
+
+    Pure function: no LLM, no I/O. Returns QualityScore with max 8 points.
+    """
+    if not body or not body.strip():
+        return QualityScore(
+            has_objective=False,
+            has_description=False,
+            has_acceptance_criteria=False,
+            has_files_to_change=False,
+            has_scope_boundaries=False,
+            has_references=False,
+            no_llm_leaks=True,
+        )
+
+    body_lower = body.lower()
+    headings = {h.strip() for h in re.findall(r"^##\s+(.+)$", body_lower, re.MULTILINE)}
+
+    has_objective = "objective" in headings
+    has_description = "detailed description" in headings
+    has_acceptance_criteria = "acceptance criteria" in headings and "- [ ]" in body_lower
+    has_files = any(h in headings for h in ("files / modules to change", "files to change", "files"))
+    has_scope = any(
+        h in headings for h in ("out of scope / constraints", "out of scope", "constraints", "scope boundaries")
+    )
+    has_references = "references" in headings or bool(re.search(r"(?:#\d+|https?://|`[a-zA-Z_/]+\.\w+`)", body))
+
+    # LLM leak detection: check line-initial patterns
+    no_llm_leaks = True
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for pattern in _LLM_LEAK_PATTERNS:
+            if pattern.match(stripped):
+                no_llm_leaks = False
+                break
+        if not no_llm_leaks:
+            break
+
+    return QualityScore(
+        has_objective=has_objective,
+        has_description=has_description,
+        has_acceptance_criteria=has_acceptance_criteria,
+        has_files_to_change=has_files,
+        has_scope_boundaries=has_scope,
+        has_references=has_references,
+        no_llm_leaks=no_llm_leaks,
+    )
+
 
 # Prompt template for Claude-based assessment
 _ASSESSMENT_PROMPT = """\
@@ -52,6 +165,34 @@ Respond with a JSON object (no markdown fencing):
     "suggested_role": "researcher" | "developer" | "triage",
     "sub_tasks": ["optional", "breakdown"]
 }}
+"""
+
+
+_ENRICHMENT_PROMPT = """\
+You are an issue quality improver. The following GitHub issue body is missing \
+key structural sections that are needed for an autonomous agent to work on it.
+
+## Issue #{issue_id}: {title}
+
+### Current Body
+{body}
+
+### Missing Sections
+{missing_sections}
+
+### GitHub Issue Template Sections
+The issue should have these sections:
+- ## Objective (one sentence: what and why)
+- ## Detailed Description (concrete description with examples)
+- ## Acceptance Criteria (testable pass/fail checkboxes using - [ ])
+- ## Files / Modules to Change (which files to modify)
+- ## Out of Scope / Constraints (what must NOT happen)
+- ## References (related issues, code paths, docs)
+
+### Instructions
+Rewrite the issue body to include all missing sections while preserving \
+the existing content. Use the template section names exactly as shown above. \
+Output ONLY the improved issue body in markdown, no preamble or postamble.
 """
 
 
@@ -349,25 +490,41 @@ class TriageRole(AgentRole):
                 threshold=triage_cfg.min_confidence,
             )
 
+        # Quality gate: score the body and potentially enrich or block
+        quality = compute_quality_score(task.body or "")
+        log.info(
+            "triage.quality_score",
+            issue=ctx.issue_number,
+            score=quality.total,
+            threshold=triage_cfg.min_quality_score,
+            has_ac=quality.has_acceptance_criteria,
+        )
+
         if triage_cfg.mode == "dry_run":
             log.info(
                 "triage.dry_run",
                 issue=ctx.issue_number,
                 suitability=assessment.suitability,
                 confidence=assessment.confidence,
+                quality_score=quality.total,
             )
             return RoleResult(
                 success=True,
                 summary=f"Issue #{ctx.issue_number} assessed as {assessment.suitability} "
-                f"({assessment.confidence:.0%} confidence) -- dry run, no changes written",
+                f"({assessment.confidence:.0%} confidence, quality {quality.total}/8) "
+                "(dry run, no changes written)",
             )
+
+        # Only apply the quality gate for issues that heuristics would mark "ready"
+        if assessment.suitability == "ready" and not quality.meets_threshold(triage_cfg.min_quality_score):
+            assessment = await self._apply_quality_gate(ctx, task, quality, triage_cfg, assessment)
 
         if triage_cfg.auto_label:
             label = self.resolve_label(assessment.suitability, triage_cfg)
             if label:
                 await ctx.adapter.add_label(ctx.issue_number, label)
 
-        assessment_section = self._build_assessment_comment(task, assessment)
+        assessment_section = self._build_assessment_comment(task, assessment, quality)
         if triage_cfg.mode == "comment":
             await ctx.adapter.post_comment(ctx.issue_number, assessment_section)
         elif triage_cfg.write_body:
@@ -380,11 +537,122 @@ class TriageRole(AgentRole):
         log.info("triage.done", issue=ctx.issue_number, mode=triage_cfg.mode)
         return RoleResult(
             success=True,
-            summary=f"Issue #{ctx.issue_number} triaged as {assessment.suitability}",
+            summary=f"Issue #{ctx.issue_number} triaged as {assessment.suitability} (quality {quality.total}/8)",
             output_state=TaskState.TRIAGED if triage_cfg.write_transition else None,
         )
 
-    def _build_assessment_comment(self, task: Task, assessment: TaskAssessment) -> str:
+    async def _apply_quality_gate(
+        self,
+        ctx: ExecutionContext,
+        task: Task,
+        quality: QualityScore,
+        triage_cfg: TriageConfig,
+        original_assessment: TaskAssessment,
+    ) -> TaskAssessment:
+        """Apply quality gate: attempt enrichment, re-score, or downgrade to needs_spec."""
+        if triage_cfg.auto_enrich:
+            enriched_body = await self._enrich_body(ctx, task, quality)
+            if enriched_body:
+                new_quality = compute_quality_score(enriched_body)
+                if new_quality.meets_threshold(triage_cfg.min_quality_score):
+                    log.info(
+                        "triage.enrichment_success",
+                        issue=ctx.issue_number,
+                        old_score=quality.total,
+                        new_score=new_quality.total,
+                    )
+                    await ctx.adapter.edit_body(ctx.issue_number, enriched_body)
+                    return original_assessment
+                log.info(
+                    "triage.enrichment_insufficient",
+                    issue=ctx.issue_number,
+                    new_score=new_quality.total,
+                    threshold=triage_cfg.min_quality_score,
+                )
+
+        missing = []
+        if not quality.has_acceptance_criteria:
+            missing.append(_ACCEPTANCE_CRITERIA)
+        if not quality.has_objective:
+            missing.append("objective section")
+        if not quality.has_description:
+            missing.append("detailed description")
+        log.info("triage.quality_gate_blocked", issue=ctx.issue_number, score=quality.total)
+        return TaskAssessment(
+            suitability="needs_spec",
+            confidence=0.9,
+            reasoning=f"Issue body quality score {quality.total}/8 is below threshold "
+            f"{triage_cfg.min_quality_score}; needs specification work.",
+            missing_context=missing,
+            estimated_complexity=original_assessment.estimated_complexity,
+            suggested_role="triage",
+        )
+
+    async def _enrich_body(self, ctx: ExecutionContext, task: Task, quality: QualityScore) -> str | None:
+        """Use a focused LLM call to add missing structural sections."""
+        missing = []
+        if not quality.has_objective:
+            missing.append("## Objective")
+        if not quality.has_description:
+            missing.append("## Detailed Description")
+        if not quality.has_acceptance_criteria:
+            missing.append("## Acceptance Criteria (with - [ ] checkboxes)")
+        if not quality.has_files_to_change:
+            missing.append("## Files / Modules to Change")
+        if not quality.has_scope_boundaries:
+            missing.append("## Out of Scope / Constraints")
+        if not quality.has_references:
+            missing.append("## References")
+
+        prompt = _ENRICHMENT_PROMPT.format(
+            issue_id=task.id,
+            title=task.title,
+            body=task.body or "(empty)",
+            missing_sections="\n".join(f"- {s}" for s in missing),
+        )
+
+        try:
+            from sova.llm.client import invoke, resolve_model
+            from sova.llm.cost import record_cost
+
+            resolved = resolve_model("triage", ctx.config.roles, llm_config=ctx.config.llm)
+            model = resolved[0] if resolved else None
+            model_reason = resolved[1] if resolved else None
+
+            result = await invoke(
+                prompt,
+                model=model,
+                cwd=ctx.project_dir,
+                max_budget_usd=ctx.config.agent.max_budget / 20,
+                timeout=90,
+            )
+
+            ctx.add_cost(result.cost_usd)
+            await record_cost(
+                result,
+                phase="triage_enrich",
+                issue=str(task.id),
+                task_run_id=ctx.task_run_id,
+                model_selection_reason=model_reason,
+            )
+
+            enriched = result.text.strip()
+            # Strip markdown fencing if the LLM wrapped its output
+            if enriched.startswith("```"):
+                lines = enriched.split("\n")
+                enriched = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+            if enriched and len(enriched) > len(task.body or ""):
+                return enriched
+
+        except Exception as exc:
+            log.warning("triage.enrich_failed", error=str(exc))
+
+        return None
+
+    def _build_assessment_comment(
+        self, task: Task, assessment: TaskAssessment, quality: QualityScore | None = None
+    ) -> str:
         """Build a triage assessment section to append to the issue body."""
         has_body = bool(task.body and task.body.strip())
         missing = ", ".join(assessment.missing_context) if assessment.missing_context else "none"
@@ -395,11 +663,17 @@ class TriageRole(AgentRole):
             f"**Suitability**: {assessment.suitability}",
             f"**Confidence**: {assessment.confidence:.0%}",
             f"**Complexity**: {assessment.estimated_complexity}",
-            f"**Missing context**: {missing}",
-            f"**Labels**: {', '.join(task.labels) if task.labels else 'none'}",
-            "",
-            assessment.reasoning,
         ]
+        if quality is not None:
+            parts.append(f"**Quality score**: {quality.total}/8")
+        parts.extend(
+            [
+                f"**Missing context**: {missing}",
+                f"**Labels**: {', '.join(task.labels) if task.labels else 'none'}",
+                "",
+                assessment.reasoning,
+            ]
+        )
 
         if assessment.suitability == "needs_spec" and assessment.missing_context:
             parts.append("\n### What's needed before this can be worked on:\n")

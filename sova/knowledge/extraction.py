@@ -213,8 +213,13 @@ async def _deduplicate_and_store(
         existing_mem, _score = similar[0]
         return await _confirm_existing(existing_mem)
 
-    # Lexical fallback: title substring match catches duplicates that
-    # semantic search misses (different content but identical titles)
+    # Lexical fallback: always runs as a second pass regardless of embedding
+    # availability. Catches memories where semantic similarity is below threshold
+    # despite matching titles (e.g., same concept described with different wording).
+    # Trade-off: two memories with identical titles but genuinely different content
+    # (e.g., same pattern name in different subsystems) may merge incorrectly;
+    # accepted because SOVA memory titles are specific enough to make this rare,
+    # and missing dedup is worse than occasional false-positive confirmation.
     existing = await memory.search(category=mem.category, query=mem.title[:50], limit=20)
     for existing_mem in existing:
         if titles_match(existing_mem.title, mem.title):

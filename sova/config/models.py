@@ -218,6 +218,10 @@ class TriageConfig(BaseSettings):
     skip_title_prefixes: list[str] = Field(default_factory=list)
     skip_labels: list[str] = Field(default_factory=list)
 
+    # Quality gate
+    min_quality_score: int = Field(4, ge=0, le=8)
+    auto_enrich: bool = False
+
     model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
 
 

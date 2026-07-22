@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 
 from sova.db.models import Memory, MemoryEdge
 from sova.db.session import get_session
-from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text, is_available
+from sova.knowledge.embeddings import SIMILARITY_THRESHOLD, cosine_similarity, embed_text
 from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")

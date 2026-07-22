@@ -485,6 +485,20 @@ _REGISTRY: list[SettingMeta] = [
         "Tickets with any of these labels are auto-classified as human_only (e.g. post-mvp, QE)",
         "triage",
     ),
+    SettingMeta(
+        "triage.min_quality_score",
+        "Min quality score",
+        "Minimum issue body quality score (0-8) for agent:ready. Issues below this are blocked or enriched.",
+        "triage",
+        "number",
+    ),
+    SettingMeta(
+        "triage.auto_enrich",
+        "Auto-enrich",
+        "Use a focused LLM call to add missing structural sections to low-quality issue bodies during triage",
+        "triage",
+        "boolean",
+    ),
     # -- Roles --
     SettingMeta(
         "roles.default",

@@ -2572,6 +2572,292 @@ class TestTriageAssessWithLLM:
 
 
 # ---------------------------------------------------------------------------
+# Quality scoring
+# ---------------------------------------------------------------------------
+
+
+class TestQualityScore:
+    """Tests for the deterministic quality scoring function."""
+
+    def test_empty_body_scores_zero(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        score = compute_quality_score("")
+        assert score.total == 1  # only no_llm_leaks (vacuously true)
+        assert not score.has_acceptance_criteria
+
+    def test_whitespace_only_scores_zero(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        score = compute_quality_score("   \n\n  ")
+        assert score.total == 1  # only no_llm_leaks (vacuously true)
+
+    def test_full_template_scores_max(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = (
+            "## Objective\nDo the thing.\n\n"
+            "## Detailed Description\nDetails here.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n- [ ] Tests pass\n\n"
+            "## Files / Modules to Change\n- `sova/foo.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- Related: #42\n"
+        )
+        score = compute_quality_score(body)
+        assert score.total == 8
+        assert score.has_acceptance_criteria
+        assert score.meets_threshold(4)
+
+    def test_missing_acceptance_criteria_fails_threshold(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = (
+            "## Objective\nDo the thing.\n\n"
+            "## Detailed Description\nDetails here.\n\n"
+            "## Files / Modules to Change\n- `sova/foo.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- Related: #42\n"
+        )
+        score = compute_quality_score(body)
+        assert not score.has_acceptance_criteria
+        assert score.total == 6  # obj + desc + files + scope + refs + no_llm_leaks (no AC = 0)
+        assert not score.meets_threshold(4)  # AC is a hard requirement
+
+    def test_acceptance_criteria_without_checkboxes(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Acceptance Criteria\n- It should work\n"
+        score = compute_quality_score(body)
+        assert not score.has_acceptance_criteria  # needs - [ ] checkboxes
+
+    def test_llm_leak_detection(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "Here's a detailed implementation plan.\n\n## Objective\nDo the thing.\n"
+        score = compute_quality_score(body)
+        assert not score.no_llm_leaks
+
+    def test_let_me_know_not_flagged(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Out of Scope\nLet me know if you have questions.\n"
+        score = compute_quality_score(body)
+        assert score.no_llm_leaks
+
+    def test_llm_leak_sure(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        score = compute_quality_score("Sure, here is the issue body.\n## Objective\nFoo\n")
+        assert not score.no_llm_leaks
+
+    def test_llm_leak_ill(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        score = compute_quality_score("I'll create the issue for you.\n## Objective\nFoo\n")
+        assert not score.no_llm_leaks
+
+    def test_references_via_url(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "See https://example.com for details.\n"
+        score = compute_quality_score(body)
+        assert score.has_references
+
+    def test_references_via_issue_number(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "Related to #42.\n"
+        score = compute_quality_score(body)
+        assert score.has_references
+
+    def test_references_via_code_path(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "Check `sova/roles/triage.py` for context.\n"
+        score = compute_quality_score(body)
+        assert score.has_references
+
+    def test_meets_threshold_zero_disables_score_check(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Acceptance Criteria\n- [ ] Done\n"
+        score = compute_quality_score(body)
+        assert score.meets_threshold(0)  # min_score=0, has AC
+
+    def test_meets_threshold_without_ac_always_fails(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = (
+            "## Objective\nFoo.\n## Detailed Description\nBar.\n"
+            "## Files / Modules to Change\n- x\n"
+            "## Out of Scope / Constraints\n- y\n## References\n#1\n"
+        )
+        score = compute_quality_score(body)
+        assert score.total >= 4
+        assert not score.meets_threshold(0)  # no AC = always fails
+
+    def test_out_of_scope_variant(self) -> None:
+        from sova.roles.triage import compute_quality_score
+
+        body = "## Out of Scope\n- Nothing.\n"
+        score = compute_quality_score(body)
+        assert score.has_scope_boundaries
+
+
+class TestQualityGateIntegration:
+    """Tests for quality gate integration in TriageRole.execute."""
+
+    async def test_execute_includes_quality_score_in_dry_run(self) -> None:
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="dry_run")
+        config = ProjectConfig(triage=triage_cfg)
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body="Short body",
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        role = TriageRole()
+        result = await role.execute(ctx)
+        assert result.success
+        assert "quality" in result.summary.lower()
+
+    async def test_quality_gate_blocks_ready_without_ac(self) -> None:
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=False)
+        config = ProjectConfig(triage=triage_cfg)
+        # Body that heuristics would mark "ready" (has criteria markers + code refs)
+        # but lacks proper ## Acceptance Criteria section with checkboxes
+        body = "## Solution\nUpdate `sova/handler.py` to support the new endpoint.\n\nExpected behavior: returns 200.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body=body,
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        role = TriageRole()
+        result = await role.execute(ctx)
+        assert result.success
+        assert "needs_spec" in result.summary
+
+    async def test_quality_gate_passes_with_full_template(self) -> None:
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=False)
+        config = ProjectConfig(triage=triage_cfg)
+        body = (
+            "## Objective\nDo the thing.\n\n"
+            "## Detailed Description\nDetails here.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n\n"
+            "## Files / Modules to Change\n- `sova/foo.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- #42\n"
+        )
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body=body,
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        role = TriageRole()
+        result = await role.execute(ctx)
+        assert result.success
+        assert "ready" in result.summary or "triaged" in result.summary.lower()
+
+    async def test_enrichment_updates_body_on_success(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.llm.models import LLMResult
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        # Body that heuristics mark "ready" but quality score is low
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body=body,
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        enriched = (
+            "## Objective\nUpdate the handler.\n\n"
+            "## Detailed Description\nUpdate `sova/handler.py` to work.\n\n"
+            "## Acceptance Criteria\n- [ ] It works\n- [ ] Tests pass\n\n"
+            "## Files / Modules to Change\n- `sova/handler.py`\n\n"
+            "## Out of Scope / Constraints\n- No new deps\n\n"
+            "## References\n- #42\n"
+        )
+        mock_result = LLMResult(text=enriched, cost_usd=Decimal("0.01"), model="sonnet")
+        mock_invoke = AsyncMock(return_value=mock_result)
+        mock_record = AsyncMock()
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+            patch("sova.llm.cost.record_cost", mock_record),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        # The enriched body should have been written via edit_body
+        edit_calls = [c for c in adapter.edit_body.call_args_list]
+        assert len(edit_calls) >= 1
+        # First edit_body call is the enrichment (before the assessment comment)
+        first_edit_body = edit_calls[0][0][1] if edit_calls[0][0] else edit_calls[0][1].get("body", "")
+        assert "## Objective" in first_edit_body
+
+    async def test_enrichment_failure_falls_back_to_needs_spec(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from sova.config.models import ProjectConfig, TriageConfig
+        from sova.roles.triage import TriageRole
+
+        triage_cfg = TriageConfig(mode="full", min_quality_score=4, auto_enrich=True)
+        config = ProjectConfig(triage=triage_cfg)
+        body = "## Solution\nUpdate `sova/handler.py`.\nExpected behavior: works.\n"
+        adapter = _mock_adapter(TaskState.BACKLOG)
+        adapter.get_task.return_value = Task(
+            id="42",
+            title="Test",
+            body=body,
+            state=TaskState.BACKLOG,
+        )
+        ctx = _make_ctx(role="triage", state=TaskState.BACKLOG, adapter=adapter, config=config)
+
+        mock_invoke = AsyncMock(side_effect=RuntimeError("LLM unavailable"))
+
+        with (
+            patch("sova.llm.client.invoke", mock_invoke),
+            patch("sova.llm.client.resolve_model", return_value=("sonnet", "role:triage")),
+        ):
+            role = TriageRole()
+            result = await role.execute(ctx)
+
+        assert result.success
+        assert "needs_spec" in result.summary
+
+
+# ---------------------------------------------------------------------------
 # ReviewerRole -- LLM-based review
 # ---------------------------------------------------------------------------
 

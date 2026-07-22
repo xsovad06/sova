@@ -65,12 +65,22 @@ Based on the open issues and project vision, propose new tasks that:
 
 Respond with a JSON array of task objects. Each object has these fields:
 - "title": string (use conventional commit prefix, e.g. "feat(dashboard): ...")
-- "description": string (full issue body in markdown)
+- "description": string (full issue body in markdown, using the section structure below)
 - "priority": "critical" | "high" | "medium" | "low"
 - "complexity": "trivial" | "simple" | "moderate" | "complex"
 - "component": string (area label, e.g. "dashboard", "cli", "orchestrator")
 - "rationale": string (why this task matters now)
 - "dependencies": list of strings (issue numbers like "#123", empty if none)
+
+The "description" field MUST use these exact section headings (matching the \
+project's GitHub issue template):
+## Objective
+## Detailed Description
+## Acceptance Criteria
+(use `- [ ]` checkboxes for each criterion)
+## Files / Modules to Change
+## Out of Scope / Constraints
+## References
 
 Return ONLY the JSON array, no markdown fencing or extra text.
 If no new tasks are needed, return an empty array: []
