@@ -349,6 +349,13 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "ci.max_fix_attempts",
+        "Max fix attempts",
+        "Maximum LLM-driven CI fix attempts before giving up (0 = disabled)",
+        "ci",
+        "number",
+    ),
+    SettingMeta(
         "ci.flaky_checks",
         "Flaky checks",
         "CI check names to ignore when they fail (comma-separated list)",

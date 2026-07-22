@@ -2817,6 +2817,260 @@ class TestCheckExistingCI:
         assert "1" in result.summary
 
 
+class TestEnsureCommitted:
+    """Tests for MonitorCIStep._ensure_committed lint-then-commit safety net."""
+
+    async def test_ruff_fixes_committed(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+        run = AsyncMock()
+        run.return_value = MagicMock(success=True, stdout="M sova/core/foo.py\n", stderr="")
+
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is True
+        calls = [c[0] for c in run.call_args_list]
+        assert ("ruff", "check", "--fix", ".") == calls[0][:4]
+        assert ("ruff", "format", ".") == calls[1][:3]
+        assert ("git", "status", "--porcelain") == calls[2][:3]
+        assert ("git", "add", "-u") == calls[3][:3]
+        assert calls[4][0] == "git" and calls[4][1] == "commit"
+
+    async def test_no_changes_returns_false(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+        run = AsyncMock()
+        run.return_value = MagicMock(success=True, stdout="", stderr="")
+
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is False
+
+    async def test_ruff_not_installed_continues(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        ruff_fail = MagicMock(success=False, stdout="", stderr="command not found")
+        status_clean = MagicMock(success=True, stdout="", stderr="")
+
+        run = AsyncMock(side_effect=[ruff_fail, status_clean])
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is False
+        assert run.call_count == 2
+
+    async def test_ruff_makes_no_changes(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        ruff_ok = MagicMock(success=True, stdout="", stderr="")
+        format_ok = MagicMock(success=True, stdout="", stderr="")
+        status_clean = MagicMock(success=True, stdout="", stderr="")
+
+        run = AsyncMock(side_effect=[ruff_ok, format_ok, status_clean])
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is False
+
+    async def test_stage_failure_returns_none(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        ruff_ok = MagicMock(success=True, stdout="", stderr="")
+        format_ok = MagicMock(success=True, stdout="", stderr="")
+        status_dirty = MagicMock(success=True, stdout="M foo.py\n", stderr="")
+        add_fail = MagicMock(success=False, stdout="", stderr="error")
+
+        run = AsyncMock(side_effect=[ruff_ok, format_ok, status_dirty, add_fail])
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is None
+
+    async def test_commit_failure_returns_none(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        step = MonitorCIStep()
+
+        ruff_ok = MagicMock(success=True, stdout="", stderr="")
+        format_ok = MagicMock(success=True, stdout="", stderr="")
+        status_dirty = MagicMock(success=True, stdout="M foo.py\n", stderr="")
+        add_ok = MagicMock(success=True, stdout="", stderr="")
+        commit_fail = MagicMock(success=False, stdout="", stderr="error")
+
+        run = AsyncMock(side_effect=[ruff_ok, format_ok, status_dirty, add_ok, commit_fail])
+        result = await step._ensure_committed(ctx, run)
+
+        assert result is None
+
+
+class TestValidateFixRunsEnsureCommitted:
+    """Verify _ensure_committed is called before the pre-push hook in _validate_fix."""
+
+    async def test_ensure_committed_called_before_hook(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        step = MonitorCIStep()
+
+        call_order = []
+
+        async def mock_ensure(c, r):
+            call_order.append("ensure_committed")
+            return False
+
+        async def mock_find_hook(wd):
+            call_order.append("find_hook")
+            return None
+
+        run = AsyncMock()
+        run.return_value = MagicMock(success=True, stdout="1\n", stderr="")
+
+        with (
+            patch.object(step, "_ensure_committed", side_effect=mock_ensure),
+            patch("sova.core.steps.validate.find_pre_push_hook", mock_find_hook),
+        ):
+            await step._validate_fix(ctx, 1, 1, run)
+
+        assert call_order == ["ensure_committed", "find_hook"]
+
+    async def test_auto_commits_when_llm_skips_commit(self) -> None:
+        """_ensure_committed creates a commit when LLM left changes uncommitted."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        step = MonitorCIStep()
+
+        ruff_ok = MagicMock(success=True, stdout="", stderr="")
+        format_ok = MagicMock(success=True, stdout="", stderr="")
+        status_dirty = MagicMock(success=True, stdout="M foo.py\n", stderr="")
+        add_ok = MagicMock(success=True, stdout="", stderr="")
+        commit_ok = MagicMock(success=True, stdout="", stderr="")
+
+        run = AsyncMock(side_effect=[ruff_ok, format_ok, status_dirty, add_ok, commit_ok])
+        committed = await step._ensure_committed(ctx, run)
+
+        assert committed is True
+        commit_call = run.call_args_list[4]
+        assert commit_call[0][1] == "commit"
+        assert "fix(core):" in commit_call[0][3]
+
+    async def test_ensure_committed_failure_skips_attempt(self) -> None:
+        """_validate_fix skips attempt when _ensure_committed returns None."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        step = MonitorCIStep()
+
+        async def mock_ensure_fail(c, r):
+            return None
+
+        run = AsyncMock()
+        run.return_value = MagicMock(success=True, stdout="1\n", stderr="")
+
+        with patch.object(step, "_ensure_committed", side_effect=mock_ensure_fail):
+            should_skip, error = await step._validate_fix(ctx, 1, 2, run)
+
+        assert should_skip is True
+        assert error is None
+
+    async def test_ensure_committed_failure_last_attempt_errors(self) -> None:
+        """_validate_fix returns error on last attempt when _ensure_committed fails."""
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10, branch_name="feat/test")
+        step = MonitorCIStep()
+
+        async def mock_ensure_fail(c, r):
+            return None
+
+        run = AsyncMock()
+        run.return_value = MagicMock(success=True, stdout="1\n", stderr="")
+
+        with patch.object(step, "_ensure_committed", side_effect=mock_ensure_fail):
+            should_skip, error = await step._validate_fix(ctx, 2, 2, run)
+
+        assert should_skip is False
+        assert error is not None
+        assert not error.success
+        assert "stage/commit" in error.summary
+
+
+class TestBuildFixPromptEnhancements:
+    """Verify _build_fix_prompt includes lint instructions and invariant rules."""
+
+    def test_includes_ruff_instructions(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        check = MagicMock()
+        check.name = "tests"
+        step = MonitorCIStep()
+
+        prompt = step._build_fix_prompt([check], "error log", "abc123 commit", ctx)
+
+        assert "ruff check --fix" in prompt
+        assert "ruff format" in prompt
+
+    def test_includes_invariant_rules(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        check = MagicMock()
+        check.name = "tests"
+        step = MonitorCIStep()
+
+        prompt = step._build_fix_prompt([check], "error log", "abc123 commit", ctx)
+
+        assert "Decimal" in prompt
+        assert "floats" in prompt
+        assert "co-author" in prompt
+        assert "emojis" in prompt
+        assert "Project Invariant Rules" in prompt
+
+    def test_prompt_uses_scoped_commit_format(self) -> None:
+        from sova.core.steps.monitor_ci import MonitorCIStep
+
+        ctx = _make_ctx(pr_number=10)
+        check = MagicMock()
+        check.name = "tests"
+        step = MonitorCIStep()
+
+        prompt = step._build_fix_prompt([check], "error log", "abc123 commit", ctx)
+
+        assert "fix(core):" in prompt
+
+
+class TestCIConfigMaxWaitDefault:
+    """Verify CIConfig.max_wait default is 1500."""
+
+    def test_default_max_wait(self) -> None:
+        config = ProjectConfig()
+        assert config.ci.max_wait == 1500
+
+
+class TestCIMaxFixAttemptsInSettingsMeta:
+    """Verify ci.max_fix_attempts is registered in settings_meta."""
+
+    def test_registered(self) -> None:
+        from sova.dashboard.settings_meta import get_meta
+
+        meta = get_meta("ci.max_fix_attempts")
+        assert meta is not None
+        assert meta.group == "ci"
+        assert meta.value_type == "number"
+
+
 class TestParseReviewBody:
     """Tests for _parse_review_body structured finding parser."""
 
@@ -3002,6 +3256,10 @@ def _shell_side_effect(*args: str, **kwargs: object) -> MagicMock:
         return MagicMock(success=True, stdout="1\n")
     if "rev-parse" in args:
         return MagicMock(success=True, stdout="abc123def456\n")
+    if "ruff" in args:
+        return MagicMock(success=True, stdout="")
+    if args and args[0] == "git" and len(args) > 1 and args[1] == "status":
+        return MagicMock(success=True, stdout="")
     return MagicMock(success=True, stdout="abc1234 fix\n")
 
 
@@ -3187,6 +3445,9 @@ class TestMonitorCIFixLoop:
                 mock_invoke.return_value = LLMResult(text="Fixed", model="opus", cost_usd=Decimal("0.50"))
                 mock_run.side_effect = [
                     MagicMock(success=True, stdout="abc fix\n"),  # git log
+                    MagicMock(success=True, stdout=""),  # ruff check (from _ensure_committed)
+                    MagicMock(success=True, stdout=""),  # ruff format (from _ensure_committed)
+                    MagicMock(success=True, stdout=""),  # git status (from _ensure_committed, clean)
                     MagicMock(success=False, stdout="FAIL\n", stderr="hook error"),  # pre-push fails
                 ]
                 result = await step.execute(ctx)
