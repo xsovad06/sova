@@ -13,6 +13,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="knowledge.memory")
 
+_UNSET = object()
+
 _MUTABLE_FIELDS = frozenset(
     {
         "title",
@@ -41,7 +43,7 @@ async def store(
     tier: str = "project",
     repo: str = "",
     issue_number: str = "",
-    embedding: list[float] | None = None,
+    embedding: list[float] | None = _UNSET,  # type: ignore[assignment]
 ) -> Memory:
     """Create a new memory entry.
 
@@ -53,12 +55,14 @@ async def store(
         tier: Knowledge tier (project, shared).
         repo: Repository identifier (e.g., user/repo).
         issue_number: Related issue number.
-        embedding: Pre-computed embedding vector. Computed automatically if None.
+        embedding: Pre-computed embedding vector. Auto-computed when omitted;
+            pass ``None`` explicitly to store without an embedding.
 
     Returns:
         The created Memory record.
     """
-    if embedding is None:
+    embedding_auto = embedding is _UNSET
+    if embedding_auto:
         embedding = embed_text(f"{title} {content}")
     memory = Memory(
         category=category,
@@ -78,7 +82,7 @@ async def store(
 
     log.info("knowledge.stored", title=title, category=category, tier=tier)
 
-    if is_available() and memory.embedding is not None:
+    if embedding_auto and is_available() and memory.embedding is not None:
         try:
             from sova.knowledge.graph import auto_link
 

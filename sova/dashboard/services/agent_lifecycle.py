@@ -41,6 +41,7 @@ from sova.dashboard.services.agent_context import (
     _strip_frontmatter as _strip_frontmatter,
 )
 from sova.dashboard.services.agent_db import (
+    _capture_pr_head_sha,
     _create_task_run,
     _downgrade_to_failed,
     _fetch_run_states,
@@ -597,6 +598,10 @@ async def start_agent(
             f"```bash\n{cmd}\n```"
         )
 
+        pre_run_sha = None
+        if pr_number:
+            pre_run_sha = await _capture_pr_head_sha(pr_number, project_dir)
+
         gh_env = await _resolve_project_gh_env(project_dir)
         try:
             process = await get_runtime().spawn(prompt, cwd, env=gh_env)
@@ -620,6 +625,8 @@ async def start_agent(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
+            pre_run_sha=pre_run_sha,
+            prompt=prompt,
             project_dir=project_dir,
         )
         pa.agents[run_id] = agent
@@ -731,6 +738,10 @@ async def start_command(
 
         prompt = _resolve_command_prompt(command, args, project_dir)
 
+        pre_run_sha = None
+        if pr_number:
+            pre_run_sha = await _capture_pr_head_sha(pr_number, project_dir)
+
         try:
             from sova.dashboard.services import handoff_service
 
@@ -762,6 +773,8 @@ async def start_command(
             process=process,
             output_writer=writer,
             pr_number=pr_number,
+            pre_run_sha=pre_run_sha,
+            prompt=prompt,
             project_dir=project_dir,
         )
         pa.agents[run_id] = agent
