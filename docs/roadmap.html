@@ -431,7 +431,7 @@
 <body>
 
 <h1>SOVA Roadmap</h1>
-<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-20</p>
+<p class="subtitle">Dependency graph and execution plan -- target v0.1.0 Oct 2026 -- updated 2026-07-22</p>
 
 <!-- ============================================ -->
 <!-- SECTION 1: Dependency Graph (Mermaid)        -->
@@ -733,7 +733,7 @@ flowchart TD
   I258["#258 Cross-project\nresource aggregation\n(DONE)"]:::done
   I259["#259 Capacity advisor\n+ energy estimation\n(DONE)"]:::done
   I355["#355 Fix available memory\nmetric display\n(DONE)"]:::done
-  I356["#356 Pre-spawn memory\ngate + warning banner"]:::autonomous
+  I356["#356 Pre-spawn memory\ngate + warning banner\n(DONE)"]:::done
   I357["#357 Supervisor memory\npressure gate\n(DONE)"]:::done
   I254 --> I255
   I255 --> I256
@@ -798,7 +798,7 @@ flowchart TD
 
       subgraph reliability["Reliability"]
         I343["#343 Auto-retry on\nrecoverable failure\n(DONE)"]:::done
-        I344["#344 Runtime agent\nwatchdog"]:::autonomous
+        I344["#344 Runtime agent\nwatchdog\n(DONE)"]:::done
         I357["#357 Memory pressure\ngate (supervisor)\n(DONE)"]:::done
       end
 
@@ -903,7 +903,27 @@ flowchart TD
       <li>#254-259 (Resource Monitoring) -- independent of tiers; #257 (live widget) extends dashboard's existing WebSocket infrastructure (#154)</li>
       <li>#355-357 (Memory Guard) -- extends Chain K: #355 fixes the metric, #356 adds the pre-spawn gate (dashboard layer, in PR), #357 moves it into the supervisor gate pipeline (done); #357 feeds into #297 (supervisor daemon)</li>
       <li>#374-376 (Conflict Safety) -- new supervisor gates: #374 detects merge conflicts via GitHub mergeStateStatus and blocks progression, #375 prevents parallel development of overlapping file sets, #376 auto-resolves conflicts via LLM rebase agent; all three feed into #297 (supervisor daemon)</li>
+      <li>#410-413 (Pipeline Reliability II) -- data-driven reliability fixes from analysis of 756 TaskRun records: #410 hardens SyncStep/RebaseStep (20% of real failures), #411 fixes MonitorCI (30%), #412 fixes address-pr validation (19%), #413 adds issue quality gate (preventive). All independent; no cross-deps.</li>
     </ul>
+  </div>
+
+  <!-- Pipeline Reliability II -->
+  <h3 class="subsection-title">Pipeline Reliability II (data-driven, Jul 2026)</h3>
+  <div class="diagram-container">
+    <pre class="mermaid">
+flowchart TD
+  I410["#410 SyncStep + RebaseStep\nhardening\n(git state resilience)"]:::high
+  I411["#411 MonitorCI reliability\n(timeouts, lint loops,\ncommit guards)"]:::high
+  I412["#412 Address-PR validation\n+ pipeline bypass\nprevention"]:::high
+  I413["#413 Issue quality gate\nand template\nenforcement"]:::medium
+
+  classDef critical fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fecaca
+  classDef high fill:#78350f,stroke:#f59e0b,stroke-width:1.5px,color:#fef3c7
+  classDef medium fill:#1e3a5f,stroke:#3b82f6,stroke-width:1px,color:#bfdbfe
+  classDef autonomous fill:#14532d,stroke:#22c55e,stroke-width:1.5px,color:#bbf7d0
+  classDef guided fill:#3b0764,stroke:#a855f7,stroke-width:1px,color:#e9d5ff
+  classDef done fill:#1e293b,stroke:#475569,stroke-width:1px,color:#64748b,stroke-dasharray:5
+    </pre>
   </div>
 </div>
 
@@ -1345,16 +1365,42 @@ flowchart TD
           <span class="task-title">Fix available memory metric display (show allocatable, not compressed)</span>
           <span class="task-badge badge-done">done</span>
         </div>
-        <div class="task-row">
+        <div class="task-row done">
           <span class="task-number">#356</span>
           <span class="task-title">Resource exhaustion guard: pre-spawn memory gate + warning banner</span>
-          <span class="task-badge badge-autonomous">agentic</span>
+          <span class="task-badge badge-done">done</span>
         </div>
-        <div class="dep-arrow">depends on #355 (done) -- Phase 1 of memory guard</div>
         <div class="task-row done">
           <span class="task-number">#357</span>
           <span class="task-title">Supervisor memory pressure gate in TaskProgressionEngine</span>
           <span class="task-badge badge-done">done</span>
+        </div>
+      </div>
+
+      <div class="phase-divider"></div>
+
+      <!-- Pipeline Reliability II -->
+      <div class="timeline-label">Reliability II<br><span style="font-weight:400;font-size:0.65rem;color:var(--amber)">High Priority</span></div>
+      <div class="timeline-content">
+        <div class="task-row">
+          <span class="task-number">#410</span>
+          <span class="task-title">Harden SyncStep and RebaseStep against git state failures (stash, divergent branches, worktree locks, conflict counters)</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#411</span>
+          <span class="task-title">Improve MonitorCI reliability (increase timeout, lint instructions in fix prompt, commit guards)</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#412</span>
+          <span class="task-title">Fix address-pr outcome validation (worktree-aware git check) and pipeline bypass prevention</span>
+          <span class="task-badge badge-high">high</span>
+        </div>
+        <div class="task-row">
+          <span class="task-number">#413</span>
+          <span class="task-title">Issue quality gate: scoring, triage enrichment, template enforcement</span>
+          <span class="task-badge badge-autonomous">agentic</span>
         </div>
       </div>
 
@@ -1504,7 +1550,7 @@ gantt
     #258 Cross-project aggregation   :done, t258, 2026-07-15, 1d
     #259 Capacity advisor + energy   :done, t259, 2026-07-17, 1d
     #355 Fix available memory metric :done, t355, 2026-07-18, 1d
-    #356 Pre-spawn memory gate       :t356, after t355, 2d
+    #356 Pre-spawn memory gate       :done, t356, 2026-07-20, 1d
     #357 Supervisor memory gate      :done, t357, 2026-07-19, 1d
 
   section Supervisor Agent (Phase 7)
@@ -1515,13 +1561,19 @@ gantt
     #295 PR lifecycle monitor        :done, t295, 2026-07-15, 1d
     #296 Task progression engine     :done, t296, 2026-07-17, 1d
     #343 Auto-retry recoverable      :done, t343, 2026-07-19, 1d
-    #344 Runtime agent watchdog      :t344, after t343, 3d
+    #344 Runtime agent watchdog      :done, t344, 2026-07-20, 1d
     #374 Conflict detection gate     :t374, after t296, 3d
     #375 File-overlap prevention     :t375, after t296, 3d
     #376 Auto-rebase agent           :t376, after t344, 4d
     #250 Activity feed               :done, t250, 2026-07-09, 1d
     #297 Supervisor daemon + UI      :t297, after t376, 5d
     #298 Fleet manager               :t298, after t297, 5d
+
+  section Pipeline Reliability II
+    #410 SyncStep + RebaseStep       :t410, 2026-07-22, 3d
+    #411 MonitorCI reliability       :t411, 2026-07-22, 2d
+    #412 Address-PR validation       :t412, after t411, 2d
+    #413 Issue quality gate          :t413, after t410, 3d
 
   section Dashboard Scalability
     #366 Output SSE (Phase 1+2)      :t366a, 2026-07-21, 2d
@@ -1551,8 +1603,8 @@ gantt
         <li><strong>Release gate</strong>: velocity measurement (#6, ~2w data), blog post (#21), tag v0.1.0 (#20)</li>
         <li><strong>Pipeline determinism</strong>: COMPLETE -- #277 (deterministic pipeline ops) done</li>
         <li><strong>Health audit</strong>: 6 issues (#235-240) -- DB hardening, module splits, test coverage, API hardening</li>
-        <li><strong>Resource monitoring</strong>: 8 of 9 done (#254-259, #355, #357 complete); 1 remaining: #356 (pre-spawn dashboard gate, in PR)</li>
-        <li><strong>Recently completed</strong>: #357 (supervisor memory pressure gate), #343 (auto-retry recoverable failures), #355 (available memory metric fix), #296 (task progression engine), #259 (capacity advisor), #295 (PR lifecycle monitor), #258 (cross-project aggregation), #294 (PR creation throttle), #293 (dependency graph engine), #292 (PR readiness gates), #257 (live metrics widget), #256 (per-run resource metrics), #250 (activity feed), #121 (kanban pipeline view), #291 (CodeRabbit rate limit), #277 (deterministic pipeline), #255 (resource DB model), #205 (RTK compression), #227 (memory lifecycle), #241 (feed prior findings), #233 (regression tracking), #226 (memory injection), #234 (multi-perspective review), #232 (inner dev loop)</li>
+        <li><strong>Resource monitoring</strong>: COMPLETE -- all 9 issues (#254-259, #355-357) done</li>
+        <li><strong>Recently completed</strong>: #344 (runtime agent watchdog), #356 (pre-spawn memory gate), #357 (supervisor memory pressure gate), #343 (auto-retry recoverable failures), #355 (available memory metric fix), #296 (task progression engine), #259 (capacity advisor), #295 (PR lifecycle monitor), #258 (cross-project aggregation), #294 (PR creation throttle), #293 (dependency graph engine), #292 (PR readiness gates), #257 (live metrics widget), #256 (per-run resource metrics), #250 (activity feed), #121 (kanban pipeline view), #291 (CodeRabbit rate limit), #277 (deterministic pipeline), #255 (resource DB model), #205 (RTK compression), #227 (memory lifecycle), #241 (feed prior findings), #233 (regression tracking), #226 (memory injection), #234 (multi-perspective review), #232 (inner dev loop)</li>
       </ul>
     </div>
     <div class="notes">
@@ -1565,11 +1617,12 @@ gantt
         <li><strong>Health audit</strong>: COMPLETE -- all 6 issues (#235-240) done</li>
         <li><strong>Knowledge system</strong>: COMPLETE -- all 4 issues (#224-227) done</li>
         <li><strong>Agent quality</strong>: COMPLETE -- all 5 issues (#232-234, #241, #205) done</li>
-        <li><strong>Resource monitoring</strong>: 8 of 9 done (#254-259, #355, #357 complete); 1 remaining: #356 (pre-spawn dashboard gate, in PR)</li>
-        <li><strong>Supervisor Agent (6 remaining, Phase 7):</strong> #297-298 -- supervisor daemon + visual dashboard, cross-project fleet manager (#291-296, #343, #357 done); #344 -- runtime watchdog (in PR); #374 -- merge conflict detection gate; #375 -- file-overlap prevention gate; #376 -- auto-rebase agent (depends on #344 + #374)</li>
+        <li><strong>Resource monitoring</strong>: COMPLETE -- all 9 issues (#254-259, #355-357) done</li>
+        <li><strong>Supervisor Agent (5 remaining, Phase 7):</strong> #297-298 -- supervisor daemon + visual dashboard, cross-project fleet manager (#291-296, #343-344, #357 done); #374 -- merge conflict detection gate; #375 -- file-overlap prevention gate; #376 -- auto-rebase agent (depends on #344 + #374)</li>
         <li><strong>Good first issues (8):</strong> #135-141, #144 -- all agentic, independent, well-scoped</li>
         <li><strong>Deferred (10 issues):</strong> post-v0.1.0 features including A2A, YAML workflows, canvas view, monetization</li>
         <li><strong>Dashboard scalability (#366):</strong> 3-phase polling reduction: Page Visibility API pause (Phase 1), adaptive backoff (Phase 2), SSE push stream replacing the 1s poll loop (Phase 3); targets ~70% request reduction during multi-tab sessions</li>
+        <li><strong>Pipeline Reliability II (4 issues, data-driven):</strong> #410 (SyncStep/RebaseStep hardening, 20% of failures), #411 (MonitorCI: timeout + lint + commit, 30%), #412 (address-pr validation + bypass, 19%), #413 (issue quality gate, preventive). Addresses 69% of real pipeline failures. Target: raise adjusted success rate from 83% to 92%+</li>
       </ul>
     </div>
   </div>

@@ -178,6 +178,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **`--force-with-lease` fails against unfetched fork refs** -- `git fetch <fork-url> <branch>` before push. [confirmed: 1]
 - **Wait for CodeRabbit to finish before merging after /address-pr** -- CodeRabbit shows as `pending` StatusContext during review. Dismissing the old CHANGES_REQUESTED and merging while CodeRabbit is still reviewing the new push means its new findings land post-merge. Poll `gh pr checks` until CodeRabbit is no longer pending, then also verify `gh pr view --json reviewDecision` -- `gh pr checks` monitors CI status only, not review decisions. PRs #134, #172, #189. [confirmed: 2]
+- **CodeRabbit rate-limited PRs need `@coderabbitai full review`, not just `review`** -- when a PR was rate-limited during initial submission, the status context stays FAILURE. After the rate limit resets, `@coderabbitai review` returns "Review finished" because incremental mode considers already-seen commits reviewed (even though they were never actually reviewed). Use `@coderabbitai full review` to force a complete review of all commits. The rate limit window is typically ~30 minutes. [confirmed: 1]
 
 ## Unified State / Work Items
 
@@ -190,6 +191,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 ## CI / GitHub Actions
 
 - **GitHub CI workflows silently skip when a PR has merge conflicts** -- `mergeStateStatus: "DIRTY"` prevents workflow triggers even when `paths-ignore` doesn't apply. The checks never appear (not pending, just absent). Fix: rebase to resolve conflicts, then push -- CI triggers on the clean commit. Diagnose with `gh pr view N --json mergeStateStatus,mergeable`. Also: force-push amends that don't change the diff may not re-trigger CI -- use a regular push (even empty commit) instead. [confirmed: 1]
+- **SonarCloud outages block all PRs when it's a required status check** -- SonarCloud can fail with HTTP 500/504 server-side errors (`sonarcloud.io/batch/project.protobuf` or `api.sonarcloud.io/analysis/analyses`), which is not a code issue. All PRs show `mergeStateStatus: BLOCKED`. Fix: re-run the failed workflow (`gh run rerun <id> --failed`). If the outage persists, temporarily remove `SonarCloud Analysis` from the branch protection ruleset via `gh api repos/{owner}/{repo}/rulesets/{id} -X PUT`, merge, re-add. [confirmed: 1]
+- **`mergeStateStatus: UNSTABLE` is mergeable when only non-required checks fail** -- GitHub reports UNSTABLE (not BLOCKED) when optional status contexts like CodeRabbit fail but all required checks pass. The PR is still mergeable via `gh pr merge`. Check required checks via `gh api repos/{owner}/{repo}/rulesets/{id} --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context'`. [confirmed: 1]
 
 ## Resource Monitoring
 
