@@ -333,21 +333,9 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
     if not agent.pr_number:
         return None
     try:
-        branch_result = await run_shell(
-            "gh",
-            "pr",
-            "view",
-            str(agent.pr_number),
-            "--json",
-            "headRefName",
-            "--jq",
-            ".headRefName",
-            cwd=agent.project_dir,
-            timeout=10,
-        )
-        if not branch_result.success or not branch_result.stdout.strip():
+        branch = await _fetch_pr_fields(agent.pr_number, agent.project_dir, "headRefName", ".headRefName")
+        if not branch:
             return None
-        branch = branch_result.stdout.strip()
 
         fetch_result = await run_shell("git", "fetch", "origin", branch, cwd=agent.project_dir, timeout=15)
         if not fetch_result.success:
@@ -421,6 +409,46 @@ async def _validate_command_outcome(run_id: int, agent: AgentState) -> str | Non
         return None
 
 
+def _build_bypass_message(role: str, pr_number: int | None, prompt: str | None, run_id: int) -> str:
+    """Build the error message for a pipeline bypass detection."""
+    msg = (
+        f"Pipeline bypassed: {role} agent completed without "
+        f"executing workflow steps (current_step still 'agent', "
+        f"0 step executions)"
+    )
+    if role == "developer" and pr_number is None:
+        msg += " and no PR was created"
+    if prompt:
+        log.warning(
+            "validate_pipeline.bypass_diagnostic",
+            run_id=run_id,
+            role=role,
+            prompt_sent=prompt[:500],
+        )
+    return msg
+
+
+async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
+    """Check if a developer run reached push/create_pr but has no pr_number."""
+    from sqlalchemy import select
+
+    from sova.core.state import STEP_DONE_STATUSES
+    from sova.db.models import StepExecution
+
+    done_steps_stmt = select(StepExecution.step_name).where(
+        StepExecution.task_run_id == run_id,
+        StepExecution.status.in_(STEP_DONE_STATUSES),
+    )
+    result = await session.execute(done_steps_stmt)
+    done_names = {row[0] for row in result.fetchall()}
+    if "create_pr" in done_names or "push" in done_names:
+        return (
+            f"Pipeline incomplete: developer agent reached "
+            f"push/create_pr step but pr_number is still None"
+        )
+    return None
+
+
 async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | None:
     """Validate that a pipeline-based role actually executed its workflow steps.
 
@@ -449,36 +477,10 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
                 step_count = result.scalar() or 0
 
                 if sentinel_active and step_count == 0:
-                    msg = (
-                        f"Pipeline bypassed: {agent.role} agent completed without "
-                        f"executing workflow steps (current_step still 'agent', "
-                        f"0 step executions)"
-                    )
-                    if agent.role == "developer" and task_run.pr_number is None:
-                        msg += " and no PR was created"
-                    if agent.prompt:
-                        log.warning(
-                            "validate_pipeline.bypass_diagnostic",
-                            run_id=run_id,
-                            role=agent.role,
-                            prompt_sent=agent.prompt[:500],
-                        )
-                    return msg
+                    return _build_bypass_message(agent.role, task_run.pr_number, agent.prompt, run_id)
 
                 if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
-                    from sova.core.state import STEP_DONE_STATUSES
-
-                    done_steps_stmt = select(StepExecution.step_name).where(
-                        StepExecution.task_run_id == run_id,
-                        StepExecution.status.in_(STEP_DONE_STATUSES),
-                    )
-                    result = await session.execute(done_steps_stmt)
-                    done_names = {row[0] for row in result.fetchall()}
-                    if "create_pr" in done_names or "push" in done_names:
-                        return (
-                            f"Pipeline incomplete: {agent.role} agent reached "
-                            f"push/create_pr step but pr_number is still None"
-                        )
+                    return await _check_incomplete_pr(run_id, session)
 
         return None
     except Exception:

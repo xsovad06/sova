@@ -215,7 +215,7 @@ async def _deduplicate_and_store(
 
     # Lexical fallback: title substring match catches duplicates that
     # semantic search misses (different content but identical titles)
-    existing = await memory.search(category=mem.category, query=mem.title[:50])
+    existing = await memory.search(category=mem.category, query=mem.title[:50], limit=20)
     for existing_mem in existing:
         if titles_match(existing_mem.title, mem.title):
             return await _confirm_existing(existing_mem)

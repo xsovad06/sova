@@ -8678,7 +8678,7 @@ class TestPipelineBypassDiagnosticLogging:
     """Tests that _validate_pipeline_outcome logs prompt on bypass."""
 
     async def test_logs_prompt_on_bypass(self) -> None:
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         from sova.dashboard.services.agent_db import _validate_pipeline_outcome
         from sova.dashboard.services.agent_pool import AgentState
@@ -8699,9 +8699,113 @@ class TestPipelineBypassDiagnosticLogging:
         agent.role = "developer"
         agent.project_dir = None
         agent.prompt = "Run sova run 99"
-        result = await _validate_pipeline_outcome(run_id, agent)
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            result = await _validate_pipeline_outcome(run_id, agent)
         assert result is not None
         assert "Pipeline bypassed" in result
+        mock_log.warning.assert_any_call(
+            "validate_pipeline.bypass_diagnostic",
+            run_id=run_id,
+            role="developer",
+            prompt_sent="Run sova run 99",
+        )
+
+
+class TestBuildBypassMessage:
+    """Tests for _build_bypass_message helper."""
+
+    def test_developer_no_pr(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("developer", None, "some prompt", 1)
+        assert "Pipeline bypassed" in msg
+        assert "no PR was created" in msg
+
+    def test_developer_with_pr(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("developer", 42, "some prompt", 1)
+        assert "Pipeline bypassed" in msg
+        assert "no PR was created" not in msg
+
+    def test_researcher_role(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log"):
+            msg = _build_bypass_message("researcher", None, None, 1)
+        assert "researcher" in msg
+        assert "no PR was created" not in msg
+
+    def test_no_prompt_skips_log(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            _build_bypass_message("developer", None, None, 1)
+        mock_log.warning.assert_not_called()
+
+    def test_prompt_truncated_to_500(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_db import _build_bypass_message
+
+        long_prompt = "x" * 1000
+        with patch("sova.dashboard.services.agent_db.log") as mock_log:
+            _build_bypass_message("developer", None, long_prompt, 5)
+        mock_log.warning.assert_called_once()
+        call_kwargs = mock_log.warning.call_args
+        assert len(call_kwargs[1]["prompt_sent"]) == 500
+
+
+@pytest.mark.asyncio
+class TestCheckIncompletePr:
+    """Tests for _check_incomplete_pr helper."""
+
+    async def test_returns_none_when_no_pr_steps(self) -> None:
+        from sova.dashboard.services.agent_db import _check_incomplete_pr
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="1", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        async with await get_session() as session:
+            async with session.begin():
+                result = await _check_incomplete_pr(run_id, session)
+        assert result is None
+
+    async def test_returns_message_when_create_pr_done(self) -> None:
+        from sova.core.state import STEP_DONE_STATUSES
+        from sova.dashboard.services.agent_db import _check_incomplete_pr
+        from sova.db.models import StepExecution
+
+        done_status = next(iter(STEP_DONE_STATUSES))
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="2", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                step = StepExecution(task_run_id=run_id, step_name="create_pr", status=done_status)
+                session.add(step)
+
+        async with await get_session() as session:
+            async with session.begin():
+                result = await _check_incomplete_pr(run_id, session)
+        assert result is not None
+        assert "pr_number is still None" in result
 
 
 class TestStepProgress:

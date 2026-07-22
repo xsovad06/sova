@@ -530,6 +530,12 @@ async def start_agent(
         if mem_warn:
             log.warning("start_agent.memory_pressure_warning", message=mem_warn)
 
+    # Capture PR head SHA before acquiring the lock: the GitHub API call
+    # can take up to 10s and would block all other agent/command starts.
+    pre_run_sha = None
+    if pr_number:
+        pre_run_sha = await _capture_pr_head_sha(pr_number, pa.project_dir)
+
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
             return {
@@ -597,10 +603,6 @@ async def start_agent(
             "yourself. Execute it exactly as written and let it complete:\n\n"
             f"```bash\n{cmd}\n```"
         )
-
-        pre_run_sha = None
-        if pr_number:
-            pre_run_sha = await _capture_pr_head_sha(pr_number, project_dir)
 
         gh_env = await _resolve_project_gh_env(project_dir)
         try:
@@ -713,6 +715,12 @@ async def start_command(
     if mem_warn:
         log.warning("start_command.memory_pressure_warning", message=mem_warn)
 
+    # Capture PR head SHA before acquiring the lock: the GitHub API call
+    # can take up to 10s and would block all other agent/command starts.
+    pre_run_sha = None
+    if pr_number:
+        pre_run_sha = await _capture_pr_head_sha(pr_number, pa.project_dir)
+
     async with pa._lock:
         if len(pa.agents) >= pa.max_concurrent:
             return {
@@ -737,10 +745,6 @@ async def start_command(
             return {"error": f"Cannot start PR-based command: worktree isolation failed for PR {pr_number}"}
 
         prompt = _resolve_command_prompt(command, args, project_dir)
-
-        pre_run_sha = None
-        if pr_number:
-            pre_run_sha = await _capture_pr_head_sha(pr_number, project_dir)
 
         try:
             from sova.dashboard.services import handoff_service

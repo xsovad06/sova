@@ -82,7 +82,7 @@ async def store(
 
     log.info("knowledge.stored", title=title, category=category, tier=tier)
 
-    if embedding_auto and is_available() and memory.embedding is not None:
+    if memory.embedding is not None and is_available():
         try:
             from sova.knowledge.graph import auto_link
 
