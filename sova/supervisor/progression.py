@@ -100,6 +100,15 @@ class TaskProgressionEngine:
         global_memory = self._check_memory_pressure_gate(cfg)
         global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
 
+        # Pre-fetch merge conflict state for all open PRs (fail-open)
+        try:
+            from sova.dashboard.services.pr_service import get_pr_mergeability_map
+
+            precomputed_conflicts = await get_pr_mergeability_map()
+        except Exception:
+            log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
+            precomputed_conflicts = {}
+
         # Compute alive count once: used for both the slot gate and remaining capacity
         alive_count = await self._get_alive_count()
         global_slots: BlockReason | None = None
@@ -141,6 +150,7 @@ class TaskProgressionEngine:
                 precomputed_memory=global_memory,
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
+                precomputed_conflicts=precomputed_conflicts,
             )
             decisions.append(decision)
 
@@ -192,7 +202,15 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="build_dependency_graph() failed"),),
             )
 
-        return await self._evaluate_single(issue_number, state, graph)
+        try:
+            from sova.dashboard.services.pr_service import get_pr_mergeability_map
+
+            precomputed_conflicts = await get_pr_mergeability_map()
+        except Exception:
+            log.debug("evaluate_task.mergeability_fetch_failed", issue=issue_number, exc_info=True)
+            precomputed_conflicts = {}
+
+        return await self._evaluate_single(issue_number, state, graph, precomputed_conflicts=precomputed_conflicts)
 
     async def execute_decision(self, decision: ProgressionDecision) -> dict:
         """Spawn agent based on decision. Returns start_agent result or error dict."""
@@ -243,6 +261,7 @@ class TaskProgressionEngine:
         precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_conflicts: dict[int, str] | None = None,
     ) -> ProgressionDecision:
         """Evaluate a single task against all gates."""
         candidate = self._determine_transition(state)
@@ -268,6 +287,7 @@ class TaskProgressionEngine:
             precomputed_memory=precomputed_memory,
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
+            precomputed_conflicts=precomputed_conflicts,
         )
 
         if blockers:
@@ -296,6 +316,7 @@ class TaskProgressionEngine:
         precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_conflicts: dict[int, str] | None = None,
     ) -> list[BlockReason]:
         """Run all gate checks and return active blockers."""
         blockers: list[BlockReason] = []
@@ -312,6 +333,12 @@ class TaskProgressionEngine:
             self._check_budget_gate(issue_number),
         )
         blockers.extend(r for r in gate_results if r is not None)
+
+        # Merge conflict gate (only blocks integrate actions)
+        if precomputed_conflicts is not None and candidate == ProgressionAction.SPAWN_INTEGRATE:
+            conflict_block = self._check_merge_conflict_gate(issue_number, precomputed_conflicts)
+            if conflict_block:
+                blockers.append(conflict_block)
 
         # Add precomputed global gates (or compute on demand for single-task eval)
         global_blocks = await self._resolve_global_gates(
@@ -546,6 +573,16 @@ class TaskProgressionEngine:
         except Exception:
             log.debug("already_running.check_failed", issue=issue, exc_info=True)
 
+        return None
+
+    def _check_merge_conflict_gate(self, issue_number: int, mergeability_map: dict[int, str]) -> BlockReason | None:
+        """Check if the PR for this issue has merge conflicts. Fail-open."""
+        status = mergeability_map.get(issue_number)
+        if status == "CONFLICTING":
+            return BlockReason(
+                gate="conflict",
+                detail=f"PR for #{issue_number} has merge conflicts with base branch",
+            )
         return None
 
     async def _find_pr_for_issue(self, issue: int) -> int | None:
