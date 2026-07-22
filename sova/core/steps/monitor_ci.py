@@ -417,6 +417,48 @@ class MonitorCIStep(BaseStep):
             log.error("step.monitor_ci.llm_failed", error=str(exc), exc_info=True)
             return Decimal("0"), exc
 
+    @staticmethod
+    async def _ensure_committed(
+        ctx: ExecutionContext,
+        run: _ShellRunner,
+    ) -> bool | None:
+        """Run ruff (if available) and auto-commit any uncommitted changes.
+
+        Returns True if a new commit was created, False if the tree was
+        already clean, or None if staging/committing failed (caller should
+        stop or retry rather than pushing stale HEAD).
+        """
+        ruff_result = await run("ruff", "check", "--fix", ".", cwd=ctx.working_dir, timeout=60)
+        if ruff_result.success:
+            await run("ruff", "format", ".", cwd=ctx.working_dir, timeout=60)
+        else:
+            log.debug("step.monitor_ci.ruff_unavailable_or_failed")
+
+        status = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+        has_changes = bool(status.success and status.stdout.strip())
+
+        if not has_changes:
+            return False
+
+        stage = await run("git", "add", "-u", cwd=ctx.working_dir)
+        if not stage.success:
+            log.warning("step.monitor_ci.stage_failed")
+            return None
+
+        commit = await run(
+            "git",
+            "commit",
+            "-m",
+            "fix(core): address CI failures",
+            cwd=ctx.working_dir,
+        )
+        if commit.success:
+            log.info("step.monitor_ci.auto_committed")
+            return True
+
+        log.warning("step.monitor_ci.auto_commit_failed")
+        return None
+
     async def _validate_fix(
         self,
         ctx: ExecutionContext,
@@ -424,8 +466,22 @@ class MonitorCIStep(BaseStep):
         max_attempts: int,
         run: _ShellRunner,
     ) -> tuple[bool, StepResult | None]:
-        """Run pre-push hook and check for new commits. Returns (should_skip, error_result)."""
+        """Run lint safety net, pre-push hook and check for new commits.
+
+        Returns (should_skip, error_result).
+        """
         from sova.core.steps.validate import find_pre_push_hook
+
+        commit_result = await self._ensure_committed(ctx, run)
+        if commit_result is None:
+            log.warning("step.monitor_ci.ensure_committed_failed", attempt=attempt)
+            if attempt == max_attempts:
+                return False, StepResult(
+                    success=False,
+                    summary=f"CI fix failed to stage/commit after {max_attempts} attempt(s)",
+                    error="git add or git commit failed; changes remain uncommitted",
+                )
+            return True, None
 
         hook = await find_pre_push_hook(ctx.working_dir)
         if hook:
@@ -561,7 +617,15 @@ class MonitorCIStep(BaseStep):
             f"- Tests that import modules not declared in project dependencies\n"
             f"- Environment-specific path or config differences\n"
             f"- Type checking or linting issues in stricter CI config\n\n"
+            f"Before staging and committing, run "
+            f"`ruff check --fix . && ruff format .` "
+            f"to ensure code passes linting.\n\n"
+            f"## Project Invariant Rules\n"
+            f"- Never represent monetary values "
+            f"(cost, amount, price, total, balance) as floats; use Decimal instead\n"
+            f"- Do not add AI co-author lines in commits\n"
+            f"- Do not use emojis in code or comments\n\n"
             f"After fixing, stage and commit the changes with a message like "
-            f"'fix: address CI failure in {check_names}'. "
+            f"'fix(core): address CI failure in {check_names}'. "
             f"Do not modify CI configuration files unless that is genuinely the fix."
         )
