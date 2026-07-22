@@ -15,7 +15,10 @@ from sova.adapters.base import Task, TaskAdapter, TaskFilters, TaskState
 from sova.config.loader import load_config
 from sova.config.models import TriageConfig
 from sova.roles.base import TaskAssessment
-from sova.roles.triage import TriageRole
+from sova.roles.triage import TriageRole, compute_quality_score
+from sova.utils.logging import get_logger
+
+log = get_logger(component="cli.triage")
 
 console = Console(stderr=True)
 
@@ -77,11 +80,12 @@ async def _triage(
     results = []
     for task in tasks:
         assessment = role.heuristic_assess(task, triage_cfg)
+        quality = compute_quality_score(task.body or "")
 
         if triage_cfg.mode != "dry_run":
-            await _apply_triage_actions(adapter, role, task, assessment, triage_cfg, force)
+            assessment = await _apply_triage_actions(adapter, role, task, assessment, triage_cfg, force)
 
-        results.append((task, assessment))
+        results.append((task, assessment, quality))
 
     _render_triage_results(results)
 
@@ -118,14 +122,45 @@ async def _apply_triage_actions(
     assessment: TaskAssessment,
     triage_cfg: TriageConfig,
     force: bool,
-) -> None:
-    """Apply labeling, commenting, and state transition for a triaged task."""
+) -> TaskAssessment:
+    """Apply labeling, commenting, and state transition for a triaged task.
+
+    Returns the (potentially downgraded) assessment after quality gate check.
+    """
+    quality = compute_quality_score(task.body or "")
+
+    # Quality gate: downgrade "ready" to "needs_spec" if below threshold
+    # (mirrors TriageRole.execute() logic, without LLM enrichment)
+    if assessment.suitability == "ready" and not quality.meets_threshold(triage_cfg.min_quality_score):
+        log.info(
+            "cli_triage.quality_gate_blocked",
+            issue=task.id,
+            score=quality.total,
+            threshold=triage_cfg.min_quality_score,
+        )
+        missing = []
+        if not quality.has_acceptance_criteria:
+            missing.append("acceptance criteria")
+        if not quality.has_objective:
+            missing.append("objective section")
+        if not quality.has_description:
+            missing.append("detailed description")
+        assessment = TaskAssessment(
+            suitability="needs_spec",
+            confidence=0.9,
+            reasoning=f"Issue body quality score {quality.total}/8 is below threshold "
+            f"{triage_cfg.min_quality_score}; needs specification work.",
+            missing_context=missing,
+            estimated_complexity=assessment.estimated_complexity,
+            suggested_role="triage",
+        )
+
     if triage_cfg.auto_label:
         label_name = role.resolve_label(assessment.suitability, triage_cfg)
         if label_name:
             await adapter.add_label(task.id, label_name)
 
-    assessment_section = role._build_assessment_comment(task, assessment)
+    assessment_section = role._build_assessment_comment(task, assessment, quality)
     if triage_cfg.mode == "comment":
         await adapter.post_comment(task.id, assessment_section)
     elif triage_cfg.write_body:
@@ -134,6 +169,8 @@ async def _apply_triage_actions(
 
     if triage_cfg.write_transition and not force and task.state in role.allowed_input_states:
         await adapter.transition_state(task.id, TaskState.TRIAGED)
+
+    return assessment
 
 
 def _render_triage_results(results: list) -> None:
@@ -144,8 +181,9 @@ def _render_triage_results(results: list) -> None:
     table.add_column("Suitability", style="green")
     table.add_column("Confidence", style="yellow")
     table.add_column("Complexity", style="magenta")
+    table.add_column("Quality", style="blue")
 
-    for task, assessment in results:
+    for task, assessment, quality in results:
         suitability_style = {
             "ready": "green",
             "needs_spec": "yellow",
@@ -159,6 +197,7 @@ def _render_triage_results(results: list) -> None:
             f"[{suitability_style}]{assessment.suitability}[/{suitability_style}]",
             f"{assessment.confidence:.0%}",
             assessment.estimated_complexity,
+            f"{quality.total}/8",
         )
 
     console.print(table)
