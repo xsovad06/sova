@@ -1417,7 +1417,7 @@ function _connectLogSSE(runId) {
     if (activeLogRunId !== runId) return;
     var content = document.getElementById('log-content');
     if (content) {
-      var text = e.data.replace(/\\n/g, '\n').replace(/\\\\/g, '\\');
+      var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
       content.textContent += text + '\n';
       content.scrollTop = content.scrollHeight;
     }

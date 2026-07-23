@@ -1,4 +1,4 @@
-"""Output stream service -- per-run pub/sub for real-time output push via SSE.
+"""Output stream service: per-run pub/sub for real-time output push via SSE.
 
 Unlike FeedService (global event bus for dashboard-level events), this service
 handles high-throughput, per-run output streaming.  Each log viewer subscribes

@@ -395,7 +395,7 @@ function _connectOutputSSE(run, targetId) {
   es.addEventListener('output', function(e) {
     var el = document.getElementById(targetId);
     if (el) {
-      var text = e.data.replace(/\\n/g, '\n').replace(/\\\\/g, '\\');
+      var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
       if (_outputCursor === 0) {
         el.textContent = text;
       } else {

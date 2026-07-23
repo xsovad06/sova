@@ -288,6 +288,7 @@ async def _check_run_terminal(run_id: int) -> bool:
             status = row.scalar()
             return status in TASK_RUN_TERMINAL if status else True
     except Exception:
+        log.warning("output_stream.terminal_check_failed", run_id=run_id, exc_info=True)
         return False
 
 
