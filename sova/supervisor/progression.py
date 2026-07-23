@@ -50,6 +50,7 @@ class ProgressionAction(StrEnum):
     SPAWN_INTEGRATE = "spawn_integrate"
     WAIT = "wait"
     BLOCKED = "blocked"
+    SPAWN_REBASE = "spawn_rebase"
     CHECKPOINT_NEEDED = "checkpoint_needed"
 
 
@@ -176,7 +177,7 @@ class TaskProgressionEngine:
 
             # Decrement capacity for actionable decisions
             non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
-            if decision.action not in non_actionable:
+            if decision.action not in non_actionable and decision.action != ProgressionAction.SPAWN_REBASE:
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
@@ -264,6 +265,15 @@ class TaskProgressionEngine:
         if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}:
             return {"skipped": True, "action": decision.action.value, "reason": decision.reason}
 
+        if decision.action == ProgressionAction.SPAWN_REBASE:
+            from sova.supervisor.rebase import attempt_auto_rebase
+
+            return await attempt_auto_rebase(
+                decision.issue_number,
+                self._project_dir,
+                self._session_factory,
+            )
+
         from sova.dashboard.services.agent_lifecycle import start_agent
 
         role = decision.role or _ACTION_TO_ROLE.get(decision.action)
@@ -344,6 +354,14 @@ class TaskProgressionEngine:
         )
 
         if blockers:
+            all_conflict = all(b.gate == "conflict" for b in blockers)
+            if all_conflict and self._config.auto_rebase:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.SPAWN_REBASE,
+                    reason="PR has merge conflicts, attempting auto-rebase",
+                )
+
             reasons = "; ".join(b.detail for b in blockers)
             return ProgressionDecision(
                 issue_number=issue_number,
