@@ -90,6 +90,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 - **Decouple display metadata from config models** -- create `SettingMeta` dataclass registry rather than embedding display concerns in config models. Module: `sova/dashboard/settings_meta.py`. [confirmed: 1]
 - **Disable inline editing for non-scalar config types** -- list/object settings saved through scalar edit path corrupt TOML structure. Gate behind `isStructured` check. [confirmed: 1]
+- **Config fields must be wired to runtime, not just defined** -- `ProjectConfig.max_parallel_agents` existed but `ProjectAgents.max_concurrent` was hardcoded to 3. Pattern: when adding a config field, grep for the runtime equivalent and wire the read. When saving via the settings API, hot-reload the in-memory value (e.g., `sync_max_concurrent()` called from the settings router). Issue #436 tracks 33 dead settings. [confirmed: 1]
 
 ## Command Design
 
