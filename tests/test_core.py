@@ -1802,7 +1802,10 @@ class TestCreatePRStepJiraPrompt:
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
+        adapter = _mock_adapter()
+        adapter.get_task.side_effect = RuntimeError("unavailable")
         ctx = _make_ctx(
+            adapter=adapter,
             task=None,
             issue_number="48928",
             branch_name="feat/RHCLOUD-48928-security-logging",
@@ -4090,6 +4093,118 @@ class TestCreatePRTitleFromBranch:
         from sova.core.steps.create_pr import _title_from_branch
 
         assert _title_from_branch("") == "update"
+
+
+# ---------------------------------------------------------------------------
+# CreatePRStep -- task title fallback via adapter (#438)
+# ---------------------------------------------------------------------------
+
+
+class TestCreatePRStepTitleFallback:
+    """When ctx.task is None but an issue number exists, CreatePRStep should
+    fetch the issue title from the adapter instead of using 'update'."""
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_fetches_title_from_adapter_when_task_is_none(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(id="375", title="concurrent branch file-overlap prevention gate")
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-375", task=None)
+
+        step = CreatePRStep()
+        await step.execute(ctx)
+        adapter.get_task.assert_awaited_once_with(ctx.issue_number)
+
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "concurrent branch file-overlap prevention gate" in title_arg
+        assert "update" not in title_arg
+        assert ctx.task is not None, "adapter fetch should populate ctx.task"
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_falls_back_to_branch_name_when_adapter_fails(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        adapter.get_task.side_effect = RuntimeError("API error")
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-375", task=None)
+
+        step = CreatePRStep()
+        await step.execute(ctx)
+        adapter.get_task.assert_awaited_once_with(ctx.issue_number)
+
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "update" in title_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_uses_task_title_directly_when_available(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """When ctx.task is populated, no adapter call is needed."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(
+            adapter=adapter,
+            branch_name="feat/issue-42",
+            task=Task(id="42", title="Add widget support"),
+        )
+
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        adapter.get_task.assert_not_called()
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "Add widget support" in title_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_no_adapter_call_for_issueless_run(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """Issueless runs should use branch name, not try the adapter."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.return_value = MagicMock(success=True, stdout="abc feat\n")
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        ctx = _make_ctx(adapter=adapter, issue_number="", branch_name="feat/sprint-plan", task=None)
+
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        adapter.get_task.assert_not_called()
+        title_arg = mock_create_pr.call_args.kwargs["title"]
+        assert "sprint plan" in title_arg
 
 
 # ---------------------------------------------------------------------------

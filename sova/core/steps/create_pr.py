@@ -144,7 +144,7 @@ class CreatePRStep(BaseStep):
         if adopted:
             return adopted
 
-        task_title = ctx.task.title if ctx.task else _title_from_branch(ctx.branch_name)
+        task_title = await self._resolve_task_title(ctx)
         title = _build_pr_title(
             task_title,
             ctx.issue_number if ctx.has_issue else None,
@@ -156,6 +156,20 @@ class CreatePRStep(BaseStep):
             return await self._create_pr_throttled(ctx, title, body)
 
         return await self._create_pr_immediate(ctx, title, body)
+
+    @staticmethod
+    async def _resolve_task_title(ctx: ExecutionContext) -> str:
+        """Resolve a meaningful task title, falling back to the adapter when ctx.task is missing."""
+        if ctx.task:
+            return ctx.task.title
+        if ctx.has_issue:
+            try:
+                task = await ctx.adapter.get_task(ctx.issue_number)
+                ctx.task = task
+                return task.title
+            except Exception:
+                log.warning("step.create_pr.title_fallback_failed", issue=ctx.issue_number, exc_info=True)
+        return _title_from_branch(ctx.branch_name)
 
     async def _create_pr_immediate(self, ctx: ExecutionContext, title: str, body: str) -> StepResult:
         """Create PR directly (no throttle)."""
