@@ -75,7 +75,12 @@ async def update_config(req: ConfigUpdateRequest):
     """Update a single configuration key."""
     try:
         project_dir = get_project_dir()
-        return settings_service.update_config(project_dir, key=req.key, value=req.value)
+        result = settings_service.update_config(project_dir, key=req.key, value=req.value)
+        if result.get("status") == "ok" and req.key == "max_parallel_agents":
+            from sova.dashboard.services.agent_pool import sync_max_concurrent
+
+            sync_max_concurrent(project_dir)
+        return result
     except Exception:
         log.warning("settings.config.update.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update configuration")

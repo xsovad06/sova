@@ -75,7 +75,7 @@ class ProjectAgents:
     recently_completed: deque[CompletedAgent] = field(
         default_factory=lambda: deque(maxlen=MAX_RECENTLY_COMPLETED),
     )
-    max_concurrent: int = 3
+    max_concurrent: int = 2
     project_dir: Path = field(default_factory=Path.cwd)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -96,9 +96,24 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
             project_dir = get_project_dir()
             if project_dir is None:
                 project_dir = _default_project_dir or Path.cwd()
-            pa = _projects.setdefault(slug, ProjectAgents(project_dir=project_dir.resolve()))
+            resolved = project_dir.resolve()
+            max_conc = _read_max_parallel(resolved)
+            pa = _projects.setdefault(
+                slug,
+                ProjectAgents(project_dir=resolved, max_concurrent=max_conc),
+            )
 
     return pa
+
+
+def _read_max_parallel(project_dir: Path) -> int:
+    """Read max_parallel_agents from config, falling back to dataclass default."""
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(project_dir).max_parallel_agents
+    except Exception:
+        return ProjectAgents.max_concurrent
 
 
 def set_project_dir(path: Path) -> None:
@@ -107,6 +122,24 @@ def set_project_dir(path: Path) -> None:
     _default_project_dir = path
     pa = _get_project_agents(_DEFAULT_SLUG)
     pa.project_dir = path.resolve()
+
+
+def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None) -> None:
+    """Read max_parallel_agents from config and apply to the in-memory pool."""
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        pa = _get_project_agents(slug)
+        if cfg.max_parallel_agents != pa.max_concurrent:
+            log.info(
+                "pool.max_concurrent.updated",
+                old=pa.max_concurrent,
+                new=cfg.max_parallel_agents,
+            )
+            pa.max_concurrent = cfg.max_parallel_agents
+    except Exception:
+        log.debug("pool.max_concurrent.sync_failed", exc_info=True)
 
 
 def _prune_completed(pa: ProjectAgents, now: float | None = None) -> None:

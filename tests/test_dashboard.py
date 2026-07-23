@@ -13569,3 +13569,131 @@ class TestPrFeedbackEndpoint:
         }
         resp = await client.post("/api/prs/feedback", json=body)
         assert resp.status_code == 201
+
+
+class TestAgentPoolConfig:
+    def test_read_max_parallel_returns_config_value(self, tmp_path):
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[project]\nmax_parallel_agents = 5\n")
+        from sova.dashboard.services.agent_pool import _read_max_parallel
+
+        result = _read_max_parallel(tmp_path)
+        assert result == 5
+
+    def test_read_max_parallel_fallback_on_missing_config(self, tmp_path):
+        from sova.dashboard.services.agent_pool import ProjectAgents, _read_max_parallel
+
+        result = _read_max_parallel(tmp_path / "nonexistent")
+        assert result == ProjectAgents.max_concurrent
+
+    def test_sync_max_concurrent_updates_pool(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_parallel_agents = 7
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *a, **kw: mock_cfg, raising=False)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-sync")
+            pa.max_concurrent = 2
+            agent_pool.sync_max_concurrent(project_dir=tmp_path, slug="test-sync")
+            assert pa.max_concurrent == 7
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_sync_max_concurrent_no_change_when_equal(self, tmp_path, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services import agent_pool
+
+        mock_cfg = MagicMock()
+        mock_cfg.max_parallel_agents = 2
+        monkeypatch.setattr("sova.config.loader.load_config", lambda *a, **kw: mock_cfg, raising=False)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-noop")
+            pa.max_concurrent = 2
+            agent_pool.sync_max_concurrent(project_dir=tmp_path, slug="test-noop")
+            assert pa.max_concurrent == 2
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_sync_max_concurrent_swallows_config_errors(self, monkeypatch):
+        from sova.dashboard.services import agent_pool
+
+        monkeypatch.setattr(
+            "sova.config.loader.load_config",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no config")),
+            raising=False,
+        )
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-err")
+            pa.max_concurrent = 3
+            agent_pool.sync_max_concurrent(project_dir=Path("/nonexistent"), slug="test-err")
+            assert pa.max_concurrent == 3
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+    def test_get_project_agents_reads_config_on_create(self, tmp_path, monkeypatch):
+        from sova.dashboard.services import agent_pool
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[project]\nmax_parallel_agents = 4\n")
+        monkeypatch.setattr("sova.dashboard.services.agent_pool.get_project_dir", lambda: tmp_path)
+        old_projects = agent_pool._projects.copy()
+        agent_pool._projects.clear()
+        try:
+            pa = agent_pool._get_project_agents("test-init")
+            assert pa.max_concurrent == 4
+        finally:
+            agent_pool._projects.clear()
+            agent_pool._projects.update(old_projects)
+
+
+class TestSettingsMaxParallelSync:
+    async def test_update_config_triggers_sync(self, client: AsyncClient, monkeypatch):
+        from unittest.mock import MagicMock
+
+        sync_called = []
+        monkeypatch.setattr(
+            "sova.dashboard.routers.settings.settings_service",
+            MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "max_parallel_agents"})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool.sync_max_concurrent",
+            lambda *a, **kw: sync_called.append(True),
+        )
+        resp = await client.post(
+            "/api/settings/config",
+            json={"key": "max_parallel_agents", "value": "5"},
+        )
+        assert resp.status_code == 200
+        assert len(sync_called) == 1
+
+    async def test_update_config_no_sync_for_other_keys(self, client: AsyncClient, monkeypatch):
+        from unittest.mock import MagicMock
+
+        sync_called = []
+        monkeypatch.setattr(
+            "sova.dashboard.routers.settings.settings_service",
+            MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "github_repo"})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool.sync_max_concurrent",
+            lambda *a, **kw: sync_called.append(True),
+        )
+        resp = await client.post(
+            "/api/settings/config",
+            json={"key": "github_repo", "value": "org/repo"},
+        )
+        assert resp.status_code == 200
+        assert len(sync_called) == 0
