@@ -898,6 +898,13 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.auto_rebase",
+        "Auto-rebase",
+        "Automatically rebase PRs with merge conflicts using LLM-assisted conflict resolution",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.respect_dependencies",
         "Respect dependencies",
         "Gate agent spawning on dependency graph (block until all deps are DONE)",

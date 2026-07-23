@@ -1467,3 +1467,169 @@ class TestFileOverlapGate:
         engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
         result = engine._check_file_overlap_gate(42, [], ["area:core"], "")
         assert result is None
+
+
+# Merge conflict gate
+# ---------------------------------------------------------------------------
+
+
+class TestMergeConflictGate:
+    def test_no_conflict_passes(self) -> None:
+        engine = _make_engine()
+        result = engine._check_merge_conflict_gate(42, {42: "MERGEABLE"})
+        assert result is None
+
+    def test_conflicting_blocks(self) -> None:
+        engine = _make_engine()
+        result = engine._check_merge_conflict_gate(42, {42: "CONFLICTING"})
+        assert result is not None
+        assert result.gate == "conflict"
+        assert "#42" in result.detail
+
+    def test_missing_issue_passes(self) -> None:
+        engine = _make_engine()
+        result = engine._check_merge_conflict_gate(42, {10: "CONFLICTING"})
+        assert result is None
+
+    def test_unknown_status_passes(self) -> None:
+        engine = _make_engine()
+        result = engine._check_merge_conflict_gate(42, {42: "UNKNOWN"})
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_REBASE action
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnRebaseAction:
+    def test_spawn_rebase_value(self) -> None:
+        assert ProgressionAction.SPAWN_REBASE == "spawn_rebase"
+
+    def test_auto_rebase_config_default_false(self) -> None:
+        cfg = SupervisorConfig()
+        assert cfg.auto_rebase is False
+
+
+# ---------------------------------------------------------------------------
+# Auto-rebase in _evaluate_single
+# ---------------------------------------------------------------------------
+
+
+class TestAutoRebase:
+    @pytest.mark.asyncio
+    async def test_conflict_only_blocker_with_auto_rebase_returns_spawn_rebase(self) -> None:
+        """When conflict is the only blocker and auto_rebase is enabled, return SPAWN_REBASE."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+            mock_gates.return_value = [
+                BlockReason(gate="conflict", detail="PR for #42 has merge conflicts"),
+            ]
+            decision = await engine._evaluate_single(
+                42,
+                TaskState.IN_REVIEW,
+                MagicMock(),
+            )
+        assert decision.action == ProgressionAction.SPAWN_REBASE
+        assert decision.issue_number == 42
+
+    @pytest.mark.asyncio
+    async def test_conflict_with_other_blockers_returns_blocked(self) -> None:
+        """When conflict + other blockers exist, return BLOCKED even with auto_rebase."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+            mock_gates.return_value = [
+                BlockReason(gate="conflict", detail="PR has conflicts"),
+                BlockReason(gate="budget", detail="Budget exceeded"),
+            ]
+            decision = await engine._evaluate_single(
+                42,
+                TaskState.IN_REVIEW,
+                MagicMock(),
+            )
+        assert decision.action == ProgressionAction.BLOCKED
+        assert len(decision.blocked_by) == 2
+
+    @pytest.mark.asyncio
+    async def test_conflict_without_auto_rebase_returns_blocked(self) -> None:
+        """When auto_rebase is disabled, conflict returns BLOCKED normally."""
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=False))
+        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+            mock_gates.return_value = [
+                BlockReason(gate="conflict", detail="PR has conflicts"),
+            ]
+            decision = await engine._evaluate_single(
+                42,
+                TaskState.IN_REVIEW,
+                MagicMock(),
+            )
+        assert decision.action == ProgressionAction.BLOCKED
+
+
+# ---------------------------------------------------------------------------
+# execute_decision for SPAWN_REBASE
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteDecisionRebase:
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.rebase.attempt_auto_rebase", new_callable=AsyncMock)
+    async def test_spawn_rebase_calls_attempt(self, mock_rebase: AsyncMock) -> None:
+        mock_rebase.return_value = {"status": "success", "pr_number": 55, "conflicts_resolved": 2}
+        engine = _make_engine()
+        engine._project_dir = Path("/fake/project")
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_REBASE,
+            reason="PR has conflicts",
+        )
+        result = await engine.execute_decision(decision)
+        mock_rebase.assert_called_once_with(42, Path("/fake/project"), engine._session_factory)
+        assert result["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# evaluate_all: SPAWN_REBASE does not decrement slots
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateAllRebase:
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.build_dependency_graph")
+    @patch("sova.supervisor.progression.load_config")
+    async def test_spawn_rebase_does_not_consume_slots(
+        self,
+        mock_cfg: MagicMock,
+        mock_graph: AsyncMock,
+    ) -> None:
+        """SPAWN_REBASE runs inline and should not count against agent slot capacity."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        mock_cfg.return_value.max_parallel_agents = 1
+        mock_cfg.return_value.coderabbit_quota.enabled = False
+        mock_cfg.return_value.resources.memory_block_threshold_gb = 0.0
+        mock_cfg.return_value.resources.memory_warn_threshold_gb = 0.0
+
+        # Two tasks, both IN_REVIEW with conflicts
+        tasks = [
+            _task(1, state=TaskState.IN_REVIEW),
+            _task(2, state=TaskState.IN_REVIEW),
+        ]
+        mock_graph.return_value = DependencyGraph(tasks)
+
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
+
+        with (
+            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch.object(engine, "_evaluate_single", new_callable=AsyncMock) as mock_eval,
+        ):
+            # Both return SPAWN_REBASE
+            mock_eval.side_effect = [
+                ProgressionDecision(issue_number=1, action=ProgressionAction.SPAWN_REBASE, reason="conflict"),
+                ProgressionDecision(issue_number=2, action=ProgressionAction.SPAWN_REBASE, reason="conflict"),
+            ]
+            decisions = await engine.evaluate_all()
+
+        # Both should succeed (no slot exhaustion between them)
+        assert len(decisions) == 2
+        assert all(d.action == ProgressionAction.SPAWN_REBASE for d in decisions)
