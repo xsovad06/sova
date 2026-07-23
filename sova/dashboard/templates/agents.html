@@ -1143,8 +1143,6 @@ async function loadAgents() {
   try {
     var data = await fetchAPI(apiUrl('/agents/active'));
 
-    loadWorkItems();
-
     var fp = agentFingerprint(data);
     var changed = fp !== lastAgentFingerprint;
     if (changed) lastAgentFingerprint = fp;
@@ -2093,6 +2091,9 @@ async function _refreshCardMetrics() {
 }
 _metricsInterval = setInterval(_refreshCardMetrics, 5000);
 
+loadWorkItems();
+var _workItemsPollInterval = setInterval(loadWorkItems, 30000);
+
 _connectAgentWs();
 
 // Clean up on page navigation
@@ -2102,6 +2103,7 @@ window.addEventListener('beforeunload', function() {
   if (_metricsInterval) { clearInterval(_metricsInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
+  if (_workItemsPollInterval) { clearInterval(_workItemsPollInterval); }
   if (_memPressureInterval) { clearInterval(_memPressureInterval); }
 });
 

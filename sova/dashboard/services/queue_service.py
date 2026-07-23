@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from sova.adapters.base import TaskState
@@ -95,6 +96,9 @@ def _extract_label_priority(labels: list[str]) -> int:
 
 _PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
 
+_QUEUE_CACHE_TTL = 30  # seconds
+_queue_cache: dict[str, tuple[float, list[dict]]] = {}
+
 
 def _extract_phase_order(milestone: str | None) -> int:
     """Extract phase number from milestone title. Lower = earlier phase.
@@ -112,7 +116,14 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
 
     Uses the GitHub adapter via the project's sova.toml config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url, last_run.
+    Results are cached for 30 seconds per project to reduce API calls.
     """
+    cache_key = str(project_dir or "")
+    now = time.monotonic()
+    cached = _queue_cache.get(cache_key)
+    if cached and (now - cached[0]) < _QUEUE_CACHE_TTL:
+        return cached[1]
+
     from sova.adapters import create_adapter
     from sova.config.loader import load_config
 
@@ -174,6 +185,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
             }
         )
 
+    _queue_cache[cache_key] = (time.monotonic(), queue)
     return queue
 
 
