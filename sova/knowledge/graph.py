@@ -45,9 +45,11 @@ async def create_edge(
 
             existing = await session.execute(
                 select(MemoryEdge).where(
-                    MemoryEdge.source_id == source_id,
-                    MemoryEdge.target_id == target_id,
                     MemoryEdge.relation == relation,
+                    or_(
+                        (MemoryEdge.source_id == source_id) & (MemoryEdge.target_id == target_id),
+                        (MemoryEdge.source_id == target_id) & (MemoryEdge.target_id == source_id),
+                    ),
                 )
             )
             if existing.scalar_one_or_none() is not None:

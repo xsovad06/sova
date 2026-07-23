@@ -49,7 +49,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **marked.js v15 heading renderer uses token object** -- `heading({ tokens, depth })` not `heading(text, level)`. [confirmed: 1]
 - **Guard CDN libs at ALL usage sites; DOM hydration before cache checks** -- `if (window.lib)` on every call, not just init. Polling cache early-returns block hydration. PR #184. [confirmed: 2]
 - **Use `escapeJsStr()` not `escapeHtml()` for JS string context** -- HTML escaping misses quotes/backslashes in `onclick` handlers. [confirmed: 1]
-- **Output delivery chain resolves in-memory deque -> DB -> file** -- issue #366 tracks SSE push stream. Existing patterns: SSE = `feed.py` (FeedService pub-sub + StreamingResponse); WebSocket = `agents.py:296` (_ConnectionManager). [confirmed: 1]
+- **Output delivery chain resolves in-memory deque -> DB -> file** -- shipped in #366 via `OutputStreamService` (per-run pub-sub fan-out, bounded queue 200 entries, `event: done` on terminal). Gap-fill on reconnect via `?since=N` replays from deque/DB before live push. `viewLogs(runId, runStatus)` routes terminal runs directly to polling (no SSE) to avoid 15s blank wait. `EventSource.onerror` falls back to adaptive backoff polling (1s base, 1.5x multiplier, 5s cap). Existing patterns: SSE = `feed.py` (FeedService pub-sub + StreamingResponse); WebSocket = `agents.py:296` (_ConnectionManager). [confirmed: 2]
 - **WebSocket incremental updates must cover all display fields** -- snapshot fingerprint excludes resource metrics. Add a separate 5-second poll for metrics not in the WebSocket update path. PR #341. [confirmed: 1]
 - **Handle sentinel step values explicitly in rendering** -- `current_step="agent"` is valid; detect early and render distinct UI. PR #341. [confirmed: 1]
 - **PR widget role actions must use `quickStartRole`, not `runCommand`** -- `runCommand` can't resolve issue from PR context, causing conflict. PR #204. [confirmed: 1]
@@ -111,6 +111,9 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **`gh pr list --json commits` triggers GitHub 500K-node limit** -- `commits` field multiplies; remove from `--json` fields. PR #407. [confirmed: 1]
 
 ## Workflow / Pipeline
+
+- **SHA comparison is the primary check for address-pr push validation** -- `_validate_address_pr()` in `agent_db.py` uses GitHub API SHA comparison (pre-run vs post-run) as the primary check, with git ref comparison and text scan as fallbacks. The SHA check must return `None` (inconclusive) when SHA is unchanged, NOT `False`, so the fallback chain works correctly. `_capture_pr_head_sha()` is called before agent spawn with a 10s timeout; on merged PR it returns `True` immediately; on rate-limit/network error it returns `None` (falls through to next check). PR #412. [confirmed: 1]
+- **Async lock holders must not block on network calls** -- `pa._lock` is project-wide; holding it during a GitHub API call with a 10s timeout blocks all concurrent agent starts for that project. Pattern: hoist API calls above `async with pa._lock:`. This applies to `_capture_pr_head_sha()` in `start_agent` and `start_command`. Same rationale as the memory-pressure check already outside the lock. File: `sova/dashboard/services/agent_lifecycle.py`. PR #412 CodeRabbit. [confirmed: 1]
 
 - **`Closes #N` must only reference issues this PR implements** -- use `Related: #N` for companion tasks. PR #365 review. [confirmed: 1]
 - **Guard assertions don't replace behavior assertions** -- extracting a guard test may drop behavior checks silently. PR #358 review. [confirmed: 1]

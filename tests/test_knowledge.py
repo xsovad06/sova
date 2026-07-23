@@ -59,6 +59,24 @@ async def test_store_with_optional_fields() -> None:
     assert mem.issue_number == "42"
 
 
+async def test_store_explicit_embedding_skips_auto_link() -> None:
+    """store() with explicit embedding does not call auto_link."""
+    from unittest.mock import patch
+
+    from sova.knowledge.memory import store
+
+    with patch("sova.knowledge.graph.auto_link") as mock_al:
+        mem = await store(
+            category="learning",
+            title="Explicit emb",
+            content="Content",
+            tags=[],
+            embedding=[1.0, 0.0],
+        )
+    assert mem.id is not None
+    mock_al.assert_not_called()
+
+
 async def test_get_by_id() -> None:
     """get() retrieves a memory by ID."""
     from sova.knowledge.memory import get, store
@@ -649,6 +667,17 @@ async def test_create_edge_duplicate_returns_none() -> None:
     assert first is not None
     duplicate = await create_edge(m1.id, m2.id, relation="relates_to")
     assert duplicate is None
+
+
+async def test_create_edge_reversed_duplicate_returns_none() -> None:
+    """create_edge() returns None when reversed (target, source) edge exists."""
+    from sova.knowledge.graph import create_edge
+
+    m1, m2 = await _create_two_memories()
+    first = await create_edge(m1.id, m2.id, relation="relates_to")
+    assert first is not None
+    reversed_dup = await create_edge(m2.id, m1.id, relation="relates_to")
+    assert reversed_dup is None
 
 
 async def test_create_edge_different_relation_allowed() -> None:

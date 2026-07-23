@@ -109,6 +109,12 @@ var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
 var _outputCursor = 0;
 var _outputPollTimer = null;
 var _outputTargetStep = null;
+var _outputEventSource = null;
+var _outputBackoffMs = 2000;
+var _OUTPUT_BACKOFF_BASE = 2000;
+var _OUTPUT_BACKOFF_MAX = 5000;
+var _outputActiveRun = null;
+var _outputActiveTarget = null;
 
 function safeStepId(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -194,12 +200,15 @@ async function loadRunDetail() {
   }
 }
 
+function _closeOutputStream() {
+  if (_outputPollTimer) { clearTimeout(_outputPollTimer); _outputPollTimer = null; }
+  if (_outputEventSource) { _outputEventSource.close(); _outputEventSource = null; }
+}
+
 function renderStepList(steps, run) {
-  if (_outputPollTimer) {
-    clearTimeout(_outputPollTimer);
-    _outputPollTimer = null;
-  }
+  _closeOutputStream();
   _outputCursor = 0;
+  _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
 
   if (steps.length === 0) {
     document.getElementById('step-list').innerHTML = '<p class="text-gray-500 text-sm p-4">No steps recorded</p>';
@@ -365,7 +374,53 @@ function scrollToStep(stepName) {
   setTimeout(function() { row.classList.remove('sova-step-highlight'); }, 1500);
 }
 
-async function tryLoadOutput(run, targetId) {
+function tryLoadOutput(run, targetId) {
+  _outputActiveRun = run;
+  _outputActiveTarget = targetId;
+
+  if (!_TERMINAL.includes(run.status)) {
+    _connectOutputSSE(run, targetId);
+  } else {
+    _pollOutput(run, targetId);
+  }
+}
+
+function _connectOutputSSE(run, targetId) {
+  _closeOutputStream();
+
+  var url = apiUrl('/agents/' + run.id + '/output/stream');
+  var es = new EventSource(url);
+  _outputEventSource = es;
+
+  es.addEventListener('output', function(e) {
+    var el = document.getElementById(targetId);
+    if (el) {
+      var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
+      if (_outputCursor === 0) {
+        el.textContent = text;
+      } else {
+        el.textContent += '\n' + text;
+      }
+      _outputCursor++;
+      el.scrollTop = el.scrollHeight;
+    }
+  });
+
+  es.addEventListener('done', function() {
+    if (es === _outputEventSource) { es.close(); _outputEventSource = null; }
+  });
+
+  es.onerror = function() {
+    if (es === _outputEventSource) { es.close(); _outputEventSource = null; }
+    _outputCursor = 0;
+    _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
+    var el = document.getElementById(targetId);
+    if (el) el.textContent = '';
+    _pollOutput(run, targetId);
+  };
+}
+
+async function _pollOutput(run, targetId) {
   try {
     var data = await fetchAPI(apiUrl('/agents/' + run.id + '/output?since=' + _outputCursor));
     if (data.lines && data.lines.length > 0) {
@@ -379,13 +434,16 @@ async function tryLoadOutput(run, targetId) {
         _outputCursor += data.lines.length;
         el.scrollTop = el.scrollHeight;
       }
+      _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
+    } else {
+      _outputBackoffMs = Math.min(_outputBackoffMs * 1.5, _OUTPUT_BACKOFF_MAX);
     }
   } catch (e) {
-    // Agent output not available
+    _outputBackoffMs = Math.min(_outputBackoffMs * 1.5, _OUTPUT_BACKOFF_MAX);
   }
 
   if (!_TERMINAL.includes(run.status)) {
-    _outputPollTimer = setTimeout(function() { tryLoadOutput(run, targetId); }, 2000);
+    _outputPollTimer = setTimeout(function() { _pollOutput(run, targetId); }, _outputBackoffMs);
   }
 }
 
@@ -605,6 +663,15 @@ function drawResourceChart(samples) {
   ctx.fillText(fmt(mid), pad.left + cw / 2, h - 4);
   ctx.fillText(fmt(last), pad.left + cw, h - 4);
 }
+
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    _closeOutputStream();
+  } else if (_outputActiveRun && !_TERMINAL.includes(_outputActiveRun.status)) {
+    _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
+    _connectOutputSSE(_outputActiveRun, _outputActiveTarget);
+  }
+});
 
 loadRunDetail();
 </script>
