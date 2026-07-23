@@ -396,6 +396,8 @@ function prefillForm(data) {
   fc('pr_auto_link', c['pr.auto_link_issues'] !== 'False');
 }
 
+let installedSlug = null;
+
 async function installProject(updateOnly) {
   if (!currentProjectPath) return;
   const btn = document.getElementById(updateOnly ? 'update-btn' : 'install-btn');
@@ -417,15 +419,39 @@ async function installProject(updateOnly) {
     }
     const result = await res.json();
     if (result.status === 'ok') {
-      output.textContent = 'Installed';
-      output.className = 'text-xs text-accent-green';
+      installedSlug = result.slug;
       document.getElementById('install-status').textContent = 'Installed';
       document.getElementById('install-status').className = 'text-xs px-2 py-1 rounded-full bg-accent-green/20 text-accent-green';
+      showSuccessBanner(output.parentElement, result.slug, updateOnly ? 'Updated' : 'Installed');
     }
   } finally {
     btn.textContent = origText;
     btn.disabled = false;
   }
+}
+
+function showSuccessBanner(container, slug, action) {
+  const banner = document.createElement('div');
+  banner.className = 'mt-4 p-4 bg-accent-green/10 border border-accent-green/30 rounded-lg';
+  banner.innerHTML = `
+    <div class="flex items-center gap-2 mb-3">
+      <span class="w-2 h-2 rounded-full bg-accent-green"></span>
+      <span class="text-sm font-medium text-accent-green">${action} successfully</span>
+    </div>
+    <div class="flex items-center gap-3">
+      <a href="/p/${slug}/dashboard"
+        class="px-4 py-2 bg-accent-green/20 text-accent-green rounded-lg hover:bg-accent-green/30 transition-colors text-sm font-medium">
+        Go to Project
+      </a>
+      <a href="/"
+        class="px-4 py-2 bg-surface-hover text-gray-300 rounded-lg hover:bg-gray-600 transition-colors text-sm font-medium">
+        Back to Projects
+      </a>
+    </div>`;
+  const existing = container.querySelector('.bg-accent-green\\/10.border');
+  if (existing) existing.remove();
+  container.appendChild(banner);
+  banner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // -- Jira wizard functions --
@@ -601,6 +627,11 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
   if (result.status === 'ok') {
     status.textContent = 'Saved to ' + result.config_path;
     status.className = 'self-center text-xs text-accent-green';
+    const slug = result.slug || installedSlug;
+    if (slug) {
+      const formEnd = document.getElementById('setup-form').parentElement;
+      showSuccessBanner(formEnd, slug, 'Configured');
+    }
   }
 });
 
