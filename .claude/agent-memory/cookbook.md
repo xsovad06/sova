@@ -6,7 +6,7 @@ Actionable patterns discovered during development, organized by domain. Entries 
 
 These entries are fully documented in `.claude/rules/architecture.md` or `.claude/rules/workflow.md`. One-line references only.
 
-**Git / Rebase**: verify branch identity before `git reset --soft`; `git stash` removes uncommitted edits; module split conflicts take refactored facade. See `workflow.md`.
+**Git / Rebase**: verify branch identity before `git reset --soft`; `git stash` removes uncommitted edits; module split conflicts take refactored facade; two-level rebase loop (commits x attempts); `_restore_stash()` on all early returns. See `workflow.md`, `architecture.md`.
 **Git / Hooks**: `core.hooksPath` doesn't survive `git clone`; three layers auto-configure it. See `architecture.md`.
 **Testing**: dashboard service tests must isolate project dir via `monkeypatch.setattr`.
 **Documentation**: doc counts drift after refactors; stale references persist after renames.
@@ -96,6 +96,13 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Use `--body-file` for `gh issue edit` with multi-line content** -- `--body "..."` breaks on shell quoting. Use `--body-file /tmp/body.md` or `--body-file -`. [confirmed: 1]
 - **Command step instructions override `_HEADLESS_PREAMBLE`** -- commands that run headlessly must never contain approval gates ("ask before", "show draft first"). Agent exits `-p` mode on text-only output. PR #404. [confirmed: 1]
 
+## Git Operations
+
+- **Early-return paths in stash-guarded functions must pop the stash** -- `sync_branch()` stashes uncommitted changes before checkout; every `return` and `raise` path must call `_restore_stash()`. Extract a helper to avoid duplication across N early-return branches. PR #425 review. [confirmed: 1]
+- **Rebase loop cap checks must track commits processed, not conflicts resolved** -- `conflicts_resolved` counts files, not commits. Use `for...else` pattern: the `else` clause fires only when the loop exhausts `range(max_commits)`. PR #425 review. [confirmed: 1]
+- **Initialize loop variables before the loop body** -- `remaining = await _get_conflicted_files()` inside the inner loop leaves `remaining` undefined if `max_attempts=0`. Declare `remaining: list[str] = []` before the loop. PR #425 review. [confirmed: 1]
+- **Log diagnostic context before silent break/continue exits** -- when a `break` exits a loop on failure, log `stdout[:200]` and `stderr[:200]` before breaking. The final error message should include the reason, not just "could not be completed". PR #425 review. [confirmed: 1]
+
 ## GitHub API
 
 - **Label names use `area: X` format (space after colon)** -- `gh label list` for exact names. [confirmed: 1]
@@ -125,7 +132,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Security validation must fail closed, not open** -- return RESTRICTIVE default on transient errors. [confirmed: 1]
 - **Multi-handoff action IDs must be disambiguated by owner** -- accept `issue` parameter alongside `action_id` to filter handoffs. [confirmed: 1]
 - **AssessStep adopts an existing open PR instead of blocking** -- when `ctx.pr_number` is unset and `force=False`, calls `find_pr_for_issue()`. On match, sets `ctx.pr_number` and `ctx.branch_name` so the developer pipeline continues without creating a duplicate PR. This does NOT switch to the address-review variant; variant selection happens in DeveloperRole before any steps run, driven by `--pr` passed at spawn time. See `_recover_last_pr_number()` in `agent_lifecycle.py`. PR #378. [confirmed: 1] [confirmed: 1]
-- **`_ensure_committed` lint-then-commit safety net in CI fix loop** -- after the LLM fixes CI failures, `_validate_fix()` calls `_ensure_committed()` before the pre-push hook to catch uncommitted changes and lint violations. The method: (1) runs `ruff check --fix . && ruff format .` (non-fatal if ruff is not installed), (2) checks `git status --porcelain` for working-tree changes, (3) stages with `git add -u` and commits if changes exist. Edge cases: ruff not installed (skipped silently), ruff makes no changes (no commit needed), LLM committed but ruff finds additional issues (ruff fixes committed separately), LLM made no edits at all (no-op), untracked files present (`git add -u` ignores them). File: `sova/core/steps/monitor_ci.py`. [confirmed: 1]
+- **`_ensure_committed` lint-then-commit safety net in CI fix loop** -- after the LLM fixes CI failures, `_validate_fix()` calls `_ensure_committed()` before the pre-push hook. Returns `bool | None`: `True` (committed), `False` (clean tree), `None` (stage/commit failed). Caller must handle `None` by skipping/erroring, not proceeding to push (stale HEAD risk). Uses `fix(core): address CI failures` (scoped, not scopeless `fix:`). Edge cases: ruff not installed (skipped), ruff no changes (no commit), LLM committed but ruff finds issues (ruff fixes committed separately), no edits (no-op), untracked files (`git add -u` ignores them). File: `sova/core/steps/monitor_ci.py`. PR #420. [confirmed: 2]
 - **CI poll must validate PR head SHA after force-push** -- pass `expected_sha` to `_poll_ci()`, verify via `gh pr view --json headRefOid`. [confirmed: 1]
 - **Resume fast-paths must apply the same filters as the primary path** -- `_check_ci_on_resume()` and `_check_existing_ci()` both initially skipped `exclude_checks` filtering, causing false CI failures for projects that exclude checks like SonarCloud. Any fast-path shortcut that reads the same data as the main loop must also apply the same exclusion/filter logic. File: `sova/core/steps/monitor_ci.py`. PR #402, #418. [confirmed: 2]
 - **Long-running polling steps need heartbeat writes for watchdog integration** -- `_poll_ci` was silent during its sleep intervals, so the watchdog's no-output detector couldn't distinguish "polling quietly" from "process is dead." Write progress lines to `OutputWriter` each iteration. Added `output_writer` field to `ExecutionContext`, wired from `WorkflowEngine`. Files: `sova/core/context.py`, `sova/core/steps/monitor_ci.py`. PR #402. [confirmed: 1]
@@ -162,6 +169,12 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Secret Pydantic fields need `repr=False`** -- fields with API tokens should use `Field("", repr=False)`. Also applies to request models in routers, not just config models. [confirmed: 1]
 
 ## Supervisor / TaskProgressionEngine
+
+- **Cross-cutting files in predict_candidate_files cause false positives on area-label fallback** -- `_CROSS_CUTTING_FILES` (models.py, loader.py, settings_meta.py) added to every area-label prediction means two unrelated area tasks always overlap at threshold=0.0. Fix: only add cross-cutting files when body-path extraction succeeds, not on area-label fallback. PR #426. [confirmed: 1]
+- **Add isnot(None) guard alongside != "" for nullable string columns** -- SQLAlchemy `!= ""` evaluates to NULL (not True) on NULL rows. Add `.isnot(None)` for explicit intent even when the ORM convention implies non-nullable. PR #426. [confirmed: 1]
+- **Skip expensive precomputation when the gate input is unavailable** -- file overlap gate fetches active branch file sets even when the task lookup returns None (no labels or body to predict from). Move the task lookup before the fetch and skip when task is None. PR #426. [confirmed: 1]
+- **Use configured base_branch for git diff fallback, not hardcoded origin/main** -- git fallback in file overlap detection always diffed against `origin/main`. Projects with a different base_branch get empty file sets after PR API failure, silently disabling the gate. Pass `cfg.base_branch` through. PR #426. [confirmed: 1]
+- **Test assertions must verify behavior, not tautologies** -- testing `if disabled: return True` by asserting `result is True` only proves the condition is met, not that the gate was actually skipped. Instead, patch the gate method and assert it was NOT called when disabled. PR #426. [confirmed: 1]
 
 - **Test precomputed values with multiple items; test fail-open paths by injecting exceptions** -- single-item tests don't prove reuse; mocks skip exception handlers. PR #357. [confirmed: 1]
 - **Standardize numeric precision; verify log assertions with message key + kwargs** -- `.1f`/`round(2)` divergence breaks log correlation; `assert_called_once()` misses wrong kwargs. PR #357. [confirmed: 1]
@@ -232,7 +245,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Common Mistakes (tracked by occurrence)
 
-- **`perf` is not a valid commit type, `git` is not a valid scope** -- invariant only accepts `feat, fix, refactor, test, docs, chore, ci`. Use `fix(core)` for perf improvements, `core`/`dashboard` for `sova/git/` changes. (occurrences: 2) [confirmed: 2]
+- **`perf` is not a valid commit type, `git` is not a valid scope** -- invariant only accepts `feat, fix, refactor, test, docs, chore, ci`. Use `fix(core)` for perf improvements, `core`/`dashboard` for `sova/git/` changes. Applies to programmatically generated commits too (e.g., `_ensure_committed`, LLM fix prompts): always `type(scope): ...`, never scopeless `type: ...` (except `ci:`). (occurrences: 3) [confirmed: 3]
 - **`except X as exc:` + `log.warning(..., exc_info=True)` leaves `exc` unused** -- remove `as exc` or ruff F841 fires. (occurrences: 2) [confirmed: 1]
 
 ## Supervisor / Progression Engine

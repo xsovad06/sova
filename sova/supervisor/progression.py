@@ -24,6 +24,12 @@ from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
 from sova.git.pr import find_pr_for_issue
 from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
+from sova.supervisor.file_overlap import (
+    BranchFileSet,
+    check_file_overlap,
+    get_active_branch_file_sets,
+    predict_candidate_files,
+)
 from sova.utils.logging import get_logger
 
 try:
@@ -109,6 +115,17 @@ class TaskProgressionEngine:
             log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
             precomputed_conflicts = {}
 
+        # Pre-fetch active branch file sets for file overlap gate (fail-open)
+        precomputed_file_sets: list[BranchFileSet] | None = None
+        if self._config.file_overlap_gate:
+            try:
+                precomputed_file_sets = await get_active_branch_file_sets(
+                    self._session_factory,
+                    self._project_dir,
+                )
+            except Exception:
+                log.debug("evaluate_all.file_overlap_fetch_failed", exc_info=True)
+
         # Compute alive count once: used for both the slot gate and remaining capacity
         alive_count = await self._get_alive_count()
         global_slots: BlockReason | None = None
@@ -151,6 +168,9 @@ class TaskProgressionEngine:
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
                 precomputed_conflicts=precomputed_conflicts,
+                precomputed_file_sets=precomputed_file_sets,
+                task_labels=task.labels,
+                task_body=task.body,
             )
             decisions.append(decision)
 
@@ -210,7 +230,34 @@ class TaskProgressionEngine:
             log.debug("evaluate_task.mergeability_fetch_failed", issue=issue_number, exc_info=True)
             precomputed_conflicts = {}
 
-        return await self._evaluate_single(issue_number, state, graph, precomputed_conflicts=precomputed_conflicts)
+        # Fetch task info and file sets for file overlap gate
+        precomputed_file_sets: list[BranchFileSet] | None = None
+        task_labels: list[str] = []
+        task_body: str = ""
+        task = graph.get_task(issue_number)
+        if task is not None:
+            task_labels = task.labels
+            task_body = task.body
+
+        if self._config.file_overlap_gate and task is not None:
+            try:
+                precomputed_file_sets = await get_active_branch_file_sets(
+                    self._session_factory,
+                    self._project_dir,
+                    exclude_issue=str(issue_number),
+                )
+            except Exception:
+                log.debug("evaluate_task.file_overlap_fetch_failed", issue=issue_number, exc_info=True)
+
+        return await self._evaluate_single(
+            issue_number,
+            state,
+            graph,
+            precomputed_conflicts=precomputed_conflicts,
+            precomputed_file_sets=precomputed_file_sets,
+            task_labels=task_labels,
+            task_body=task_body,
+        )
 
     async def execute_decision(self, decision: ProgressionDecision) -> dict:
         """Spawn agent based on decision. Returns start_agent result or error dict."""
@@ -262,6 +309,9 @@ class TaskProgressionEngine:
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
+        precomputed_file_sets: list[BranchFileSet] | None = None,
+        task_labels: list[str] | None = None,
+        task_body: str = "",
     ) -> ProgressionDecision:
         """Evaluate a single task against all gates."""
         candidate = self._determine_transition(state)
@@ -288,6 +338,9 @@ class TaskProgressionEngine:
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
             precomputed_conflicts=precomputed_conflicts,
+            precomputed_file_sets=precomputed_file_sets,
+            task_labels=task_labels,
+            task_body=task_body,
         )
 
         if blockers:
@@ -317,6 +370,9 @@ class TaskProgressionEngine:
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
+        precomputed_file_sets: list[BranchFileSet] | None = None,
+        task_labels: list[str] | None = None,
+        task_body: str = "",
     ) -> list[BlockReason]:
         """Run all gate checks and return active blockers."""
         blockers: list[BlockReason] = []
@@ -339,6 +395,17 @@ class TaskProgressionEngine:
             conflict_block = self._check_merge_conflict_gate(issue_number, precomputed_conflicts)
             if conflict_block:
                 blockers.append(conflict_block)
+
+        # File overlap gate (per-task, uses precomputed file sets)
+        if self._config.file_overlap_gate and precomputed_file_sets is not None:
+            overlap_block = self._check_file_overlap_gate(
+                issue_number,
+                precomputed_file_sets,
+                task_labels or [],
+                task_body,
+            )
+            if overlap_block:
+                blockers.append(overlap_block)
 
         # Add precomputed global gates (or compute on demand for single-task eval)
         global_blocks = await self._resolve_global_gates(
@@ -584,6 +651,41 @@ class TaskProgressionEngine:
                 detail=f"PR for #{issue_number} has merge conflicts with base branch",
             )
         return None
+
+    def _check_file_overlap_gate(
+        self,
+        issue_number: int,
+        active_file_sets: list[BranchFileSet],
+        labels: list[str],
+        body: str,
+    ) -> BlockReason | None:
+        """Check if candidate task's predicted files overlap with in-flight branches."""
+        try:
+            candidate_files = predict_candidate_files(labels, body)
+            if not candidate_files:
+                return None
+
+            filtered = [fs for fs in active_file_sets if fs.issue_number != str(issue_number)]
+            overlaps = check_file_overlap(candidate_files, filtered, threshold=self._config.file_overlap_threshold)
+            if not overlaps:
+                return None
+
+            details = []
+            for o in overlaps:
+                sample = sorted(o.overlapping_files)[:3]
+                files_str = ", ".join(sample)
+                if len(o.overlapping_files) > 3:
+                    files_str += f" (+{len(o.overlapping_files) - 3} more)"
+                issue_ref = f"#{o.conflicting_issue}" if o.conflicting_issue else o.conflicting_branch
+                details.append(f"overlaps with {issue_ref} on {files_str}")
+
+            return BlockReason(
+                gate="file_overlap",
+                detail="; ".join(details),
+            )
+        except Exception:
+            log.debug("file_overlap_gate.check_failed", issue=issue_number, exc_info=True)
+            return None
 
     async def _find_pr_for_issue(self, issue: int) -> int | None:
         """Find an open PR linked to this issue."""
