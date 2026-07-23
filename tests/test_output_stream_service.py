@@ -208,9 +208,17 @@ async def test_output_stream_sends_done_on_terminal_run(setup_db) -> None:
     from sova.dashboard.routers.agents import stream_agent_output
 
     mock_request = AsyncMock()
-    mock_request.is_disconnected = AsyncMock(return_value=False)
+    call_count = 0
 
-    with patch("sova.dashboard.routers.agents._check_run_terminal", return_value=True):
+    async def is_disconnected():
+        nonlocal call_count
+        call_count += 1
+        return call_count > 1
+
+    mock_request.is_disconnected = is_disconnected
+
+    with patch("sova.dashboard.routers.agents._check_run_terminal", return_value=True), \
+         patch("sova.dashboard.routers.agents.asyncio.wait_for", side_effect=asyncio.TimeoutError):
         response = await stream_agent_output(run_id=1, request=mock_request)
         chunks = []
         async for chunk in response.body_iterator:
@@ -251,3 +259,13 @@ async def test_buffer_line_publishes_to_output_stream(setup_db) -> None:
     assert queue.get_nowait() == "test line"
 
     mod._output_stream_service = None
+
+
+@pytest.mark.asyncio
+async def test_check_run_terminal_exception_returns_false(setup_db) -> None:
+    """_check_run_terminal returns False and logs on DB errors."""
+    from sova.dashboard.routers.agents import _check_run_terminal
+
+    with patch("sova.dashboard.routers.agents.get_session", side_effect=RuntimeError("db down")):
+        result = await _check_run_terminal(run_id=999)
+    assert result is False
