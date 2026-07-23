@@ -516,6 +516,8 @@ class SupervisorConfig(BaseSettings):
     auto_address_review: bool = False
     auto_integrate: bool = False
     respect_dependencies: bool = True
+    file_overlap_gate: bool = True
+    file_overlap_threshold: float = Field(0.0, ge=0.0, le=1.0)
     poll_interval_seconds: int = Field(120, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")

@@ -1,4 +1,4 @@
-"""Tests for sova.supervisor.progression -- task progression engine."""
+"""Tests for sova.supervisor.progression: task progression engine."""
 
 from __future__ import annotations
 
@@ -1357,3 +1357,113 @@ class TestResolveGlobalGates:
         assert len(blocks) == 3
         gates = {b.gate for b in blocks}
         assert gates == {"quota", "slots", "memory"}
+
+
+# ---------------------------------------------------------------------------
+# _check_file_overlap_gate
+# ---------------------------------------------------------------------------
+
+
+class TestFileOverlapGate:
+    @pytest.mark.asyncio
+    async def test_gate_disabled_skips(self) -> None:
+        """Verify file_overlap_gate=False prevents _check_file_overlap_gate from running."""
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=False))
+        from sova.supervisor.file_overlap import BranchFileSet
+        from sova.supervisor.progression import DependencyGraph
+
+        bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
+        with patch.object(engine, "_check_file_overlap_gate", wraps=engine._check_file_overlap_gate) as mock_gate:
+            blockers = await engine._collect_gate_blockers(
+                42,
+                ProgressionAction.SPAWN_DEVELOPER,
+                DependencyGraph({}),
+                precomputed_memory=None,
+                precomputed_quota=None,
+                precomputed_slots=None,
+                precomputed_file_sets=[bfs],
+                task_labels=["area:core"],
+                task_body="",
+            )
+            mock_gate.assert_not_called()
+            assert len(blockers) == 0
+
+    def test_no_candidate_files_passes(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
+        result = engine._check_file_overlap_gate(42, [bfs], [], "")
+        assert result is None
+
+    def test_overlap_detected_blocks(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
+        result = engine._check_file_overlap_gate(42, [bfs], ["area:core"], "")
+        assert result is not None
+        assert result.gate == "file_overlap"
+        assert "#10" in result.detail
+
+    def test_self_overlap_filtered(self) -> None:
+        """A task's own prior branch should not block itself."""
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs = BranchFileSet("42", 1, None, "feat/issue-42", frozenset(["sova/core/foo.py"]))
+        result = engine._check_file_overlap_gate(42, [bfs], ["area:core"], "")
+        assert result is None
+
+    def test_no_overlap_passes(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/dashboard/app.py"]))
+        result = engine._check_file_overlap_gate(42, [bfs], ["area:cli"], "")
+        assert result is None
+
+    def test_multiple_overlapping_branches_reported(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs1 = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
+        bfs2 = BranchFileSet("20", 2, None, "feat/issue-20", frozenset(["sova/core/bar.py"]))
+        result = engine._check_file_overlap_gate(42, [bfs1, bfs2], ["area:core"], "")
+        assert result is not None
+        assert "#10" in result.detail
+        assert "#20" in result.detail
+
+    def test_body_file_paths_used(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        from sova.supervisor.file_overlap import BranchFileSet
+
+        bfs = BranchFileSet(
+            "10",
+            1,
+            None,
+            "feat/issue-10",
+            frozenset(["sova/supervisor/progression.py"]),
+        )
+        result = engine._check_file_overlap_gate(
+            42,
+            [bfs],
+            [],
+            "Fix `sova/supervisor/progression.py`",
+        )
+        assert result is not None
+        assert result.gate == "file_overlap"
+
+    def test_exception_fails_open(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        with patch(
+            "sova.supervisor.progression.predict_candidate_files",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = engine._check_file_overlap_gate(42, [], ["area:core"], "")
+            assert result is None
+
+    def test_empty_branch_file_set_no_block(self) -> None:
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=True))
+        result = engine._check_file_overlap_gate(42, [], ["area:core"], "")
+        assert result is None

@@ -905,6 +905,20 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.file_overlap_gate",
+        "File overlap gate",
+        "Defer tasks whose predicted file changes overlap with in-flight branches",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.file_overlap_threshold",
+        "File overlap threshold",
+        "Minimum overlap ratio (common files / union) to trigger the gate (0.0 = any overlap blocks)",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
         "supervisor.poll_interval_seconds",
         _LABEL_POLL_INTERVAL,
         "Seconds between progression evaluation cycles",
