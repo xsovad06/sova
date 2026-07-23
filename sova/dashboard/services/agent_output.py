@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+from sova.dashboard.services.output_stream_service import get_output_stream_service
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -47,12 +48,16 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | N
 
 
 async def _buffer_line(agent: AgentState, text: str) -> None:
-    """Append a line to the agent's deque and optionally persist to DB."""
+    """Append a line to the agent's deque, persist to DB, and push to SSE subscribers."""
     agent.output_lines.append(text)
     if agent.output_writer:
         agent.output_writer.write_line(text)
         if agent.output_writer.should_flush():
             await agent.output_writer.flush()
+
+    oss = get_output_stream_service()
+    if oss.has_subscribers(agent.run_id):
+        oss.publish(agent.run_id, text)
 
 
 async def _read_output(agent: AgentState) -> None:

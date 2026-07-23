@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
+from starlette.requests import Request
+from starlette.responses import StreamingResponse
 
+from sova.core.state import TASK_RUN_TERMINAL
 from sova.dashboard.services import control_service
+from sova.dashboard.services.output_stream_service import get_output_stream_service
+from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
@@ -234,6 +241,54 @@ async def get_agent_output(run_id: int, since: int = 0):
     """Get output lines for a specific agent."""
     lines = await control_service.get_output(since, run_id=run_id)
     return {"lines": lines, "total": since + len(lines)}
+
+
+@router.get("/agents/{run_id}/output/stream")
+async def stream_agent_output(run_id: int, request: Request) -> StreamingResponse:
+    """SSE endpoint: streams output lines for a specific agent run in real time."""
+    oss = get_output_stream_service()
+    sub_id, queue = oss.subscribe(run_id)
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        try:
+            yield "event: connected\ndata: {}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    line = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    escaped = line.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+                    yield f"event: output\ndata: {escaped}\n\n"
+                except asyncio.TimeoutError:
+                    # Check if the run has reached a terminal state
+                    is_done = await _check_run_terminal(run_id)
+                    if is_done:
+                        yield "event: done\ndata: {}\n\n"
+                        break
+                    yield ": keepalive\n\n"
+        finally:
+            oss.unsubscribe(run_id, sub_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _check_run_terminal(run_id: int) -> bool:
+    """Check whether a run has reached a terminal status."""
+    try:
+        async with await get_session() as session:
+            row = await session.execute(select(TaskRun.status).where(TaskRun.id == run_id))
+            status = row.scalar()
+            return status in TASK_RUN_TERMINAL if status else True
+    except Exception:
+        return False
 
 
 @router.post("/agents/start")

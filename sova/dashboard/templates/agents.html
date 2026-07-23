@@ -1122,6 +1122,10 @@ async function runCommand(command, args) {
 var logCursor = 0;
 var agentPollInterval = null;
 var logPollInterval = null;
+var _logEventSource = null;
+var _logBackoffMs = 1000;
+var _LOG_BACKOFF_BASE = 1000;
+var _LOG_BACKOFF_MAX = 5000;
 var lastAgentFingerprint = null;
 
 function agentFingerprint(data) {
@@ -1392,21 +1396,60 @@ function viewLogs(runId) {
     return;
   }
 
+  closeLogViewer();
   activeLogRunId = runId;
   logCursor = 0;
+  _logBackoffMs = _LOG_BACKOFF_BASE;
   content.textContent = '';
   viewer.classList.remove('hidden');
 
-  pollLogs();
+  _connectLogSSE(runId);
+}
 
-  if (logPollInterval) clearInterval(logPollInterval);
-  logPollInterval = setInterval(pollLogs, 1000);
+function _connectLogSSE(runId) {
+  if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
+
+  var url = apiUrl('/agents/' + runId + '/output/stream');
+  var es = new EventSource(url);
+  _logEventSource = es;
+
+  es.addEventListener('output', function(e) {
+    if (activeLogRunId !== runId) return;
+    var content = document.getElementById('log-content');
+    if (content) {
+      var text = e.data.replace(/\\n/g, '\n').replace(/\\\\/g, '\\');
+      content.textContent += text + '\n';
+      content.scrollTop = content.scrollHeight;
+    }
+  });
+
+  es.addEventListener('done', function() {
+    if (es === _logEventSource) { es.close(); _logEventSource = null; }
+  });
+
+  es.onerror = function() {
+    // SSE failed: fall back to polling with fresh cursor
+    if (es === _logEventSource) { es.close(); _logEventSource = null; }
+    if (activeLogRunId === runId) {
+      logCursor = 0;
+      var el = document.getElementById('log-content');
+      if (el) el.textContent = '';
+      _startLogPolling();
+    }
+  };
+}
+
+function _startLogPolling() {
+  if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
+  _logBackoffMs = _LOG_BACKOFF_BASE;
+  pollLogs();
 }
 
 function closeLogViewer() {
   activeLogRunId = null;
   logCursor = 0;
-  if (logPollInterval) { clearInterval(logPollInterval); logPollInterval = null; }
+  if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
+  if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
   var viewer = document.getElementById('log-viewer');
   if (viewer) viewer.classList.add('hidden');
 }
@@ -1422,9 +1465,15 @@ async function pollLogs() {
       });
       logCursor = data.total;
       content.scrollTop = content.scrollHeight;
+      _logBackoffMs = _LOG_BACKOFF_BASE;
+    } else {
+      _logBackoffMs = Math.min(_logBackoffMs * 1.5, _LOG_BACKOFF_MAX);
     }
   } catch (e) {
-    // Agent may have completed
+    _logBackoffMs = Math.min(_logBackoffMs * 1.5, _LOG_BACKOFF_MAX);
+  }
+  if (activeLogRunId !== null) {
+    logPollInterval = setTimeout(pollLogs, _logBackoffMs);
   }
 }
 
@@ -2484,6 +2533,8 @@ document.addEventListener('visibilitychange', function() {
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
     if (_memPressureInterval) { clearInterval(_memPressureInterval); _memPressureInterval = null; }
+    if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
+    if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
   } else {
     _wsReconnectAttempts = 0;
     _wsReconnectDelay = 1000;
@@ -2505,6 +2556,10 @@ document.addEventListener('visibilitychange', function() {
     _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
     checkMemoryPressure();
     _memPressureInterval = setInterval(checkMemoryPressure, 3000);
+    if (activeLogRunId !== null) {
+      _logBackoffMs = _LOG_BACKOFF_BASE;
+      _connectLogSSE(activeLogRunId);
+    }
   }
 });
 // -- CodeRabbit Quota Widget --

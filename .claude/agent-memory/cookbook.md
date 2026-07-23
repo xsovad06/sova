@@ -112,6 +112,9 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Workflow / Pipeline
 
+- **SHA comparison is the primary check for address-pr push validation** -- `_validate_address_pr()` in `agent_db.py` uses GitHub API SHA comparison (pre-run vs post-run) as the primary check, with git ref comparison and text scan as fallbacks. The SHA check must return `None` (inconclusive) when SHA is unchanged, NOT `False`, so the fallback chain works correctly. `_capture_pr_head_sha()` is called before agent spawn with a 10s timeout; on merged PR it returns `True` immediately; on rate-limit/network error it returns `None` (falls through to next check). PR #412. [confirmed: 1]
+- **Async lock holders must not block on network calls** -- `pa._lock` is project-wide; holding it during a GitHub API call with a 10s timeout blocks all concurrent agent starts for that project. Pattern: hoist API calls above `async with pa._lock:`. This applies to `_capture_pr_head_sha()` in `start_agent` and `start_command`. Same rationale as the memory-pressure check already outside the lock. File: `sova/dashboard/services/agent_lifecycle.py`. PR #412 CodeRabbit. [confirmed: 1]
+
 - **`Closes #N` must only reference issues this PR implements** -- use `Related: #N` for companion tasks. PR #365 review. [confirmed: 1]
 - **Guard assertions don't replace behavior assertions** -- extracting a guard test may drop behavior checks silently. PR #358 review. [confirmed: 1]
 - **Approval-then-spawn: spawn first, clear state second** -- `clear_handoff()` before `start_agent()` risks inconsistent state on spawn failure. PR #182. [confirmed: 1]
