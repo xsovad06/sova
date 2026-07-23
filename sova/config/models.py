@@ -537,6 +537,15 @@ class OversightConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_OVERSIGHT_")
 
 
+class FleetConfig(BaseSettings):
+    """Fleet insights: cross-project aggregation from local SOVA databases."""
+
+    cache_ttl_seconds: int = Field(300, gt=0)
+    query_timeout_seconds: int = Field(10, gt=0)
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_FLEET_")
+
+
 class AwarenessConfig(BaseSettings):
     """Awareness subsystem configuration (briefing, email, calendar)."""
 
@@ -627,6 +636,7 @@ class ProjectConfig(BaseSettings):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    fleet: FleetConfig = Field(default_factory=FleetConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
 

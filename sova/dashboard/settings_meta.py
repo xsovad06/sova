@@ -50,6 +50,7 @@ GROUPS: dict[str, str] = {
     "supervisor": "Supervisor",
     "memory_guard": "Memory Guard",
     "watchdog": "Agent Watchdog",
+    "fleet": "Fleet Insights",
     "awareness": "Awareness",
     "oversight": "Oversight Agent",
 }
@@ -88,6 +89,7 @@ GROUP_ORDER: list[str] = [
     "supervisor",
     "memory_guard",
     "watchdog",
+    "fleet",
     "awareness",
     "oversight",
 ]
@@ -1011,6 +1013,21 @@ _REGISTRY: list[SettingMeta] = [
         "Cooldown (min)",
         "Minutes between repeated alerts for the same run and signal type",
         "watchdog",
+        "number",
+    ),
+    # -- Fleet Insights --
+    SettingMeta(
+        "fleet.cache_ttl_seconds",
+        "Cache TTL (s)",
+        "Seconds to cache fleet-wide aggregation results before re-querying project databases",
+        "fleet",
+        "number",
+    ),
+    SettingMeta(
+        "fleet.query_timeout_seconds",
+        "Query timeout (s)",
+        "Maximum seconds to wait for a single project database query before skipping that project",
+        "fleet",
         "number",
     ),
     # -- Awareness --
