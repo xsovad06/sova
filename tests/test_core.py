@@ -1048,6 +1048,61 @@ class TestDevelopStep:
 
         assert gate.passed
 
+    async def test_gate_check_passes_with_only_untracked_files(self) -> None:
+        """Gate must pass when Claude wrote new files but never staged them."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (no tracked changes)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (nothing staged)
+                MagicMock(success=True, stdout=""),  # git log base..HEAD (no commits)
+                MagicMock(success=True, stdout="?? navigator.py\n?? tests/test_navigator.py\n"),  # untracked
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_gate_check_fails_with_all_signals_empty(self) -> None:
+        """Gate must fail when no diffs, no commits, and no untracked files exist."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "no code changes" in gate.reason.lower()
+
+    async def test_gate_check_ignores_non_untracked_porcelain_lines(self) -> None:
+        """Only lines starting with '??' count as untracked; modified lines do not."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout=" M modified.py\n"),  # porcelain: modified but tracked
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
 
 class TestCommitStep:
     async def test_commits_uncommitted_changes(self) -> None:
