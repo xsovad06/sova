@@ -217,8 +217,10 @@ async def test_output_stream_sends_done_on_terminal_run(setup_db) -> None:
 
     mock_request.is_disconnected = is_disconnected
 
-    with patch("sova.dashboard.routers.agents._check_run_terminal", return_value=True), \
-         patch("sova.dashboard.routers.agents.asyncio.wait_for", side_effect=asyncio.TimeoutError):
+    with (
+        patch("sova.dashboard.routers.agents._check_run_terminal", return_value=True),
+        patch("sova.dashboard.routers.agents.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+    ):
         response = await stream_agent_output(run_id=1, request=mock_request)
         chunks = []
         async for chunk in response.body_iterator:

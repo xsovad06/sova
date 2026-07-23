@@ -1126,6 +1126,7 @@ var _logEventSource = null;
 var _logBackoffMs = 1000;
 var _LOG_BACKOFF_BASE = 1000;
 var _LOG_BACKOFF_MAX = 5000;
+var _TERMINAL = ['done', 'failed', 'rejected', 'interrupted'];
 var lastAgentFingerprint = null;
 
 function agentFingerprint(data) {
@@ -1210,7 +1211,7 @@ function renderAgentCard(agent) {
     '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
-      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
+      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
       (agent.source !== 'external'
@@ -1381,13 +1382,13 @@ function updateLogTabs(agents) {
     var isActive = activeLogRunId === a.run_id;
     var activeClass = isActive ? 'bg-surface text-white border-b-2 border-accent' : 'text-gray-500 hover:text-gray-300';
     var tabLabel = a.issue ? '#' + a.issue : (a.pr_number ? 'PR #' + a.pr_number : formatRole(a.role, a.pipeline_variant));
-    return '<button onclick="viewLogs(' + a.run_id + ')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
+    return '<button onclick="viewLogs(' + a.run_id + ', \'' + escapeHtml(a.status) + '\')" class="px-4 py-2 text-xs transition-colors whitespace-nowrap ' + activeClass + '">' +
       escapeHtml(tabLabel) + ' <span class="' + colors.text + '">' + escapeHtml(formatRole(a.role, a.pipeline_variant)) + '</span>' +
     '</button>';
   }).join('');
 }
 
-function viewLogs(runId) {
+function viewLogs(runId, runStatus) {
   var viewer = document.getElementById('log-viewer');
   var content = document.getElementById('log-content');
 
@@ -1403,7 +1404,11 @@ function viewLogs(runId) {
   content.textContent = '';
   viewer.classList.remove('hidden');
 
-  _connectLogSSE(runId);
+  if (runStatus && _TERMINAL.includes(runStatus)) {
+    _startLogPolling();
+  } else {
+    _connectLogSSE(runId);
+  }
 }
 
 function _connectLogSSE(runId) {
