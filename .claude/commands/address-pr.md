@@ -16,7 +16,7 @@ Score each review comment, address all of them (fix or acknowledge with justific
 
 ## CRITICAL: Complete ALL Steps
 
-This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-16 first (squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-10 (rebase and push) to resolve any merge conflicts, then skip to step 16 for the summary.
+This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-17 first (squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-10 (rebase and push) to resolve any merge conflicts, then skip to step 11 to handle thread resolution before the summary.
 
 **Incomplete execution is worse than failure**: a run that fixes code but never commits/pushes wastes the cost and leaves the PR unchanged.
 
@@ -151,7 +151,48 @@ This command runs as a headless agent. You MUST execute every step below through
 
    **Only continue to step 11 when all required checks pass.** If checks are still failing after 2 retries, report the specific failures and stop -- do not proceed to reply/resolve steps with a red CI.
 
-11. **Post a single summary comment** on the PR with all dispositions. Do NOT reply to each thread individually. One comment per address-pr round:
+11. **Fetch all unresolved review threads** using GraphQL:
+    ```bash
+    gh api graphql -f query='{
+      repository(owner: "<OWNER>", name: "<REPO>") {
+        pullRequest(number: <PR_NUMBER>) {
+          reviewThreads(first: 50) {
+            nodes {
+              id
+              isResolved
+              isOutdated
+              comments(first: 1) { nodes { body path line author { login __typename } } }
+            }
+          }
+        }
+      }
+    }'
+    ```
+    Filter to unresolved, non-outdated threads. Match each thread to a finding using the thread's `path` and `line` fields. Use `author.__typename` to classify thread authors: `Bot` for automated reviewers, `User` for humans. If `__typename` is absent, fall back to checking whether `login` ends with `[bot]`.
+
+12. **Reply to each thread, then conditionally resolve** (MANDATORY: this is what unblocks the PR):
+
+    For each unresolved thread, post an inline reply explaining the disposition. Then resolve conditionally: resolve all bot threads (both Fixed and Acknowledged), and human threads only when the finding was Fixed. Leave Acknowledged human threads unresolved so the reviewer can confirm. Replying is always required; skipping replies leaves reviewers unclear on what was done.
+
+    a. **Reply** with a short, direct explanation:
+       ```bash
+       gh api graphql \
+         -f query='mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $threadId, body: $body}) { comment { id } } }' \
+         -f threadId="THREAD_ID" \
+         -f body="Fixed in <SHA>: <what changed>."
+       ```
+       For acknowledged findings: `"Acknowledged: <justification>."`
+
+    b. **Resolve** the thread:
+       ```bash
+       gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
+       ```
+
+    Thread resolution depends on who posted it:
+    - **Bot reviewers** (CodeRabbit, Sourcery, etc.): reply + resolve threads for both Fixed AND Acknowledged findings. Bot threads do not require human confirmation.
+    - **Human reviewers**: reply to all threads. Resolve only Fixed threads. Leave Acknowledged threads unresolved so the reviewer can confirm the justification.
+
+13. **Post a summary comment** on the PR with all dispositions in one table:
 
     ```markdown
     ## Address Review: Round N
@@ -162,37 +203,9 @@ This command runs as a headless agent. You MUST execute every step below through
     | 2 | `file:line`: short description | Acknowledged: justification. |
     ```
 
-    Keep the Action column SHORT and DIRECT. No filler words, no 'Great catch!', no emojis.
+    Keep the Action column SHORT and DIRECT. No filler words, no emojis.
 
-12. **Resolve each addressed thread** using GraphQL:
-    First fetch the thread node IDs for the PR:
-    ```bash
-    gh api graphql -f query='{
-      repository(owner: "<OWNER>", name: "<REPO>") {
-        pullRequest(number: <PR_NUMBER>) {
-          reviewThreads(first: 50) {
-            nodes {
-              id
-              isResolved
-              isOutdated
-              comments(first: 1) { nodes { body path line } }
-            }
-          }
-        }
-      }
-    }'
-    ```
-    Match each thread to a finding using the thread's `path` (file) and `line` fields from the query response. Skip threads where `isOutdated` is true: they are automatically superseded by subsequent commits and do not need explicit resolution.
-
-    Thread resolution depends on who posted it:
-    - **Bot reviewers** (CodeRabbit, Sourcery, etc.): resolve threads for both Fixed AND Acknowledged findings. Bot threads do not require human confirmation: resolving signals the finding was reviewed and a decision was made.
-    - **Human reviewers**: resolve only Fixed threads. Leave Acknowledged threads open so the reviewer can confirm the justification is acceptable.
-
-    ```bash
-    gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_ID"}) { thread { isResolved } } }'
-    ```
-
-13. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
+14. **Dismiss bot CHANGES_REQUESTED reviews** (mandatory when any bot review is in CHANGES_REQUESTED state after addressing findings):
 
     Fetch bot reviews that are still CHANGES_REQUESTED:
     ```bash
@@ -205,9 +218,9 @@ This command runs as a headless agent. You MUST execute every step below through
       -f message="Findings addressed or acknowledged. See Address Review comment."
     ```
 
-    **Never dismiss human reviews** -- only bot reviews (`user.type == "Bot"`) whose findings have been addressed in step 11.
+    **Never dismiss human reviews**: only bot reviews (`user.type == "Bot"`) whose findings have been addressed.
 
-14. **Request bot re-review** (if bot comments were addressed):
+15. **Request bot re-review** (if bot comments were addressed):
     ```bash
     # Sourcery AI
     gh pr comment <PR_NUMBER> --body "@sourcery-ai review"
@@ -216,9 +229,9 @@ This command runs as a headless agent. You MUST execute every step below through
     ```
     Only request re-review for bots whose comments were actually addressed.
 
-15. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
+16. **Update memory**: Append lessons learned to `.claude/agent-memory/cookbook.md` (under matching domain section).
 
-16. **Print summary**:
+17. **Print summary**:
     - Table: | Comment | Source | Score | Action |
     - Source column distinguishes human vs bot reviewers
     - Status: `ALL_RESOLVED` or `NEEDS_HUMAN_INPUT` (with bullet list of items needing input)
