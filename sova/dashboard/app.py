@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from sova.monitoring.cross_project import MetricsSnapshotWriter
+    from sova.oversight.agent import OversightAgent
     from sova.supervisor.watchdog import AgentWatchdog
 
 from fastapi import FastAPI, Request
@@ -184,6 +185,7 @@ async def _shutdown_tasks(
     metrics_writer: MetricsSnapshotWriter | None,
     watchdog: AgentWatchdog | None = None,
     recovery_task: asyncio.Task | None = None,
+    oversight_agent: OversightAgent | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -195,6 +197,8 @@ async def _shutdown_tasks(
     await cancel_all_batches()
     if metrics_writer is not None:
         await metrics_writer.stop()
+    if oversight_agent is not None:
+        await oversight_agent.stop()
     if watchdog is not None:
         await watchdog.stop()
     bg_tasks = pr_throttle_tasks + pr_monitor_tasks
@@ -377,6 +381,14 @@ def create_app(
             )
             metrics_writer.start()
 
+        # Start oversight agent
+        from sova.oversight.agent import OversightAgent as _OversightAgent
+
+        oversight_agent: OversightAgent | None = None
+        if cfg.oversight.enabled:
+            oversight_agent = _OversightAgent(config=cfg.oversight)
+            oversight_agent.start()
+
         try:
             yield
         finally:
@@ -389,6 +401,7 @@ def create_app(
                         metrics_writer,
                         watchdog,
                         recovery_task=recovery_task,
+                        oversight_agent=oversight_agent,
                     ),
                     timeout=5.0,
                 )

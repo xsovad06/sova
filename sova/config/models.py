@@ -524,6 +524,19 @@ class SupervisorConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
 
 
+class OversightConfig(BaseSettings):
+    """Oversight agent configuration."""
+
+    enabled: bool = False
+    wake_interval_minutes: int = Field(60, ge=1)
+    auto_create_issues: bool = False
+    auto_triage: bool = False
+    persona_path: str = ""
+    analysis_model: str = "sonnet"
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_OVERSIGHT_")
+
+
 class AwarenessConfig(BaseSettings):
     """Awareness subsystem configuration (briefing, email, calendar)."""
 
@@ -615,6 +628,7 @@ class ProjectConfig(BaseSettings):
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
+    oversight: OversightConfig = Field(default_factory=OversightConfig)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_")
 

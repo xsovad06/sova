@@ -440,6 +440,33 @@ class ActionFeedback(Base):
     )
 
 
+class OversightRunStatus(StrEnum):
+    """Status values for oversight agent wake cycles."""
+
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+
+
+class OversightRun(Base):
+    """Record of each oversight agent wake cycle."""
+
+    __tablename__ = "oversight_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=OversightRunStatus.RUNNING)
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_oversight_runs_status", "status"),
+        Index("ix_oversight_runs_started", "started_at"),
+    )
+
+
 class PRQueueStatus(StrEnum):
     """Status values for PR creation queue entries."""
 

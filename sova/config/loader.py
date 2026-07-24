@@ -86,6 +86,7 @@ _NESTED_SECTIONS = (
     "memory_guard",
     "watchdog",
     "awareness",
+    "oversight",
 )
 
 
