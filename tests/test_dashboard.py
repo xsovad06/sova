@@ -3279,6 +3279,12 @@ class TestHandoffAPI:
         assert "view-list" in resp.text
         assert "view-kanban" in resp.text
 
+    async def test_agents_page_has_pr_summary_strip(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="pr-summary-strip"' in resp.text
+        assert "renderPrSummary" in resp.text
+
 
 # ---------------------------------------------------------------------------
 # Multi-project mode
