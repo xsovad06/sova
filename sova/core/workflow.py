@@ -421,6 +421,7 @@ class WorkflowEngine:
             task_run = await session.get(TaskRun, self._task_run_id)
             if task_run:
                 task_run.branch_name = self._ctx.branch_name
+                task_run.total_cost_usd = Decimal(str(self._ctx.cost_usd))
                 if self._ctx.worktree_dir:
                     task_run.worktree_path = str(self._ctx.worktree_dir)
                 if self._ctx.pr_number:

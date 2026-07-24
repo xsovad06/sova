@@ -225,6 +225,7 @@ var _TIER2_PAGE_SIZE = 15;
 var _MIN_BEFORE_COLLAPSE = 8;
 var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
 var _cardMenuOpen = false;
+var _completedCleanupTimer = null;
 var _workItems = [];
 
 // LLM suggestion experiment: keyed by issueKey (issue_number or "pr:N")
@@ -1174,6 +1175,21 @@ async function loadAgents() {
 
     grid.innerHTML = cards.join('');
     enhancePlannerCards(data.completed);
+
+    // Schedule a refresh after server-side TTL expires to clear completed cards
+    if (data.completed.length > 0) {
+      var maxAge = 0;
+      data.completed.forEach(function(agent) {
+        var remaining = 30 - (agent.completed_seconds_ago || 0);
+        if (remaining > maxAge) maxAge = remaining;
+      });
+      var delay = maxAge > 0 ? (maxAge + 1) * 1000 : 2000;
+      if (_completedCleanupTimer) clearTimeout(_completedCleanupTimer);
+      _completedCleanupTimer = setTimeout(function() {
+        _completedCleanupTimer = null;
+        loadAgents();
+      }, delay);
+    }
   } catch (e) {
     console.error('Failed to load agents:', e);
   }
