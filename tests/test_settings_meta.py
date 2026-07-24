@@ -41,6 +41,12 @@ class TestSettingMeta:
         assert meta.group == "integration_gates"
         assert meta.value_type == "boolean"
 
+    def test_commit_pr_auto_link_issues_meta_registered(self) -> None:
+        meta = get_meta("commit.pr_auto_link_issues")
+        assert meta is not None
+        assert meta.group == "commit"
+        assert meta.value_type == "boolean"
+
     def test_all_groups_in_order(self) -> None:
         for gid in GROUP_ORDER:
             assert gid in GROUPS, f"GROUP_ORDER contains '{gid}' not in GROUPS"

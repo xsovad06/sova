@@ -3418,6 +3418,71 @@ class TestMultiProject:
         assert data["files_cleaned"] is False
         mock_uninstall.assert_not_called()
 
+    async def test_try_load_config_returns_none_on_broken_toml(self, tmp_path):
+        """_try_load_config returns None when the project has invalid config."""
+        from sova.dashboard.app import _try_load_config
+
+        p = tmp_path / "broken-project"
+        p.mkdir()
+        (p / "sova.toml").write_text("INVALID TOML {{{{")
+
+        result = _try_load_config(p)
+        assert result is None
+
+    async def test_try_load_config_returns_config_on_valid_project(self, tmp_path):
+        """_try_load_config returns a ProjectConfig for valid projects."""
+        from sova.dashboard.app import _try_load_config
+
+        p = tmp_path / "valid-project"
+        p.mkdir()
+        (p / "sova.toml").write_text('[project]\ngithub_repo = "user/repo"\n')
+
+        result = _try_load_config(p)
+        assert result is not None
+        assert result.github_repo == "user/repo"
+
+    async def test_collect_supervisor_configs_skips_broken(self, tmp_path):
+        """_collect_supervisor_configs skips projects with broken config."""
+        from sova.dashboard.app import _collect_supervisor_configs
+
+        broken = tmp_path / "broken"
+        broken.mkdir()
+        (broken / "sova.toml").write_text("INVALID {{{{")
+
+        result = _collect_supervisor_configs({"broken": str(broken)})
+        assert result == []
+
+    async def test_collect_supervisor_configs_skips_nonexistent(self, tmp_path):
+        """_collect_supervisor_configs skips directories that don't exist."""
+        from sova.dashboard.app import _collect_supervisor_configs
+
+        result = _collect_supervisor_configs({"gone": str(tmp_path / "nonexistent")})
+        assert result == []
+
+    async def test_collect_supervisor_configs_skips_disabled(self, tmp_path):
+        """_collect_supervisor_configs skips projects with supervisor disabled."""
+        from sova.dashboard.app import _collect_supervisor_configs
+
+        p = tmp_path / "disabled-sv"
+        p.mkdir()
+        (p / "sova.toml").write_text('[project]\ngithub_repo = "u/r"\n\n[supervisor]\nenabled = false\n')
+
+        result = _collect_supervisor_configs({"proj": str(p)})
+        assert result == []
+
+    async def test_collect_supervisor_configs_returns_enabled(self, tmp_path):
+        """_collect_supervisor_configs returns projects with supervisor enabled."""
+        from sova.dashboard.app import _collect_supervisor_configs
+
+        p = tmp_path / "enabled-sv"
+        p.mkdir()
+        (p / "sova.toml").write_text('[project]\ngithub_repo = "u/r"\n\n[supervisor]\nenabled = true\n')
+
+        result = _collect_supervisor_configs({"proj": str(p)})
+        assert len(result) == 1
+        assert result[0][0] == p
+        assert result[0][1].supervisor.enabled is True
+
 
 # ---------------------------------------------------------------------------
 # Setup API

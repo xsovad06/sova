@@ -34,6 +34,7 @@ def test_default_config() -> None:
     assert cfg.review.enabled is True
     assert cfg.review.max_rounds == 2
     assert cfg.commit.format == "conventional"
+    assert cfg.commit.pr_auto_link_issues is True
     assert cfg.roles.default == "developer"
     assert cfg.pipeline.auto_handoff is True
     assert cfg.pipeline.auto_address_review is True
@@ -653,10 +654,10 @@ jira_status_mapping = { "ON_QA" = "done", "Selected for Development" = "triaged"
 
 
 class TestIntegrationGatesConfig:
-    def test_defaults(self) -> None:
+    def test_defaults_all_false(self) -> None:
         cfg = IntegrationGatesConfig()
         assert cfg.ci_passed is False
-        assert cfg.sova_reviewed is True
+        assert cfg.sova_reviewed is False
         assert cfg.coderabbit_reviewed is False
         assert cfg.threads_resolved is False
 

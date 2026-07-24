@@ -88,6 +88,33 @@ _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
 
 
+def _try_load_config(project_path: Path) -> object | None:
+    """Load config for a project, returning None on failure."""
+    from sova.config.loader import load_config
+
+    try:
+        return load_config(project_path)
+    except Exception:
+        log.warning("supervisor.config_load_failed", project=str(project_path), exc_info=True)
+        return None
+
+
+def _collect_supervisor_configs(project_dirs: dict[str, str]) -> list[tuple[Path, object]]:
+    """Load configs for registered projects, skipping broken or non-supervisor ones."""
+    result: list[tuple[Path, object]] = []
+    for path_str in project_dirs.values():
+        p = Path(path_str)
+        if not p.is_dir():
+            continue
+        cfg = _try_load_config(p)
+        if cfg is None:
+            continue
+        if not cfg.supervisor.enabled:
+            continue
+        result.append((p, cfg))
+    return result
+
+
 async def _mark_dead_run(run: object, project_dir: Path) -> None:
     """Mark a single dead-PID TaskRun as done (if merged) or interrupted."""
     from datetime import datetime, timezone
@@ -401,16 +428,9 @@ def create_app(
         supervisor_daemons: list[SupervisorDaemon] = []
         daemon_registry: dict[str, _SupervisorDaemon] = {}
         if is_multi:
-            from sova.config.loader import load_config as _load_cfg_sv
             from sova.db.session import get_session_factory
 
-            for path_str in list_projects().values():
-                p = Path(path_str)
-                if not p.is_dir():
-                    continue
-                sv_cfg = _load_cfg_sv(p)
-                if not sv_cfg.supervisor.enabled:
-                    continue
+            for p, sv_cfg in _collect_supervisor_configs(dict(list_projects())):
                 sf = await get_session_factory(p)
                 daemon = _SupervisorDaemon(config=sv_cfg, project_dir=p, session_factory=sf)
                 daemon.start()
