@@ -3,38 +3,82 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SOVA Dashboard</title>
+  <title>SOVA Fleet Manager</title>
   {% include "_head.html" %}
 </head>
-<body class="bg-surface text-gray-200 min-h-screen flex items-center justify-center">
+<body class="bg-surface text-gray-200 min-h-screen">
   {% from "_icons.html" import icon %}
-  <div class="max-w-2xl w-full px-6">
-    <div class="text-center mb-10">
-      <a href="/" class="inline-block mb-4">
-        <img src="/static/logo.png" alt="SOVA" class="h-20 w-20 rounded-lg object-cover object-top mx-auto">
+  <div class="max-w-5xl mx-auto px-6 py-8">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-8">
+      <div class="flex items-center gap-4">
+        <a href="/">
+          <img src="/static/logo.png" alt="SOVA" class="h-12 w-12 rounded-lg object-cover object-top">
+        </a>
+        <div>
+          <h1 class="text-2xl font-bold text-accent">Fleet Manager</h1>
+          <p class="text-sm text-gray-500">Cross-project command center</p>
+        </div>
+      </div>
+      <a href="/setup"
+         class="inline-flex items-center gap-2 bg-accent/10 text-accent border border-accent/30 rounded-lg px-4 py-2 hover:bg-accent/20 transition-colors text-sm font-medium">
+        <span class="text-base">+</span>
+        Add Project
       </a>
-      <h1 class="text-3xl font-bold text-accent mb-2">SOVA</h1>
-      <p class="text-gray-400">Select a project to manage, or set up a new one.</p>
     </div>
 
-    <!-- Project list -->
-    <div id="project-list" class="space-y-3 mb-8">
+    <!-- Global summary bar -->
+    <div id="fleet-summary" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Active Agents</p>
+        <p class="text-2xl font-bold text-accent" id="summary-active">--</p>
+      </div>
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Total Slots</p>
+        <p class="text-2xl font-bold text-gray-200" id="summary-slots">--</p>
+      </div>
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">Queued</p>
+        <p class="text-2xl font-bold text-accent-yellow" id="summary-queued">--</p>
+      </div>
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-4 py-3">
+        <p class="text-xs text-gray-500 uppercase tracking-wide">CodeRabbit</p>
+        <p class="text-2xl font-bold" id="summary-cr">--</p>
+      </div>
+    </div>
+
+    <!-- Project cards -->
+    <div id="fleet-grid" class="space-y-3">
       {% for slug, path in projects.items() %}
-      <div class="relative bg-surface-card border border-gray-700/50 rounded-lg hover:border-accent/50 hover:bg-surface-hover transition-all group">
-        <a href="/p/{{ slug }}/" class="block px-5 py-4">
-          <div class="flex items-center justify-between">
-            <div>
-              <h2 class="text-lg font-medium text-gray-100 group-hover:text-accent transition-colors">{{ slug }}</h2>
-              <p class="text-xs text-gray-500 mt-1 font-mono">{{ path }}</p>
+      <div class="bg-surface-card border border-gray-700/50 rounded-lg px-5 py-4" data-project="{{ slug | e }}">
+        <div class="flex items-center justify-between">
+          <a href="/p/{{ slug }}/" class="flex-1 min-w-0 group">
+            <h2 class="text-lg font-medium text-gray-100 group-hover:text-accent transition-colors">{{ slug }}</h2>
+            <p class="text-xs text-gray-500 mt-0.5 font-mono truncate">{{ path }}</p>
+          </a>
+          <div class="flex items-center gap-6 ml-4 shrink-0">
+            <!-- Live stats (populated by JS) -->
+            <div class="flex items-center gap-4 text-sm" data-stats="{{ slug | e }}">
+              <span class="text-gray-500">Loading...</span>
             </div>
-            <span class="text-gray-600 group-hover:text-accent transition-colors text-xl mr-8">&rarr;</span>
+            <!-- Slot slider -->
+            <div class="flex items-center gap-2" data-slider="{{ slug | e }}">
+              <label class="text-xs text-gray-500 whitespace-nowrap">Slots:</label>
+              <input type="range" min="1" max="20" value="2"
+                     class="w-20 h-1.5 accent-[rgb(var(--ctp-blue-rgb))] cursor-pointer"
+                     data-slot-slider="{{ slug | e }}"
+                     oninput="this.nextElementSibling.textContent = this.value"
+                     onchange="updateSlots(this.dataset.slotSlider, parseInt(this.value))">
+              <span class="text-xs text-gray-400 w-4 text-center">2</span>
+            </div>
+            <!-- Uninstall button -->
+            <button type="button" data-slug="{{ slug | e }}" onclick="uninstallProject(event, this.dataset.slug)"
+                    data-tooltip="Uninstall SOVA from this project"
+                    class="p-2 rounded-md text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-colors">
+              {{ icon("trash", "w-4 h-4") }}
+            </button>
           </div>
-        </a>
-        <button type="button" data-slug="{{ slug | e }}" onclick="uninstallProject(event, this.dataset.slug)"
-                data-tooltip="Uninstall SOVA from this project"
-                class="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-md text-gray-600 hover:text-red-400 hover:bg-red-400/10 transition-colors z-10">
-          {{ icon("trash", "w-4 h-4") }}
-        </button>
+        </div>
       </div>
       {% else %}
       <div class="bg-surface-card border border-gray-700/50 rounded-lg px-5 py-8 text-center">
@@ -43,19 +87,104 @@
       </div>
       {% endfor %}
     </div>
-
-    <!-- Setup link -->
-    <div class="text-center">
-      <a href="/setup"
-         class="inline-flex items-center gap-2 bg-accent/10 text-accent border border-accent/30 rounded-lg px-6 py-3 hover:bg-accent/20 transition-colors text-sm font-medium">
-        <span class="text-lg">+</span>
-        Setup New Project
-      </a>
-    </div>
   </div>
 
   <script src="/static/app.js"></script>
   <script>
+  function _updateText(el, value) {
+    if (!el) return;
+    var s = String(value);
+    if (el.textContent !== s) el.textContent = s;
+  }
+
+  var _slotDebounce = {};
+
+  function updateSlots(slug, value) {
+    if (_slotDebounce[slug]) clearTimeout(_slotDebounce[slug]);
+    _slotDebounce[slug] = setTimeout(function() {
+      fetch('/api/fleet-manager/projects/' + encodeURIComponent(slug) + '/slots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: value })
+      }).catch(function(err) {
+        console.error('Slot update failed:', err);
+      });
+    }, 300);
+  }
+
+  function loadFleetStatus() {
+    fetch('/api/fleet-manager/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Update summary
+        var activeEl = document.getElementById('summary-active');
+        var slotsEl = document.getElementById('summary-slots');
+        var queuedEl = document.getElementById('summary-queued');
+        var crEl = document.getElementById('summary-cr');
+
+        _updateText(activeEl, data.total_active_agents);
+        _updateText(slotsEl, data.total_max_slots);
+        _updateText(queuedEl, data.total_queued);
+        if (crEl) {
+          _updateText(crEl, data.global_coderabbit_used + '/' + data.global_coderabbit_limit);
+          var wantColor = data.global_coderabbit_can_create ? 'text-accent-green' : 'text-accent-red';
+          var dropColor = data.global_coderabbit_can_create ? 'text-accent-red' : 'text-accent-green';
+          crEl.classList.remove(dropColor);
+          crEl.classList.add(wantColor);
+        }
+
+        // Track known slugs for stale card removal
+        var knownSlugs = new Set();
+        var projects = data.projects || [];
+        for (var i = 0; i < projects.length; i++) {
+          knownSlugs.add(projects[i].slug);
+        }
+
+        // Remove orphaned cards
+        var cards = document.querySelectorAll('[data-project]');
+        for (var j = 0; j < cards.length; j++) {
+          if (!knownSlugs.has(cards[j].dataset.project)) {
+            cards[j].remove();
+          }
+        }
+
+        // Update per-project stats
+        for (var k = 0; k < projects.length; k++) {
+          var p = projects[k];
+          var statsEl = document.querySelector('[data-stats="' + CSS.escape(p.slug) + '"]');
+          if (!statsEl) continue;
+
+          var agentColor = p.active_agents > 0 ? 'text-accent-green' : 'text-gray-500';
+          var queueColor = p.queued_tasks > 0 ? 'text-accent-yellow' : 'text-gray-500';
+
+          statsEl.innerHTML =
+            '<span class="' + agentColor + '" title="Active agents">' +
+              p.active_agents + '/' + p.max_concurrent + ' agents</span>' +
+            '<span class="' + queueColor + '" title="Queued tasks">' +
+              p.queued_tasks + ' queued</span>';
+
+          if (p.error) {
+            statsEl.innerHTML += '<span class="text-accent-red text-xs" title="' + escapeHtml(p.error) + '">error</span>';
+          }
+
+          // Sync slider value (avoid overwriting during user interaction)
+          var slider = document.querySelector('[data-slot-slider="' + CSS.escape(p.slug) + '"]');
+          if (slider && document.activeElement !== slider) {
+            slider.value = p.max_concurrent;
+            var label = slider.nextElementSibling;
+            if (label) label.textContent = p.max_concurrent;
+          }
+        }
+      })
+      .catch(function(err) {
+        console.error('Fleet status poll failed:', err);
+      });
+  }
+
+  // Initial load + poll every 5s
+  loadFleetStatus();
+  setInterval(loadFleetStatus, 5000);
+
   function showUninstallDialog(slug) {
     return new Promise(function(resolve) {
       var backdrop = document.createElement('div');
