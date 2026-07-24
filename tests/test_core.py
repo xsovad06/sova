@@ -2334,7 +2334,6 @@ class TestWorkflowDB:
         """When a step returns cost_usd > 0, a CostRecord is created."""
         ctx = _make_ctx()
         step = DummyStep(should_pass=True, gate_pass=True)
-        original_execute = step.execute
 
         async def execute_with_cost(c):
             return StepResult(success=True, summary="Done", cost_usd=Decimal("0.05"))

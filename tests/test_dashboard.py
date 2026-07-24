@@ -3330,9 +3330,7 @@ class TestHandoffAPI:
         html = resp.text
         assert "grid-cols-' + metrics.length + '" in html
 
-    async def test_pr_api_provides_fields_for_metrics(
-        self, client: AsyncClient, monkeypatch
-    ) -> None:
+    async def test_pr_api_provides_fields_for_metrics(self, client: AsyncClient, monkeypatch) -> None:
         """Verify /api/prs/open returns all fields needed by renderPrSummary."""
         from unittest.mock import AsyncMock
 
