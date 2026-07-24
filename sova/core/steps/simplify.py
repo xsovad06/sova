@@ -41,7 +41,13 @@ class SimplifyStep(BaseStep):
         # Also check commits ahead of base
         log_result = await run("git", "log", f"{ctx.config.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         has_commits = bool(log_result.success and log_result.stdout.strip())
+        # Also check for untracked new files: Claude often writes new modules without staging them.
+        # git diff and git log are blind to untracked files, so they miss this case entirely.
+        status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+        has_untracked = bool(
+            status_result.success and any(line.startswith("??") for line in status_result.stdout.splitlines())
+        )
 
-        if has_changes or has_commits:
+        if has_changes or has_commits or has_untracked:
             return GateCheckResult(passed=True)
         return GateCheckResult(passed=False, reason="All changes were reverted during simplification")

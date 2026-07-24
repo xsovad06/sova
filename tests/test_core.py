@@ -4583,6 +4583,24 @@ class TestSimplifyStep:
                 MagicMock(success=True, stdout=" src/app.py | 5 +++++\n"),  # unstaged
                 MagicMock(success=True, stdout=""),  # staged
                 MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # status --porcelain
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_passes_with_staged_changes(self) -> None:
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # unstaged
+                MagicMock(success=True, stdout=" src/app.py | 3 +++\n"),  # staged
+                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # status --porcelain
             ]
             gate = await step.validate_output(ctx)
 
@@ -4599,6 +4617,25 @@ class TestSimplifyStep:
                 MagicMock(success=True, stdout=""),  # unstaged
                 MagicMock(success=True, stdout=""),  # staged
                 MagicMock(success=True, stdout="abc123 feat: something\n"),  # log
+                MagicMock(success=True, stdout=""),  # status --porcelain
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_output_passes_with_only_untracked_files(self) -> None:
+        """Gate must pass when Claude wrote new files but never staged them."""
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD (no tracked changes)
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat (nothing staged)
+                MagicMock(success=True, stdout=""),  # git log base..HEAD (no commits)
+                MagicMock(success=True, stdout="?? new_module.py\n?? tests/test_new_module.py\n"),  # untracked
             ]
             gate = await step.validate_output(ctx)
 
@@ -4615,11 +4652,30 @@ class TestSimplifyStep:
                 MagicMock(success=True, stdout=""),  # unstaged
                 MagicMock(success=True, stdout=""),  # staged
                 MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=True, stdout=""),  # status --porcelain
             ]
             gate = await step.validate_output(ctx)
 
         assert not gate.passed
         assert "reverted" in gate.reason.lower()
+
+    async def test_validate_output_status_failure_falls_back_to_other_checks(self) -> None:
+        """When git status --porcelain fails, has_untracked is False; gate still passes via other checks."""
+        from sova.core.steps.simplify import SimplifyStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = SimplifyStep()
+
+        with patch("sova.core.steps.simplify.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" src/app.py | 2 +-\n"),  # unstaged diff present
+                MagicMock(success=True, stdout=""),  # staged
+                MagicMock(success=True, stdout=""),  # log
+                MagicMock(success=False, stdout=""),  # status --porcelain fails
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
 
 
 # ---------------------------------------------------------------------------
