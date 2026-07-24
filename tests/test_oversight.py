@@ -84,14 +84,9 @@ class TestOversightAgent:
             )
 
         with patch.object(agent, "_record_run", side_effect=_mock_record):
-            # Patch sleep to return immediately once, then cancel
-            call_count = 0
-
+            # Patch sleep to cancel immediately after the first cycle
             async def _fake_sleep(seconds):
-                nonlocal call_count
-                call_count += 1
-                if call_count > 1:
-                    raise asyncio.CancelledError
+                raise asyncio.CancelledError
 
             with patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep):
                 task = agent.start()
@@ -128,31 +123,25 @@ class TestOversightAgent:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        # The loop ran 2 cycles without crashing despite _record_run failures
+        # The loop ran 3 cycles without crashing despite _record_run failures
         assert call_count == 3  # 2 successful sleeps + 1 that cancelled
-        assert agent._cycle_number == 2
+        assert agent._cycle_number == 3
 
     @pytest.mark.asyncio
-    async def test_cancelled_run_records_error(self) -> None:
-        """When cancelled during the cycle body, record an error with 'cancelled'."""
+    async def test_cancelled_during_sleep_completes_prior_cycle(self) -> None:
+        """When cancelled during sleep between cycles, the prior cycle is recorded as done."""
         cfg = OversightConfig(wake_interval_minutes=1)
         agent = OversightAgent(config=cfg)
 
         recorded: list[dict] = []
-        sleep_count = 0
 
         async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
             recorded.append({"status": status, "error": error})
 
         async def _fake_sleep(seconds):
-            nonlocal sleep_count
-            sleep_count += 1
-            if sleep_count == 1:
-                return  # let first cycle run
             raise asyncio.CancelledError
 
-        # Make the cycle body cancel by patching record to first succeed,
-        # then let the second sleep cancel
+        # First cycle runs immediately, then sleep raises CancelledError
         with (
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
@@ -161,12 +150,12 @@ class TestOversightAgent:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        # First cycle: done. Second sleep: CancelledError (no second cycle body)
+        # First cycle completed as done, then sleep cancelled (no second cycle)
         assert len(recorded) == 1
         assert recorded[0]["status"] == OversightRunStatus.DONE
 
     @pytest.mark.asyncio
-    async def test_record_run_with_db(self, tmp_path: object) -> None:
+    async def test_record_run_with_db(self) -> None:
         """Integration test: _record_run writes to the DB via in-memory SQLite."""
         from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 

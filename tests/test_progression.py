@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,7 +47,7 @@ def _make_engine(
     return TaskProgressionEngine(
         config=cfg,
         adapter=mock_adapter,
-        project_dir=MagicMock(),
+        project_dir=Path(tempfile.mkdtemp()),
         session_factory=mock_session_factory,
     )
 

@@ -45,10 +45,9 @@ class OversightAgent:
             log.info("oversight.stopped")
 
     async def _run_loop(self) -> None:
-        """Main loop: sleep for the configured interval, then execute a wake cycle."""
+        """Main loop: execute a wake cycle, then sleep for the configured interval."""
         interval_seconds = self._config.wake_interval_minutes * 60
         while True:
-            await asyncio.sleep(interval_seconds)
             run_id = str(uuid.uuid4())
             self._cycle_number += 1
             cycle = self._cycle_number
@@ -88,6 +87,7 @@ class OversightAgent:
                     )
                 except Exception:
                     log.warning("oversight.error_record_failed", exc_info=True)
+            await asyncio.sleep(interval_seconds)
 
     async def _record_run(
         self,

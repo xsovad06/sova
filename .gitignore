@@ -26,6 +26,9 @@ dashboard/.venv/
 *.log
 *.db.bak
 
+# Test artifacts (MagicMock path evaluations creating real SQLite files)
+<MagicMock*
+
 # Coverage reports
 coverage.xml
 htmlcov/

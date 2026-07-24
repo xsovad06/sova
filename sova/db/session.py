@@ -49,6 +49,8 @@ def _get_database_url(project_dir: Path | None = None) -> str:
         return env_url
 
     if project_dir:
+        if not isinstance(project_dir, Path):
+            raise TypeError(f"project_dir must be a Path, got {type(project_dir).__name__}")
         db_path = project_dir / ".claude" / _DB_FILENAME
     else:
         db_path = Path.home() / ".config" / "sova" / _DB_FILENAME
