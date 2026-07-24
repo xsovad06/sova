@@ -439,6 +439,13 @@ _REGISTRY: list[SettingMeta] = [
         "Branch name style: conventional (feat/fix/refactor) or freeform",
         "commit",
     ),
+    SettingMeta(
+        "commit.pr_auto_link_issues",
+        "PR auto-link issues",
+        "Automatically link issues in PR body via Closes #N",
+        "commit",
+        "boolean",
+    ),
     # -- Triage --
     SettingMeta(
         "triage.mode",
