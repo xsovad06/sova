@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
+from sova.core.state import TaskStatus
 from sova.core.steps import get_researcher_steps
 from sova.core.steps.base import BaseStep
 from sova.core.workflow import WorkflowEngine
@@ -90,13 +91,25 @@ class ResearcherRole(AgentRole):
         engine = WorkflowEngine(steps=steps, ctx=ctx)
         workflow_result = await engine.run()
 
-        if workflow_result.success:
+        spec_awaiting = workflow_result.final_status == TaskStatus.AWAITING_APPROVAL
+
+        if workflow_result.success or spec_awaiting:
+            # Update label even when spec awaits approval: prevents supervisor re-spawn on next poll
             await ctx.adapter.transition_state(ctx.issue_number, TaskState.RESEARCHED)
+
+        if workflow_result.success:
             log.info("researcher.done", issue=ctx.issue_number)
             return RoleResult(
                 success=True,
                 summary=f"Issue #{ctx.issue_number} researched",
                 output_state=TaskState.RESEARCHED,
+            )
+
+        if spec_awaiting:
+            log.info("researcher.spec_awaiting_approval", issue=ctx.issue_number)
+            return RoleResult(
+                success=False,
+                summary=f"Spec for #{ctx.issue_number} awaiting human approval",
             )
 
         log.error("researcher.failed", issue=ctx.issue_number, error=workflow_result.error)

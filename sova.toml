@@ -44,3 +44,16 @@ interval = 5.0
 
 [dashboard]
 pr_author_filter = "all"
+
+[supervisor]
+enabled = false
+poll_interval_seconds = 30
+log_retention_days = 14
+auto_rebase = true
+auto_develop = true
+auto_address_review = true
+auto_integrate = true
+
+[coderabbit_quota]
+enabled = true
+plan = "free"
