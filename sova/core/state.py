@@ -136,4 +136,4 @@ TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted", "pau
 
 # Step statuses that mean "completed successfully".
 # Legacy runs used "passed"; current WorkflowEngine uses "done".
-STEP_DONE_STATUSES = frozenset({"done", "passed"})
+STEP_DONE_STATUSES = frozenset({"done", "passed", "skipped"})

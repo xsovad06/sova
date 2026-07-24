@@ -2164,6 +2164,37 @@ class TestWorkflowDB:
             assert rows[0].step_name == "step_a"
             assert rows[1].step_name == "step_b"
 
+    async def test_skipped_step_creates_step_execution(self) -> None:
+        """Skipped steps create a StepExecution record with status 'skipped'."""
+        ctx = _make_ctx()
+        step_a = DummyStep(should_pass=True, gate_pass=True, skip=True, name="step_a")
+        step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        assert result.steps_skipped == 1
+        assert result.steps_completed == 1
+        session = await get_session()
+        async with session.begin():
+            rows = (
+                (
+                    await session.execute(
+                        select(StepExecution)
+                        .where(StepExecution.task_run_id == result.task_run_id)
+                        .order_by(StepExecution.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 2
+            assert rows[0].step_name == "step_a"
+            assert rows[0].status == "skipped"
+            assert rows[1].step_name == "step_b"
+            assert rows[1].status == "done"
+
     async def test_task_run_id_set_on_context(self) -> None:
         ctx = _make_ctx()
         step = DummyStep(should_pass=True, gate_pass=True)
