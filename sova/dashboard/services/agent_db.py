@@ -5,6 +5,7 @@ Separated from agent_lifecycle to keep DB logic focused and testable.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -361,8 +362,56 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
     return None
 
 
+_SOVA_REVIEW_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
+
+_VERDICT_TO_NEXT_ACTION = {
+    "approve": "approve",
+    "revise": "address_review",
+    "block": "address_review",
+}
+
+
+def _extract_review_verdict_marker(lines: list[str]) -> str | None:
+    """Extract verdict from <!-- sova-review: X --> marker in output lines.
+
+    Scans lines in reverse so the last marker wins (per spec).
+    """
+    for line in reversed(lines):
+        matches = _SOVA_REVIEW_MARKER_RE.findall(line)
+        if matches:
+            return matches[-1].lower()
+    return None
+
+
+async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path | None) -> None:
+    """Write structured handoff_json to a review-pr TaskRun."""
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    next_action = _VERDICT_TO_NEXT_ACTION.get(verdict, "address_review")
+    handoff_data = {
+        "next_action": next_action,
+        "pending_findings": [],
+    }
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run is None:
+                    return
+                if task_run.handoff_json is not None:
+                    log.debug("review_pr.handoff_already_set", run_id=run_id)
+                    return
+                task_run.handoff_json = handoff_data
+                log.info("review_pr.verdict_persisted", run_id=run_id, verdict=verdict, next_action=next_action)
+    except Exception:
+        log.warning("review_pr.persist_verdict_failed", run_id=run_id, exc_info=True)
+        raise
+
+
 async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
-    """Check that review-pr actually posted a review on the PR."""
+    """Check that review-pr posted a review, then persist the verdict as handoff_json."""
     if agent.pr_number is None:
         return None
 
@@ -379,6 +428,16 @@ async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
 
     if not has_post_evidence:
         return "review-pr completed without posting a review on GitHub"
+
+    verdict = _extract_review_verdict_marker(lines)
+    if not verdict:
+        from sova.dashboard.services.agent_recovery import _parse_verdict_from_output
+
+        verdict = _parse_verdict_from_output(lines)
+    if not verdict:
+        verdict = "revise"
+    await _persist_review_verdict(run_id, verdict, agent.project_dir)
+
     return None
 
 

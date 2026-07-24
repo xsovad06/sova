@@ -7751,6 +7751,239 @@ class TestCommandOutcomeValidation:
         assert result is None
 
 
+class TestReviewPrVerdictPersistence:
+    """_validate_review_pr extracts verdict marker and persists handoff_json."""
+
+    async def test_extract_marker_approve(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["some output", "<!-- sova-review: approve -->", "more output"]
+        assert _extract_review_verdict_marker(lines) == "approve"
+
+    async def test_extract_marker_revise(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: revise -->"]
+        assert _extract_review_verdict_marker(lines) == "revise"
+
+    async def test_extract_marker_block(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: block -->"]
+        assert _extract_review_verdict_marker(lines) == "block"
+
+    async def test_extract_marker_case_insensitive(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: APPROVE -->"]
+        assert _extract_review_verdict_marker(lines) == "approve"
+
+    async def test_extract_marker_last_wins(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: approve -->", "<!-- sova-review: revise -->"]
+        assert _extract_review_verdict_marker(lines) == "revise"
+
+    async def test_extract_marker_same_line_last_wins(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!-- sova-review: approve --> <!-- sova-review: revise -->"]
+        assert _extract_review_verdict_marker(lines) == "revise"
+
+    async def test_extract_marker_none_when_absent(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["no marker here", "just regular output"]
+        assert _extract_review_verdict_marker(lines) is None
+
+    async def test_extract_marker_with_extra_whitespace(self) -> None:
+        from sova.dashboard.services.agent_db import _extract_review_verdict_marker
+
+        lines = ["<!--  sova-review:  approve  -->"]
+        assert _extract_review_verdict_marker(lines) == "approve"
+
+    async def test_persist_writes_handoff_json_approve(self) -> None:
+        from sova.dashboard.services.agent_db import _persist_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=200)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _persist_review_verdict(run_id, "approve", None)
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json is not None
+            assert run.handoff_json["next_action"] == "approve"
+            assert run.handoff_json["pending_findings"] == []
+
+    async def test_persist_writes_handoff_json_revise(self) -> None:
+        from sova.dashboard.services.agent_db import _persist_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=201)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _persist_review_verdict(run_id, "revise", None)
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json is not None
+            assert run.handoff_json["next_action"] == "address_review"
+
+    async def test_persist_writes_handoff_json_block(self) -> None:
+        from sova.dashboard.services.agent_db import _persist_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=202)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _persist_review_verdict(run_id, "block", None)
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json["next_action"] == "address_review"
+
+    async def test_persist_skips_when_handoff_already_set(self) -> None:
+        from sova.dashboard.services.agent_db import _persist_review_verdict
+
+        existing = {"next_action": "approve", "pending_findings": []}
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(
+                issue_number="359",
+                role="command:review-pr",
+                status="done",
+                pr_number=203,
+                handoff_json=existing,
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        await _persist_review_verdict(run_id, "revise", None)
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json["next_action"] == "approve"
+
+    async def test_validate_review_pr_persists_verdict_from_marker(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=204)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="<!-- sova-review: revise -->"))
+            session.add(
+                OutputLine(
+                    task_run_id=run_id,
+                    line_number=2,
+                    text="Review posted at: https://github.com/org/repo/pull/204#pullrequestreview-456",
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:review-pr"
+        agent.pr_number = 204
+        agent.project_dir = None
+
+        result = await _validate_review_pr(run_id, agent)
+        assert result is None
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json is not None
+            assert run.handoff_json["next_action"] == "address_review"
+
+    async def test_validate_review_pr_falls_back_to_prose_verdict(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=205)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(OutputLine(task_run_id=run_id, line_number=1, text="Verdict: Approve"))
+            session.add(
+                OutputLine(
+                    task_run_id=run_id,
+                    line_number=2,
+                    text="Review posted successfully via pullRequestReview API",
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:review-pr"
+        agent.pr_number = 205
+        agent.project_dir = None
+
+        result = await _validate_review_pr(run_id, agent)
+        assert result is None
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json is not None
+            assert run.handoff_json["next_action"] == "approve"
+
+    async def test_validate_review_pr_no_verdict_defaults_to_revise(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import OutputLine
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="359", role="command:review-pr", status="done", pr_number=206)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+            session.add(
+                OutputLine(
+                    task_run_id=run_id,
+                    line_number=1,
+                    text="Review posted at: https://github.com/org/repo/pull/206#pullrequestreview-789",
+                )
+            )
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "command:review-pr"
+        agent.pr_number = 206
+        agent.project_dir = None
+
+        result = await _validate_review_pr(run_id, agent)
+        assert result is None
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.handoff_json is not None
+            assert run.handoff_json["next_action"] == "address_review"
+
+
 class TestDowngradeToFailed:
     """_downgrade_to_failed changes done runs to failed with a reason."""
 
