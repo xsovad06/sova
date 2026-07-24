@@ -52,12 +52,7 @@ class SupervisorDaemon:
         self._running = False
         if self._task is not None:
             self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
+            await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
 
     async def poll_once(self) -> dict:
@@ -65,7 +60,7 @@ class SupervisorDaemon:
         async with self._poll_lock:
             return await self._poll_once()
 
-    async def get_status(self) -> dict:
+    def get_status(self) -> dict:
         """Return current daemon status."""
         return {
             "enabled": self._config.supervisor.enabled,
@@ -88,7 +83,7 @@ class SupervisorDaemon:
             await asyncio.sleep(self._config.supervisor.poll_interval_seconds)
 
     async def _poll_once(self) -> dict:
-        """Single ordered poll: progression -> pr_throttle -> quota -> health."""
+        """Single ordered poll: progression -> quota -> health."""
         from sova.adapters import create_adapter
 
         try:
@@ -107,7 +102,7 @@ class SupervisorDaemon:
         results["quota"] = await self._poll_quota()
 
         # Phase 3: Health check
-        results["health"] = await self._poll_health(adapter)
+        results["health"] = await self._poll_health()
 
         return results
 
@@ -199,30 +194,16 @@ class SupervisorDaemon:
             log.warning("poll.quota_error", exc_info=True)
             return {"error": str(exc)}
 
-    async def _poll_health(self, adapter) -> dict:
-        """Basic health check: verify adapter and DB connectivity."""
+    async def _poll_health(self) -> dict:
+        """Basic health check: verify DB connectivity. Adapter errors surface through progression logs."""
         checks: dict = {}
 
-        # DB connectivity
         try:
             async with self._session_factory() as session:
                 await session.execute(select(SupervisorDecision.id).limit(1))
             checks["db"] = "ok"
         except Exception as exc:
             checks["db"] = f"error: {exc}"
-
-        # Adapter connectivity (lightweight: fetch a single task)
-        try:
-            tasks = await adapter.list_tasks()
-            checks["adapter"] = f"ok ({len(tasks)} tasks)"
-        except Exception as exc:
-            checks["adapter"] = f"error: {exc}"
-            await self._log_decision(
-                component="health",
-                event_type="health",
-                action="error",
-                detail=f"Adapter check failed: {exc}",
-            )
 
         return checks
 

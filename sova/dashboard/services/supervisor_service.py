@@ -16,6 +16,7 @@ log = get_logger(component="dashboard.service.supervisor")
 async def get_recent_decisions(
     project_dir: Path,
     *,
+    project_slug: str | None = None,
     limit: int = 100,
     component: str | None = None,
     event_type: str | None = None,
@@ -23,6 +24,8 @@ async def get_recent_decisions(
     """Return recent supervisor decisions, newest first."""
     async with await get_session(project_dir=project_dir) as session:
         stmt = select(SupervisorDecision)
+        if project_slug:
+            stmt = stmt.where(SupervisorDecision.project_slug == project_slug)
         if component:
             stmt = stmt.where(SupervisorDecision.component == component)
         if event_type:
@@ -46,11 +49,12 @@ async def get_recent_decisions(
     ]
 
 
-async def get_decision_counts(project_dir: Path) -> dict:
+async def get_decision_counts(project_dir: Path, *, project_slug: str | None = None) -> dict:
     """Return component-level decision counts for the status panel."""
     async with await get_session(project_dir=project_dir) as session:
-        stmt = select(SupervisorDecision.component, func.count(SupervisorDecision.id)).group_by(
-            SupervisorDecision.component
-        )
+        stmt = select(SupervisorDecision.component, func.count(SupervisorDecision.id))
+        if project_slug:
+            stmt = stmt.where(SupervisorDecision.project_slug == project_slug)
+        stmt = stmt.group_by(SupervisorDecision.component)
         result = await session.execute(stmt)
         return dict(result.all())

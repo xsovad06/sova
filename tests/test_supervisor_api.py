@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -86,6 +86,18 @@ class TestSupervisorService:
         assert counts["quota"] == 1
         assert counts["health"] == 1
 
+    async def test_get_recent_decisions_filter_project_slug(self, seed_decisions) -> None:
+        result = await get_recent_decisions(Path.cwd(), project_slug="test/repo")
+        assert len(result) == 3
+        result_other = await get_recent_decisions(Path.cwd(), project_slug="other/repo")
+        assert len(result_other) == 0
+
+    async def test_get_decision_counts_filter_project_slug(self, seed_decisions) -> None:
+        counts = await get_decision_counts(Path.cwd(), project_slug="test/repo")
+        assert counts["progression"] == 1
+        counts_other = await get_decision_counts(Path.cwd(), project_slug="other/repo")
+        assert counts_other == {}
+
 
 class TestSupervisorRouter:
     @pytest.fixture
@@ -120,3 +132,74 @@ class TestSupervisorRouter:
             resp = await client.get("/supervisor")
             assert resp.status_code == 200
             assert "Supervisor" in resp.text
+
+    async def test_get_status_with_daemon(self, app) -> None:
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_daemon = MagicMock()
+        mock_daemon.get_status.return_value = {
+            "enabled": True,
+            "running": True,
+            "poll_interval_seconds": 60,
+            "log_retention_days": 14,
+            "project_dir": str(Path.cwd()),
+        }
+        project_dir = Path.cwd().resolve()
+        set_daemon_registry({str(project_dir): mock_daemon})
+
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/status")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["enabled"] is True
+                    assert data["running"] is True
+        finally:
+            set_daemon_registry({})
+
+    async def test_trigger_poll_with_daemon(self, app) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_daemon = MagicMock()
+        mock_daemon.poll_once = AsyncMock(return_value={"progression": {"decisions": 0}})
+        project_dir = Path.cwd().resolve()
+        set_daemon_registry({str(project_dir): mock_daemon})
+
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/poll")
+                    assert resp.status_code == 202
+                    assert resp.json()["status"] == "accepted"
+        finally:
+            set_daemon_registry({})
+
+    async def test_get_counts_empty(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/supervisor/counts")
+            assert resp.status_code == 200
+            assert "counts" in resp.json()
+
+    async def test_get_counts_with_data(self, app, seed_decisions) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "test/repo"
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/counts")
+                assert resp.status_code == 200
+                counts = resp.json()["counts"]
+                assert counts.get("progression") == 1
+                assert counts.get("quota") == 1
+
+    async def test_get_decisions_with_filters(self, app, seed_decisions) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "test/repo"
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/decisions?component=progression&limit=10")
+                assert resp.status_code == 200
+                data = resp.json()["decisions"]
+                assert all(d["component"] == "progression" for d in data)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -38,10 +38,10 @@ async def get_status():
     daemon = _get_daemon()
     if daemon is None:
         return {"enabled": False, "running": False}
-    return await daemon.get_status()
+    return daemon.get_status()
 
 
-@router.post("/poll", status_code=202)
+@router.post("/poll", status_code=202, responses={404: {"description": "Supervisor daemon is not running"}})
 async def trigger_poll():
     """Trigger a manual poll cycle (fire-and-forget)."""
     daemon = _get_daemon()
@@ -55,16 +55,23 @@ async def trigger_poll():
 
 @router.get("/decisions")
 async def get_decisions(
-    limit: int = Query(100, ge=1, le=1000),
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     component: str | None = None,
     event_type: str | None = None,
 ):
     """Return recent supervisor decisions."""
+    from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_recent_decisions
 
     project_dir = get_project_dir()
+    try:
+        cfg = load_config(project_dir)
+        project_slug = cfg.github_repo or None
+    except Exception:
+        project_slug = None
     decisions = await get_recent_decisions(
         project_dir,
+        project_slug=project_slug,
         limit=limit,
         component=component,
         event_type=event_type,
@@ -75,8 +82,14 @@ async def get_decisions(
 @router.get("/counts")
 async def get_counts():
     """Return per-component decision counts."""
+    from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_decision_counts
 
     project_dir = get_project_dir()
-    counts = await get_decision_counts(project_dir)
+    try:
+        cfg = load_config(project_dir)
+        project_slug = cfg.github_repo or None
+    except Exception:
+        project_slug = None
+    counts = await get_decision_counts(project_dir, project_slug=project_slug)
     return {"counts": counts}

@@ -381,7 +381,7 @@ loadQuota();
 loadGraph();
 loadDecisions();
 
-// Poll status, quota, and decisions every 30s
-setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); }, 30000);
+// Poll status, quota, decisions, and dependency graph every 30s
+setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
 </script>
 {% endblock %}
