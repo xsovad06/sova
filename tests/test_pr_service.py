@@ -584,7 +584,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_all_gates_disabled_passes(self) -> None:
-        cfg = _make_config()
+        cfg = _make_config(sova_reviewed=False)
         result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
         assert result["passed"] is True
         assert all(g["passed"] for g in result["gates"])
@@ -592,7 +592,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_ci_gate_passes_when_ci_green(self) -> None:
-        cfg = _make_config(ci_passed=True)
+        cfg = _make_config(ci_passed=True, sova_reviewed=False)
         result = await check_integration_gates(pr_data=_pr_data(ci_status="passed"), issue_number="10", config=cfg)
         ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
         assert ci_gate["enabled"] is True
@@ -600,7 +600,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_ci_gate_fails_when_ci_pending(self) -> None:
-        cfg = _make_config(ci_passed=True)
+        cfg = _make_config(ci_passed=True, sova_reviewed=False)
         result = await check_integration_gates(pr_data=_pr_data(ci_status="pending"), issue_number="10", config=cfg)
         assert result["passed"] is False
         ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
@@ -609,7 +609,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_ci_gate_fails_when_ci_failed(self) -> None:
-        cfg = _make_config(ci_passed=True)
+        cfg = _make_config(ci_passed=True, sova_reviewed=False)
         result = await check_integration_gates(pr_data=_pr_data(ci_status="failed"), issue_number="10", config=cfg)
         ci_gate = next(g for g in result["gates"] if g["name"] == "ci_passed")
         assert ci_gate["passed"] is False
@@ -668,7 +668,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_coderabbit_gate_passes(self) -> None:
-        cfg = _make_config(coderabbit_reviewed=True)
+        cfg = _make_config(coderabbit_reviewed=True, sova_reviewed=False)
         result = await check_integration_gates(
             pr_data=_pr_data(review_logins=["coderabbitai"]),
             issue_number="10",
@@ -679,7 +679,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_coderabbit_gate_fails_no_review(self) -> None:
-        cfg = _make_config(coderabbit_reviewed=True)
+        cfg = _make_config(coderabbit_reviewed=True, sova_reviewed=False)
         result = await check_integration_gates(
             pr_data=_pr_data(review_logins=["someuser"]),
             issue_number="10",
@@ -690,7 +690,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_threads_gate_passes_all_resolved(self) -> None:
-        cfg = _make_config(threads_resolved=True)
+        cfg = _make_config(threads_resolved=True, sova_reviewed=False)
         result = await check_integration_gates(
             pr_data=_pr_data(thread_total=5, thread_resolved=5),
             issue_number="10",
@@ -701,7 +701,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_threads_gate_fails_unresolved(self) -> None:
-        cfg = _make_config(threads_resolved=True)
+        cfg = _make_config(threads_resolved=True, sova_reviewed=False)
         result = await check_integration_gates(
             pr_data=_pr_data(thread_total=5, thread_resolved=3),
             issue_number="10",
@@ -713,7 +713,7 @@ class TestCheckIntegrationGates:
 
     @pytest.mark.asyncio
     async def test_threads_gate_passes_no_threads(self) -> None:
-        cfg = _make_config(threads_resolved=True)
+        cfg = _make_config(threads_resolved=True, sova_reviewed=False)
         result = await check_integration_gates(
             pr_data=_pr_data(thread_total=0, thread_resolved=0),
             issue_number="10",

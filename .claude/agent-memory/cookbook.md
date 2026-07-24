@@ -265,6 +265,10 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 
 ## Supervisor / Progression Engine
 
+- **Health check must not call list_tasks() to verify adapter** -- `list_tasks()` fetches all open issues, making the health phase as expensive as the progression phase (2x API calls per cycle). If you need an adapter liveness check, use `adapter.get_task(known_id)` or omit it entirely and let progression's own error logging surface adapter failures. PR #453. [confirmed: 1]
+- **supervisor_service queries need project_slug filter for PostgreSQL shared-DB** -- SQLite single-project mode is isolated by file, but PostgreSQL deployments share one DB. Always add a `WHERE project_slug = ?` clause when querying `SupervisorDecision`. Router must load config to get `cfg.github_repo`; wrap in try/except since tests use `Path.cwd()` without a real sova.toml. PR #453. [confirmed: 1]
+- **Router tests that assert on filtered data must mock load_config to match seed slug** -- when router endpoints load config to resolve project_slug, tests that seed data with a fixed slug (e.g., "test/repo") must patch `sova.config.loader.load_config` to return that same slug. Without this, the router reads the real sova.toml ("xsovad06/sova") and the filter produces 0 results. PR #453. [confirmed: 1]
+
 - **commit-format invariant must include all top-level sova/ directories as valid scopes** -- when adding a new module directory (supervisor, mcp, monitoring, db, awareness), add the scope to `VALID_SCOPES` in `invariants/commit-format.sh` and to AGENTS.md's Scopes list. Missing scopes cause push failures even for obviously correct scope names. PR #345, #392. [confirmed: 2]
 - **CHECKPOINT_NEEDED distinguishes "human approval needed" from "no action possible"** -- must short-circuit before execution gates. PR #345. [confirmed: 1]
 - **Evaluate_all should load config once and pass it through to gate methods** -- avoids 2+ TOML parses per cycle. PR #345. [confirmed: 1]
