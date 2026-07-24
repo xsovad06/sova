@@ -395,6 +395,7 @@ function _connectOutputSSE(run, targetId) {
   _outputEventSource = es;
 
   es.addEventListener('output', function(e) {
+    if (es !== _outputEventSource) return;
     var el = document.getElementById(targetId);
     if (el) {
       var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
@@ -404,7 +405,7 @@ function _connectOutputSSE(run, targetId) {
         _outputBuffer += '\n' + text;
       }
       _outputCursor++;
-      el.innerHTML = renderMarkdown(_outputBuffer);
+      try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
       el.scrollTop = el.scrollHeight;
     }
   });
@@ -436,7 +437,7 @@ async function _pollOutput(run, targetId) {
           _outputBuffer += '\n' + data.lines.join('\n');
         }
         _outputCursor += data.lines.length;
-        el.innerHTML = renderMarkdown(_outputBuffer);
+        try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
         el.scrollTop = el.scrollHeight;
       }
       _outputBackoffMs = _OUTPUT_BACKOFF_BASE;

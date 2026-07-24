@@ -35,7 +35,17 @@
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script>
+function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 var _markedConfigured = false;
 function _ensureMarked() {
   if (_markedConfigured) return;
@@ -60,6 +70,7 @@ function _ensureMarked() {
 function renderMarkdown(text) {
   _ensureMarked();
   if (!window.marked) return escapeHtml(text || '');
-  return marked.parse(text || '');
+  var html = marked.parse(text || '');
+  return window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(text || '');
 }
 </script>
