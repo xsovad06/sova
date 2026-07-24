@@ -758,7 +758,18 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/supervisor")
     async def supervisor_page(request: Request):
-        return templates.TemplateResponse(request, "supervisor.html", {"page": "supervisor"})
+        try:
+            from sova.config.loader import load_config
+            from sova.dashboard.project_context import get_project_dir
+
+            sup_cfg = load_config(get_project_dir())
+            github_repo = sup_cfg.github_repo or ""
+        except Exception:
+            log.debug("Failed to load github_repo for supervisor page", exc_info=True)
+            github_repo = ""
+        return templates.TemplateResponse(
+            request, "supervisor.html", {"page": "supervisor", "github_repo": github_repo}
+        )
 
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
