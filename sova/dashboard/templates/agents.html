@@ -475,14 +475,12 @@ function renderTaskCard(item) {
   var ageHtml = '';
   var ageSource = item.created_at || '';
   if (ageSource) {
-    var ageStr = formatIsoAge(ageSource);
-    if (ageStr) {
-      ageHtml = '<span class="text-[10px] shrink-0 ' + ageColor(ageSource) + '" data-tooltip="Created ' + escapeHtml(ageSource.split('T')[0] || '') + '">' + ageStr + '</span>';
+    var ageMs = Date.now() - new Date(ageSource).getTime();
+    if (!isNaN(ageMs) && ageMs > 0) {
+      ageHtml = formatAgeBadge(Math.floor(ageMs / 1000), ageSource);
     }
   } else if (pd.age_seconds > 0) {
-    var prAgeDays = pd.age_seconds / 86400;
-    var prAgeColor = prAgeDays > 14 ? 'text-accent-red' : prAgeDays > 7 ? 'text-accent-yellow' : 'text-gray-600';
-    ageHtml = '<span class="text-[10px] shrink-0 ' + prAgeColor + '">' + formatAge(pd.age_seconds) + '</span>';
+    ageHtml = formatAgeBadge(pd.age_seconds, null);
   }
 
   var diffHtml = '';
@@ -1818,20 +1816,35 @@ function formatAge(seconds) {
   return Math.floor(seconds / 86400) + 'd';
 }
 
-function formatIsoAge(isoStr) {
-  if (!isoStr) return '';
-  var ms = Date.now() - new Date(isoStr).getTime();
-  if (isNaN(ms) || ms < 0) return '';
-  return formatAge(Math.floor(ms / 1000));
+function ageBadgeClasses(days) {
+  if (days > 14) return 'bg-accent-red/20 text-accent-red';
+  if (days > 7) return 'bg-accent-peach/20 text-accent-peach';
+  if (days > 3) return 'bg-accent-yellow/20 text-accent-yellow';
+  if (days >= 1) return 'bg-gray-600/20 text-gray-400';
+  return 'bg-accent-green/20 text-accent-green';
 }
 
-function ageColor(isoStr) {
-  if (!isoStr) return 'text-gray-600';
-  var days = (Date.now() - new Date(isoStr).getTime()) / 86400000;
-  if (isNaN(days)) return 'text-gray-600';
-  if (days > 14) return 'text-accent-red';
-  if (days > 7) return 'text-accent-yellow';
-  return 'text-gray-600';
+var _ageDateFmt = { year: 'numeric', month: 'short', day: 'numeric' };
+
+function formatAgeBadge(seconds, createdAt) {
+  if (!seconds || seconds <= 0) return '';
+  var days = seconds / 86400;
+  var cls = ageBadgeClasses(days);
+  var tooltip = '';
+  if (createdAt) {
+    var d = new Date(createdAt);
+    if (!isNaN(d.getTime())) {
+      tooltip = 'Created ' + d.toLocaleDateString(undefined, _ageDateFmt);
+    } else {
+      tooltip = 'Created ' + String(createdAt).split('T')[0];
+    }
+  }
+  if (!tooltip) {
+    var approx = new Date(Date.now() - seconds * 1000);
+    tooltip = 'Created ' + approx.toLocaleDateString(undefined, _ageDateFmt);
+  }
+  var tooltipAttr = tooltip ? ' data-tooltip="' + escapeHtml(tooltip) + '"' : '';
+  return '<span class="text-[10px] px-1.5 py-0.5 rounded-full shrink-0 ' + cls + '"' + tooltipAttr + '>' + formatAge(seconds) + '</span>';
 }
 
 function diffSizeLabel(additions, deletions) {
@@ -1925,7 +1938,7 @@ function renderPrRow(pr) {
     ciDot +
     conflictBadge +
     '<span class="px-2 py-0.5 rounded-full text-xs ' + stateClass + '">' + escapeHtml(pr.state_label) + '</span>' +
-    '<span class="text-xs text-gray-600 w-8 text-right shrink-0">' + formatAge(pr.age_seconds) + '</span>' +
+    (pr.age_seconds > 0 ? formatAgeBadge(pr.age_seconds, null) : '') +
   '</div>';
 }
 
