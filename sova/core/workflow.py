@@ -143,6 +143,17 @@ class WorkflowEngine:
             log.info("workflow.step.skip", step=step.name)
             result.steps_skipped += 1
             result.step_records.append(StepRecord(step_name=step.name, status="skipped"))
+            try:
+                now = datetime.now(timezone.utc)
+                await self._create_step_execution(
+                    step.name,
+                    status="skipped",
+                    duration_ms=0,
+                    started_at=now,
+                    ended_at=now,
+                )
+            except Exception:
+                log.warning("workflow.step_exec.skip_create_failed", step=step.name, exc_info=True)
             return True
 
         await self._set_current_step(step.name)
@@ -476,15 +487,30 @@ class WorkflowEngine:
         except Exception:
             log.warning("workflow.approval_handoff.write_failed", step=step_name, exc_info=True)
 
-    async def _create_step_execution(self, step_name: str, retry_count: int = 0) -> int:
+    async def _create_step_execution(
+        self,
+        step_name: str,
+        retry_count: int = 0,
+        *,
+        status: str = "running",
+        duration_ms: int | None = None,
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
+    ) -> int:
         """Create a StepExecution record and return its ID."""
         async with await get_session() as session, session.begin():
             step_exec = StepExecution(
                 task_run_id=self._task_run_id,
                 step_name=step_name,
-                status="running",
+                status=status,
                 retry_count=retry_count,
             )
+            if started_at is not None:
+                step_exec.started_at = started_at
+            if duration_ms is not None:
+                step_exec.duration_ms = duration_ms
+            if ended_at is not None:
+                step_exec.ended_at = ended_at
             session.add(step_exec)
             await session.flush()
             return step_exec.id
