@@ -20,45 +20,63 @@
   </p>
 </div>
 
-<!-- Three-panel layout -->
-<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-  <!-- Panel 1: Dependency Graph -->
-  <div class="lg:col-span-2 bg-surface-card rounded-lg border border-gray-700/50 p-4">
-    <h3 class="text-sm font-medium text-gray-300 mb-3">Dependency Graph</h3>
-    <div id="graph-container" class="relative" style="min-height: 400px;">
-      <div id="graph-loading" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
-        Loading graph...
-      </div>
-      <div id="graph-error" class="hidden absolute inset-0 flex items-center justify-center">
-        <p class="text-sm text-accent-red bg-accent-red/10 px-4 py-2 rounded"></p>
-      </div>
-      <svg id="graph-svg" class="w-full" style="height: 400px;"></svg>
-    </div>
-    <div class="mt-2 flex items-center gap-4 text-xs text-gray-500">
-      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent-green inline-block"></span> Done</span>
-      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent inline-block"></span> In Progress</span>
-      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-gray-500 inline-block"></span> Open</span>
-      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+<!-- Dependency Graph (full width, primary board) -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-sm font-medium text-gray-300">Dependency Graph</h3>
+    <div class="flex items-center gap-4 text-xs text-gray-500">
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent-green inline-block"></span> Done</span>
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent inline-block"></span> In Progress</span>
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#f9e2af" ></span> Awaiting</span>
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-gray-500 inline-block"></span> Open</span>
+      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent-red inline-block"></span> Blocked</span>
     </div>
   </div>
+  <div id="graph-container" class="relative overflow-x-auto" style="min-height: 200px; max-height: 62vh;">
+    <div id="graph-loading" class="flex items-center justify-center py-16 text-gray-500 text-sm">Loading graph...</div>
+    <div id="graph-error" class="hidden flex items-center justify-center py-16">
+      <p class="text-sm text-accent-red bg-accent-red/10 px-4 py-2 rounded"></p>
+    </div>
+    <svg id="graph-svg"></svg>
+  </div>
+</div>
 
-  <!-- Panel 2: Rate Limits -->
+<!-- Action drawer: appears when a node is clicked -->
+<div id="action-drawer" class="hidden bg-surface-card rounded-lg border border-accent/30 p-4 mb-4">
+  <div class="flex items-start gap-4">
+    <div class="flex-1 min-w-0">
+      <div class="flex items-center gap-2 mb-1 flex-wrap">
+        <span id="drawer-dot" class="w-2.5 h-2.5 rounded-full bg-gray-500 shrink-0"></span>
+        <a id="drawer-gh-link" href="#" target="_blank" class="text-xs font-mono text-accent hover:underline shrink-0"></a>
+        <span id="drawer-state" class="text-xs text-gray-400 capitalize"></span>
+        <span id="drawer-milestone" class="text-xs text-gray-600 truncate ml-1"></span>
+      </div>
+      <h4 id="drawer-title" class="text-sm font-medium text-gray-200 mb-1 leading-snug"></h4>
+      <p id="drawer-excerpt" class="text-xs text-gray-500 mb-3 leading-relaxed"></p>
+      <div id="drawer-actions" class="flex items-center gap-2 flex-wrap"></div>
+    </div>
+    <button onclick="hideDrawer()" class="text-gray-600 hover:text-gray-400 text-xs shrink-0 mt-0.5">close</button>
+  </div>
+</div>
+
+<!-- Compact row: Rate Limits + Daemon Status -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
     <h3 class="text-sm font-medium text-gray-300 mb-3">Rate Limits</h3>
-    <div id="quota-panel" class="space-y-3">
+    <div id="quota-panel" class="space-y-2">
       <p class="text-xs text-gray-500">Loading...</p>
     </div>
-
-    <h3 class="text-sm font-medium text-gray-300 mt-6 mb-3">Daemon Status</h3>
+  </div>
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <h3 class="text-sm font-medium text-gray-300 mb-3">Daemon Status</h3>
     <div id="status-panel" class="space-y-2 text-xs text-gray-400">
       <p>Loading...</p>
     </div>
   </div>
 </div>
 
-<!-- Panel 3: Activity Stream -->
-<div class="mt-6 bg-surface-card rounded-lg border border-gray-700/50 p-4">
+<!-- Activity Stream -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
   <div class="flex items-center justify-between mb-3">
     <h3 class="text-sm font-medium text-gray-300">Activity Stream</h3>
     <div class="flex items-center gap-2">
@@ -76,7 +94,7 @@
       </select>
     </div>
   </div>
-  <div id="decisions-list" class="space-y-1 max-h-96 overflow-y-auto">
+  <div id="decisions-list" class="space-y-1 max-h-80 overflow-y-auto">
     <p class="text-xs text-gray-500 text-center py-4">Loading...</p>
   </div>
 </div>
@@ -85,12 +103,29 @@
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
+const githubRepo = {{ github_repo | tojson }};
 
 const esc = window.escapeHtml || function(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
+  const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
 };
+
+// -- Graph state --
+let _graphKey = null;
+
+function _computeGraphKey(data) {
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}`).sort().join(',');
+  const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
+  return n + '|' + e;
+}
+
+function stateColor(state) {
+  const s = (state || '').toLowerCase();
+  if (s === 'done' || s === 'closed') return '#a6e3a1';
+  if (s === 'in_progress' || s === 'in_review') return '#89b4fa';
+  if (s === 'awaiting_approval') return '#f9e2af';
+  if (s === 'blocked') return '#f38ba8';
+  return '#6c7086';
+}
 
 // -- Status --
 async function loadStatus() {
@@ -120,8 +155,7 @@ async function loadStatus() {
       pollBtn.disabled = true;
     }
 
-    const panel = document.getElementById('status-panel');
-    panel.innerHTML = `
+    document.getElementById('status-panel').innerHTML = `
       <div class="flex justify-between"><span>Poll interval</span><span class="text-gray-300">${data.poll_interval_seconds}s</span></div>
       <div class="flex justify-between"><span>Log retention</span><span class="text-gray-300">${data.log_retention_days}d</span></div>
     `;
@@ -135,8 +169,7 @@ async function loadQuota() {
   try {
     const res = await fetch(`${apiBase}/quota/status`);
     if (!res.ok) {
-      document.getElementById('quota-panel').innerHTML =
-        '<p class="text-xs text-gray-500">CodeRabbit quota tracking not configured</p>';
+      document.getElementById('quota-panel').innerHTML = '<p class="text-xs text-gray-500">CodeRabbit quota tracking not configured</p>';
       return;
     }
     const data = await res.json();
@@ -148,24 +181,20 @@ async function loadQuota() {
     }
 
     const statusColor = data.can_create_pr ? 'text-accent-green' : 'text-accent-red';
-    const statusText = data.can_create_pr ? 'Available' : 'Throttled';
     panel.innerHTML = `
-      <div class="flex justify-between text-xs"><span class="text-gray-400">Status</span><span class="${statusColor} font-medium">${statusText}</span></div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Status</span><span class="${statusColor} font-medium">${data.can_create_pr ? 'Available' : 'Throttled'}</span></div>
       <div class="flex justify-between text-xs"><span class="text-gray-400">Reviews in window</span><span class="text-gray-300">${data.reviews_in_window}/${data.reviews_per_hour}</span></div>
       ${data.next_available_minutes != null ? `<div class="flex justify-between text-xs"><span class="text-gray-400">Next available</span><span class="text-gray-300">${Math.ceil(data.next_available_minutes)}m</span></div>` : ''}
     `;
   } catch (e) {
-    document.getElementById('quota-panel').innerHTML =
-      '<p class="text-xs text-gray-500">Failed to load quota status</p>';
+    document.getElementById('quota-panel').innerHTML = '<p class="text-xs text-gray-500">Failed to load quota status</p>';
   }
 }
 
-// -- Dependency Graph (D3 force-directed) --
+// -- Dependency Graph --
 async function loadGraph() {
-  const container = document.getElementById('graph-container');
   const loading = document.getElementById('graph-loading');
   const errorEl = document.getElementById('graph-error');
-  const svg = d3.select('#graph-svg');
 
   try {
     const res = await fetch(`${apiBase}/dependencies/graph`);
@@ -186,7 +215,12 @@ async function loadGraph() {
       return;
     }
 
-    renderGraph(data, svg, container);
+    const newKey = _computeGraphKey(data);
+    if (newKey === _graphKey) return;
+    _graphKey = newKey;
+
+    errorEl.classList.add('hidden');
+    renderGraph(data);
   } catch (e) {
     loading.classList.add('hidden');
     errorEl.classList.remove('hidden');
@@ -194,129 +228,220 @@ async function loadGraph() {
   }
 }
 
-function renderGraph(data, svg, container) {
-  const width = container.clientWidth;
-  const height = 400;
-  svg.attr('viewBox', `0 0 ${width} ${height}`);
-  svg.selectAll('*').remove();
+function renderGraph(data) {
+  // -- Layout constants --
+  const NW = 144, NH = 36, NPX = 8, NPY = 8, NPR = 3;
+  const GP = 14, GH = 22;
+  const CG = 32, RG = 16, MARGIN = 12;
 
-  const stateColor = (state) => {
-    if (!state) return '#6c7086';
-    const s = state.toLowerCase();
-    if (s === 'done' || s === 'closed') return '#a6e3a1';
-    if (s === 'in_progress' || s === 'in_review') return '#89b4fa';
-    if (s === 'blocked') return '#f38ba8';
-    return '#6c7086';
+  // -- Compute tier per node --
+  const tierMap = {};
+  (data.parallel_groups || []).forEach(g => g.task_ids.forEach(id => tierMap[id] = g.tier));
+
+  // -- Group nodes by milestone --
+  const milestoneMap = {};
+  (data.nodes || []).forEach(n => {
+    const m = n.milestone || '(no milestone)';
+    if (!milestoneMap[m]) milestoneMap[m] = [];
+    milestoneMap[m].push(n);
+  });
+  const milestones = Object.keys(milestoneMap);
+
+  // -- Average tier per milestone -> column --
+  const mAvgTier = m => {
+    const ns = milestoneMap[m];
+    return ns.reduce((s, n) => s + (tierMap[n.id] || 0), 0) / ns.length;
+  };
+  const mCol = m => Math.round(mAvgTier(m));
+
+  const colGroups = {};
+  milestones.forEach(m => {
+    const c = mCol(m);
+    if (!colGroups[c]) colGroups[c] = [];
+    colGroups[c].push(m);
+  });
+  // Within each column, sort milestones by name for stable order
+  Object.values(colGroups).forEach(ms => ms.sort());
+  const columns = Object.keys(colGroups).map(Number).sort((a, b) => a - b);
+
+  // -- Group dimensions --
+  const gDim = m => {
+    const cnt = milestoneMap[m].length;
+    const cols = Math.min(cnt, NPR);
+    const rows = Math.ceil(cnt / NPR);
+    return {
+      w: GP * 2 + cols * NW + Math.max(0, cols - 1) * NPX,
+      h: GH + GP * 2 + rows * NH + Math.max(0, rows - 1) * NPY,
+    };
   };
 
-  const nodes = data.nodes.map(n => ({
-    id: n.id,
-    title: n.title || `#${n.id}`,
-    state: n.state || 'open',
-    milestone: n.milestone || '',
-  }));
+  // -- Column widths --
+  const colW = {};
+  columns.forEach(c => { colW[c] = Math.max(...colGroups[c].map(m => gDim(m).w)); });
 
-  const edges = (data.edges || []).map(e => ({
-    source: e.from,
-    target: e.to,
-  }));
-
-  const g = svg.append('g');
-
-  // Zoom
-  const zoom = d3.zoom()
-    .scaleExtent([0.3, 3])
-    .on('zoom', (event) => g.attr('transform', event.transform));
-  svg.call(zoom);
-
-  // Arrow marker
-  svg.append('defs').append('marker')
-    .attr('id', 'arrow')
-    .attr('viewBox', '0 -5 10 10')
-    .attr('refX', 20)
-    .attr('refY', 0)
-    .attr('markerWidth', 6)
-    .attr('markerHeight', 6)
-    .attr('orient', 'auto')
-    .append('path')
-    .attr('d', 'M0,-5L10,0L0,5')
-    .attr('fill', '#585b70');
-
-  const simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(edges).id(d => d.id).distance(80))
-    .force('charge', d3.forceManyBody().strength(-200))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide(25));
-
-  const link = g.selectAll('.link')
-    .data(edges)
-    .join('line')
-    .attr('class', 'link')
-    .attr('stroke', '#585b70')
-    .attr('stroke-width', 1.5)
-    .attr('marker-end', 'url(#arrow)');
-
-  const node = g.selectAll('.node')
-    .data(nodes)
-    .join('g')
-    .attr('class', 'node')
-    .call(d3.drag()
-      .on('start', (event, d) => {
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x; d.fy = d.y;
-      })
-      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
-      .on('end', (event, d) => {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null; d.fy = null;
-      })
-    );
-
-  node.append('circle')
-    .attr('r', 10)
-    .attr('fill', d => stateColor(d.state))
-    .attr('stroke', '#1e1e2e')
-    .attr('stroke-width', 2);
-
-  node.append('text')
-    .attr('dy', -14)
-    .attr('text-anchor', 'middle')
-    .attr('fill', '#cdd6f4')
-    .attr('font-size', '10px')
-    .text(d => `#${d.id}`);
-
-  // Tooltip
-  const tooltip = d3.select(container).append('div')
-    .style('position', 'absolute')
-    .style('display', 'none')
-    .style('background', '#313244')
-    .style('border', '1px solid rgba(108,112,134,0.5)')
-    .style('border-radius', '6px')
-    .style('padding', '8px 12px')
-    .style('font-size', '12px')
-    .style('color', '#cdd6f4')
-    .style('pointer-events', 'none')
-    .style('z-index', '10');
-
-  node.on('mouseover', (event, d) => {
-    tooltip.style('display', 'block')
-      .html(`<strong>#${d.id}</strong><br>${esc(d.title)}<br><span style="color:${stateColor(d.state)}">${esc(d.state)}</span>`);
-  })
-  .on('mousemove', (event) => {
-    const rect = container.getBoundingClientRect();
-    tooltip.style('left', (event.clientX - rect.left + 12) + 'px')
-      .style('top', (event.clientY - rect.top - 10) + 'px');
-  })
-  .on('mouseout', () => tooltip.style('display', 'none'));
-
-  simulation.on('tick', () => {
-    link
-      .attr('x1', d => d.source.x)
-      .attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x)
-      .attr('y2', d => d.target.y);
-    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  // -- Position groups and nodes --
+  const groupPos = {};
+  const nodePos = {}; // id -> {x, y, cx, cy}
+  let cx = MARGIN;
+  columns.forEach(col => {
+    let cy = MARGIN;
+    colGroups[col].forEach(m => {
+      groupPos[m] = { x: cx, y: cy };
+      milestoneMap[m].forEach((n, i) => {
+        const col2 = i % NPR;
+        const row = Math.floor(i / NPR);
+        const nx = cx + GP + col2 * (NW + NPX);
+        const ny = cy + GH + GP + row * (NH + NPY);
+        nodePos[n.id] = { x: nx, y: ny, cx: nx + NW / 2, cy: ny + NH / 2 };
+      });
+      cy += gDim(m).h + RG;
+    });
+    cx += colW[col] + CG;
   });
+
+  // -- SVG dimensions --
+  const allPosX = Object.values(nodePos).map(p => p.x + NW);
+  const allPosY = Object.values(nodePos).map(p => p.y + NH);
+  const svgW = Math.max(allPosX.length ? Math.max(...allPosX) + MARGIN : 400, 400);
+  const svgH = Math.max(allPosY.length ? Math.max(...allPosY) + MARGIN : 200, 200);
+
+  const svg = d3.select('#graph-svg')
+    .attr('width', svgW).attr('height', svgH)
+    .attr('viewBox', `0 0 ${svgW} ${svgH}`);
+  svg.selectAll('*').remove();
+
+  // -- Arrow marker --
+  svg.append('defs').append('marker')
+    .attr('id', 'dep-arrow').attr('viewBox', '0 -4 8 8')
+    .attr('refX', 7).attr('refY', 0)
+    .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', '#45475a');
+
+  // -- Group boxes --
+  milestones.forEach(m => {
+    const { x, y } = groupPos[m];
+    const { w, h } = gDim(m);
+    svg.append('rect')
+      .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
+      .attr('rx', 6).attr('fill', 'rgba(17,17,27,0.65)')
+      .attr('stroke', 'rgba(88,91,112,0.25)').attr('stroke-width', 1);
+    svg.append('text')
+      .attr('x', x + GP).attr('y', y + 14)
+      .attr('fill', '#585b70').attr('font-size', '10px').attr('font-family', 'sans-serif')
+      .text(m.length > 40 ? m.slice(0, 38) + '...' : m);
+  });
+
+  // -- Dependency edges --
+  // Draw "enables" arrows left-to-right: dependency (e.to) -> dependent (e.from)
+  // This matches the roadmap convention: the arrow shows "this enables that."
+  (data.edges || []).forEach(e => {
+    const dep = nodePos[e.to];   // dependency: lower tier, generally to the left
+    const dndt = nodePos[e.from]; // dependent: higher tier, generally to the right
+    if (!dep || !dndt) return;
+    const sx = dep.x + NW, sy = dep.cy;   // right edge of dependency
+    const tx = dndt.x, ty = dndt.cy;      // left edge of dependent
+    const dx = Math.max((tx - sx) * 0.45, 24);
+    svg.append('path')
+      .attr('d', `M${sx},${sy} C${sx+dx},${sy} ${tx-dx},${ty} ${tx},${ty}`)
+      .attr('fill', 'none').attr('stroke', '#45475a').attr('stroke-width', 1)
+      .attr('marker-end', 'url(#dep-arrow)').attr('opacity', 0.7);
+  });
+
+  // -- Nodes --
+  data.nodes.forEach(n => {
+    const pos = nodePos[n.id];
+    if (!pos) return;
+    const color = stateColor(n.state);
+    const isDone = n.state === 'done' || n.state === 'closed';
+    const opacity = isDone ? 0.45 : 1;
+
+    const g = svg.append('g').attr('class', 'dep-node').style('cursor', 'pointer')
+      .attr('opacity', opacity);
+
+    // Node background
+    g.append('rect')
+      .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH)
+      .attr('rx', 4)
+      .attr('fill', color + '18')
+      .attr('stroke', color + '55').attr('stroke-width', 1);
+
+    // State indicator dot
+    g.append('circle')
+      .attr('cx', pos.x + 11).attr('cy', pos.cy)
+      .attr('r', 4).attr('fill', color);
+
+    // Issue number
+    g.append('text')
+      .attr('x', pos.x + 22).attr('y', pos.y + 14)
+      .attr('fill', '#cdd6f4').attr('font-size', '10px')
+      .attr('font-weight', '600').attr('font-family', 'monospace')
+      .text(`#${n.id}`);
+
+    // Title (truncated)
+    const titleTrunc = n.title && n.title.length > 20 ? n.title.slice(0, 19) + '...' : (n.title || '');
+    g.append('text')
+      .attr('x', pos.x + 22).attr('y', pos.y + 26)
+      .attr('fill', '#6c7086').attr('font-size', '9px').attr('font-family', 'sans-serif')
+      .text(titleTrunc);
+
+    // Hover highlight + click
+    g.on('mouseenter', function() { d3.select(this).select('rect').attr('stroke', color + 'aa'); })
+     .on('mouseleave', function() { d3.select(this).select('rect').attr('stroke', color + '55'); })
+     .on('click', () => showDrawer(n));
+  });
+}
+
+// -- Action drawer --
+function showDrawer(node) {
+  const drawer = document.getElementById('action-drawer');
+  drawer.classList.remove('hidden');
+
+  const color = stateColor(node.state);
+  document.getElementById('drawer-dot').style.backgroundColor = color;
+  document.getElementById('drawer-title').textContent = node.title || `Issue #${node.id}`;
+  document.getElementById('drawer-state').textContent = (node.state || '').replace(/_/g, ' ');
+  document.getElementById('drawer-milestone').textContent = node.milestone || '';
+  document.getElementById('drawer-excerpt').textContent = node.body_excerpt || '';
+
+  const ghLink = document.getElementById('drawer-gh-link');
+  ghLink.textContent = `#${node.id}`;
+  ghLink.href = githubRepo ? `https://github.com/${githubRepo}/issues/${node.id}` : '#';
+
+  const actions = document.getElementById('drawer-actions');
+  const actionBtns = (node.available_actions || []).map(a =>
+    `<button data-issue="${node.id}" data-role="${esc(a.role)}"
+      class="dep-action-btn text-xs px-3 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+      ${esc(a.label)}
+    </button>`
+  ).join('');
+
+  const lifecycleLink = `<a href="${prefix}/lifecycle/${node.id}"
+    class="text-xs px-3 py-1.5 rounded bg-gray-700/40 text-gray-400 hover:bg-gray-700/60">
+    View Lifecycle
+  </a>`;
+
+  actions.innerHTML = actionBtns + lifecycleLink;
+  drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function hideDrawer() {
+  document.getElementById('action-drawer').classList.add('hidden');
+}
+
+async function spawnAgent(issue, role) {
+  try {
+    const r = await fetch(`${apiBase}/agents/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue: String(issue), role }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || 'Spawn failed');
+    hideDrawer();
+    setTimeout(loadGraph, 1500);
+  } catch (e) {
+    alert(`Failed to start agent: ${e.message}`);
+  }
 }
 
 // -- Decisions / Activity Stream --
@@ -341,7 +466,9 @@ async function loadDecisions() {
       const actionColor = d.action === 'error' ? 'text-accent-red' :
                           d.action === 'throttled' ? 'text-accent-yellow' :
                           d.event_type === 'decision' ? 'text-accent' : 'text-gray-400';
-      const time = d.created_at ? new Date(d.created_at).toLocaleTimeString() : '';
+      const ts = d.created_at;
+      const utcTs = ts && !ts.includes('+') && !ts.endsWith('Z') ? ts + 'Z' : ts;
+      const time = utcTs ? new Date(utcTs).toLocaleTimeString() : '';
       const issue = d.issue_number ? `#${d.issue_number}` : '';
       return `<div class="flex items-start gap-3 py-1.5 px-2 rounded hover:bg-gray-700/20 text-xs">
         <span class="text-gray-600 shrink-0 w-16">${time}</span>
@@ -364,8 +491,9 @@ async function triggerPoll() {
   try {
     await fetch(`${apiBase}/supervisor/poll`, { method: 'POST' });
     setTimeout(() => {
-      loadDecisions();
-      loadQuota();
+      loadDecisions(); loadQuota();
+      _graphKey = null; // force graph refresh after manual poll
+      loadGraph();
       btn.disabled = false;
       btn.textContent = 'Poll Now';
     }, 2000);
@@ -375,13 +503,16 @@ async function triggerPoll() {
   }
 }
 
-// -- Init --
-loadStatus();
-loadQuota();
-loadGraph();
-loadDecisions();
+// -- Action button delegation (avoids inline onclick with data values in attributes) --
+document.getElementById('action-drawer').addEventListener('click', e => {
+  const btn = e.target.closest('.dep-action-btn');
+  if (btn) spawnAgent(btn.dataset.issue, btn.dataset.role);
+});
 
-// Poll status, quota, decisions, and dependency graph every 30s
+// -- Init --
+loadStatus(); loadQuota(); loadGraph(); loadDecisions();
+
+// Poll every 30s; loadGraph re-renders only when data changes
 setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
 </script>
 {% endblock %}

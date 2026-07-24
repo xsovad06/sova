@@ -238,9 +238,8 @@ class TestDashboardHealth:
         assert resp.status_code == 200
 
     async def test_supervisor_page_loads(self, client: AsyncClient) -> None:
-        from unittest.mock import patch
-
         from dataclasses import dataclass
+        from unittest.mock import patch
 
         @dataclass
         class FakeCfg:
