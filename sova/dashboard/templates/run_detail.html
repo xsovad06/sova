@@ -115,6 +115,7 @@ var _OUTPUT_BACKOFF_BASE = 2000;
 var _OUTPUT_BACKOFF_MAX = 5000;
 var _outputActiveRun = null;
 var _outputActiveTarget = null;
+var _outputBuffer = '';
 
 function safeStepId(name) {
   return name.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -208,6 +209,7 @@ function _closeOutputStream() {
 function renderStepList(steps, run) {
   _closeOutputStream();
   _outputCursor = 0;
+  _outputBuffer = '';
   _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
 
   if (steps.length === 0) {
@@ -393,15 +395,17 @@ function _connectOutputSSE(run, targetId) {
   _outputEventSource = es;
 
   es.addEventListener('output', function(e) {
+    if (es !== _outputEventSource) return;
     var el = document.getElementById(targetId);
     if (el) {
       var text = e.data.replace(/\\([nr\\])/g, function(_, c) { return c === 'n' ? '\n' : c === 'r' ? '\r' : '\\'; });
       if (_outputCursor === 0) {
-        el.textContent = text;
+        _outputBuffer = text;
       } else {
-        el.textContent += '\n' + text;
+        _outputBuffer += '\n' + text;
       }
       _outputCursor++;
+      try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
       el.scrollTop = el.scrollHeight;
     }
   });
@@ -414,8 +418,9 @@ function _connectOutputSSE(run, targetId) {
     if (es === _outputEventSource) { es.close(); _outputEventSource = null; }
     _outputCursor = 0;
     _outputBackoffMs = _OUTPUT_BACKOFF_BASE;
+    _outputBuffer = '';
     var el = document.getElementById(targetId);
-    if (el) el.textContent = '';
+    if (el) el.innerHTML = '';
     _pollOutput(run, targetId);
   };
 }
@@ -427,11 +432,12 @@ async function _pollOutput(run, targetId) {
       var el = document.getElementById(targetId);
       if (el) {
         if (_outputCursor === 0) {
-          el.textContent = data.lines.join('\n');
+          _outputBuffer = data.lines.join('\n');
         } else {
-          el.textContent += '\n' + data.lines.join('\n');
+          _outputBuffer += '\n' + data.lines.join('\n');
         }
         _outputCursor += data.lines.length;
+        try { el.innerHTML = renderMarkdown(_outputBuffer); } catch(err) { console.error('Markdown render failed:', err); el.textContent = _outputBuffer; }
         el.scrollTop = el.scrollHeight;
       }
       _outputBackoffMs = _OUTPUT_BACKOFF_BASE;

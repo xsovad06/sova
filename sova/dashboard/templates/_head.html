@@ -34,3 +34,43 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script>
+function escapeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+var _markedConfigured = false;
+function _ensureMarked() {
+  if (_markedConfigured) return;
+  if (!window.marked) return;
+  _markedConfigured = true;
+  marked.use({
+    gfm: true,
+    breaks: true,
+    renderer: {
+      heading: function(token) {
+        var text = this.parser.parseInline(token.tokens);
+        var tag = 'h' + token.depth;
+        var cls = token.depth === 1 ? 'text-xl font-bold mt-6 mb-3 text-gray-100'
+                : token.depth === 2 ? 'text-lg font-semibold mt-6 mb-3 text-gray-100 border-b border-gray-700/50 pb-2'
+                : 'text-base font-semibold mt-4 mb-2 text-gray-200';
+        return '<' + tag + ' class="' + cls + '">' + text + '</' + tag + '>';
+      },
+    },
+  });
+}
+
+function renderMarkdown(text) {
+  _ensureMarked();
+  if (!window.marked) return escapeHtml(text || '');
+  var html = marked.parse(text || '');
+  return window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(text || '');
+}
+</script>

@@ -62,7 +62,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 <script>
 if (window.mermaid) {
@@ -115,33 +114,6 @@ function statusBadge(status) {
       el.className = 'ml-auto px-3 py-1 text-xs rounded-full bg-gray-700 text-gray-400';
   }
   el.textContent = status;
-}
-
-var _markedConfigured = false;
-function _ensureMarked() {
-  if (_markedConfigured) return;
-  if (!window.marked) return;
-  _markedConfigured = true;
-  marked.use({
-    gfm: true,
-    breaks: true,
-    renderer: {
-      heading: function(token) {
-        var text = this.parser.parseInline(token.tokens);
-        var tag = 'h' + token.depth;
-        var cls = token.depth === 1 ? 'text-xl font-bold mt-6 mb-3 text-gray-100'
-                : token.depth === 2 ? 'text-lg font-semibold mt-6 mb-3 text-gray-100 border-b border-gray-700/50 pb-2'
-                : 'text-base font-semibold mt-4 mb-2 text-gray-200';
-        return '<' + tag + ' class="' + cls + '">' + text + '</' + tag + '>';
-      },
-    },
-  });
-}
-
-function renderMarkdown(text) {
-  _ensureMarked();
-  if (!window.marked) return escapeHtml(text || '');
-  return marked.parse(text || '');
 }
 
 function renderMermaidBlocks(containerId) {
