@@ -311,6 +311,44 @@ class TestDependencyGraph:
         assert d["ready"] == [2]
         assert d["validation"]["valid"] is True
 
+    def test_to_dict_node_has_body_excerpt(self) -> None:
+        """Each node should include a short body excerpt for the action drawer."""
+        long_body = "x" * 200
+        tasks = [_task(1, body=long_body)]
+        graph = DependencyGraph(tasks)
+        node = graph.to_dict()["nodes"][0]
+        assert "body_excerpt" in node
+        assert len(node["body_excerpt"]) <= 100
+
+    def test_to_dict_node_body_excerpt_strips_deps_section(self) -> None:
+        """body_excerpt should not include the Dependencies header noise."""
+        body = "Fix the login page.\n\n## Dependencies\n- #2\n"
+        tasks = [_task(1, body=body)]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["body_excerpt"].startswith("Fix")
+
+    def test_to_dict_node_body_excerpt_empty_body(self) -> None:
+        tasks = [_task(1, body="")]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["body_excerpt"] == ""
+
+    def test_to_dict_node_has_available_actions(self) -> None:
+        """Each node should expose the actions available given its current state."""
+        tasks = [
+            _task(1, state=TaskState.TRIAGED),
+            _task(2, state=TaskState.RESEARCHED),
+            _task(3, state=TaskState.IN_REVIEW),
+            _task(4, state=TaskState.IN_PROGRESS),
+            _task(5, state=TaskState.DONE),
+        ]
+        d = DependencyGraph(tasks).to_dict()
+        by_id = {n["id"]: n["available_actions"] for n in d["nodes"]}
+        assert any(a["role"] == "researcher" for a in by_id[1])
+        assert any(a["role"] == "developer" for a in by_id[2])
+        assert any(a["role"] == "integrate-pr" for a in by_id[3])
+        assert by_id[4] == []
+        assert by_id[5] == []
+
     def test_self_reference_filtered(self) -> None:
         tasks = [_task(5, body="## Dependencies\n- #5\n- #10\n")]
         graph = DependencyGraph(tasks)

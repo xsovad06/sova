@@ -21,6 +21,22 @@ _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
     {TaskState.DONE, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.HUMAN_ONLY}
 )
 
+# Actions a user or supervisor can take for each issue state, surfaced in the graph drawer.
+_STATE_ACTIONS: dict[TaskState, list[dict]] = {
+    TaskState.BACKLOG: [],
+    TaskState.TRIAGED: [{"id": "researcher", "label": "Run Researcher", "role": "researcher"}],
+    TaskState.RESEARCHED: [{"id": "developer", "label": "Run Developer", "role": "developer"}],
+    TaskState.IN_PROGRESS: [],
+    TaskState.IN_REVIEW: [
+        {"id": "integrate-pr", "label": "Integrate PR", "role": "integrate-pr"},
+        {"id": "address-pr", "label": "Address PR", "role": "address-pr"},
+    ],
+    TaskState.DONE: [],
+    TaskState.HUMAN_ONLY: [],
+}
+
+_BODY_EXCERPT_LEN = 100
+
 
 @dataclass
 class ValidationResult:
@@ -231,6 +247,15 @@ class DependencyGraph:
         """
         nodes = []
         for tid, task in sorted(self._tasks.items()):
+            body = task.body or ""
+            # Skip section headers (#...) and list/dep items (-...) so the excerpt
+            # shows the human-readable description, not dependency boilerplate.
+            excerpt_lines = [
+                ln.strip()
+                for ln in body.splitlines()
+                if ln.strip() and not ln.strip().startswith("#") and not ln.strip().startswith("-")
+            ]
+            excerpt = " ".join(excerpt_lines)[:_BODY_EXCERPT_LEN].strip()
             nodes.append(
                 {
                     "id": tid,
@@ -238,6 +263,8 @@ class DependencyGraph:
                     "state": task.state.value,
                     "milestone": task.milestone,
                     "dependencies": sorted(self._deps.get(tid, set())),
+                    "body_excerpt": excerpt,
+                    "available_actions": list(_STATE_ACTIONS.get(task.state, [])),
                 }
             )
 
