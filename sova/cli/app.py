@@ -20,6 +20,7 @@ from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_
 from sova.cli.commands.project import install, setup, uninstall
 from sova.cli.commands.run import parallel, run_issue, watch
 from sova.cli.commands.server import app as server_app
+from sova.cli.commands.supervisor import app as supervisor_app
 from sova.cli.commands.triage import triage
 from sova.config.loader import load_config
 
@@ -67,6 +68,9 @@ app.add_typer(commands_app)
 
 # Server (subcommand group)
 app.add_typer(server_app)
+
+# Supervisor (subcommand group)
+app.add_typer(supervisor_app)
 
 console = Console(stderr=True)
 

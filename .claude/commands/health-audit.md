@@ -293,11 +293,11 @@ with the issue numbers and links.
 3. Wait for explicit user confirmation before creating any issues
 4. After creation, report all issue numbers
 
-## Phase D: Update Roadmap
+## Phase D: Verify Backlog
 
-After creating issues, run `/update-roadmap` to integrate the new audit issues
-into the project's visual roadmap and vision document. This ensures the backlog,
-roadmap, and issue tracker stay in sync.
+After creating issues, verify the new issues appear on the project board and have
+correct labels, milestones, and dependencies. The supervisor dashboard (`/supervisor`)
+shows the live dependency graph.
 
 ## Constraints
 - Do NOT fabricate findings. If you are unsure whether an issue exists, say so and

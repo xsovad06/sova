@@ -282,6 +282,15 @@ async def get_session(project_dir: Path | None = None) -> AsyncSession:
     return _session_factory()
 
 
+async def get_session_factory(project_dir: Path) -> async_sessionmaker:
+    """Return the async_sessionmaker for a project (initializes DB if needed)."""
+    url = _get_database_url(project_dir)
+    if url not in _engines:
+        await init_db_for_project(project_dir)
+    _, factory = _engines[url]
+    return factory
+
+
 async def close_db() -> None:
     """Close all database engines."""
     global _engine, _session_factory

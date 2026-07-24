@@ -936,6 +936,13 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
         "number",
     ),
+    SettingMeta(
+        "supervisor.log_retention_days",
+        "Log retention (days)",
+        "Days to retain supervisor decision logs before purging",
+        "supervisor",
+        "number",
+    ),
     # -- Memory Guard --
     SettingMeta(
         "memory_guard.enabled",

@@ -101,7 +101,7 @@ The adapter ABC's `_parse_issue()` method extracts the milestone string. The das
 - **Move issues, don't rename phases**: when work shifts priority, change the issue's milestone, not the phase name.
 - **Leave contributor issues unphased**: good-first-issues and external contributor tasks work best without a phase milestone -- they appear in the neutral "No phase" section.
 - **Close completed phases**: when all issues in a phase are done, close the milestone via the GitHub UI. This keeps the milestone picker clean.
-- **Pair with a visual roadmap**: use `docs/roadmap.html` (Mermaid dependency graph + Gantt timeline) alongside milestones for the full picture. Regenerate when phases change.
+- **Pair with the supervisor dashboard**: the `/supervisor` page shows an interactive D3.js dependency graph alongside milestones for the full picture.
 - **One source of truth**: milestones drive the dashboard. Don't also use GitHub Projects V2 "Phase" field -- it causes confusion (the dashboard ignores it).
 
 ## Integration Points
