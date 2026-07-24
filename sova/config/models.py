@@ -201,6 +201,7 @@ class CommitConfig(BaseSettings):
     author: str = ""
     pr_title_format: Literal["conventional", "freeform"] = "conventional"
     branch_naming: Literal["conventional", "freeform"] = "conventional"
+    pr_auto_link_issues: bool = True
 
     model_config = SettingsConfigDict(env_prefix="SOVA_COMMIT_")
 
