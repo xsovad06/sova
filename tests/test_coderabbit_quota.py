@@ -275,11 +275,14 @@ class TestQuotaAPI:
     async def test_disabled_endpoint(self) -> None:
         from httpx import ASGITransport, AsyncClient
 
+        from sova.config.models import ProjectConfig
         from sova.dashboard.app import create_app
 
+        cfg = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=False))
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/quota/coderabbit")
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/coderabbit")
         assert resp.status_code == 200
         data = resp.json()
         assert data["enabled"] is False
@@ -287,11 +290,14 @@ class TestQuotaAPI:
     async def test_sync_endpoint_disabled(self) -> None:
         from httpx import ASGITransport, AsyncClient
 
+        from sova.config.models import ProjectConfig
         from sova.dashboard.app import create_app
 
+        cfg = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=False))
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post("/api/quota/coderabbit/sync")
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/quota/coderabbit/sync")
         assert resp.status_code == 200
         data = resp.json()
         assert data["enabled"] is False
@@ -412,11 +418,14 @@ class TestQuotaAPI:
     async def test_pr_queue_disabled(self) -> None:
         from httpx import ASGITransport, AsyncClient
 
+        from sova.config.models import ProjectConfig
         from sova.dashboard.app import create_app
 
+        cfg = ProjectConfig(coderabbit_quota=CodeRabbitQuotaConfig(enabled=False))
         app = create_app()
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/quota/pr-queue")
+        with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/quota/pr-queue")
         assert resp.status_code == 200
         data = resp.json()
         assert data["enabled"] is False
