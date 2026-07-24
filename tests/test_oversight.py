@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRunStatus
@@ -27,7 +28,7 @@ class TestOversightConfig:
         assert cfg.analysis_model == "sonnet"
 
     def test_wake_interval_min_bound(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError, match="wake_interval_minutes"):
             OversightConfig(wake_interval_minutes=0)
 
     def test_wake_interval_accepts_one(self) -> None:
@@ -199,6 +200,82 @@ class TestOversightAgent:
         assert runs[0].duration_ms == 42
 
         await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_during_cycle_body_records_error(self) -> None:
+        """When CancelledError fires during the cycle body, record an ERROR run."""
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        recorded: list[dict] = []
+
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+            recorded.append({"status": status, "error": error})
+
+        sleep_count = 0
+
+        async def _fake_sleep(seconds):
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count == 1:
+                return  # let cycle start
+            raise asyncio.CancelledError  # won't be reached
+
+        # Patch _record_run to first raise CancelledError (simulating cancellation
+        # during the cycle body at the point where _record_run(DONE) is called),
+        # then succeed on the second call (the error-recording call in the except block).
+        call_count = 0
+        original_mock_record = _mock_record
+
+        async def _cancel_then_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.CancelledError
+            await original_mock_record(run_id, cycle, status, duration_ms, started_at=started_at, error=error)
+
+        with (
+            patch.object(agent, "_record_run", side_effect=_cancel_then_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert len(recorded) == 1
+        assert recorded[0]["status"] == OversightRunStatus.ERROR
+        assert recorded[0]["error"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_during_cycle_body_record_fails(self) -> None:
+        """When _record_run fails during CancelledError handling, CancelledError still propagates."""
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        async def _fake_sleep(seconds):
+            return  # let cycle start immediately
+
+        # Both calls to _record_run raise: first CancelledError (in try body),
+        # then RuntimeError (in except CancelledError handler).
+        call_count = 0
+
+        async def _failing_record(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.CancelledError
+            raise RuntimeError("DB gone during cancellation")
+
+        with (
+            patch.object(agent, "_record_run", side_effect=_failing_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # The CancelledError was still re-raised despite the inner _record_run failure
+        assert call_count == 2
 
     @pytest.mark.asyncio
     async def test_record_run_db_failure_does_not_raise(self) -> None:
