@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from sova.monitoring.cross_project import MetricsSnapshotWriter
     from sova.oversight.agent import OversightAgent
+    from sova.supervisor.daemon import SupervisorDaemon
     from sova.supervisor.watchdog import AgentWatchdog
 
 from fastapi import FastAPI, Request
@@ -49,6 +50,7 @@ from sova.dashboard.routers import (
     settings,
     setup,
     spec,
+    supervisor,
     tasks,
     work,
 )
@@ -186,6 +188,7 @@ async def _shutdown_tasks(
     watchdog: AgentWatchdog | None = None,
     recovery_task: asyncio.Task | None = None,
     oversight_agent: OversightAgent | None = None,
+    supervisor_daemons: list[SupervisorDaemon] | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -201,6 +204,8 @@ async def _shutdown_tasks(
         await oversight_agent.stop()
     if watchdog is not None:
         await watchdog.stop()
+    for daemon in supervisor_daemons or []:
+        await daemon.stop()
     bg_tasks = pr_throttle_tasks + pr_monitor_tasks
     for t in bg_tasks:
         t.cancel()
@@ -389,6 +394,39 @@ def create_app(
             oversight_agent = _OversightAgent(config=cfg.oversight)
             oversight_agent.start()
 
+        # Start supervisor daemons
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+        from sova.supervisor.daemon import SupervisorDaemon as _SupervisorDaemon
+
+        supervisor_daemons: list[SupervisorDaemon] = []
+        daemon_registry: dict[str, _SupervisorDaemon] = {}
+        if is_multi:
+            from sova.config.loader import load_config as _load_cfg_sv
+            from sova.db.session import get_session_factory
+
+            for path_str in list_projects().values():
+                p = Path(path_str)
+                if not p.is_dir():
+                    continue
+                sv_cfg = _load_cfg_sv(p)
+                if not sv_cfg.supervisor.enabled:
+                    continue
+                sf = await get_session_factory(p)
+                daemon = _SupervisorDaemon(config=sv_cfg, project_dir=p, session_factory=sf)
+                daemon.start()
+                supervisor_daemons.append(daemon)
+                daemon_registry[str(p.resolve())] = daemon
+        elif cfg.supervisor.enabled:
+            from sova.db.session import get_session_factory
+
+            sf = await get_session_factory(resolved)
+            daemon = _SupervisorDaemon(config=cfg, project_dir=resolved, session_factory=sf)
+            daemon.start()
+            supervisor_daemons.append(daemon)
+            daemon_registry[str(resolved)] = daemon
+
+        set_daemon_registry(daemon_registry)
+
         try:
             yield
         finally:
@@ -402,6 +440,7 @@ def create_app(
                         watchdog,
                         recovery_task=recovery_task,
                         oversight_agent=oversight_agent,
+                        supervisor_daemons=supervisor_daemons,
                     ),
                     timeout=5.0,
                 )
@@ -598,6 +637,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_spec(request: Request, slug: str, issue_number: str) -> Response:
         return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
 
+    @app.get("/p/{slug}/supervisor")
+    async def project_supervisor(request: Request, slug: str):
+        return _project_page(request, templates, slug, "supervisor.html", "supervisor")
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -713,6 +756,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def spec_page(request: Request, issue_number: str) -> Response:
         return templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
 
+    @app.get("/supervisor")
+    async def supervisor_page(request: Request):
+        return templates.TemplateResponse(request, "supervisor.html", {"page": "supervisor"})
+
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
@@ -740,4 +787,5 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(quota.router, prefix=prefix)
     app.include_router(dependencies.router, prefix=prefix)
     app.include_router(resources.router, prefix=prefix)
+    app.include_router(supervisor.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)

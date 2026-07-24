@@ -6,7 +6,7 @@ SOVA has four main components:
 
 ### 1. CLI (`sova/cli/`)
 - Python CLI built with Typer, entry point `sova` (via pyproject.toml)
-- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `config`, `mcp`
+- Subcommands: `run`, `watch`, `parallel`, `triage`, `harden`, `install`, `setup`, `uninstall`, `dashboard`, `server`, `commands`, `memory`, `status`, `costs`, `cleanup`, `doctor`, `address-pr`, `maintain-pr`, `review-pr`, `learn-from-pr`, `init-db`, `config`, `mcp`, `supervisor`
 - Registered in `sova/cli/app.py`, implementations in `sova/cli/commands/`
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
@@ -31,10 +31,10 @@ SOVA has four main components:
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
 - Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
-- 21 pages: dashboard, agents, run_detail, lifecycle, costs, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks, base
+- 22 pages: dashboard, agents, run_detail, lifecycle, costs, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks, base, supervisor
 - **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
-- 21 API routers under `/api`: overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources
-- 32 services: run, cost, memory, control (facade), feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output (re-export facade for core/output), role, spec, pr, resource, llm_suggestion, output_stream
+- 22 API routers under `/api`: overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor
+- 34 services: run, cost, memory, control (facade), feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output (re-export facade for core/output), role, spec, pr, resource, llm_suggestion, output_stream, fleet, supervisor
 - Old pages (overview, control, runs, tasks, work) redirect to current equivalents (dashboard or agents)
 - **Multi-agent control**: manages concurrent agent processes per project with slot limits and per-issue dedup. Both `start_agent()` and `start_command()` call `_check_issue_conflict()` which rejects duplicates via two checks: in-memory (`pa.agents`) and DB (`TaskRun` with alive PID). The DB check catches CLI-spawned agents not tracked in-memory. The `max_concurrent` slot check alone doesn't prevent same-issue duplicates. `_check_issue_conflict()` auto-recovers dead-PID DB runs by marking them "interrupted" on detection. When `force=True` (passed through from `start_agent`), both in-memory and live external conflicts are skipped so `--force` retries are not blocked by stale state.
 - **Batch operations**: triage/harden multiple issues with parallel concurrency (`asyncio.Semaphore`, default 3 for triage, 2 for harden via `DEFAULT_CONCURRENCY`). `BatchJob.max_concurrency` configurable per-batch. Global progress bar in `base.html` (visible on all pages), batch ID persistence via `sessionStorage`, `GET /api/queue/batch/active` endpoint for discovering running batches after page navigation or browser refresh

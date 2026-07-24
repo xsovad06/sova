@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}Supervisor - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Supervisor</h2>
+  <div class="flex items-center gap-3">
+    <span id="daemon-status" class="text-xs px-2 py-1 rounded bg-gray-700/50 text-gray-400">Loading...</span>
+    <button id="poll-btn" onclick="triggerPoll()" class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
+      Poll Now
+    </button>
+  </div>
+</div>
+
+<!-- Disabled banner -->
+<div id="disabled-banner" class="hidden bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-4 py-3 mb-6">
+  <p class="text-sm text-accent-yellow">
+    The supervisor daemon is disabled. Enable it in
+    <a href="{{ prefix|default('') }}/settings" class="underline hover:text-yellow-200">Settings</a>
+    under the Supervisor section (<code>supervisor.enabled = true</code>).
+  </p>
+</div>
+
+<!-- Three-panel layout -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+  <!-- Panel 1: Dependency Graph -->
+  <div class="lg:col-span-2 bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <h3 class="text-sm font-medium text-gray-300 mb-3">Dependency Graph</h3>
+    <div id="graph-container" class="relative" style="min-height: 400px;">
+      <div id="graph-loading" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+        Loading graph...
+      </div>
+      <div id="graph-error" class="hidden absolute inset-0 flex items-center justify-center">
+        <p class="text-sm text-accent-red bg-accent-red/10 px-4 py-2 rounded"></p>
+      </div>
+      <svg id="graph-svg" class="w-full" style="height: 400px;"></svg>
+    </div>
+    <div class="mt-2 flex items-center gap-4 text-xs text-gray-500">
+      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent-green inline-block"></span> Done</span>
+      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent inline-block"></span> In Progress</span>
+      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-gray-500 inline-block"></span> Open</span>
+      <span class="flex items-center gap-1"><span class="w-3 h-3 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+    </div>
+  </div>
+
+  <!-- Panel 2: Rate Limits -->
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
+    <h3 class="text-sm font-medium text-gray-300 mb-3">Rate Limits</h3>
+    <div id="quota-panel" class="space-y-3">
+      <p class="text-xs text-gray-500">Loading...</p>
+    </div>
+
+    <h3 class="text-sm font-medium text-gray-300 mt-6 mb-3">Daemon Status</h3>
+    <div id="status-panel" class="space-y-2 text-xs text-gray-400">
+      <p>Loading...</p>
+    </div>
+  </div>
+</div>
+
+<!-- Panel 3: Activity Stream -->
+<div class="mt-6 bg-surface-card rounded-lg border border-gray-700/50 p-4">
+  <div class="flex items-center justify-between mb-3">
+    <h3 class="text-sm font-medium text-gray-300">Activity Stream</h3>
+    <div class="flex items-center gap-2">
+      <select id="filter-component" onchange="loadDecisions()" class="text-xs bg-surface border border-gray-700/50 rounded px-2 py-1 text-gray-400">
+        <option value="">All components</option>
+        <option value="progression">Progression</option>
+        <option value="quota">Quota</option>
+        <option value="health">Health</option>
+      </select>
+      <select id="filter-type" onchange="loadDecisions()" class="text-xs bg-surface border border-gray-700/50 rounded px-2 py-1 text-gray-400">
+        <option value="">All types</option>
+        <option value="decision">Decisions</option>
+        <option value="status">Status</option>
+        <option value="health">Health</option>
+      </select>
+    </div>
+  </div>
+  <div id="decisions-list" class="space-y-1 max-h-96 overflow-y-auto">
+    <p class="text-xs text-gray-500 text-center py-4">Loading...</p>
+  </div>
+</div>
+
+<script src="/static/d3.min.js"></script>
+<script>
+const prefix = '{{ prefix|default("") }}';
+const apiBase = prefix ? `${prefix}/api` : '/api';
+
+const esc = window.escapeHtml || function(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+};
+
+// -- Status --
+async function loadStatus() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/status`);
+    const data = await res.json();
+    const statusEl = document.getElementById('daemon-status');
+    const pollBtn = document.getElementById('poll-btn');
+    const banner = document.getElementById('disabled-banner');
+
+    if (!data.enabled) {
+      statusEl.textContent = 'Disabled';
+      statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-700/50 text-gray-400';
+      banner.classList.remove('hidden');
+      pollBtn.disabled = true;
+      return;
+    }
+
+    banner.classList.add('hidden');
+    if (data.running) {
+      statusEl.textContent = 'Running';
+      statusEl.className = 'text-xs px-2 py-1 rounded bg-accent-green/20 text-accent-green';
+      pollBtn.disabled = false;
+    } else {
+      statusEl.textContent = 'Stopped';
+      statusEl.className = 'text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red';
+      pollBtn.disabled = true;
+    }
+
+    const panel = document.getElementById('status-panel');
+    panel.innerHTML = `
+      <div class="flex justify-between"><span>Poll interval</span><span class="text-gray-300">${data.poll_interval_seconds}s</span></div>
+      <div class="flex justify-between"><span>Log retention</span><span class="text-gray-300">${data.log_retention_days}d</span></div>
+    `;
+  } catch (e) {
+    console.error('Failed to load supervisor status:', e);
+  }
+}
+
+// -- Quota --
+async function loadQuota() {
+  try {
+    const res = await fetch(`${apiBase}/quota/status`);
+    if (!res.ok) {
+      document.getElementById('quota-panel').innerHTML =
+        '<p class="text-xs text-gray-500">CodeRabbit quota tracking not configured</p>';
+      return;
+    }
+    const data = await res.json();
+    const panel = document.getElementById('quota-panel');
+
+    if (!data.enabled) {
+      panel.innerHTML = '<p class="text-xs text-gray-500">CodeRabbit quota tracking disabled</p>';
+      return;
+    }
+
+    const statusColor = data.can_create_pr ? 'text-accent-green' : 'text-accent-red';
+    const statusText = data.can_create_pr ? 'Available' : 'Throttled';
+    panel.innerHTML = `
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Status</span><span class="${statusColor} font-medium">${statusText}</span></div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Reviews in window</span><span class="text-gray-300">${data.reviews_in_window}/${data.reviews_per_hour}</span></div>
+      ${data.next_available_minutes != null ? `<div class="flex justify-between text-xs"><span class="text-gray-400">Next available</span><span class="text-gray-300">${Math.ceil(data.next_available_minutes)}m</span></div>` : ''}
+    `;
+  } catch (e) {
+    document.getElementById('quota-panel').innerHTML =
+      '<p class="text-xs text-gray-500">Failed to load quota status</p>';
+  }
+}
+
+// -- Dependency Graph (D3 force-directed) --
+async function loadGraph() {
+  const container = document.getElementById('graph-container');
+  const loading = document.getElementById('graph-loading');
+  const errorEl = document.getElementById('graph-error');
+  const svg = d3.select('#graph-svg');
+
+  try {
+    const res = await fetch(`${apiBase}/dependencies/graph`);
+    if (!res.ok) {
+      const detail = res.status === 503 ? 'Project configuration unavailable' : `HTTP ${res.status}`;
+      loading.classList.add('hidden');
+      errorEl.classList.remove('hidden');
+      errorEl.querySelector('p').textContent = `Failed to load graph: ${detail}`;
+      return;
+    }
+    const data = await res.json();
+    loading.classList.add('hidden');
+
+    if (!data.nodes || data.nodes.length === 0) {
+      errorEl.classList.remove('hidden');
+      errorEl.querySelector('p').textContent = 'No issues with dependencies found';
+      errorEl.querySelector('p').className = 'text-sm text-gray-500 bg-gray-700/30 px-4 py-2 rounded';
+      return;
+    }
+
+    renderGraph(data, svg, container);
+  } catch (e) {
+    loading.classList.add('hidden');
+    errorEl.classList.remove('hidden');
+    errorEl.querySelector('p').textContent = `Failed to load graph: ${e.message}`;
+  }
+}
+
+function renderGraph(data, svg, container) {
+  const width = container.clientWidth;
+  const height = 400;
+  svg.attr('viewBox', `0 0 ${width} ${height}`);
+  svg.selectAll('*').remove();
+
+  const stateColor = (state) => {
+    if (!state) return '#6c7086';
+    const s = state.toLowerCase();
+    if (s === 'done' || s === 'closed') return '#a6e3a1';
+    if (s === 'in_progress' || s === 'in_review') return '#89b4fa';
+    if (s === 'blocked') return '#f38ba8';
+    return '#6c7086';
+  };
+
+  const nodes = data.nodes.map(n => ({
+    id: n.id,
+    title: n.title || `#${n.id}`,
+    state: n.state || 'open',
+    milestone: n.milestone || '',
+  }));
+
+  const edges = (data.edges || []).map(e => ({
+    source: e.from,
+    target: e.to,
+  }));
+
+  const g = svg.append('g');
+
+  // Zoom
+  const zoom = d3.zoom()
+    .scaleExtent([0.3, 3])
+    .on('zoom', (event) => g.attr('transform', event.transform));
+  svg.call(zoom);
+
+  // Arrow marker
+  svg.append('defs').append('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -5 10 10')
+    .attr('refX', 20)
+    .attr('refY', 0)
+    .attr('markerWidth', 6)
+    .attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-5L10,0L0,5')
+    .attr('fill', '#585b70');
+
+  const simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(edges).id(d => d.id).distance(80))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide(25));
+
+  const link = g.selectAll('.link')
+    .data(edges)
+    .join('line')
+    .attr('class', 'link')
+    .attr('stroke', '#585b70')
+    .attr('stroke-width', 1.5)
+    .attr('marker-end', 'url(#arrow)');
+
+  const node = g.selectAll('.node')
+    .data(nodes)
+    .join('g')
+    .attr('class', 'node')
+    .call(d3.drag()
+      .on('start', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      })
+      .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+      .on('end', (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      })
+    );
+
+  node.append('circle')
+    .attr('r', 10)
+    .attr('fill', d => stateColor(d.state))
+    .attr('stroke', '#1e1e2e')
+    .attr('stroke-width', 2);
+
+  node.append('text')
+    .attr('dy', -14)
+    .attr('text-anchor', 'middle')
+    .attr('fill', '#cdd6f4')
+    .attr('font-size', '10px')
+    .text(d => `#${d.id}`);
+
+  // Tooltip
+  const tooltip = d3.select(container).append('div')
+    .style('position', 'absolute')
+    .style('display', 'none')
+    .style('background', '#313244')
+    .style('border', '1px solid rgba(108,112,134,0.5)')
+    .style('border-radius', '6px')
+    .style('padding', '8px 12px')
+    .style('font-size', '12px')
+    .style('color', '#cdd6f4')
+    .style('pointer-events', 'none')
+    .style('z-index', '10');
+
+  node.on('mouseover', (event, d) => {
+    tooltip.style('display', 'block')
+      .html(`<strong>#${d.id}</strong><br>${esc(d.title)}<br><span style="color:${stateColor(d.state)}">${esc(d.state)}</span>`);
+  })
+  .on('mousemove', (event) => {
+    const rect = container.getBoundingClientRect();
+    tooltip.style('left', (event.clientX - rect.left + 12) + 'px')
+      .style('top', (event.clientY - rect.top - 10) + 'px');
+  })
+  .on('mouseout', () => tooltip.style('display', 'none'));
+
+  simulation.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+}
+
+// -- Decisions / Activity Stream --
+async function loadDecisions() {
+  const component = document.getElementById('filter-component').value;
+  const eventType = document.getElementById('filter-type').value;
+  const params = new URLSearchParams();
+  if (component) params.set('component', component);
+  if (eventType) params.set('event_type', eventType);
+
+  try {
+    const res = await fetch(`${apiBase}/supervisor/decisions?${params}`);
+    const data = await res.json();
+    const list = document.getElementById('decisions-list');
+
+    if (!data.decisions || data.decisions.length === 0) {
+      list.innerHTML = '<p class="text-xs text-gray-500 text-center py-4">No decisions logged yet</p>';
+      return;
+    }
+
+    list.innerHTML = data.decisions.map(d => {
+      const actionColor = d.action === 'error' ? 'text-accent-red' :
+                          d.action === 'throttled' ? 'text-accent-yellow' :
+                          d.event_type === 'decision' ? 'text-accent' : 'text-gray-400';
+      const time = d.created_at ? new Date(d.created_at).toLocaleTimeString() : '';
+      const issue = d.issue_number ? `#${d.issue_number}` : '';
+      return `<div class="flex items-start gap-3 py-1.5 px-2 rounded hover:bg-gray-700/20 text-xs">
+        <span class="text-gray-600 shrink-0 w-16">${time}</span>
+        <span class="text-gray-500 shrink-0 w-20">${esc(d.component)}</span>
+        <span class="${actionColor} shrink-0 w-28">${esc(d.action)}${issue ? ` ${issue}` : ''}</span>
+        <span class="text-gray-400 truncate">${esc(d.detail)}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('decisions-list').innerHTML =
+      '<p class="text-xs text-accent-red text-center py-4">Failed to load decisions</p>';
+  }
+}
+
+// -- Manual poll --
+async function triggerPoll() {
+  const btn = document.getElementById('poll-btn');
+  btn.disabled = true;
+  btn.textContent = 'Polling...';
+  try {
+    await fetch(`${apiBase}/supervisor/poll`, { method: 'POST' });
+    setTimeout(() => {
+      loadDecisions();
+      loadQuota();
+      btn.disabled = false;
+      btn.textContent = 'Poll Now';
+    }, 2000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Poll Now';
+  }
+}
+
+// -- Init --
+loadStatus();
+loadQuota();
+loadGraph();
+loadDecisions();
+
+// Poll status, quota, decisions, and dependency graph every 30s
+setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
+</script>
+{% endblock %}

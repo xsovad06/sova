@@ -30,7 +30,7 @@ sova/
   sova/                            # Python package (SOVA)
     cli/                           # Typer CLI (sova run, sova triage, etc.)
       app.py                       # Main app, subcommand registration
-      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server, mcp)
+      commands/                    # Command modules (run, triage, harden, project, pr, admin, memory, migrate, commands, server, mcp, supervisor)
     core/                          # Workflow engine, steps, state machine, context, output writer, DAG executor
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner, dispatcher)
     adapters/                      # Task source plugins (github; jira, linear, manual planned)
@@ -41,8 +41,8 @@ sova/
     scheduler/                     # Watch loop, parallel executor, server daemon
     dashboard/                     # FastAPI web UI
       app.py                       # App factory
-      routers/                     # 21 API routers (overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources)
-      services/                    # 33 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr, resource, llm_suggestion, output_stream, fleet)
+      routers/                     # 22 API routers (overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor)
+      services/                    # 34 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr, resource, llm_suggestion, output_stream, fleet, supervisor)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)

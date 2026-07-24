@@ -505,3 +505,26 @@ class PRCreationQueue(Base):
         Index("ix_pr_queue_enqueued", "enqueued_at"),
         Index("ix_pr_queue_project_status_enqueued", "project_slug", "status", "enqueued_at"),
     )
+
+
+class SupervisorDecision(Base):
+    """Append-only log of supervisor daemon decisions for diagnostics."""
+
+    __tablename__ = "supervisor_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    component: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    action: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_supervisor_decisions_project", "project_slug"),
+        Index("ix_supervisor_decisions_component", "component"),
+        Index("ix_supervisor_decisions_created", "created_at"),
+        Index("ix_supervisor_decisions_event_type", "event_type"),
+    )
