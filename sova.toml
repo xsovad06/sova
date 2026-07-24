@@ -1,4 +1,5 @@
 # SOVA -- Project Configuration (self-hosted)
+max_parallel_agents = 4
 
 [project]
 github_repo = "xsovad06/sova"
