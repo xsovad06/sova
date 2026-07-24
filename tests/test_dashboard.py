@@ -237,6 +237,29 @@ class TestDashboardHealth:
         resp = await client.get("/static/app.js")
         assert resp.status_code == 200
 
+    async def test_supervisor_page_loads(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeCfg:
+            github_repo: str = "owner/repo"
+
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/proj"),
+            patch("sova.config.loader.load_config", return_value=FakeCfg()),
+        ):
+            resp = await client.get("/supervisor")
+        assert resp.status_code == 200
+
+    async def test_supervisor_page_falls_back_on_config_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            resp = await client.get("/supervisor")
+        assert resp.status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Overview API
