@@ -85,6 +85,7 @@ _NESTED_SECTIONS = (
     "supervisor",
     "memory_guard",
     "watchdog",
+    "fleet",
     "awareness",
     "oversight",
 )
