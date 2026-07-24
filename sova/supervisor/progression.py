@@ -41,6 +41,10 @@ except ImportError:
 
 log = get_logger(component="supervisor.progression")
 
+# awaiting_approval is intentionally excluded: a completed researcher whose spec is pending
+# human review must still block re-spawn even though the agent process has exited.
+_ALREADY_RUNNING_TERMINAL = TASK_RUN_TERMINAL - {"awaiting_approval"}
+
 _NOT_COMPUTED = object()  # sentinel: distinguish "not precomputed" from "checked, no block"
 
 
@@ -635,16 +639,25 @@ class TaskProgressionEngine:
         return None
 
     async def _check_already_running(self, issue: int) -> BlockReason | None:
-        """Check if an agent is already running or being started for this issue."""
+        """Check if an agent is already running or being started for this issue.
+
+        awaiting_approval runs (spec pending human review) block unconditionally: the researcher
+        completed its work and the issue should not be re-researched even though the process exited.
+        """
         try:
             async with self._session_factory() as session:
                 stmt = select(TaskRun).where(
                     TaskRun.issue_number == str(issue),
-                    TaskRun.status.notin_(TASK_RUN_TERMINAL),
+                    TaskRun.status.notin_(_ALREADY_RUNNING_TERMINAL),
                 )
                 result = await session.execute(stmt)
                 runs = result.scalars().all()
                 for run in runs:
+                    if run.status == "awaiting_approval":
+                        return BlockReason(
+                            gate="already_running",
+                            detail=f"Spec awaiting human approval for #{issue} (run {run.id})",
+                        )
                     if run.pid is None:
                         return BlockReason(
                             gate="already_running",

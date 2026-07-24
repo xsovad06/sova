@@ -256,6 +256,26 @@ class TestResearcherRole:
         assert not result.success
         adapter.transition_state.assert_not_called()
 
+    async def test_spec_awaiting_approval_transitions_and_returns_failure(self) -> None:
+        """When the spec step pauses for human review, the issue label advances to RESEARCHED
+        (blocking supervisor re-spawn) but RoleResult.success is False."""
+        from unittest.mock import patch
+
+        from sova.core.workflow import WorkflowResult
+        from sova.roles.researcher import ResearcherRole
+
+        adapter = _mock_adapter(TaskState.TRIAGED)
+        ctx = _make_ctx(role="researcher", state=TaskState.TRIAGED, adapter=adapter)
+        role = ResearcherRole()
+
+        mock_result = WorkflowResult(success=False, final_status=TaskStatus.AWAITING_APPROVAL, task_run_id=1)
+        with patch.object(WorkflowEngine, "run", new=AsyncMock(return_value=mock_result)):
+            result = await role.execute(ctx)
+
+        assert not result.success
+        assert "awaiting" in result.summary.lower()
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.RESEARCHED)
+
     def test_get_steps_returns_researcher_pipeline(self) -> None:
         from sova.roles.researcher import ResearcherRole
 

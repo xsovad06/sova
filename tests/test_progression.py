@@ -340,6 +340,26 @@ class TestAlreadyRunning:
         assert result.gate == "already_running"
         assert "PID not yet assigned" in result.detail
 
+    @pytest.mark.asyncio
+    async def test_awaiting_approval_blocks_unconditionally(self) -> None:
+        """awaiting_approval runs block even though the agent process has exited."""
+        mock_run = MagicMock()
+        mock_run.id = 9
+        mock_run.pid = None
+        mock_run.status = "awaiting_approval"
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_run]
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        engine = _make_engine()
+        engine._session_factory = MagicMock(return_value=mock_session)
+        result = await engine._check_already_running(42)
+        assert result is not None
+        assert result.gate == "already_running"
+        assert "awaiting human approval" in result.detail
+
 
 # ---------------------------------------------------------------------------
 # _check_slot_gate
