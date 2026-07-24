@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -17,7 +18,7 @@ _daemon_registry: dict = {}
 _background_tasks: set[asyncio.Task] = set()
 
 
-def _get_daemon():
+def _get_daemon() -> Any | None:
     """Get the daemon instance for the current project, if any."""
     project_dir = get_project_dir()
     if project_dir is None:
