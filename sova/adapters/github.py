@@ -691,12 +691,15 @@ def _parse_issue(data: dict) -> Task:
     milestone_data = data.get("milestone")
     milestone = milestone_data["title"] if milestone_data else ""
 
-    # Infer state from labels
-    state = TaskState.BACKLOG
-    for label in labels:
-        if label in _LABEL_TO_STATE:
-            state = _LABEL_TO_STATE[label]
-            break
+    # Closed issues are DONE regardless of labels
+    if data.get("state") == "CLOSED":
+        state = TaskState.DONE
+    else:
+        state = TaskState.BACKLOG
+        for label in labels:
+            if label in _LABEL_TO_STATE:
+                state = _LABEL_TO_STATE[label]
+                break
 
     metadata: dict = {}
     if data.get("createdAt"):
