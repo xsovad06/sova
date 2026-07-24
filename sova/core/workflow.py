@@ -144,11 +144,13 @@ class WorkflowEngine:
             result.steps_skipped += 1
             result.step_records.append(StepRecord(step_name=step.name, status="skipped"))
             try:
+                now = datetime.now(timezone.utc)
                 await self._create_step_execution(
                     step.name,
                     status="skipped",
                     duration_ms=0,
-                    ended_at=datetime.now(timezone.utc),
+                    started_at=now,
+                    ended_at=now,
                 )
             except Exception:
                 log.warning("workflow.step_exec.skip_create_failed", step=step.name, exc_info=True)
@@ -492,6 +494,7 @@ class WorkflowEngine:
         *,
         status: str = "running",
         duration_ms: int | None = None,
+        started_at: datetime | None = None,
         ended_at: datetime | None = None,
     ) -> int:
         """Create a StepExecution record and return its ID."""
@@ -502,6 +505,8 @@ class WorkflowEngine:
                 status=status,
                 retry_count=retry_count,
             )
+            if started_at is not None:
+                step_exec.started_at = started_at
             if duration_ms is not None:
                 step_exec.duration_ms = duration_ms
             if ended_at is not None:

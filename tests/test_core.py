@@ -2192,6 +2192,10 @@ class TestWorkflowDB:
             assert len(rows) == 2
             assert rows[0].step_name == "step_a"
             assert rows[0].status == "skipped"
+            assert rows[0].duration_ms == 0
+            assert rows[0].started_at is not None
+            assert rows[0].ended_at is not None
+            assert rows[0].started_at == rows[0].ended_at
             assert rows[1].step_name == "step_b"
             assert rows[1].status == "done"
 
