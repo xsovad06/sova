@@ -401,7 +401,7 @@ class IntegrationGatesConfig(BaseSettings):
     """Configurable gates that must pass before PR integration is allowed."""
 
     ci_passed: bool = False
-    sova_reviewed: bool = False
+    sova_reviewed: bool = True
     coderabbit_reviewed: bool = False
     threads_resolved: bool = False
 

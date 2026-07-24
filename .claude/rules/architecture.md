@@ -70,6 +70,7 @@ SOVA has four main components:
 - **DB URL**: `SOVA_DATABASE_URL` env var for PostgreSQL; defaults to `.claude/sova.db` (SQLite)
 - **Budget limits**: per-run and per-issue caps prevent runaway costs. See `docs/performance-guidelines.md` for defaults and config keys.
 - **Settings metadata registry**: every field in a config model (`models.py`) must also have a `SettingMeta` entry in `sova/dashboard/settings_meta.py` with key, label, description, group, and value_type. Without it, the field won't appear in the dashboard settings UI. When adding a new config group (e.g., `external_reviews`), also add it to `GROUPS` dict and `GROUP_ORDER` list.
+- **`sova_reviewed` integration gate is enabled by default**: `IntegrationGatesConfig.sova_reviewed` defaults to `True`. Projects without an explicit `[integration_gates]` section in `sova.toml` will have `/integrate-pr` blocked until a SOVA review has been run. Projects that do not use the reviewer role should add `[integration_gates]` with `sova_reviewed = false` to `sova.toml`.
 
 ## Naming Convention
 

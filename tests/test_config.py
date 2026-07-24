@@ -653,10 +653,10 @@ jira_status_mapping = { "ON_QA" = "done", "Selected for Development" = "triaged"
 
 
 class TestIntegrationGatesConfig:
-    def test_defaults_all_false(self) -> None:
+    def test_defaults(self) -> None:
         cfg = IntegrationGatesConfig()
         assert cfg.ci_passed is False
-        assert cfg.sova_reviewed is False
+        assert cfg.sova_reviewed is True
         assert cfg.coderabbit_reviewed is False
         assert cfg.threads_resolved is False
 
