@@ -1807,66 +1807,72 @@ var _lastPrSummaryKey = null;
 
 function renderPrSummary() {
   var strip = document.getElementById('pr-summary-strip');
-  var prs = window._prTrackerData;
-  if (!prs.length) {
-    strip.classList.add('hidden');
-    _lastPrSummaryKey = null;
-    return;
-  }
+  try {
+    var prs = window._prTrackerData;
+    if (!prs.length) {
+      strip.classList.add('hidden');
+      _lastPrSummaryKey = null;
+      return;
+    }
 
-  var total = prs.length;
-  var awaitingReview = 0;
-  var changesRequested = 0;
-  var ciFailing = 0;
-  var approved = 0;
-  var stale = 0;
-  var totalAge = 0;
+    var total = prs.length;
+    var awaitingReview = 0;
+    var changesRequested = 0;
+    var ciFailing = 0;
+    var approved = 0;
+    var stale = 0;
+    var totalAge = 0;
 
-  for (var i = 0; i < prs.length; i++) {
-    var pr = prs[i];
-    var age = pr.age_seconds || 0;
-    var st = pr.computed_state;
-    if (st === 'awaiting_review') awaitingReview++;
-    else if (st === 'changes_requested') changesRequested++;
-    else if (st === 'approved' || st === 'approved_ci_green') approved++;
-    if (pr.ci_status === 'failed') ciFailing++;
-    totalAge += age;
-    if (age >= _STALE_THRESHOLD_SECONDS) stale++;
-  }
+    for (var i = 0; i < prs.length; i++) {
+      var pr = prs[i];
+      var age = pr.age_seconds || 0;
+      var st = pr.computed_state;
+      if (st === 'awaiting_review') awaitingReview++;
+      else if (st === 'changes_requested') changesRequested++;
+      else if (st === 'approved' || st === 'approved_ci_green') approved++;
+      if (pr.ci_status === 'failed') ciFailing++;
+      totalAge += age;
+      if (age >= _STALE_THRESHOLD_SECONDS) stale++;
+    }
 
-  var ageHours = Math.floor(totalAge / 3600);
-  var key = [total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',');
-  if (key === _lastPrSummaryKey) {
+    var ageHours = Math.floor(totalAge / 3600);
+    var key = [total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',');
+    if (key === _lastPrSummaryKey) {
+      strip.classList.toggle('hidden', _prTrackerCollapsed);
+      return;
+    }
+    _lastPrSummaryKey = key;
+
+    var avgAge = total > 0 ? formatAge(Math.floor(totalAge / total)) : '0d';
+
+    var metrics = [
+      { label: 'Open', value: total, color: 'text-gray-300' },
+      { label: 'Review', value: awaitingReview, color: 'text-accent' },
+      { label: 'Changes', value: changesRequested, color: 'text-accent-peach' },
+      { label: 'CI Fail', value: ciFailing, color: 'text-accent-red' },
+      { label: 'Approved', value: approved, color: 'text-accent-green' },
+      { label: 'Stale', value: stale, color: stale > 0 ? 'text-accent-yellow' : 'text-gray-500' },
+    ];
+
+    // grid-cols-6 must match metrics.length (currently 6)
+    var html = '<div class="grid grid-cols-' + metrics.length + ' gap-2 px-4 py-2 border-b border-gray-700/30">';
+    for (var j = 0; j < metrics.length; j++) {
+      var m = metrics[j];
+      var val = m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value);
+      var sub = m.label === 'Stale' && m.value === 0 ? 'Avg Age' : m.label;
+      html += '<div class="text-center">' +
+        '<div class="text-sm font-semibold ' + m.color + '">' + escapeHtml(val) + '</div>' +
+        '<div class="text-[10px] text-gray-500">' + escapeHtml(sub) + '</div>' +
+      '</div>';
+    }
+    html += '</div>';
+
+    strip.innerHTML = html;
     strip.classList.toggle('hidden', _prTrackerCollapsed);
-    return;
+  } catch (e) {
+    console.error('PR summary render failed:', e);
+    strip.classList.add('hidden');
   }
-  _lastPrSummaryKey = key;
-
-  var avgAge = total > 0 ? formatAge(Math.floor(totalAge / total)) : '0d';
-
-  var metrics = [
-    { label: 'Open', value: total, color: 'text-gray-300' },
-    { label: 'Review', value: awaitingReview, color: 'text-accent' },
-    { label: 'Changes', value: changesRequested, color: 'text-accent-peach' },
-    { label: 'CI Fail', value: ciFailing, color: 'text-accent-red' },
-    { label: 'Approved', value: approved, color: 'text-accent-green' },
-    { label: 'Stale', value: stale, color: stale > 0 ? 'text-accent-yellow' : 'text-gray-500' },
-  ];
-
-  var html = '<div class="grid grid-cols-6 gap-2 px-4 py-2 border-b border-gray-700/30">';
-  for (var j = 0; j < metrics.length; j++) {
-    var m = metrics[j];
-    var val = m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value);
-    var sub = m.label === 'Stale' && m.value === 0 ? 'Avg Age' : m.label;
-    html += '<div class="text-center">' +
-      '<div class="text-sm font-semibold ' + m.color + '">' + escapeHtml(val) + '</div>' +
-      '<div class="text-[10px] text-gray-500">' + escapeHtml(sub) + '</div>' +
-    '</div>';
-  }
-  html += '</div>';
-
-  strip.innerHTML = html;
-  strip.classList.toggle('hidden', _prTrackerCollapsed);
 }
 
 var _prStateColors = {
