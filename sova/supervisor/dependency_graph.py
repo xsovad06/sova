@@ -274,7 +274,7 @@ class DependencyGraph:
 
         return {
             "nodes": nodes,
-            "edges": [{"from": e[0], "to": e[1]} for e in self.edges],
+            "edges": [{"from": e[0], "to": e[1]} for e in self.edges if e[1] in self._tasks],
             "ready": ready,
             "parallel_groups": [{"tier": g.tier, "task_ids": g.task_ids} for g in groups],
             "validation": {
