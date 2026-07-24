@@ -51,6 +51,7 @@ GROUPS: dict[str, str] = {
     "memory_guard": "Memory Guard",
     "watchdog": "Agent Watchdog",
     "awareness": "Awareness",
+    "oversight": "Oversight Agent",
 }
 
 GROUP_ORDER: list[str] = [
@@ -88,6 +89,7 @@ GROUP_ORDER: list[str] = [
     "memory_guard",
     "watchdog",
     "awareness",
+    "oversight",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -1072,6 +1074,47 @@ _REGISTRY: list[SettingMeta] = [
         "GitHub user for PRs",
         "GitHub username for review-requested detection across projects",
         "awareness",
+    ),
+    # -- Oversight Agent --
+    SettingMeta(
+        "oversight.enabled",
+        "Enabled",
+        "Enable the oversight agent background daemon for autonomous project monitoring",
+        "oversight",
+        "boolean",
+    ),
+    SettingMeta(
+        "oversight.wake_interval_minutes",
+        "Wake interval (min)",
+        "Minutes between oversight agent wake cycles (minimum 1)",
+        "oversight",
+        "number",
+    ),
+    SettingMeta(
+        "oversight.auto_create_issues",
+        "Auto-create issues",
+        "Automatically create GitHub Issues from oversight findings (placeholder, not yet wired)",
+        "oversight",
+        "boolean",
+    ),
+    SettingMeta(
+        "oversight.auto_triage",
+        "Auto-triage",
+        "Automatically triage issues created by the oversight agent (placeholder, not yet wired)",
+        "oversight",
+        "boolean",
+    ),
+    SettingMeta(
+        "oversight.persona_path",
+        "Persona path",
+        "Path to a custom persona file for the oversight agent (placeholder, not yet wired)",
+        "oversight",
+    ),
+    SettingMeta(
+        "oversight.analysis_model",
+        "Analysis model",
+        "LLM model tier for oversight analysis (placeholder, not yet wired)",
+        "oversight",
     ),
 ]
 
