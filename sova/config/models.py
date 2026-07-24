@@ -522,6 +522,7 @@ class SupervisorConfig(BaseSettings):
     file_overlap_threshold: float = Field(0.0, ge=0.0, le=1.0)
     poll_interval_seconds: int = Field(120, gt=0)
     log_retention_days: int = Field(30, gt=0)
+    max_researcher_failures: int = Field(3, ge=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
 

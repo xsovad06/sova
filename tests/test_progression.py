@@ -448,6 +448,67 @@ class TestBudgetGate:
 
 
 # ---------------------------------------------------------------------------
+# _check_repeated_failures_gate
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatedFailuresGate:
+    def _make_session(self, count: int) -> AsyncMock:
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = count
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        return mock_session
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_passes(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(2))
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_at_threshold_blocks(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(3))
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is not None
+        assert result.gate == "repeated_failure"
+        assert "42" in result.detail
+        assert "3" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_zero_disables_gate(self) -> None:
+        """max_researcher_failures=0 disables the gate entirely."""
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=0))
+        engine._session_factory = MagicMock(return_value=self._make_session(999))
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_db_error_fails_open(self) -> None:
+        """DB exceptions are swallowed and the gate passes (fail-open)."""
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        bad_session = AsyncMock()
+        bad_session.__aenter__ = AsyncMock(return_value=bad_session)
+        bad_session.__aexit__ = AsyncMock(return_value=False)
+        bad_session.execute = AsyncMock(side_effect=Exception("db error"))
+        engine._session_factory = MagicMock(return_value=bad_session)
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_null_count_treated_as_zero(self) -> None:
+        """scalar_one_or_none() returning None is treated as 0 failures."""
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(None))
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # evaluate_task (integration of state machine + gates)
 # ---------------------------------------------------------------------------
 
@@ -784,6 +845,7 @@ class TestSupervisorConfig:
         assert cfg.auto_integrate is False
         assert cfg.respect_dependencies is True
         assert cfg.poll_interval_seconds == 120
+        assert cfg.max_researcher_failures == 3
 
     def test_custom_values(self) -> None:
         cfg = SupervisorConfig(
@@ -846,6 +908,7 @@ class TestConfigIntegration:
             "supervisor.auto_integrate",
             "supervisor.respect_dependencies",
             "supervisor.poll_interval_seconds",
+            "supervisor.max_researcher_failures",
         ]
         for key in expected_keys:
             meta = get_meta(key)

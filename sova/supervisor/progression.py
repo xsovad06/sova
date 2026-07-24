@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from sova.adapters.base import TaskAdapter, TaskState
@@ -406,10 +406,13 @@ class TaskProgressionEngine:
                 blockers.append(dep_block)
 
         # Run async per-task gates concurrently
-        gate_results = await asyncio.gather(
+        gates = [
             self._check_already_running(issue_number),
             self._check_budget_gate(issue_number),
-        )
+        ]
+        if candidate == ProgressionAction.SPAWN_RESEARCHER:
+            gates.append(self._check_repeated_failures_gate(issue_number))
+        gate_results = await asyncio.gather(*gates)
         blockers.extend(r for r in gate_results if r is not None)
 
         # Merge conflict gate (only blocks integrate actions)
@@ -670,6 +673,50 @@ class TaskProgressionEngine:
                         )
         except Exception:
             log.debug("already_running.check_failed", issue=issue, exc_info=True)
+
+        return None
+
+    async def _check_repeated_failures_gate(self, issue: int) -> BlockReason | None:
+        """Block researcher spawn after too many failures since the last success. Fail-open."""
+        max_failures = self._config.max_researcher_failures
+        if max_failures == 0:
+            return None
+        try:
+            async with self._session_factory() as session:
+                # Only count failures after the most recent successful researcher run so
+                # that issues which were successfully researched and re-triaged can be
+                # researched again without being blocked by stale failure history.
+                last_success_subq = (
+                    select(func.coalesce(func.max(TaskRun.id), 0))
+                    .where(
+                        TaskRun.issue_number == str(issue),
+                        TaskRun.role == "researcher",
+                        TaskRun.status == "done",
+                    )
+                    .scalar_subquery()
+                )
+                stmt = (
+                    select(func.count())
+                    .select_from(TaskRun)
+                    .where(
+                        TaskRun.issue_number == str(issue),
+                        TaskRun.role == "researcher",
+                        TaskRun.status == "failed",
+                        TaskRun.id > last_success_subq,
+                    )
+                )
+                result = await session.execute(stmt)
+                count = result.scalar_one_or_none() or 0
+                if count >= max_failures:
+                    return BlockReason(
+                        gate="repeated_failure",
+                        detail=(
+                            f"Researcher has failed {count} times for #{issue}; "
+                            f"human review required (threshold: {max_failures})"
+                        ),
+                    )
+        except Exception:
+            log.debug("repeated_failures.check_failed", issue=issue, exc_info=True)
 
         return None
 
