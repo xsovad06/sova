@@ -242,7 +242,7 @@ def compute_work_item_state(
 ) -> WorkItemState:
     """Compute the unified dashboard state for a work item.
 
-    Priority: running agent > handoff > PR state (adjusted by SOVA verdict) > GitHub label.
+    Priority: running agent > handoff (unless SOVA blocks) > PR state (adjusted by SOVA verdict) > GitHub label.
 
     sova_verdict is the result of get_sova_review_verdict() scoped to the current PR.
     When present it overrides the raw GitHub state:
@@ -260,12 +260,21 @@ def compute_work_item_state(
 
     if handoff and handoff.get("status") == "awaiting_action":
         pr_computed = (pr_data or {}).get("computed_state", "")
-        if pr_computed not in ("changes_requested", "ci_failed"):
+        # A blocking SOVA verdict overrides the handoff: the developer agent
+        # may claim "findings addressed" while the review still stands.
+        sova_blocks = False
+        if sova_verdict and sova_verdict.get("verdict") in ("block", "revise"):
+            latest_approval_at = (pr_data or {}).get("latest_approval_at")
+            if not _is_verdict_stale(sova_verdict, latest_approval_at):
+                sova_blocks = True
+        if pr_computed not in ("changes_requested", "ci_failed") and not sova_blocks:
             next_actions = handoff.get("next_actions", [])
             action_ids = {a.get("id") or a.get("action") or a.get("command") or "" for a in next_actions}
             if action_ids & _SPEC_ACTION_IDS:
                 return WorkItemState.SPEC_REVIEW
             return WorkItemState.HANDOFF_PENDING
+        if sova_blocks and pr_data is None:
+            return WorkItemState.PR_SOVA_CHANGES
 
     if pr_data is not None:
         pr_state_raw = pr_data.get("state", "OPEN")

@@ -42,7 +42,7 @@ def _state(**kwargs: object) -> WorkItemState:
 
 
 class TestComputeWorkItemState:
-    """Priority cascade: running > handoff > PR > label."""
+    """Priority cascade: running > handoff (unless SOVA blocks) > PR > label."""
 
     # -- Priority 1: Running agent --
 
@@ -101,6 +101,53 @@ class TestComputeWorkItemState:
             _state(
                 pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
                 handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
+            )
+            == WorkItemState.HANDOFF_PENDING
+        )
+
+    def test_sova_block_verdict_overrides_handoff(self) -> None:
+        """A blocking SOVA verdict takes priority over a stale handoff."""
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
+                sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_sova_block_verdict_no_pr_data(self) -> None:
+        """SOVA blocking verdict returns PR_SOVA_CHANGES even without pr_data."""
+        assert (
+            _state(
+                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
+                sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_sova_revise_verdict_overrides_handoff(self) -> None:
+        """A revise SOVA verdict also takes priority over a handoff."""
+        assert (
+            _state(
+                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
+                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
+                sova_verdict={"verdict": "revise", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
+            )
+            == WorkItemState.PR_SOVA_CHANGES
+        )
+
+    def test_stale_sova_verdict_does_not_override_handoff(self) -> None:
+        """If a human approved after the SOVA review, the handoff wins."""
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "latest_approval_at": "2026-07-24T12:00:00Z",
+                },
+                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
+                sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
             )
             == WorkItemState.HANDOFF_PENDING
         )
