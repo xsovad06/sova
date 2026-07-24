@@ -2195,6 +2195,30 @@ class TestWorkflowDB:
             assert rows[1].step_name == "step_b"
             assert rows[1].status == "done"
 
+    async def test_skipped_step_db_failure_does_not_break_workflow(self) -> None:
+        """When _create_step_execution raises during a skip, the workflow continues."""
+        ctx = _make_ctx()
+        step_a = DummyStep(should_pass=True, gate_pass=True, skip=True, name="step_a")
+        step_b = DummyStep(should_pass=True, gate_pass=True, name="step_b")
+        engine = WorkflowEngine(steps=[step_a, step_b], ctx=ctx)
+
+        original = engine._create_step_execution
+        call_count = 0
+
+        async def fail_first_call(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("db down")
+            return await original(*args, **kwargs)
+
+        with patch.object(engine, "_create_step_execution", side_effect=fail_first_call):
+            result = await engine.run()
+
+        assert result.success
+        assert result.steps_skipped == 1
+        assert result.steps_completed == 1
+
     async def test_task_run_id_set_on_context(self) -> None:
         ctx = _make_ctx()
         step = DummyStep(should_pass=True, gate_pass=True)
