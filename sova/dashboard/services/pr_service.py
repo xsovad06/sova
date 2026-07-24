@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from sova.config.models import ProjectConfig
+    from sova.config.models import IntegrationGatesConfig, ProjectConfig
 
 log = get_logger(component="dashboard.pr_service")
 
@@ -311,6 +311,55 @@ def _check_threads_from_pr_data(pr_data: dict) -> dict:
     )
 
 
+async def _check_sova_gate(
+    pr_data: dict,
+    gates_cfg: IntegrationGatesConfig,
+    issue_number: str | None,
+    pr_number: int | None = None,
+) -> dict:
+    """Evaluate the SOVA review gate, including the all-threads-resolved bypass."""
+    if not gates_cfg.sova_reviewed:
+        return _gate("sova_reviewed", enabled=False, passed=True)
+    if not issue_number:
+        return _gate("sova_reviewed", enabled=True, passed=True, reason="No linked issue (skipped)")
+    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+    verdict = await get_sova_review_verdict(issue_number, pr_number=pr_number)
+    if not verdict.get("has_sova_review"):
+        return _gate("sova_reviewed", enabled=True, passed=False, reason="No SOVA review found")
+    v = verdict.get("verdict", "")
+    if v == "approve":
+        return _gate("sova_reviewed", enabled=True, passed=True)
+    # Findings were reviewed but verdict is not approve: check if all threads
+    # are resolved (the canonical signal that the developer addressed them).
+    thread_total = pr_data.get("thread_total", 0)
+    thread_resolved = pr_data.get("thread_resolved", 0)
+    if thread_total > 0 and thread_resolved >= thread_total:
+        return _gate("sova_reviewed", enabled=True, passed=True, reason="Findings addressed (all threads resolved)")
+    return _gate(
+        "sova_reviewed",
+        enabled=True,
+        passed=False,
+        reason=f"SOVA review verdict: {v} ({verdict.get('finding_count', 0)} findings)",
+    )
+
+
+def _check_coderabbit_gate(pr_data: dict, gates_cfg: IntegrationGatesConfig) -> dict:
+    """Evaluate the CodeRabbit review gate using pre-fetched review_logins."""
+    if not gates_cfg.coderabbit_reviewed:
+        return _gate("coderabbit_reviewed", enabled=False, passed=True)
+    if _check_coderabbit_from_pr_data(pr_data):
+        return _gate("coderabbit_reviewed", enabled=True, passed=True)
+    return _gate("coderabbit_reviewed", enabled=True, passed=False, reason="No CodeRabbit review found")
+
+
+def _check_threads_gate(pr_data: dict, gates_cfg: IntegrationGatesConfig) -> dict:
+    """Evaluate the threads-resolved gate using pre-fetched thread counts."""
+    if not gates_cfg.threads_resolved:
+        return _gate("threads_resolved", enabled=False, passed=True)
+    return _check_threads_from_pr_data(pr_data)
+
+
 async def check_integration_gates(
     *,
     pr_data: dict,
@@ -327,50 +376,10 @@ async def check_integration_gates(
       - gates: list of {name, enabled, passed, reason}
     """
     gates_cfg = config.integration_gates
-
-    # CI gate is synchronous -- no API call needed
     ci_gate = _check_ci_gate(gates_cfg.ci_passed, pr_data.get("ci_status", "none"))
-
-    # SOVA review gate -- requires async DB query
-    async def check_sova_review() -> dict:
-        if not gates_cfg.sova_reviewed:
-            return _gate("sova_reviewed", enabled=False, passed=True)
-        if not issue_number:
-            return _gate("sova_reviewed", enabled=True, passed=True, reason="No linked issue (skipped)")
-        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
-
-        verdict = await get_sova_review_verdict(issue_number)
-        if not verdict.get("has_sova_review"):
-            return _gate("sova_reviewed", enabled=True, passed=False, reason="No SOVA review found")
-        v = verdict.get("verdict", "")
-        if v == "approve":
-            return _gate("sova_reviewed", enabled=True, passed=True)
-        return _gate(
-            "sova_reviewed",
-            enabled=True,
-            passed=False,
-            reason=f"SOVA review verdict: {v} ({verdict.get('finding_count', 0)} findings)",
-        )
-
-    # CodeRabbit gate -- use pre-fetched review_logins when available
-    def check_coderabbit() -> dict:
-        if not gates_cfg.coderabbit_reviewed:
-            return _gate("coderabbit_reviewed", enabled=False, passed=True)
-        if _check_coderabbit_from_pr_data(pr_data):
-            return _gate("coderabbit_reviewed", enabled=True, passed=True)
-        return _gate("coderabbit_reviewed", enabled=True, passed=False, reason="No CodeRabbit review found")
-
-    # Threads gate -- use pre-fetched thread counts when available
-    def check_threads() -> dict:
-        if not gates_cfg.threads_resolved:
-            return _gate("threads_resolved", enabled=False, passed=True)
-        return _check_threads_from_pr_data(pr_data)
-
-    # Only SOVA review needs async; rest are synchronous using pre-fetched data
-    sova_gate = await check_sova_review()
-    cr_gate = check_coderabbit()
-    thr_gate = check_threads()
-
+    sova_gate = await _check_sova_gate(pr_data, gates_cfg, issue_number, pr_number=pr_data.get("number"))
+    cr_gate = _check_coderabbit_gate(pr_data, gates_cfg)
+    thr_gate = _check_threads_gate(pr_data, gates_cfg)
     gates = [ci_gate, sova_gate, cr_gate, thr_gate]
     return {"passed": all(g["passed"] for g in gates), "gates": gates}
 
