@@ -210,6 +210,14 @@ git stash list
 
 If any stash entries reference the merged branch name, report them to the user (do not drop without confirmation).
 
+Run the full issue-aware GC to clean up any remaining stale worktrees and branches across the project:
+
+```bash
+sova cleanup --all --project <PROJECT_DIR>
+```
+
+This is safe post-merge because the issue is closed and its worktrees/branches are no longer needed.
+
 ### Phase 7: Report
 
 Note: review learnings and doc count updates were captured in Phase 3 (pre-merge). No post-merge git commits are needed.

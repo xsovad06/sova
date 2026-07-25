@@ -207,6 +207,23 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
             log.warning("periodic_recovery.error", exc_info=True)
 
 
+async def _startup_gc(project_dir: Path) -> None:
+    """Run issue-aware GC in the background after startup."""
+    try:
+        from sova.git.worktree import cleanup_by_issue_state
+
+        gc = await cleanup_by_issue_state(project_dir=project_dir)
+        if gc.worktrees_removed or gc.branches_removed:
+            log.info(
+                "lifespan.gc_complete",
+                worktrees=gc.worktrees_removed,
+                branches=gc.branches_removed,
+                stashes=len(gc.stashes_found),
+            )
+    except Exception:
+        log.warning("lifespan.gc_failed", exc_info=True)
+
+
 async def _shutdown_tasks(
     sweep_task: asyncio.Task,
     pr_throttle_tasks: list[asyncio.Task],
@@ -216,6 +233,7 @@ async def _shutdown_tasks(
     recovery_task: asyncio.Task | None = None,
     oversight_agent: OversightAgent | None = None,
     supervisor_daemons: list[SupervisorDaemon] | None = None,
+    gc_task: asyncio.Task | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -241,6 +259,8 @@ async def _shutdown_tasks(
     cancel_tasks = [sweep_task]
     if recovery_task is not None:
         cancel_tasks.append(recovery_task)
+    if gc_task is not None:
+        cancel_tasks.append(gc_task)
     for t in cancel_tasks:
         t.cancel()
     await asyncio.gather(*cancel_tasks, return_exceptions=True)
@@ -300,6 +320,7 @@ def create_app(
 
         from sova.core.output import cleanup_old_output
 
+        gc_task: asyncio.Task | None = None
         if is_multi:
             log.warning("multi_project.shared_runtime", runtime=cfg.agent.runtime)
 
@@ -313,6 +334,9 @@ def create_app(
             await init_db(resolved)
             await recover_stale_runs(resolved)
             await cleanup_old_output(resolved, cfg.output.retention_days)
+
+            if cfg.dashboard.gc_on_startup:
+                gc_task = asyncio.create_task(_startup_gc(resolved))
 
         # Recover stale PR queue entries and start background processor
         pr_throttle_tasks: list[asyncio.Task] = []
@@ -461,6 +485,7 @@ def create_app(
                         recovery_task=recovery_task,
                         oversight_agent=oversight_agent,
                         supervisor_daemons=supervisor_daemons,
+                        gc_task=gc_task,
                     ),
                     timeout=5.0,
                 )
