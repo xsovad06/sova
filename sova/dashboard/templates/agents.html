@@ -1793,11 +1793,9 @@ function togglePrTracker() {
   _prTrackerCollapsed = !_prTrackerCollapsed;
   localStorage.setItem('sova-pr-tracker-collapsed', _prTrackerCollapsed);
   var list = document.getElementById('pr-tracker-list');
-  var strip = document.getElementById('pr-summary-strip');
   var chevron = document.getElementById('pr-tracker-chevron');
   var toggle = document.getElementById('pr-tracker-toggle');
   list.classList.toggle('hidden', _prTrackerCollapsed);
-  strip.classList.toggle('hidden', _prTrackerCollapsed || !window._prTrackerData.length);
   chevron.style.transform = _prTrackerCollapsed ? 'rotate(-90deg)' : '';
   if (toggle) toggle.setAttribute('aria-expanded', (!_prTrackerCollapsed).toString());
 }
@@ -1829,7 +1827,7 @@ function renderPrSummary() {
       var st = pr.computed_state;
       if (st === 'awaiting_review') awaitingReview++;
       else if (st === 'changes_requested') changesRequested++;
-      else if (st === 'approved' || st === 'approved_ci_green') approved++;
+      else if (st === 'approved_ci_green') approved++;
       if (pr.ci_status === 'failed') ciFailing++;
       totalAge += age;
       if (age >= _STALE_THRESHOLD_SECONDS) stale++;
@@ -1837,10 +1835,7 @@ function renderPrSummary() {
 
     var ageHours = Math.floor(totalAge / 3600);
     var key = [total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',');
-    if (key === _lastPrSummaryKey) {
-      strip.classList.toggle('hidden', _prTrackerCollapsed);
-      return;
-    }
+    if (key === _lastPrSummaryKey) return;
     _lastPrSummaryKey = key;
 
     var avgAge = total > 0 ? formatAge(Math.floor(totalAge / total)) : '0d';
@@ -1850,7 +1845,7 @@ function renderPrSummary() {
       { label: 'Review', value: awaitingReview, color: 'text-accent' },
       { label: 'Changes', value: changesRequested, color: 'text-accent-peach' },
       { label: 'CI Fail', value: ciFailing, color: 'text-accent-red' },
-      { label: 'Approved', value: approved, color: 'text-accent-green' },
+      { label: 'Ready', value: approved, color: 'text-accent-green' },
       { label: 'Stale', value: stale, color: stale > 0 ? 'text-accent-yellow' : 'text-gray-500' },
     ];
 
@@ -1868,7 +1863,7 @@ function renderPrSummary() {
     html += '</div>';
 
     strip.innerHTML = html;
-    strip.classList.toggle('hidden', _prTrackerCollapsed);
+    strip.classList.remove('hidden');
   } catch (e) {
     console.error('PR summary render failed:', e);
     strip.classList.add('hidden');
@@ -2063,7 +2058,6 @@ async function loadPrTracker() {
 _updateFilterToggleUI();
 if (_prTrackerCollapsed) {
   document.getElementById('pr-tracker-list').classList.add('hidden');
-  document.getElementById('pr-summary-strip').classList.add('hidden');
   document.getElementById('pr-tracker-chevron').style.transform = 'rotate(-90deg)';
 }
 var _agentView = localStorage.getItem('sova-agents-view') || 'list';

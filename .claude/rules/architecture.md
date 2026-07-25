@@ -11,7 +11,7 @@ SOVA has four main components:
 
 ### 2. Agent Core (`sova/core/`, `sova/roles/`)
 - `core/workflow.py` -- WorkflowEngine: executes step pipelines with DB persistence (TaskRun, StepExecution, FailureRecord)
-- `core/state.py` -- 17-state TaskStatus StrEnum with transition validation
+- `core/state.py` -- 19-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/output.py` -- OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
 - `core/steps/` -- 29 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:

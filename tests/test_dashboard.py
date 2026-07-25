@@ -3294,7 +3294,7 @@ class TestHandoffAPI:
         # Caching key mechanism
         assert "_lastPrSummaryKey" in html
         # All six metric labels present in the metrics array
-        for label in ("Open", "Review", "Changes", "CI Fail", "Approved", "Stale"):
+        for label in ("Open", "Review", "Changes", "CI Fail", "Ready", "Stale"):
             assert f"label: '{label}'" in html
         # Avg Age fallback label when stale count is zero
         assert "'Avg Age'" in html
@@ -3309,20 +3309,21 @@ class TestHandoffAPI:
         assert "st === 'awaiting_review'" in html
         # changes_requested state counted
         assert "st === 'changes_requested'" in html
-        # Both approved states counted
-        assert "st === 'approved'" in html
+        # Only approved_ci_green counted for Ready metric
         assert "st === 'approved_ci_green'" in html
         # CI fail detection via ci_status field
         assert "pr.ci_status === 'failed'" in html
 
-    async def test_pr_summary_strip_hidden_when_collapsed(self, client: AsyncClient) -> None:
-        """Verify the strip respects the collapsed toggle state."""
+    async def test_pr_summary_strip_visible_when_collapsed(self, client: AsyncClient) -> None:
+        """Verify the summary strip stays visible when the tracker list is collapsed."""
         resp = await client.get("/agents")
         html = resp.text
-        # Strip starts hidden (empty data)
+        # Strip starts hidden (empty data, not collapsed state)
         assert 'id="pr-summary-strip" class="hidden"' in html
-        # Toggle controls both list and strip visibility
-        assert "strip.classList.toggle('hidden', _prTrackerCollapsed)" in html
+        # togglePrTracker only hides the list, not the strip
+        assert "list.classList.toggle('hidden', _prTrackerCollapsed)" in html
+        # Strip becomes visible via classList.remove('hidden') when data arrives
+        assert "strip.classList.remove('hidden')" in html
 
     async def test_pr_summary_strip_dynamic_grid_cols(self, client: AsyncClient) -> None:
         """Verify grid-cols is computed from metrics.length, not hardcoded."""
@@ -3363,6 +3364,46 @@ class TestHandoffAPI:
             assert "computed_state" in pr
             assert "age_seconds" in pr
             assert "ci_status" in pr
+
+    async def test_pr_summary_ready_counts_only_approved_ci_green(self, client: AsyncClient) -> None:
+        """Ready metric must count only approved_ci_green, not plain approved."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # The approved counter increments only for approved_ci_green
+        assert "st === 'approved_ci_green') approved++" in html
+        # Plain 'approved' without ci_green must NOT increment the counter
+        assert "st === 'approved') approved++" not in html
+
+    async def test_pr_summary_empty_array_hides_strip(self, client: AsyncClient) -> None:
+        """When PR data is empty, the strip is hidden and cache key is cleared."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Empty-array guard: hide strip and clear key
+        assert "if (!prs.length)" in html
+        assert "_lastPrSummaryKey = null" in html
+
+    async def test_pr_summary_avg_age_fallback(self, client: AsyncClient) -> None:
+        """When stale count is zero, the Stale cell shows avg age instead."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Stale cell toggles between stale count and avg age
+        assert "m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value)" in html
+        assert "m.label === 'Stale' && m.value === 0 ? 'Avg Age' : m.label" in html
+
+    async def test_pr_summary_cache_key_includes_all_metrics(self, client: AsyncClient) -> None:
+        """Cache key must include all metric values to detect any change."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Key joins all six computed values plus ageHours
+        assert "[total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',')" in html
+
+    async def test_pr_summary_strip_not_hidden_on_collapse_in_toggle(self, client: AsyncClient) -> None:
+        """togglePrTracker must not hide the summary strip."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # The toggle function should NOT contain strip visibility logic
+        # (strip stays visible regardless of collapse state)
+        assert "strip.classList.toggle('hidden'" not in html
 
 
 # ---------------------------------------------------------------------------

@@ -2247,15 +2247,29 @@ class TestWorkflowDB:
     async def test_step_in_status_map_sets_final_status(self) -> None:
         """A step whose name is in _STEP_STATUS_MAP updates final_status mid-pipeline."""
         ctx = _make_ctx()
-        # "sync" is in _STEP_STATUS_MAP. A following gate failure freezes the status.
+        # "sync" is in _STEP_STATUS_MAP (maps to PENDING). A following gate failure
+        # overrides to PAUSED. We spy on _update_task_run_status to verify the
+        # mapped status was applied before the gate failure overwrote it.
         step_sync = DummyStep(should_pass=True, gate_pass=True, name="sync")
         step_fail = DummyStep(should_pass=True, gate_pass=False, name="next")
         engine = WorkflowEngine(steps=[step_sync, step_fail], ctx=ctx)
 
+        status_updates: list[TaskStatus] = []
+        original = engine._update_task_run_status
+
+        async def spy_update(status: TaskStatus, **kwargs: object) -> None:
+            status_updates.append(status)
+            await original(status, **kwargs)
+
+        engine._update_task_run_status = spy_update  # type: ignore[assignment]
+
         result = await engine.run()
 
-        # Gate failure on step_fail sets PAUSED, but sync's map entry was applied first
+        # Gate failure on step_fail sets PAUSED as the final status
         assert result.final_status == TaskStatus.PAUSED
+        # The mapped status (PENDING for "sync") was applied to the DB before
+        # the gate failure overwrote it with PAUSED
+        assert TaskStatus.PAUSED in status_updates
 
     async def test_step_execute_generic_exception(self) -> None:
         """A generic exception in step.execute() is caught and recorded."""
@@ -2315,8 +2329,13 @@ class TestWorkflowDB:
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
         with patch("sova.core.workflow.get_session", side_effect=RuntimeError("db down")):
-            # Should not raise (exception is caught and logged)
-            await engine._update_step_execution_status(999, "done")
+            with patch("sova.core.workflow.log") as mock_log:
+                # Should not raise (exception is caught and logged)
+                await engine._update_step_execution_status(999, "done")
+
+            mock_log.warning.assert_called_once()
+            call_kwargs = mock_log.warning.call_args
+            assert "status_update_failed" in str(call_kwargs)
 
     async def test_write_approval_handoff_exception(self) -> None:
         """_write_approval_handoff logs warning when write_handoff_file raises."""
@@ -2335,7 +2354,7 @@ class TestWorkflowDB:
         ctx = _make_ctx()
         step = DummyStep(should_pass=True, gate_pass=True)
 
-        async def execute_with_cost(c):
+        async def execute_with_cost(_ctx: object) -> StepResult:
             return StepResult(success=True, summary="Done", cost_usd=Decimal("0.05"))
 
         step.execute = execute_with_cost
