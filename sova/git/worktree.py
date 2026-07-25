@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -433,3 +434,158 @@ async def get_primary_worktree_root(cwd: Path | None = None) -> Path:
         # Absolute path indicates we are inside a linked worktree.
         return common_path.parent
     return effective_cwd
+
+
+_ISSUE_BRANCH_RE = re.compile(
+    r"^(?:feat|fix|refactor|chore|test|docs)/"
+    r"(?:issue-(?P<gh_number>\d+)|(?P<jira_key>[A-Z][A-Z0-9]+-\d+))"
+)
+
+
+@dataclass
+class GCResult:
+    """Result of an issue-aware garbage collection run."""
+
+    worktrees_removed: int = 0
+    branches_removed: int = 0
+    stashes_found: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def extract_issue_from_branch(branch: str) -> tuple[str | None, str | None]:
+    """Extract issue number or JIRA key from a branch name."""
+    m = _ISSUE_BRANCH_RE.search(branch)
+    if not m:
+        return None, None
+    return m.group("gh_number"), m.group("jira_key")
+
+
+async def _fetch_closed_issues(project_dir: Path) -> set[str]:
+    """Batch-fetch closed GitHub issue numbers."""
+    result = await run(
+        "gh",
+        "issue",
+        "list",
+        "--state",
+        "closed",
+        "--limit",
+        "200",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+        cwd=project_dir,
+    )
+    if not result.success:
+        log.warning("gc.fetch_closed_issues_failed", stderr=result.stderr[:200])
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+async def _list_local_branches(project_dir: Path) -> list[str]:
+    """List local branch names (excluding current)."""
+    result = await run("git", "branch", "--format=%(refname:short)", cwd=project_dir)
+    if not result.success:
+        return []
+    current = await run("git", "branch", "--show-current", cwd=project_dir)
+    if not current.success:
+        return []
+    current_branch = current.stdout.strip()
+    return [b.strip() for b in result.stdout.splitlines() if b.strip() and b.strip() != current_branch]
+
+
+async def _has_gone_upstream(branch: str, project_dir: Path) -> bool:
+    """True only when the branch tracked a remote that no longer exists."""
+    result = await run(
+        "git",
+        "for-each-ref",
+        "--format=%(upstream)|%(upstream:track)",
+        f"refs/heads/{branch}",
+        cwd=project_dir,
+    )
+    if not result.success:
+        return False
+    upstream, _, track = result.stdout.strip().partition("|")
+    return bool(upstream) and "gone" in track
+
+
+async def _list_stashes(project_dir: Path) -> list[str]:
+    """List git stash entries."""
+    result = await run("git", "stash", "list", cwd=project_dir)
+    if not result.success:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+async def cleanup_by_issue_state(
+    *,
+    project_dir: Path,
+    dry_run: bool = False,
+) -> GCResult:
+    """Remove worktrees and branches for closed issues.
+
+    Uses a batch query to GitHub to find closed issues, then removes
+    worktrees and local branches that reference those issues. JIRA
+    branches are only cleaned when their remote tracking branch is gone
+    (no gh API for JIRA). Stashes are reported but never dropped.
+    """
+    gc_result = GCResult()
+    closed_issues = await _fetch_closed_issues(project_dir)
+
+    active_wt_branches: set[str] = set()
+    wt_result = await run("git", "worktree", "list", "--porcelain", cwd=project_dir)
+    if wt_result.success:
+        for line in wt_result.stdout.splitlines():
+            if line.startswith("branch refs/heads/"):
+                active_wt_branches.add(line[len("branch refs/heads/") :])
+
+    worktrees_dir = project_dir / WORKTREE_DIR
+    if worktrees_dir.exists():
+        for entry in worktrees_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            issue_id = entry.name
+            if issue_id in closed_issues:
+                active_pid = await _check_worktree_active_agent(entry, project_dir=project_dir)
+                if active_pid is not None:
+                    log.info("gc.worktree_skipped_active", path=str(entry), pid=active_pid)
+                    continue
+                dirty = await run("git", "status", "--porcelain", cwd=entry)
+                if not dirty.success:
+                    log.info("gc.worktree_skipped_status_unknown", path=str(entry), stderr=dirty.stderr[:200])
+                    continue
+                if dirty.stdout.strip():
+                    log.info("gc.worktree_skipped_dirty", path=str(entry))
+                    continue
+                log.info("gc.worktree_closed_issue", path=str(entry), issue=issue_id)
+                if not dry_run:
+                    try:
+                        await cleanup_worktree(entry, cwd=project_dir)
+                    except Exception as exc:
+                        gc_result.errors.append(f"Failed to remove worktree {entry}: {exc}")
+                        continue
+                gc_result.worktrees_removed += 1
+
+    branches = await _list_local_branches(project_dir)
+    for branch in branches:
+        if branch in active_wt_branches:
+            continue
+        gh_num, jira_key = extract_issue_from_branch(branch)
+        should_remove = False
+        if gh_num and gh_num in closed_issues:
+            should_remove = True
+        elif jira_key and await _has_gone_upstream(branch, project_dir):
+            should_remove = True
+        if should_remove:
+            log.info("gc.branch_cleanup", branch=branch, gh_issue=gh_num, jira_key=jira_key)
+            if not dry_run:
+                del_result = await run("git", "branch", "-d", branch, cwd=project_dir)
+                if not del_result.success:
+                    gc_result.errors.append(f"Failed to delete branch {branch}: {del_result.stderr.strip()}")
+                    continue
+            gc_result.branches_removed += 1
+
+    stashes = await _list_stashes(project_dir)
+    gc_result.stashes_found = stashes
+
+    return gc_result

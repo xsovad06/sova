@@ -127,12 +127,13 @@ def cleanup(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would be cleaned up.")] = False,
     logs: Annotated[bool, typer.Option("--logs", help="Also clean up old agent output lines from the DB.")] = False,
+    all_: Annotated[bool, typer.Option("--all", help="Run issue-aware GC (worktrees, branches, stashes).")] = False,
 ) -> None:
-    """Remove stale worktrees and optionally old output logs."""
-    asyncio.run(_cleanup(project_dir=project, dry_run=dry_run, clean_logs=logs))
+    """Remove stale worktrees, optionally old output logs, and with --all branches for closed issues."""
+    asyncio.run(_cleanup(project_dir=project, dry_run=dry_run, clean_logs=logs, run_all=all_))
 
 
-async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool) -> None:
+async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool, run_all: bool = False) -> None:
     from sova.utils.shell import run
 
     resolved_dir = project_dir or Path.cwd()
@@ -152,6 +153,31 @@ async def _cleanup(*, project_dir: Path | None, dry_run: bool, clean_logs: bool)
         _preview_stale_worktrees(stale)
     else:
         await _remove_worktrees(stale, resolved_dir)
+
+    if run_all:
+        from sova.git.worktree import cleanup_by_issue_state
+
+        gc = await cleanup_by_issue_state(project_dir=resolved_dir, dry_run=dry_run)
+        if dry_run:
+            console.print(
+                f"[yellow]Would remove {gc.worktrees_removed} worktree(s)"
+                f" and {gc.branches_removed} branch(es) for closed issues.[/yellow]"
+            )
+        elif gc.worktrees_removed or gc.branches_removed:
+            console.print(
+                f"[green]Removed {gc.worktrees_removed} worktree(s)"
+                f" and {gc.branches_removed} branch(es) for closed issues.[/green]"
+            )
+        else:
+            console.print("[green]No stale worktrees or branches for closed issues.[/green]")
+        if gc.stashes_found:
+            console.print(f"[yellow]Found {len(gc.stashes_found)} stash(es) (not auto-dropped):[/yellow]")
+            for stash in gc.stashes_found:
+                console.print(f"  {stash}")
+        for err in gc.errors:
+            console.print(f"[red]{err}[/red]")
+        if gc.errors:
+            raise typer.Exit(code=1)
 
     if clean_logs and not dry_run:
         from sova.config.loader import load_config

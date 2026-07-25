@@ -634,6 +634,13 @@ _REGISTRY: list[SettingMeta] = [
         "dashboard",
         "string",
     ),
+    SettingMeta(
+        "dashboard.gc_on_startup",
+        "GC on startup",
+        "Run issue-aware GC (worktree and branch cleanup) on dashboard startup (single-project mode only)",
+        "dashboard",
+        "boolean",
+    ),
     # -- Testing --
     SettingMeta(
         "testing.baseline_enabled",
