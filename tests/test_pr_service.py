@@ -300,6 +300,20 @@ class TestSummarizeCi:
         checks = [{"status": "COMPLETED", "conclusion": "CANCELLED"}]
         assert _summarize_ci(checks) == "passed"
 
+    def test_cancelled_does_not_override_success(self) -> None:
+        checks = [
+            {"status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        assert _summarize_ci(checks) == "passed"
+
+    def test_cancelled_does_not_mask_failure(self) -> None:
+        checks = [
+            {"status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        assert _summarize_ci(checks) == "failed"
+
     def test_action_required(self) -> None:
         checks = [{"status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}]
         assert _summarize_ci(checks) == "failed"
