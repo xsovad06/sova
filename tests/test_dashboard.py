@@ -3279,6 +3279,132 @@ class TestHandoffAPI:
         assert "view-list" in resp.text
         assert "view-kanban" in resp.text
 
+    async def test_agents_page_has_pr_summary_strip(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        assert resp.status_code == 200
+        assert 'id="pr-summary-strip"' in resp.text
+        assert "renderPrSummary" in resp.text
+
+    async def test_pr_summary_strip_js_constants_and_structure(self, client: AsyncClient) -> None:
+        """Verify JS constants, metric labels, and stale threshold for renderPrSummary."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Stale threshold: 7 days in seconds
+        assert "_STALE_THRESHOLD_SECONDS = 7 * 86400" in html
+        # Caching key mechanism
+        assert "_lastPrSummaryKey" in html
+        # All six metric labels present in the metrics array
+        for label in ("Open", "Review", "Changes", "CI Fail", "Ready", "Stale"):
+            assert f"label: '{label}'" in html
+        # Avg Age fallback label when stale count is zero
+        assert "'Avg Age'" in html
+        # Error handling: try-catch wraps the function body
+        assert "console.error('PR summary render failed:'" in html
+
+    async def test_pr_summary_strip_state_counting_logic(self, client: AsyncClient) -> None:
+        """Verify JS logic counts the correct computed_state values for each metric."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # awaiting_review state counted
+        assert "st === 'awaiting_review'" in html
+        # changes_requested state counted
+        assert "st === 'changes_requested'" in html
+        # Only approved_ci_green counted for Ready metric
+        assert "st === 'approved_ci_green'" in html
+        # CI fail detection via ci_status field
+        assert "pr.ci_status === 'failed'" in html
+
+    async def test_pr_summary_strip_visible_when_collapsed(self, client: AsyncClient) -> None:
+        """Verify the summary strip stays visible when the tracker list is collapsed."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Strip starts hidden (empty data, not collapsed state)
+        assert 'id="pr-summary-strip" class="hidden"' in html
+        # togglePrTracker only hides the list, not the strip
+        assert "list.classList.toggle('hidden', _prTrackerCollapsed)" in html
+        # Strip becomes visible via classList.remove('hidden') when data arrives
+        assert "strip.classList.remove('hidden')" in html
+
+    async def test_pr_summary_strip_dynamic_grid_cols(self, client: AsyncClient) -> None:
+        """Verify grid-cols is computed from metrics.length, not hardcoded."""
+        resp = await client.get("/agents")
+        html = resp.text
+        assert "grid-cols-' + metrics.length + '" in html
+
+    async def test_pr_api_provides_fields_for_metrics(self, client: AsyncClient, monkeypatch) -> None:
+        """Verify /api/prs/open returns all fields needed by renderPrSummary."""
+        from unittest.mock import AsyncMock
+
+        mock_prs = [
+            {
+                "number": 1,
+                "title": "Test PR",
+                "computed_state": "awaiting_review",
+                "age_seconds": 700000,
+                "ci_status": "failed",
+            },
+            {
+                "number": 2,
+                "title": "Old PR",
+                "computed_state": "approved",
+                "age_seconds": 100,
+                "ci_status": "passed",
+            },
+        ]
+        monkeypatch.setattr(
+            "sova.dashboard.routers.prs.list_open_prs_with_state",
+            AsyncMock(return_value=mock_prs),
+        )
+        resp = await client.get("/api/prs/open")
+        assert resp.status_code == 200
+        prs = resp.json()["prs"]
+        assert len(prs) == 2
+        # All fields required by renderPrSummary are present
+        for pr in prs:
+            assert "computed_state" in pr
+            assert "age_seconds" in pr
+            assert "ci_status" in pr
+
+    async def test_pr_summary_ready_counts_only_approved_ci_green(self, client: AsyncClient) -> None:
+        """Ready metric must count only approved_ci_green, not plain approved."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # The approved counter increments only for approved_ci_green
+        assert "st === 'approved_ci_green') approved++" in html
+        # Plain 'approved' without ci_green must NOT increment the counter
+        assert "st === 'approved') approved++" not in html
+
+    async def test_pr_summary_empty_array_hides_strip(self, client: AsyncClient) -> None:
+        """When PR data is empty, the strip is hidden and cache key is cleared."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Empty-array guard: hide strip and clear key
+        assert "if (!prs.length)" in html
+        assert "_lastPrSummaryKey = null" in html
+
+    async def test_pr_summary_avg_age_fallback(self, client: AsyncClient) -> None:
+        """When stale count is zero, the Stale cell shows avg age instead."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Stale cell toggles between stale count and avg age
+        assert "m.label === 'Stale' && m.value === 0 ? avgAge : String(m.value)" in html
+        assert "m.label === 'Stale' && m.value === 0 ? 'Avg Age' : m.label" in html
+
+    async def test_pr_summary_cache_key_includes_all_metrics(self, client: AsyncClient) -> None:
+        """Cache key must include all metric values to detect any change."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Key joins all six computed values plus ageHours
+        assert "[total, awaitingReview, changesRequested, ciFailing, approved, stale, ageHours].join(',')" in html
+
+    async def test_pr_summary_strip_not_hidden_on_collapse_in_toggle(self, client: AsyncClient) -> None:
+        """togglePrTracker must not hide the summary strip."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # The toggle function should NOT contain strip visibility logic
+        # (strip stays visible regardless of collapse state)
+        assert "strip.classList.toggle('hidden'" not in html
+
 
 # ---------------------------------------------------------------------------
 # Multi-project mode

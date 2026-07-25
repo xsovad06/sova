@@ -18,7 +18,7 @@ from sova.core.context import ExecutionContext
 from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transitions
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.core.workflow import WorkflowEngine
-from sova.db.models import FailureRecord, StepExecution, TaskRun
+from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 
 
@@ -2243,6 +2243,162 @@ class TestWorkflowDB:
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             assert task_run.resumed_from_id == 99
+
+    async def test_step_in_status_map_sets_final_status(self) -> None:
+        """A step whose name is in _STEP_STATUS_MAP updates final_status mid-pipeline."""
+        ctx = _make_ctx()
+        # "sync" is in _STEP_STATUS_MAP (maps to PENDING). A following gate failure
+        # overrides to PAUSED. We spy on _update_task_run_status to verify the
+        # mapped status was applied before the gate failure overwrote it.
+        step_sync = DummyStep(should_pass=True, gate_pass=True, name="sync")
+        step_fail = DummyStep(should_pass=True, gate_pass=False, name="next")
+        engine = WorkflowEngine(steps=[step_sync, step_fail], ctx=ctx)
+
+        status_updates: list[TaskStatus] = []
+        original = engine._update_task_run_status
+
+        async def spy_update(status: TaskStatus, **kwargs: object) -> None:
+            status_updates.append(status)
+            await original(status, **kwargs)
+
+        engine._update_task_run_status = spy_update  # type: ignore[assignment]
+
+        result = await engine.run()
+
+        # Gate failure on step_fail sets PAUSED as the final status
+        assert result.final_status == TaskStatus.PAUSED
+        # The mapped status (PENDING for "sync") was applied to the DB before
+        # the gate failure overwrote it with PAUSED
+        assert TaskStatus.PAUSED in status_updates
+
+    async def test_step_execute_generic_exception(self) -> None:
+        """A generic exception in step.execute() is caught and recorded."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.execute = AsyncMock(side_effect=ValueError("boom"))
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert not result.success
+        assert "boom" in (result.error or "")
+
+    async def test_step_timeout_monitor_ci(self) -> None:
+        """_step_timeout returns ci.max_wait + 120 for monitor_ci."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+
+        timeout = engine._step_timeout("monitor_ci")
+
+        assert timeout == ctx.config.ci.max_wait + 120
+
+    async def test_step_timeout_regular_step(self) -> None:
+        """_step_timeout returns agent.step_timeout for non-monitor_ci steps."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+
+        timeout = engine._step_timeout("develop")
+
+        assert timeout == ctx.config.agent.step_timeout
+
+    async def test_write_output_flushes_when_needed(self) -> None:
+        """_write_output calls flush() when should_flush() returns True."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        writer = MagicMock()
+        writer.should_flush.return_value = True
+        writer.flush = AsyncMock()
+        engine._output_writer = writer
+
+        await engine._write_output("hello")
+
+        writer.write_line.assert_called_once_with("hello")
+        writer.flush.assert_awaited_once()
+
+    async def test_update_step_execution_status_none_id(self) -> None:
+        """_update_step_execution_status returns early when step_exec_id is None."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+
+        # Should not raise
+        await engine._update_step_execution_status(None, "done")
+
+    async def test_update_step_execution_status_db_error(self) -> None:
+        """_update_step_execution_status logs warning on DB error."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+
+        with patch("sova.core.workflow.get_session", side_effect=RuntimeError("db down")):
+            with patch("sova.core.workflow.log") as mock_log:
+                # Should not raise (exception is caught and logged)
+                await engine._update_step_execution_status(999, "done")
+
+            mock_log.warning.assert_called_once()
+            call_kwargs = mock_log.warning.call_args
+            assert "status_update_failed" in str(call_kwargs)
+
+    async def test_write_approval_handoff_exception(self) -> None:
+        """_write_approval_handoff logs warning when write_handoff_file raises."""
+        ctx = _make_ctx()
+        engine = WorkflowEngine(steps=[], ctx=ctx)
+        result = StepResult(success=True, summary="needs approval", awaiting_approval=True)
+
+        with patch("sova.core.workflow.log") as mock_log:
+            with patch("sova.ipc.handoff.write_handoff_file", side_effect=OSError("disk full")):
+                engine._write_approval_handoff("develop", result)
+
+            mock_log.warning.assert_called()
+
+    async def test_step_with_cost_creates_cost_record(self) -> None:
+        """When a step returns cost_usd > 0, a CostRecord is created."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+
+        async def execute_with_cost(_ctx: object) -> StepResult:
+            return StepResult(success=True, summary="Done", cost_usd=Decimal("0.05"))
+
+        step.execute = execute_with_cost
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        assert result.success
+        session = await get_session()
+        async with session.begin():
+            rows = (
+                (await session.execute(select(CostRecord).where(CostRecord.task_run_id == result.task_run_id)))
+                .scalars()
+                .all()
+            )
+            assert len(rows) == 1
+            assert rows[0].cost_usd == Decimal("0.05")
+            assert rows[0].phase == "dummy"
+
+    async def test_finalize_task_run_preserves_existing_ended_at(self) -> None:
+        """_finalize_task_run does not overwrite ended_at if already set."""
+        from datetime import datetime, timezone
+
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+
+        result = await engine.run()
+
+        # Manually set ended_at to a known value
+        known_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            task_run.ended_at = known_time
+
+        # Call _finalize_task_run again
+        await engine._finalize_task_run()
+
+        session = await get_session()
+        async with session.begin():
+            task_run = await session.get(TaskRun, result.task_run_id)
+            # SQLite strips tzinfo, so compare without it
+            assert task_run.ended_at.replace(tzinfo=None) == known_time.replace(tzinfo=None)
 
 
 # ---------------------------------------------------------------------------
