@@ -394,6 +394,20 @@ class TestProjectRegistry:
         assert _slugify("--test--") == "test"
         assert _slugify("") == "project"
 
+    def test_find_slug_for_path(self, tmp_path: Path, monkeypatch: object) -> None:
+        from sova.config import registry
+
+        reg_file = tmp_path / "projects.json"
+        monkeypatch.setattr(registry, "_REGISTRY_FILE", reg_file)
+        monkeypatch.setattr(registry, "_REGISTRY_DIR", tmp_path)
+
+        project = tmp_path / "myproj"
+        project.mkdir()
+        registry.register_project(project, slug="myproj")
+
+        assert registry.find_slug_for_path(project) == "myproj"
+        assert registry.find_slug_for_path(tmp_path / "other") is None
+
     def test_register_nonexistent_raises(self, tmp_path: Path, monkeypatch: object) -> None:
         from sova.config import registry
 

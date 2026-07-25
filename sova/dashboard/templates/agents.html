@@ -60,7 +60,7 @@
     </div>
     <div class="flex items-center gap-2">
       <span id="cr-quota-status" class="text-xs"></span>
-      <button onclick="_syncCrQuota()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Sync from GitHub">
+      <button onclick="_syncCrQuota()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Force sync from GitHub now (auto-syncs every 2 minutes)">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
       </button>
     </div>
@@ -2204,6 +2204,7 @@ window.addEventListener('beforeunload', function() {
   if (_metricsInterval) { clearInterval(_metricsInterval); }
   if (_prPollInterval) { clearInterval(_prPollInterval); }
   if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); }
+  if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); }
   if (_workItemsPollInterval) { clearInterval(_workItemsPollInterval); }
   if (_memPressureInterval) { clearInterval(_memPressureInterval); }
 });
@@ -2640,6 +2641,7 @@ document.addEventListener('visibilitychange', function() {
     if (_prPollInterval) { clearInterval(_prPollInterval); _prPollInterval = null; }
     if (_kanbanPollInterval) { clearInterval(_kanbanPollInterval); _kanbanPollInterval = null; }
     if (_crQuotaPollInterval) { clearInterval(_crQuotaPollInterval); _crQuotaPollInterval = null; }
+    if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); _crQuotaSyncInterval = null; }
     if (_memPressureInterval) { clearInterval(_memPressureInterval); _memPressureInterval = null; }
     if (_logEventSource) { _logEventSource.close(); _logEventSource = null; }
     if (logPollInterval) { clearTimeout(logPollInterval); logPollInterval = null; }
@@ -2662,6 +2664,8 @@ document.addEventListener('visibilitychange', function() {
     }
     _loadCrQuota();
     _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
+    if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); _crQuotaSyncInterval = null; }
+    _crQuotaSyncInterval = setInterval(_syncCrQuota, 120000);
     checkMemoryPressure();
     _memPressureInterval = setInterval(checkMemoryPressure, 3000);
     if (activeLogRunId !== null) {
@@ -2723,6 +2727,7 @@ async function _syncCrQuota() {
 
 _loadCrQuota();
 var _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
+var _crQuotaSyncInterval = setInterval(_syncCrQuota, 120000);
 
 // -- Memory Pressure Banner --
 

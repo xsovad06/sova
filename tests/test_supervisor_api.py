@@ -203,3 +203,101 @@ class TestSupervisorRouter:
                 assert resp.status_code == 200
                 data = resp.json()["decisions"]
                 assert all(d["component"] == "progression" for d in data)
+
+    async def test_start_supervisor_disabled_in_config(self, app) -> None:
+        """POST /supervisor/start returns 409 when supervisor.enabled is false."""
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.enabled = False
+        project_dir = Path.cwd().resolve()
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/start")
+                assert resp.status_code == 409
+
+    async def test_start_supervisor_already_running(self, app) -> None:
+        """POST /supervisor/start returns started=False when daemon is already running."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_daemon = MagicMock()
+        mock_daemon.running = True
+        mock_daemon.get_status.return_value = {
+            "enabled": True,
+            "running": True,
+            "poll_interval_seconds": 120,
+            "log_retention_days": 7,
+            "project_dir": str(Path.cwd()),
+        }
+        project_dir = Path.cwd().resolve()
+        set_daemon_registry({str(project_dir): mock_daemon})
+
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/start")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["started"] is False
+                    assert data["reason"] == "already running"
+        finally:
+            set_daemon_registry({})
+
+    async def test_start_supervisor_success(self, app) -> None:
+        """POST /supervisor/start creates and starts a new daemon when config has it enabled."""
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.enabled = True
+        mock_daemon = MagicMock()
+        mock_daemon.running = False
+        mock_daemon.get_status.return_value = {
+            "enabled": True,
+            "running": True,
+            "poll_interval_seconds": 120,
+            "log_retention_days": 7,
+            "project_dir": str(Path.cwd()),
+        }
+        project_dir = Path.cwd().resolve()
+        set_daemon_registry({})
+
+        try:
+            with (
+                patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+                patch("sova.config.loader.load_config", return_value=mock_cfg),
+                patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
+                patch("sova.supervisor.daemon.SupervisorDaemon", return_value=mock_daemon),
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/start")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["started"] is True
+                    assert data["running"] is True
+                    mock_daemon.start.assert_called_once()
+        finally:
+            set_daemon_registry({})
+
+    async def test_start_supervisor_no_project_context(self, app) -> None:
+        """POST /supervisor/start returns 503 when no project context is set."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/start")
+                assert resp.status_code == 503
+
+    async def test_get_decisions_load_config_error(self, app) -> None:
+        """GET /supervisor/decisions falls back to project_slug=None when load_config raises."""
+        with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/decisions")
+                assert resp.status_code == 200
+                assert resp.json()["decisions"] == []
+
+    async def test_get_counts_load_config_error(self, app) -> None:
+        """GET /supervisor/counts falls back to project_slug=None when load_config raises."""
+        with patch("sova.config.loader.load_config", side_effect=Exception("no config")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/counts")
+                assert resp.status_code == 200
+                assert "counts" in resp.json()

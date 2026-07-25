@@ -16,6 +16,7 @@ router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 
 _daemon_registry: dict = {}
 _background_tasks: set[asyncio.Task] = set()
+_start_lock = asyncio.Lock()
 
 
 def _get_daemon() -> Any | None:
@@ -77,6 +78,59 @@ async def get_decisions(
         event_type=event_type,
     )
     return {"decisions": decisions}
+
+
+@router.post("/start", responses={409: {"description": "supervisor.enabled is false in config"}})
+async def start_supervisor() -> dict[str, Any]:
+    """Start the supervisor daemon for the current project.
+
+    Safe to call after enabling supervisor.enabled in settings without a server restart.
+    Returns the daemon status after starting (or the existing status if already running).
+    """
+    from sova.config.loader import load_config
+    from sova.db.session import get_session_factory
+    from sova.supervisor.daemon import SupervisorDaemon
+
+    project_dir = get_project_dir()
+    if project_dir is None:
+        raise HTTPException(status_code=503, detail="No project context")
+
+    async with _start_lock:
+        daemon = _get_daemon()
+        if daemon is not None and daemon.running:
+            return {"started": False, "reason": "already running", **daemon.get_status()}
+
+        cfg = load_config(project_dir)
+        if not cfg.supervisor.enabled:
+            raise HTTPException(status_code=409, detail="supervisor.enabled is false in config — enable it first")
+
+        session_factory = await get_session_factory(project_dir)
+        new_daemon = SupervisorDaemon(config=cfg, project_dir=project_dir, session_factory=session_factory)
+        new_daemon.start()
+        _daemon_registry[str(project_dir.resolve())] = new_daemon
+        log.info("supervisor.started_via_api", project_dir=str(project_dir))
+        return {"started": True, **new_daemon.get_status()}
+
+
+@router.post("/stop", responses={404: {"description": "Supervisor daemon is not running"}})
+async def stop_supervisor() -> dict[str, Any]:
+    """Stop the supervisor daemon for the current project.
+
+    Cancels the polling loop and removes the daemon from the registry.
+    Config is not modified; re-enable via POST /supervisor/start.
+    """
+    project_dir = get_project_dir()
+    if project_dir is None:
+        raise HTTPException(status_code=503, detail="No project context")
+
+    async with _start_lock:
+        daemon = _get_daemon()
+        if daemon is None or not daemon.running:
+            raise HTTPException(status_code=404, detail="Supervisor daemon is not running")
+        await daemon.stop()
+        _daemon_registry.pop(str(project_dir.resolve()), None)
+        log.info("supervisor.stopped_via_api", project_dir=str(project_dir))
+        return {"stopped": True, "running": False}
 
 
 @router.get("/counts")

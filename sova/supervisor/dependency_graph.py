@@ -332,10 +332,9 @@ async def build_dependency_graph(
     """
     from sova.adapters.base import TaskFilters
 
-    if milestone:
-        filters = TaskFilters(milestone=milestone, state="all")
-    else:
-        filters = TaskFilters()
+    # Fetch up to 500 issues so the graph is not silently truncated on larger
+    # repos.  gh CLI handles pagination automatically when --limit > 100.
+    filters = TaskFilters(milestone=milestone, state="all", limit=500)
     tasks = await adapter.list_tasks(filters)
 
     # Milestones that have at least one open (non-done) issue

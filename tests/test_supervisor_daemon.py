@@ -394,6 +394,28 @@ class TestSupervisorDaemon:
         with patch.object(daemon, "_session_factory", side_effect=Exception("db down")):
             await daemon._purge_old_logs()
 
+    async def test_poll_once_quota_runs_before_progression(self, daemon: SupervisorDaemon) -> None:
+        """Quota sync must complete before the progression engine evaluates tasks."""
+        call_order: list[str] = []
+
+        async def mock_quota():
+            call_order.append("quota")
+            return {"enabled": True, "can_create_pr": True, "reviews_in_window": 0}
+
+        async def mock_progression(_adapter):
+            call_order.append("progression")
+            return {"decisions": 0, "executed": 0}
+
+        with (
+            patch.object(daemon, "_poll_quota", side_effect=mock_quota),
+            patch.object(daemon, "_poll_progression", side_effect=mock_progression),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={"db": "ok"}),
+            patch("sova.adapters.create_adapter", return_value=AsyncMock()),
+        ):
+            await daemon.poll_once()
+
+        assert call_order == ["quota", "progression"], f"Expected quota before progression, got: {call_order}"
+
 
 class TestSupervisorDecisionModel:
     async def test_model_fields(self, session_factory: async_sessionmaker) -> None:

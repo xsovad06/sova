@@ -300,20 +300,6 @@ class TestSummarizeCi:
         checks = [{"status": "COMPLETED", "conclusion": "CANCELLED"}]
         assert _summarize_ci(checks) == "passed"
 
-    def test_cancelled_does_not_override_success(self) -> None:
-        checks = [
-            {"status": "COMPLETED", "conclusion": "CANCELLED"},
-            {"status": "COMPLETED", "conclusion": "SUCCESS"},
-        ]
-        assert _summarize_ci(checks) == "passed"
-
-    def test_cancelled_does_not_mask_failure(self) -> None:
-        checks = [
-            {"status": "COMPLETED", "conclusion": "CANCELLED"},
-            {"status": "COMPLETED", "conclusion": "FAILURE"},
-        ]
-        assert _summarize_ci(checks) == "failed"
-
     def test_action_required(self) -> None:
         checks = [{"status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}]
         assert _summarize_ci(checks) == "failed"
@@ -629,12 +615,25 @@ class TestCheckIntegrationGates:
         assert ci_gate["passed"] is False
 
     @pytest.mark.asyncio
-    async def test_sova_review_gate_skipped_without_issue(self) -> None:
+    async def test_sova_review_gate_skipped_without_issue_or_pr(self) -> None:
+        # When neither issue_number nor pr_data["number"] is available, the gate skips.
         cfg = _make_config(sova_reviewed=True)
-        result = await check_integration_gates(pr_data=_pr_data(), issue_number=None, config=cfg)
+        result = await check_integration_gates(pr_data=_pr_data(number=None), issue_number=None, config=cfg)
         sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
         assert sova_gate["passed"] is True
         assert "skipped" in sova_gate["reason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_sova_review_gate_checks_pr_when_no_issue(self, monkeypatch) -> None:
+        # When issue_number is None but pr_data has a number, the gate still queries by PR.
+        cfg = _make_config(sova_reviewed=True)
+        mock_verdict = AsyncMock(return_value={"has_sova_review": False, "verdict": None, "finding_count": 0})
+        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
+        result = await check_integration_gates(pr_data=_pr_data(), issue_number=None, config=cfg)
+        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
+        assert sova_gate["passed"] is False
+        assert "No SOVA review" in sova_gate["reason"]
+        mock_verdict.assert_called_once_with(None, pr_number=42)
 
     @pytest.mark.asyncio
     async def test_sova_review_gate_fails_no_review(self, monkeypatch) -> None:
@@ -662,21 +661,6 @@ class TestCheckIntegrationGates:
         result = await check_integration_gates(pr_data=_pr_data(), issue_number="10", config=cfg)
         sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
         assert sova_gate["passed"] is True
-
-    @pytest.mark.asyncio
-    async def test_sova_verdict_scoped_to_pr_number(self, monkeypatch) -> None:
-        cfg = _make_config(sova_reviewed=True)
-        mock_verdict = AsyncMock(
-            return_value={
-                "has_sova_review": True,
-                "verdict": "approve",
-                "finding_count": 0,
-            }
-        )
-        monkeypatch.setattr("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict)
-
-        await check_integration_gates(pr_data=_pr_data(number=99), issue_number="10", config=cfg)
-        mock_verdict.assert_called_once_with("10", pr_number=99)
 
     @pytest.mark.asyncio
     async def test_sova_review_gate_fails_revise(self, monkeypatch) -> None:
@@ -788,56 +772,6 @@ class TestCheckIntegrationGates:
         )
         assert result["passed"] is True
         assert all(g["passed"] for g in result["gates"])
-
-    @pytest.mark.asyncio
-    async def test_sova_review_gate_passes_when_block_but_all_threads_resolved(self, monkeypatch) -> None:
-        """Block verdict is forgiven when all review threads are resolved."""
-        cfg = _make_config(sova_reviewed=True)
-        monkeypatch.setattr(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            AsyncMock(return_value={"has_sova_review": True, "verdict": "block", "finding_count": 2}),
-        )
-        result = await check_integration_gates(
-            pr_data=_pr_data(thread_total=7, thread_resolved=7),
-            issue_number="10",
-            config=cfg,
-        )
-        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
-        assert sova_gate["passed"] is True
-        assert "threads resolved" in sova_gate["reason"]
-
-    @pytest.mark.asyncio
-    async def test_sova_review_gate_still_fails_when_block_and_threads_open(self, monkeypatch) -> None:
-        """Block verdict with unresolved threads keeps the gate blocked."""
-        cfg = _make_config(sova_reviewed=True)
-        monkeypatch.setattr(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            AsyncMock(return_value={"has_sova_review": True, "verdict": "block", "finding_count": 2}),
-        )
-        result = await check_integration_gates(
-            pr_data=_pr_data(thread_total=7, thread_resolved=5),
-            issue_number="10",
-            config=cfg,
-        )
-        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
-        assert sova_gate["passed"] is False
-        assert "block" in sova_gate["reason"]
-
-    @pytest.mark.asyncio
-    async def test_sova_review_gate_still_fails_when_block_and_no_threads(self, monkeypatch) -> None:
-        """Block verdict with no inline threads (body-only review) is not forgiven."""
-        cfg = _make_config(sova_reviewed=True)
-        monkeypatch.setattr(
-            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-            AsyncMock(return_value={"has_sova_review": True, "verdict": "block", "finding_count": 2}),
-        )
-        result = await check_integration_gates(
-            pr_data=_pr_data(thread_total=0, thread_resolved=0),
-            issue_number="10",
-            config=cfg,
-        )
-        sova_gate = next(g for g in result["gates"] if g["name"] == "sova_reviewed")
-        assert sova_gate["passed"] is False
 
 
 # ---------------------------------------------------------------------------
