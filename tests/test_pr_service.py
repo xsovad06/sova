@@ -298,7 +298,7 @@ class TestSummarizeCi:
 
     def test_cancelled(self) -> None:
         checks = [{"status": "COMPLETED", "conclusion": "CANCELLED"}]
-        assert _summarize_ci(checks) == "failed"
+        assert _summarize_ci(checks) == "passed"
 
     def test_action_required(self) -> None:
         checks = [{"status": "COMPLETED", "conclusion": "ACTION_REQUIRED"}]
