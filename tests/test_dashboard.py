@@ -349,7 +349,7 @@ class TestDashboardHealth:
         # Should use _STATUS_TERMINAL lookup instead of hardcoded done/failed check
         assert "_STATUS_TERMINAL[curr]" in html, "Notification check should use _STATUS_TERMINAL lookup"
         # Should exclude paused (user-initiated, not worth notifying)
-        assert "!== 'paused'" in html or "!== \"paused\"" in html
+        assert "!== 'paused'" in html or '!== "paused"' in html
 
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
