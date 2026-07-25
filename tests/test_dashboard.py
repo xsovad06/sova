@@ -542,6 +542,58 @@ class TestCostsAPI:
             assert isinstance(entry["cost_usd"], (int, float))
 
 
+class TestCostsAPIErrorHandling:
+    """Cover the except branches in sova/dashboard/routers/costs.py."""
+
+    async def test_cost_summary_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_summary", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/summary")
+        assert resp.status_code == 500
+        assert "Failed to fetch cost summary" in resp.json()["detail"]
+
+    async def test_daily_costs_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_daily", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/daily")
+        assert resp.status_code == 500
+        assert "Failed to fetch daily costs" in resp.json()["detail"]
+
+    async def test_costs_by_issue_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_by_issue", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/by-issue")
+        assert resp.status_code == 500
+        assert "Failed to fetch costs by issue" in resp.json()["detail"]
+
+    async def test_costs_by_phase_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_by_phase", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/by-phase")
+        assert resp.status_code == 500
+        assert "Failed to fetch costs by phase" in resp.json()["detail"]
+
+    async def test_costs_by_model_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_by_model", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/by-model")
+        assert resp.status_code == 500
+        assert "Failed to fetch costs by model" in resp.json()["detail"]
+
+    async def test_costs_by_routing_error(self, client: AsyncClient) -> None:
+        from unittest.mock import patch
+
+        with patch("sova.dashboard.routers.costs.cost_service.get_by_routing", side_effect=RuntimeError("db down")):
+            resp = await client.get("/api/costs/by-routing")
+        assert resp.status_code == 500
+        assert "Failed to fetch costs by routing" in resp.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Control API
 # ---------------------------------------------------------------------------
