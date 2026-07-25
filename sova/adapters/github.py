@@ -77,7 +77,7 @@ class GitHubAdapter(TaskAdapter):
             "--json",
             "number,title,body,state,labels,assignees,milestone,url,createdAt",
             "--limit",
-            "50",
+            "200",
         ]
 
         if filters.milestone:
@@ -238,10 +238,18 @@ class GitHubAdapter(TaskAdapter):
         if data.get("state") == "CLOSED":
             return TaskState.DONE
 
-        labels = [lbl["name"] for lbl in data.get("labels", [])]
-        for label in labels:
-            if label in _LABEL_TO_STATE:
-                return _LABEL_TO_STATE[label]
+        label_set = {lbl["name"] for lbl in data.get("labels", [])}
+        for priority_state in (
+            TaskState.HUMAN_ONLY,
+            TaskState.IN_REVIEW,
+            TaskState.IN_PROGRESS,
+            TaskState.NEEDS_SPEC,
+            TaskState.RESEARCHED,
+            TaskState.TRIAGED,
+        ):
+            label_name = _STATE_LABELS.get(priority_state)
+            if label_name and label_name in label_set:
+                return priority_state
 
         return TaskState.BACKLOG
 
@@ -695,10 +703,22 @@ def _parse_issue(data: dict) -> Task:
     if data.get("state") == "CLOSED":
         state = TaskState.DONE
     else:
+        # Check labels in priority order: HUMAN_ONLY always wins over any other
+        # agent state label so that a blocking label cannot be overridden by an
+        # earlier-added progress label.
+        label_set = set(labels)
         state = TaskState.BACKLOG
-        for label in labels:
-            if label in _LABEL_TO_STATE:
-                state = _LABEL_TO_STATE[label]
+        for priority_state in (
+            TaskState.HUMAN_ONLY,
+            TaskState.IN_REVIEW,
+            TaskState.IN_PROGRESS,
+            TaskState.NEEDS_SPEC,
+            TaskState.RESEARCHED,
+            TaskState.TRIAGED,
+        ):
+            label_name = _STATE_LABELS.get(priority_state)
+            if label_name and label_name in label_set:
+                state = priority_state
                 break
 
     metadata: dict = {}
