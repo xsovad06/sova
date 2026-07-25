@@ -22,6 +22,7 @@ SOVA (Software Orchestration Via Agents) is a standalone application that any so
 | `docs/database-guidelines.md` | ORM models, session management, migrations |
 | `docs/testing-guidelines.md` | pytest patterns, fixtures, mocking, test isolation |
 | `docs/integration-guidelines.md` | GitHub/Jira/SonarCloud integration, handoff protocol |
+| `docs/jira-configuration-guide.md` | Jira Cloud setup, JQL filters, status mapping, troubleshooting |
 
 ## Project Structure
 
