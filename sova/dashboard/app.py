@@ -659,7 +659,17 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/supervisor")
     async def project_supervisor(request: Request, slug: str):
-        return _project_page(request, templates, slug, "supervisor.html", "supervisor")
+        github_repo = ""
+        try:
+            from sova.config.loader import load_config
+            from sova.config.registry import get_project_path
+
+            proj_path = get_project_path(slug)
+            if proj_path:
+                github_repo = load_config(proj_path).github_repo or ""
+        except Exception:
+            log.debug("Failed to load github_repo for supervisor page", exc_info=True)
+        return _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
 
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):

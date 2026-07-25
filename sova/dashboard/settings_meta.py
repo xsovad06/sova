@@ -950,6 +950,13 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
         "number",
     ),
+    SettingMeta(
+        "supervisor.max_researcher_failures",
+        "Max researcher failures",
+        "Block researcher spawn after this many consecutive failures (0 = unlimited)",
+        "supervisor",
+        "number",
+    ),
     # -- Memory Guard --
     SettingMeta(
         "memory_guard.enabled",

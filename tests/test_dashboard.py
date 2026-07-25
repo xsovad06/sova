@@ -3483,6 +3483,12 @@ class TestMultiProject:
         assert result[0][0] == p
         assert result[0][1].supervisor.enabled is True
 
+    async def test_project_supervisor_page_loads(self, multi_client: AsyncClient) -> None:
+        """Supervisor page must not 500 in multi-project mode (github_repo context var)."""
+        resp = await multi_client.get("/p/alpha/supervisor")
+        assert resp.status_code == 200
+        assert "Supervisor" in resp.text
+
 
 # ---------------------------------------------------------------------------
 # Setup API
