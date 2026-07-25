@@ -2033,6 +2033,7 @@ var _wsMaxReconnectDelay = 16000;
 var _wsReconnectAttempts = 0;
 var _wsMaxReconnectAttempts = 10;
 var _wsLastRunIds = null;
+var _wsPreviousStatuses = {};
 
 function _connectAgentWs() {
   if (_wsReconnectAttempts > _wsMaxReconnectAttempts) {
@@ -2055,6 +2056,25 @@ function _connectAgentWs() {
     try {
       var msg = JSON.parse(event.data);
       if (msg.type === 'status_update' && Array.isArray(msg.runs)) {
+        // Fire browser notifications on terminal state transitions
+        var _activeRunIds = {};
+        msg.runs.forEach(function(run) {
+          _activeRunIds[run.run_id] = 1;
+          var prev = _wsPreviousStatuses[run.run_id];
+          var curr = run.status;
+          if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
+            var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
+            var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected' };
+            var title = _notifTitles[curr] || 'Agent ' + curr;
+            sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
+          }
+          _wsPreviousStatuses[run.run_id] = curr;
+        });
+        // Prune entries for runs no longer reported by the server
+        Object.keys(_wsPreviousStatuses).forEach(function(id) {
+          if (!_activeRunIds[id]) delete _wsPreviousStatuses[id];
+        });
+
         // Build a snapshot of display-relevant fields to detect any change
         var snapshot = msg.runs.map(function(r) {
           return r.run_id + ':' + r.status + ':' + (r.current_step || '') + ':' + r.step_index + ':' + (r.is_stuck ? '1' : '0');
