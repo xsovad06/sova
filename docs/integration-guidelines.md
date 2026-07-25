@@ -62,6 +62,8 @@ Always wrap `json.loads(result.stdout)` in `try/except (json.JSONDecodeError, Ty
 - **State via labels**: same `agent:` label pattern as GitHub, with priority chain
 - **PR operations are no-ops**: `post_pr_comment`, `post_pr_review`, `get_pr_reviews` log and return empty
 
+For setup instructions, JQL filter recipes, and status mapping configuration, see [JIRA Configuration Guide](jira-configuration-guide.md).
+
 ## SonarCloud and CodeRabbit
 
 `sova/adapters/external_reviews.py` fetches findings from both services.

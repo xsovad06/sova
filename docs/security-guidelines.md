@@ -18,7 +18,7 @@ Every `gh` CLI call in `sova/adapters/github.py` and `sova/git/pr.py` passes `en
 
 ### Jira API Token
 
-`jira_api_token` in `sova/config/models.py` uses `Field("", repr=False)` to suppress from Pydantic repr, preventing accidental logging.
+`jira_api_token` in `sova/config/models.py` uses `Field("", repr=False)` to suppress from Pydantic repr, preventing accidental logging. Store as `SOVA_TASK_JIRA_API_TOKEN` env var. See [JIRA Configuration Guide](jira-configuration-guide.md) for full setup.
 
 ### Worktree Credential Copying
 

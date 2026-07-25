@@ -195,7 +195,7 @@ Agents are **ephemeral**: each one spawns, does its job, writes a handoff file, 
 | Source | Status |
 |--------|--------|
 | GitHub Issues | Supported |
-| Jira Cloud | Supported |
+| Jira Cloud | Supported ([configuration guide](docs/jira-configuration-guide.md)) |
 | Linear | Planned |
 
 ## Contributing
