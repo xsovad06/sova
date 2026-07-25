@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from sova.config.models import ProjectConfig
     from sova.monitoring.cross_project import MetricsSnapshotWriter
     from sova.oversight.agent import OversightAgent
     from sova.supervisor.daemon import SupervisorDaemon
@@ -88,7 +89,7 @@ _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
 
 
-def _try_load_config(project_path: Path) -> object | None:
+def _try_load_config(project_path: Path) -> ProjectConfig | None:
     """Load config for a project, returning None on failure."""
     from sova.config.loader import load_config
 
@@ -99,9 +100,9 @@ def _try_load_config(project_path: Path) -> object | None:
         return None
 
 
-def _collect_supervisor_configs(project_dirs: dict[str, str]) -> list[tuple[Path, object]]:
+def _collect_supervisor_configs(project_dirs: dict[str, str]) -> list[tuple[Path, ProjectConfig]]:
     """Load configs for registered projects, skipping broken or non-supervisor ones."""
-    result: list[tuple[Path, object]] = []
+    result: list[tuple[Path, ProjectConfig]] = []
     for path_str in project_dirs.values():
         p = Path(path_str)
         if not p.is_dir():
@@ -688,16 +689,14 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.get("/p/{slug}/supervisor")
     async def project_supervisor(request: Request, slug: str):
-        github_repo = ""
-        try:
-            from sova.config.loader import load_config
-            from sova.config.registry import get_project_path
+        from sova.config.registry import get_project_path
 
-            proj_path = get_project_path(slug)
-            if proj_path:
-                github_repo = load_config(proj_path).github_repo or ""
-        except Exception:
-            log.debug("Failed to load github_repo for supervisor page", exc_info=True)
+        github_repo = ""
+        proj_path = get_project_path(slug)
+        if proj_path:
+            cfg = _try_load_config(proj_path)
+            if cfg is not None:
+                github_repo = cfg.github_repo or ""
         return _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
 
     @app.get("/p/{slug}/style-guide")
