@@ -509,10 +509,14 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     """Configure routes for multi-project mode."""
     from sova.config.registry import register_project, unregister_project
     from sova.dashboard.middleware import ProjectContextMiddleware
+    from sova.dashboard.routers import fleet_manager
 
     app.add_middleware(ProjectContextMiddleware)
 
-    # -- Home page (project list) --
+    # -- Fleet Manager API (global, not project-scoped) --
+    app.include_router(fleet_manager.router, prefix="/api")
+
+    # -- Home page (Fleet Manager command center) --
     @app.get("/")
     async def home(request: Request):
         projects = list_projects()

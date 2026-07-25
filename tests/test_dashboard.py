@@ -13901,15 +13901,15 @@ class TestAgentPoolConfig:
     def test_read_max_parallel_returns_config_value(self, tmp_path):
         toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[project]\nmax_parallel_agents = 5\n")
-        from sova.dashboard.services.agent_pool import _read_max_parallel
+        from sova.dashboard.services.agent_pool import read_max_parallel
 
-        result = _read_max_parallel(tmp_path)
+        result = read_max_parallel(tmp_path)
         assert result == 5
 
     def test_read_max_parallel_fallback_on_missing_config(self, tmp_path):
-        from sova.dashboard.services.agent_pool import ProjectAgents, _read_max_parallel
+        from sova.dashboard.services.agent_pool import ProjectAgents, read_max_parallel
 
-        result = _read_max_parallel(tmp_path / "nonexistent")
+        result = read_max_parallel(tmp_path / "nonexistent")
         assert result == ProjectAgents.max_concurrent
 
     def test_sync_max_concurrent_updates_pool(self, tmp_path, monkeypatch):

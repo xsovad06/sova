@@ -97,7 +97,7 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
             if project_dir is None:
                 project_dir = _default_project_dir or Path.cwd()
             resolved = project_dir.resolve()
-            max_conc = _read_max_parallel(resolved)
+            max_conc = read_max_parallel(resolved)
             pa = _projects.setdefault(
                 slug,
                 ProjectAgents(project_dir=resolved, max_concurrent=max_conc),
@@ -106,7 +106,7 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
     return pa
 
 
-def _read_max_parallel(project_dir: Path) -> int:
+def read_max_parallel(project_dir: Path) -> int:
     """Read max_parallel_agents from config, falling back to dataclass default."""
     try:
         from sova.config.loader import load_config
@@ -140,6 +140,20 @@ def sync_max_concurrent(project_dir: Path | None = None, slug: str | None = None
             pa.max_concurrent = cfg.max_parallel_agents
     except Exception:
         log.debug("pool.max_concurrent.sync_failed", exc_info=True)
+
+
+def get_project_pool(slug: str | None = None) -> ProjectAgents:
+    """Public accessor for the project agent pool.
+
+    Returns the pool for the given slug, creating one if needed.
+    """
+    return _get_project_agents(slug)
+
+
+def list_all_pools() -> dict[str, ProjectAgents]:
+    """Return all initialized project pools (projects that have been accessed this session)."""
+    with _projects_lock:
+        return dict(_projects)
 
 
 def _prune_completed(pa: ProjectAgents, now: float | None = None) -> None:
