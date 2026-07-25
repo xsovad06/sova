@@ -736,10 +736,11 @@ class TestEvaluateAll:
         ):
             decisions = await engine.evaluate_all()
 
-        assert len(decisions) == 3
+        # DONE tasks with no milestone are excluded from the dependency graph
+        # and therefore produce no decision (supervisor has nothing to act on).
+        assert len(decisions) == 2
         by_issue = {d.issue_number: d for d in decisions}
         assert by_issue[1].action == ProgressionAction.SPAWN_RESEARCHER
-        assert by_issue[2].action == ProgressionAction.WAIT
         assert by_issue[3].action == ProgressionAction.WAIT
 
     @pytest.mark.asyncio

@@ -321,13 +321,28 @@ async def build_dependency_graph(
 ) -> DependencyGraph:
     """Build a dependency graph from the adapter's task list.
 
+    Fetches all issues (open + closed) so that:
+    - open issues are always included
+    - closed issues within a milestone that still has open issues are included
+      (shows completed sub-tasks of an in-progress feature)
+    - milestones where every issue is closed are excluded (feature is done)
+
     When *milestone* is provided, only tasks in that milestone are fetched.
     Dependencies outside the filtered set are fetched individually.
     """
     from sova.adapters.base import TaskFilters
 
-    filters = TaskFilters(milestone=milestone) if milestone else None
+    if milestone:
+        filters = TaskFilters(milestone=milestone, state="all")
+    else:
+        filters = TaskFilters()
     tasks = await adapter.list_tasks(filters)
+
+    # Milestones that have at least one open (non-done) issue
+    active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}
+
+    # Keep open issues + closed issues within active milestones
+    tasks = [t for t in tasks if t.state != TaskState.DONE or (t.milestone and t.milestone in active_milestones)]
 
     # Collect all referenced deps and fetch missing ones
     all_dep_ids: set[int] = set()
