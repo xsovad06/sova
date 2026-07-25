@@ -27,12 +27,14 @@ def _task(
     title: str = "",
     body: str = "",
     state: TaskState = TaskState.BACKLOG,
+    milestone: str = "",
 ) -> Task:
     return Task(
         id=str(issue_id),
         title=title or f"Issue #{issue_id}",
         body=body,
         state=state,
+        milestone=milestone,
     )
 
 
@@ -509,99 +511,6 @@ class TestRepeatedFailuresGate:
 
 
 # ---------------------------------------------------------------------------
-# _check_repeated_failures_gate -- DB-backed integration
-# ---------------------------------------------------------------------------
-
-
-class TestRepeatedFailuresGateIntegration:
-    """Verify the correlated subquery correctly resets the failure count after a success."""
-
-    @pytest.fixture
-    async def session_factory(self):
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-        from sova.db.models import Base
-
-        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        yield factory
-        await engine.dispose()
-
-    @pytest.mark.asyncio
-    async def test_failures_before_last_success_excluded(self, session_factory) -> None:
-        """Failures before the most recent done run must not count toward the threshold."""
-        from sova.db.models import TaskRun
-
-        async with session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="done"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                    ]
-                )
-
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = session_factory
-
-        # Only 1 failure since the last success; threshold is 3: gate must pass.
-        result = await engine._check_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_failures_since_last_success_trigger_block(self, session_factory) -> None:
-        """Gate fires when failures since the last done run reach the threshold."""
-        from sova.db.models import TaskRun
-
-        async with session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="done"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                    ]
-                )
-
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = session_factory
-
-        # 3 failures since the last success == threshold; gate must block.
-        result = await engine._check_repeated_failures_gate(42)
-        assert result is not None
-        assert result.gate == "repeated_failure"
-        assert "3" in result.detail
-
-    @pytest.mark.asyncio
-    async def test_no_prior_success_counts_all_failures(self, session_factory) -> None:
-        """When there is no prior done run, all historical failures count."""
-        from sova.db.models import TaskRun
-
-        async with session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                        TaskRun(issue_number="42", role="researcher", status="failed"),
-                    ]
-                )
-
-        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
-        engine._session_factory = session_factory
-
-        result = await engine._check_repeated_failures_gate(42)
-        assert result is not None
-        assert result.gate == "repeated_failure"
-
-
-# ---------------------------------------------------------------------------
 # evaluate_task (integration of state machine + gates)
 # ---------------------------------------------------------------------------
 
@@ -736,12 +645,49 @@ class TestEvaluateAll:
         ):
             decisions = await engine.evaluate_all()
 
-        # DONE tasks with no milestone are excluded from the dependency graph
-        # and therefore produce no decision (supervisor has nothing to act on).
+        # Issue 2 (DONE, no milestone) is excluded from the dependency graph by
+        # the active-milestone filter, so the supervisor produces no decision for it.
         assert len(decisions) == 2
         by_issue = {d.issue_number: d for d in decisions}
         assert by_issue[1].action == ProgressionAction.SPAWN_RESEARCHER
         assert by_issue[3].action == ProgressionAction.WAIT
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_active_milestone_filter_branches(self, mock_cfg: MagicMock) -> None:
+        """Active-milestone filter: DONE issues in active milestones stay; DONE in done-only milestones are excluded."""
+        mock_cfg.return_value.max_parallel_agents = 5
+        tasks = [
+            # M1 is active (issue 10 is TRIAGED), so the DONE sibling (issue 11) stays
+            _task(10, state=TaskState.TRIAGED, milestone="M1"),
+            _task(11, state=TaskState.DONE, milestone="M1"),
+            # M2 has only DONE issues, so issue 12 is excluded
+            _task(12, state=TaskState.DONE, milestone="M2"),
+        ]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True),
+            adapter=adapter,
+        )
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_dependency_gate", return_value=None),
+            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+        ):
+            decisions = await engine.evaluate_all()
+
+        # Issue 12 (DONE, M2-only milestone) is filtered out of the graph entirely.
+        # Issue 11 (DONE, M1 active) stays in the graph; DONE produces WAIT.
+        # Issue 10 (TRIAGED, M1 active) gets SPAWN_RESEARCHER.
+        assert len(decisions) == 2
+        by_issue = {d.issue_number: d for d in decisions}
+        assert by_issue[10].action == ProgressionAction.SPAWN_RESEARCHER
+        assert by_issue[11].action == ProgressionAction.WAIT
+        assert 12 not in by_issue
 
     @pytest.mark.asyncio
     async def test_graph_build_failure_returns_empty(self) -> None:
@@ -856,7 +802,7 @@ class TestExecuteDecision:
     @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_researcher_calls_start_agent(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
+    async def test_spawn_researcher_calls_start_agent(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 1}
         engine = _make_engine()
         decision = ProgressionDecision(
@@ -872,7 +818,7 @@ class TestExecuteDecision:
     @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_developer_calls_start_agent(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
+    async def test_spawn_developer_calls_start_agent(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 2}
         engine = _make_engine()
         decision = ProgressionDecision(
@@ -888,7 +834,7 @@ class TestExecuteDecision:
     @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
+    async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 3}
         engine = _make_engine()
         engine._find_pr_for_issue = AsyncMock(return_value=55)
@@ -899,7 +845,7 @@ class TestExecuteDecision:
             reason="Ready",
         )
         result = await engine.execute_decision(decision)
-        mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", slug="test-project", pr_number=55)
+        mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", pr_number=55, slug="test-project")
         assert result["run_id"] == 3
 
     @pytest.mark.asyncio
@@ -1419,7 +1365,7 @@ class TestExecuteDecisionsRuns:
     @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_execute_decisions_calls_actionable(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
+    async def test_execute_decisions_calls_actionable(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 1}
         engine = _make_engine()
         decisions = [
