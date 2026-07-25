@@ -265,6 +265,18 @@ class TestDashboardHealth:
         ci_section = js[ci_idx : ci_idx + 120]
         assert "_WAITING_COLOR" in ci_section
 
+    async def test_awaiting_approval_is_terminal_with_color(self, client: AsyncClient) -> None:
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        # awaiting_approval must be in _STATUS_TERMINAL
+        terminal_idx = js.index("_STATUS_TERMINAL")
+        terminal_section = js[terminal_idx : terminal_idx + 200]
+        assert "awaiting_approval" in terminal_section
+        # awaiting_approval must have a color mapping in STATUS_COLORS
+        colors_idx = js.index("STATUS_COLORS")
+        colors_section = js[colors_idx : js.index("};", colors_idx)]
+        assert "awaiting_approval" in colors_section
+
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         html = resp.text

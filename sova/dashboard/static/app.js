@@ -75,6 +75,7 @@ var STATUS_COLORS = {
   pr_created:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
   ci_monitoring:     _WAITING_COLOR,
   automated_review:  _WAITING_COLOR,
+  awaiting_approval: _WAITING_COLOR,
   done:              { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
   failed:            { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
   rejected:          { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
@@ -83,7 +84,7 @@ var STATUS_COLORS = {
   running:           { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
 };
 
-var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1 };
+var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1, awaiting_approval: 1 };
 var _STUCK_THRESHOLD_S = 300;
 
 var _STEP_LABELS = {
@@ -143,7 +144,8 @@ function statusDot(status) {
 
 function _computeBadgeLabel(status, currentStep) {
   if (_STATUS_TERMINAL[status]) {
-    return status.charAt(0).toUpperCase() + status.slice(1);
+    var label = status.replace(/_/g, ' ');
+    return label.charAt(0).toUpperCase() + label.slice(1);
   }
   if (!currentStep || currentStep === 'agent') {
     return 'Starting...';
