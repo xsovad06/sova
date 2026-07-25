@@ -64,7 +64,7 @@ var _WAITING_COLOR = { dot: 'bg-accent-peach', text: 'text-accent-peach', bg: 'b
 var STATUS_COLORS = {
   pending:           { dot: 'bg-gray-500',        text: 'text-gray-400',         bg: 'bg-gray-500/20' },
   assessing:         { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
-  researched:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  researched:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   in_progress:       { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   developing:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   simplifying:       { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
@@ -72,7 +72,7 @@ var STATUS_COLORS = {
   committing:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   addressing_review: { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   pushing:           { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
-  pr_created:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  pr_created:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   ci_monitoring:     _WAITING_COLOR,
   automated_review:  _WAITING_COLOR,
   awaiting_approval: _WAITING_COLOR,
@@ -150,7 +150,8 @@ function _computeBadgeLabel(status, currentStep) {
   if (!currentStep || currentStep === 'agent') {
     return 'Starting...';
   }
-  var stepLabel = _STEP_LABELS[currentStep] || currentStep.replace(/_/g, ' ');
+  var rawLabel = currentStep.replace(/_/g, ' ');
+  var stepLabel = _STEP_LABELS[currentStep] || (rawLabel.charAt(0).toUpperCase() + rawLabel.slice(1));
   var prefix = _WAITING_STEPS[currentStep] ? 'Waiting: ' : 'Running: ';
   return prefix + stepLabel;
 }

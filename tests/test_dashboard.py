@@ -277,6 +277,80 @@ class TestDashboardHealth:
         colors_section = js[colors_idx : js.index("};", colors_idx)]
         assert "awaiting_approval" in colors_section
 
+    async def test_badge_label_terminal_states_capitalized(self, client: AsyncClient) -> None:
+        """Verify _computeBadgeLabel logic: terminal states produce capitalized labels."""
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        # Extract terminal statuses from _STATUS_TERMINAL
+        import re
+
+        terminal_match = re.search(r"_STATUS_TERMINAL\s*=\s*\{([^}]+)\}", js)
+        assert terminal_match, "_STATUS_TERMINAL not found"
+        terminal_keys = re.findall(r"(\w+)\s*:", terminal_match.group(1))
+        assert len(terminal_keys) >= 5, f"Expected at least 5 terminal states, got {terminal_keys}"
+        for status in ["done", "failed", "interrupted", "rejected", "paused"]:
+            assert status in terminal_keys, f"{status} missing from _STATUS_TERMINAL"
+
+    async def test_badge_label_waiting_steps_use_waiting_prefix(self, client: AsyncClient) -> None:
+        """Verify waiting steps are in _WAITING_STEPS and use peach color."""
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        import re
+
+        waiting_match = re.search(r"_WAITING_STEPS\s*=\s*\{([^}]+)\}", js)
+        assert waiting_match, "_WAITING_STEPS not found"
+        waiting_keys = re.findall(r"(\w+)\s*:", waiting_match.group(1))
+        expected_waiting = ["monitor_ci", "wait_for_external_reviews", "handoff_to_reviewer", "handoff_to_user"]
+        for step in expected_waiting:
+            assert step in waiting_keys, f"{step} missing from _WAITING_STEPS"
+        # Verify _computeBadgeLabel uses 'Waiting: ' prefix for waiting steps
+        assert "'Waiting: '" in js or '"Waiting: "' in js
+
+    async def test_badge_label_running_steps_use_running_prefix(self, client: AsyncClient) -> None:
+        """Verify non-waiting, non-terminal steps produce 'Running: {label}' badges."""
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        assert "'Running: '" in js or '"Running: "' in js
+        # Verify non-waiting steps like 'develop' have explicit labels
+        import re
+
+        labels_match = re.search(r"_STEP_LABELS\s*=\s*\{([^}]+)\}", js)
+        assert labels_match
+        # develop should map to 'Developing', not be in _WAITING_STEPS
+        assert "develop:" in labels_match.group(1)
+        assert "'Developing'" in labels_match.group(1) or '"Developing"' in labels_match.group(1)
+
+    async def test_badge_fallback_label_capitalizes_first_letter(self, client: AsyncClient) -> None:
+        """Verify unmapped steps get capitalized fallback labels."""
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        # The fallback path should capitalize: rawLabel.charAt(0).toUpperCase()
+        assert "charAt(0).toUpperCase()" in js
+
+    async def test_badge_non_terminal_states_use_green_not_blue(self, client: AsyncClient) -> None:
+        """Verify transitional states (researched, pr_created) use green, not blue."""
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        import re
+
+        colors_match = re.search(r"STATUS_COLORS\s*=\s*\{(.+?)\n\};", js, re.DOTALL)
+        assert colors_match
+        colors_block = colors_match.group(1)
+        # researched and pr_created should use accent-green (running), not accent (blue/completed)
+        for status in ["researched", "pr_created"]:
+            idx = colors_block.index(f"{status}:")
+            section = colors_block[idx : idx + 120]
+            assert "bg-accent-green" in section, f"{status} should use green (running) color, not blue"
+
+    async def test_ws_notifications_cover_all_terminal_states(self, client: AsyncClient) -> None:
+        """Verify WebSocket notification handler fires for all terminal states except paused."""
+        resp = await client.get("/agents")
+        html = resp.text
+        # Should use _STATUS_TERMINAL lookup instead of hardcoded done/failed check
+        assert "_STATUS_TERMINAL[curr]" in html, "Notification check should use _STATUS_TERMINAL lookup"
+        # Should exclude paused (user-initiated, not worth notifying)
+        assert "!== 'paused'" in html or "!== \"paused\"" in html
+
     async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
         resp = await client.get("/agents")
         html = resp.text

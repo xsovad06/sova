@@ -2062,9 +2062,10 @@ function _connectAgentWs() {
           _activeRunIds[run.run_id] = 1;
           var prev = _wsPreviousStatuses[run.run_id];
           var curr = run.status;
-          if (prev && prev !== curr && (curr === 'done' || curr === 'failed')) {
+          if (prev && prev !== curr && _STATUS_TERMINAL[curr] && curr !== 'paused') {
             var ref = run.issue ? '#' + run.issue : (run.pr_number ? 'PR #' + run.pr_number : 'Run ' + run.run_id);
-            var title = curr === 'done' ? 'Agent completed' : 'Agent failed';
+            var _notifTitles = { done: 'Agent completed', failed: 'Agent failed', interrupted: 'Agent interrupted', rejected: 'Agent rejected' };
+            var title = _notifTitles[curr] || 'Agent ' + curr;
             sendBrowserNotification('SOVA: ' + title, ref + ' (' + (run.role || 'agent') + ')');
           }
           _wsPreviousStatuses[run.run_id] = curr;
