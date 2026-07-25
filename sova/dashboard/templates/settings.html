@@ -226,6 +226,17 @@ async function loadConfig() {
     loadInvariants();
     loadPersonas();
     loadInstallationStatus();
+
+    // If the URL has a #groupId hash, open that group and scroll to it
+    var hash = window.location.hash.replace('#', '');
+    if (hash && document.getElementById('group-body-' + hash)) {
+      var hashBody = document.getElementById('group-body-' + hash);
+      var isAlreadyOpen = hashBody.style.maxHeight && hashBody.style.maxHeight !== '0px';
+      if (!isAlreadyOpen) toggleGroup(hash);
+      setTimeout(function() {
+        hashBody.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 120);
+    }
   } catch (e) {
     console.error('Failed to load config:', e);
     var detail = (e.message || '').replace('HTTP 500: ', '');
