@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from sova.config.models import ProjectConfig
+    from sova.config.loader import ProjectConfig
     from sova.monitoring.cross_project import MetricsSnapshotWriter
     from sova.oversight.agent import OversightAgent
     from sova.supervisor.daemon import SupervisorDaemon

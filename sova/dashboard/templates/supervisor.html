@@ -4,20 +4,22 @@
 <div class="flex items-center justify-between mb-6">
   <h2 class="text-2xl font-semibold">Supervisor</h2>
   <div class="flex items-center gap-3">
-    <span id="daemon-status" class="text-xs px-2 py-1 rounded bg-gray-700/50 text-gray-400">Loading...</span>
-    <button id="poll-btn" onclick="triggerPoll()" class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
+    <label class="flex items-center gap-2 cursor-pointer select-none" title="Enable or disable the supervisor daemon">
+      <div class="relative">
+        <input type="checkbox" id="supervisor-toggle" class="sr-only peer" onchange="toggleSupervisor(this.checked)">
+        <div class="w-9 h-5 bg-gray-600 peer-checked:bg-accent-green peer-focus-visible:ring-2 peer-focus-visible:ring-accent-green/50 rounded-full transition-colors duration-200"></div>
+        <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform duration-200 peer-checked:translate-x-4 pointer-events-none"></div>
+      </div>
+      <span id="supervisor-toggle-label" class="text-xs text-gray-400">Loading...</span>
+    </label>
+    <a href="{{ prefix|default('') }}/settings#supervisor"
+       class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
+    <button id="poll-btn" onclick="triggerPoll()"
+            title="Manually trigger one supervision cycle: check task states, sync CodeRabbit quota, and execute any ready progression decisions"
+            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
       Poll Now
     </button>
   </div>
-</div>
-
-<!-- Disabled banner -->
-<div id="disabled-banner" class="hidden bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg px-4 py-3 mb-6">
-  <p class="text-sm text-accent-yellow">
-    The supervisor daemon is disabled. Enable it in
-    <a href="{{ prefix|default('') }}/settings" class="underline hover:text-yellow-200">Settings</a>
-    under the Supervisor section (<code>supervisor.enabled = true</code>).
-  </p>
 </div>
 
 <!-- Dependency Graph (full width, primary board) -->
@@ -127,31 +129,116 @@ function stateColor(state) {
   return '#6c7086';
 }
 
+// -- Toggle / enable / disable --
+let _toggleBusy = false;
+
+async function toggleSupervisor(enabled) {
+  if (_toggleBusy) { return; }
+  _toggleBusy = true;
+  const toggle = document.getElementById('supervisor-toggle');
+  toggle.disabled = true;
+  try {
+    if (enabled) {
+      await enableSupervisor();
+    } else {
+      await disableSupervisor();
+    }
+  } catch (e) {
+    console.error('toggleSupervisor failed:', e);
+    await loadStatus();
+  } finally {
+    toggle.disabled = false;
+    _toggleBusy = false;
+  }
+}
+
+let _confirmPoll = null;
+
+async function enableSupervisor() {
+  // 1. Save config
+  const r = await fetch(`${apiBase}/settings/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'supervisor.enabled', value: true }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
+    alert(`Failed to enable supervisor: ${msg}`);
+    await loadStatus();
+    return;
+  }
+  // 2. Start daemon (no server restart needed)
+  const s = await fetch(`${apiBase}/supervisor/start`, { method: 'POST' });
+  if (!s.ok && s.status !== 409) {
+    const body = await s.json().catch(() => ({}));
+    console.warn('supervisor/start:', body.detail || s.status);
+  }
+  // 3. Refresh status, then poll briefly until daemon is confirmed running
+  await loadStatus();
+  if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
+  let attempts = 0;
+  _confirmPoll = setInterval(async () => {
+    attempts++;
+    const res = await fetch(`${apiBase}/supervisor/status`).catch(() => null);
+    if (res && res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.running || attempts >= 5) {
+        clearInterval(_confirmPoll);
+        _confirmPoll = null;
+        await loadStatus();
+      }
+    } else if (attempts >= 5) {
+      clearInterval(_confirmPoll);
+      _confirmPoll = null;
+      await loadStatus();
+    }
+  }, 3000);
+}
+
+async function disableSupervisor() {
+  if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
+  const r = await fetch(`${apiBase}/settings/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: 'supervisor.enabled', value: false }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
+    alert(`Failed to disable supervisor: ${msg}`);
+    throw new Error(msg);
+  }
+  // Stop the running daemon so it doesn't keep polling with a stale config.
+  await fetch(`${apiBase}/supervisor/stop`, { method: 'POST' }).catch(() => null);
+  await loadStatus();
+}
+
 // -- Status --
 async function loadStatus() {
   try {
     const res = await fetch(`${apiBase}/supervisor/status`);
     const data = await res.json();
-    const statusEl = document.getElementById('daemon-status');
+    const toggle = document.getElementById('supervisor-toggle');
+    const label = document.getElementById('supervisor-toggle-label');
     const pollBtn = document.getElementById('poll-btn');
-    const banner = document.getElementById('disabled-banner');
+
+    toggle.checked = !!data.enabled;
 
     if (!data.enabled) {
-      statusEl.textContent = 'Disabled';
-      statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-700/50 text-gray-400';
-      banner.classList.remove('hidden');
+      label.textContent = 'Disabled';
+      label.className = 'text-xs text-gray-400';
       pollBtn.disabled = true;
       return;
     }
 
-    banner.classList.add('hidden');
     if (data.running) {
-      statusEl.textContent = 'Running';
-      statusEl.className = 'text-xs px-2 py-1 rounded bg-accent-green/20 text-accent-green';
+      label.textContent = 'Running';
+      label.className = 'text-xs text-accent-green';
       pollBtn.disabled = false;
     } else {
-      statusEl.textContent = 'Stopped';
-      statusEl.className = 'text-xs px-2 py-1 rounded bg-accent-red/20 text-accent-red';
+      label.textContent = 'Enabled (starting...)';
+      label.className = 'text-xs text-accent-yellow';
       pollBtn.disabled = true;
     }
 
@@ -229,162 +316,143 @@ async function loadGraph() {
 }
 
 function renderGraph(data) {
-  // -- Layout constants --
-  const NW = 144, NH = 36, NPX = 8, NPY = 8, NPR = 3;
-  const GP = 14, GH = 22;
-  const CG = 32, RG = 16, MARGIN = 12;
+  // Layout constants
+  const NW = 160, NH = 38;
+  const NPY = 10;       // vertical gap between nodes in the same tier
+  const TIER_W = NW + 72; // horizontal stride between tier columns
+  const GP = 12, GH = 20; // group box padding / header height
+  const MARGIN = 16;
 
-  // -- Compute tier per node --
+  // Build tier map from parallel_groups: {node_id -> tier}
   const tierMap = {};
-  (data.parallel_groups || []).forEach(g => g.task_ids.forEach(id => tierMap[id] = g.tier));
+  (data.parallel_groups || []).forEach(g => g.task_ids.forEach(id => { tierMap[id] = g.tier; }));
+  // Nodes absent from any group are placed at tier 0 (leftmost column).
+  // Placing them at maxTier+1 would cause edges from grouped dependents
+  // (lower tier) to point rightward to the ungrouped dependency (higher tier),
+  // violating the left-to-right edge invariant and drawing backwards arrows.
+  (data.nodes || []).forEach(n => { if (tierMap[n.id] == null) tierMap[n.id] = 0; });
 
-  // -- Group nodes by milestone --
+  // Collect and sort nodes per tier: sort by (milestone, id) for visual grouping
+  const tierNodes = {};
+  (data.nodes || []).forEach(n => {
+    const t = tierMap[n.id];
+    if (!tierNodes[t]) tierNodes[t] = [];
+    tierNodes[t].push(n);
+  });
+  const tiers = Object.keys(tierNodes).map(Number).sort((a, b) => a - b);
+  tiers.forEach(t => {
+    tierNodes[t].sort((a, b) => {
+      const ma = a.milestone || '', mb = b.milestone || '';
+      return ma !== mb ? ma.localeCompare(mb) : a.id - b.id;
+    });
+  });
+
+  // Position each node at its tier column; Y = index within tier.
+  // Top offset includes space for the group header (GH + GP) so the
+  // milestone box header is never clipped off the top of the SVG.
+  const nodePos = {}; // id -> {x, y, cx, cy}
+  const TOP = MARGIN + GH + GP;
+  tiers.forEach((t, ti) => {
+    const x = MARGIN + ti * TIER_W;
+    tierNodes[t].forEach((n, i) => {
+      const y = TOP + i * (NH + NPY);
+      nodePos[n.id] = { x, y, cx: x + NW / 2, cy: y + NH / 2 };
+    });
+  });
+
+  // Milestone bounding boxes: compute from actual node positions
   const milestoneMap = {};
   (data.nodes || []).forEach(n => {
     const m = n.milestone || '(no milestone)';
     if (!milestoneMap[m]) milestoneMap[m] = [];
     milestoneMap[m].push(n);
   });
-  const milestones = Object.keys(milestoneMap);
 
-  // -- Average tier per milestone -> column --
-  const mAvgTier = m => {
-    const ns = milestoneMap[m];
-    return ns.reduce((s, n) => s + (tierMap[n.id] || 0), 0) / ns.length;
-  };
-  const mCol = m => Math.round(mAvgTier(m));
-
-  const colGroups = {};
-  milestones.forEach(m => {
-    const c = mCol(m);
-    if (!colGroups[c]) colGroups[c] = [];
-    colGroups[c].push(m);
-  });
-  // Within each column, sort milestones by name for stable order
-  Object.values(colGroups).forEach(ms => ms.sort());
-  const columns = Object.keys(colGroups).map(Number).sort((a, b) => a - b);
-
-  // -- Group dimensions --
-  const gDim = m => {
-    const cnt = milestoneMap[m].length;
-    const cols = Math.min(cnt, NPR);
-    const rows = Math.ceil(cnt / NPR);
-    return {
-      w: GP * 2 + cols * NW + Math.max(0, cols - 1) * NPX,
-      h: GH + GP * 2 + rows * NH + Math.max(0, rows - 1) * NPY,
-    };
-  };
-
-  // -- Column widths --
-  const colW = {};
-  columns.forEach(c => { colW[c] = Math.max(...colGroups[c].map(m => gDim(m).w)); });
-
-  // -- Position groups and nodes --
-  const groupPos = {};
-  const nodePos = {}; // id -> {x, y, cx, cy}
-  let cx = MARGIN;
-  columns.forEach(col => {
-    let cy = MARGIN;
-    colGroups[col].forEach(m => {
-      groupPos[m] = { x: cx, y: cy };
-      milestoneMap[m].forEach((n, i) => {
-        const col2 = i % NPR;
-        const row = Math.floor(i / NPR);
-        const nx = cx + GP + col2 * (NW + NPX);
-        const ny = cy + GH + GP + row * (NH + NPY);
-        nodePos[n.id] = { x: nx, y: ny, cx: nx + NW / 2, cy: ny + NH / 2 };
-      });
-      cy += gDim(m).h + RG;
-    });
-    cx += colW[col] + CG;
-  });
-
-  // -- SVG dimensions --
-  const allPosX = Object.values(nodePos).map(p => p.x + NW);
-  const allPosY = Object.values(nodePos).map(p => p.y + NH);
-  const svgW = Math.max(allPosX.length ? Math.max(...allPosX) + MARGIN : 400, 400);
-  const svgH = Math.max(allPosY.length ? Math.max(...allPosY) + MARGIN : 200, 200);
+  // SVG dimensions
+  const allX = Object.values(nodePos).map(p => p.x + NW);
+  const allY = Object.values(nodePos).map(p => p.y + NH);
+  const svgW = Math.max(allX.length ? Math.max(...allX) + MARGIN : 400, 400);
+  const svgH = Math.max(allY.length ? Math.max(...allY) + MARGIN * 3 + GH : 200, 200);
 
   const svg = d3.select('#graph-svg')
     .attr('width', svgW).attr('height', svgH)
     .attr('viewBox', `0 0 ${svgW} ${svgH}`);
   svg.selectAll('*').remove();
 
-  // -- Arrow marker --
+  // Arrow marker
   svg.append('defs').append('marker')
     .attr('id', 'dep-arrow').attr('viewBox', '0 -4 8 8')
     .attr('refX', 7).attr('refY', 0)
     .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
     .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', '#45475a');
 
-  // -- Group boxes --
-  milestones.forEach(m => {
-    const { x, y } = groupPos[m];
-    const { w, h } = gDim(m);
+  // Milestone group boxes drawn behind nodes
+  Object.entries(milestoneMap).forEach(([m, nodes]) => {
+    const xs = nodes.map(n => nodePos[n.id]?.x).filter(v => v != null);
+    const ys = nodes.map(n => nodePos[n.id]?.y).filter(v => v != null);
+    if (!xs.length) return;
+    const bx = Math.min(...xs) - GP;
+    const by = Math.min(...ys) - GH - GP;
+    const bw = Math.max(...xs) + NW + GP - bx;
+    const bh = Math.max(...ys) + NH + GP - by;
     svg.append('rect')
-      .attr('x', x).attr('y', y).attr('width', w).attr('height', h)
-      .attr('rx', 6).attr('fill', 'rgba(17,17,27,0.65)')
-      .attr('stroke', 'rgba(88,91,112,0.25)').attr('stroke-width', 1);
+      .attr('x', bx).attr('y', by).attr('width', bw).attr('height', bh)
+      .attr('rx', 6).attr('fill', 'rgba(17,17,27,0.55)')
+      .attr('stroke', 'rgba(88,91,112,0.2)').attr('stroke-width', 1);
     svg.append('text')
-      .attr('x', x + GP).attr('y', y + 14)
-      .attr('fill', '#585b70').attr('font-size', '10px').attr('font-family', 'sans-serif')
-      .text(m.length > 40 ? m.slice(0, 38) + '...' : m);
+      .attr('x', bx + GP).attr('y', by + GH - 4)
+      .attr('fill', '#45475a').attr('font-size', '10px').attr('font-family', 'sans-serif')
+      .text(m.length > 44 ? m.slice(0, 42) + '...' : m);
   });
 
-  // -- Dependency edges --
-  // Draw "enables" arrows left-to-right: dependency (e.to) -> dependent (e.from)
-  // This matches the roadmap convention: the arrow shows "this enables that."
+  // Dependency edges: from right edge of dependency (e.to) to left edge of dependent (e.from)
+  // Edges always flow left-to-right because tier[e.to] <= tier[e.from].
   (data.edges || []).forEach(e => {
-    const dep = nodePos[e.to];   // dependency: lower tier, generally to the left
-    const dndt = nodePos[e.from]; // dependent: higher tier, generally to the right
-    if (!dep || !dndt) return;
-    const sx = dep.x + NW, sy = dep.cy;   // right edge of dependency
-    const tx = dndt.x, ty = dndt.cy;      // left edge of dependent
-    const dx = Math.max((tx - sx) * 0.45, 24);
+    const dep = nodePos[e.to];
+    const dnt = nodePos[e.from];
+    if (!dep || !dnt) return;
+    const sx = dep.x + NW, sy = dep.cy;
+    const tx = dnt.x, ty = dnt.cy;
+    const dx = Math.max((tx - sx) * 0.45, 20);
     svg.append('path')
       .attr('d', `M${sx},${sy} C${sx+dx},${sy} ${tx-dx},${ty} ${tx},${ty}`)
       .attr('fill', 'none').attr('stroke', '#45475a').attr('stroke-width', 1)
-      .attr('marker-end', 'url(#dep-arrow)').attr('opacity', 0.7);
+      .attr('marker-end', 'url(#dep-arrow)').attr('opacity', 0.65);
   });
 
-  // -- Nodes --
-  data.nodes.forEach(n => {
+  // Nodes
+  (data.nodes || []).forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
     const color = stateColor(n.state);
     const isDone = n.state === 'done' || n.state === 'closed';
-    const opacity = isDone ? 0.45 : 1;
+    const opacity = isDone ? 0.4 : 1;
 
     const g = svg.append('g').attr('class', 'dep-node').style('cursor', 'pointer')
       .attr('opacity', opacity);
 
-    // Node background
     g.append('rect')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH)
       .attr('rx', 4)
-      .attr('fill', color + '18')
+      .attr('fill', color + '15')
       .attr('stroke', color + '55').attr('stroke-width', 1);
 
-    // State indicator dot
     g.append('circle')
       .attr('cx', pos.x + 11).attr('cy', pos.cy)
       .attr('r', 4).attr('fill', color);
 
-    // Issue number
     g.append('text')
       .attr('x', pos.x + 22).attr('y', pos.y + 14)
       .attr('fill', '#cdd6f4').attr('font-size', '10px')
       .attr('font-weight', '600').attr('font-family', 'monospace')
       .text(`#${n.id}`);
 
-    // Title (truncated)
-    const titleTrunc = n.title && n.title.length > 20 ? n.title.slice(0, 19) + '...' : (n.title || '');
+    const titleTrunc = n.title && n.title.length > 22 ? n.title.slice(0, 21) + '...' : (n.title || '');
     g.append('text')
-      .attr('x', pos.x + 22).attr('y', pos.y + 26)
+      .attr('x', pos.x + 22).attr('y', pos.y + 27)
       .attr('fill', '#6c7086').attr('font-size', '9px').attr('font-family', 'sans-serif')
       .text(titleTrunc);
 
-    // Hover highlight + click
     g.on('mouseenter', function() { d3.select(this).select('rect').attr('stroke', color + 'aa'); })
      .on('mouseleave', function() { d3.select(this).select('rect').attr('stroke', color + '55'); })
      .on('click', () => showDrawer(n));
@@ -514,5 +582,9 @@ loadStatus(); loadQuota(); loadGraph(); loadDecisions();
 
 // Poll every 30s; loadGraph re-renders only when data changes
 setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
+
+window.addEventListener('beforeunload', () => {
+  if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
+});
 </script>
 {% endblock %}
