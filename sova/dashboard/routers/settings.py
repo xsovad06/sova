@@ -39,7 +39,7 @@ def _extract_validation_detail(exc: Exception) -> str:
 
 class ConfigUpdateRequest(BaseModel):
     key: str
-    value: str
+    value: str | bool | int | float
 
 
 @router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
@@ -75,7 +75,13 @@ async def update_config(req: ConfigUpdateRequest):
     """Update a single configuration key."""
     try:
         project_dir = get_project_dir()
-        result = settings_service.update_config(project_dir, key=req.key, value=req.value)
+        # Normalize JSON booleans/numbers to strings; the service expects str.
+        raw = req.value
+        if isinstance(raw, bool):
+            value_str = "true" if raw else "false"
+        else:
+            value_str = str(raw)
+        result = settings_service.update_config(project_dir, key=req.key, value=value_str)
         if result.get("status") == "ok" and req.key == "max_parallel_agents":
             from sova.dashboard.services.agent_pool import sync_max_concurrent
 

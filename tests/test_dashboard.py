@@ -14419,3 +14419,17 @@ class TestSettingsMaxParallelSync:
         )
         assert resp.status_code == 200
         assert len(sync_called) == 0
+
+    async def test_update_config_accepts_json_boolean(self, client: AsyncClient, monkeypatch):
+        from unittest.mock import MagicMock
+
+        mock_service = MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "supervisor.enabled"}))
+        monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", mock_service)
+        resp = await client.post(
+            "/api/settings/config",
+            json={"key": "supervisor.enabled", "value": True},
+        )
+        assert resp.status_code == 200
+        mock_service.update_config.assert_called_once()
+        _, kwargs = mock_service.update_config.call_args
+        assert kwargs["value"] == "true"
