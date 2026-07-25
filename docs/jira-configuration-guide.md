@@ -1,24 +1,27 @@
-# JIRA Cloud Configuration Guide
+# Jira Cloud Configuration Guide
 
-Step-by-step guide for configuring SOVA to work with JIRA Cloud as a task source. Covers status discovery, JQL filter construction, status mapping, and a complete reference configuration.
+Step-by-step guide for configuring SOVA to work with Jira Cloud as a task source. Covers status discovery, JQL filter construction, status mapping, and a complete reference configuration.
 
 ## Prerequisites
 
 Before starting:
 
-1. A JIRA Cloud instance with API access
-2. A JIRA API token (create at https://id.atlassian.com/manage-profile/security/api-tokens)
+1. A Jira Cloud instance with API access
+2. A Jira API token (create at https://id.atlassian.com/manage-profile/security/api-tokens)
 3. SOVA installed in your project (`sova install /path/to/project`)
 
-## Step 1: Discover Your JIRA Statuses
+## Step 1: Discover Your Jira Statuses
 
-Every JIRA project has a unique workflow with custom statuses. Before configuring SOVA, you need to discover and classify them.
+Every Jira project has a unique workflow with custom statuses. Before configuring SOVA, you need to discover and classify them.
 
 ### List all statuses in your project
 
 ```bash
 # Replace YOUR_DOMAIN and PROJECT_KEY with your values
-curl -s -u "your-email@example.com:YOUR_API_TOKEN" \
+# Set credentials as environment variables first:
+#   export JIRA_EMAIL="your-email@example.com"
+#   export SOVA_TASK_JIRA_API_TOKEN="your-api-token"
+curl -s -u "$JIRA_EMAIL:$SOVA_TASK_JIRA_API_TOKEN" \
   "https://YOUR_DOMAIN.atlassian.net/rest/api/3/project/PROJECT_KEY/statuses" \
   | python3 -m json.tool
 ```
@@ -26,7 +29,7 @@ curl -s -u "your-email@example.com:YOUR_API_TOKEN" \
 This returns a JSON array of issue types, each containing a `statuses` array. Extract the unique status names:
 
 ```bash
-curl -s -u "your-email@example.com:YOUR_API_TOKEN" \
+curl -s -u "$JIRA_EMAIL:$SOVA_TASK_JIRA_API_TOKEN" \
   "https://YOUR_DOMAIN.atlassian.net/rest/api/3/project/PROJECT_KEY/statuses" \
   | python3 -c "
 import json, sys
@@ -43,13 +46,13 @@ for name, cat in sorted(statuses):
 
 ### Classify statuses
 
-JIRA groups every status into one of three **status categories**: `To Do`, `In Progress`, and `Done`. SOVA uses these categories as a coarse signal, then refines with custom status mapping.
+Jira groups every status into one of three **status categories**: `To Do`, `In Progress`, and `Done`. SOVA uses these categories as a coarse signal, then refines with custom status mapping.
 
 The category matters because **`statusCategory = "Done"` always maps to `done`**, regardless of any custom `jira_status_mapping` entry. The adapter checks the category before consulting the custom mapping.
 
 Organize your statuses into a table like this:
 
-| JIRA Status | Category | SOVA State |
+| Jira Status | Category | SOVA State |
 |-------------|----------|------------|
 | To Do | To Do | `backlog` |
 | Refinement | To Do | `needs_spec` |
@@ -79,6 +82,13 @@ Store the API token as an environment variable (never in `sova.toml`):
 export SOVA_TASK_JIRA_API_TOKEN="your-api-token-here"
 ```
 
+Verify it is set correctly:
+
+```bash
+echo $SOVA_TASK_JIRA_API_TOKEN
+# Should output your token, not an empty line
+```
+
 Or add it to `.env` in your project root (already in `.gitignore`).
 
 The field `jira_api_token` in `sova.toml` uses `repr=False` to prevent accidental logging, but environment variables are the recommended approach.
@@ -88,10 +98,10 @@ The field `jira_api_token` in `sova.toml` uses `repr=False` to prevent accidenta
 | Field | Description | Example |
 |-------|-------------|---------|
 | `type` | Must be `"jira"` | `"jira"` |
-| `jira_base_url` | Your JIRA Cloud instance URL | `"https://acme.atlassian.net"` |
+| `jira_base_url` | Your Jira Cloud instance URL | `"https://acme.atlassian.net"` |
 | `jira_email` | Email for API authentication | `"dev@acme.com"` |
 | `jira_api_token` | API token (prefer env var `SOVA_TASK_JIRA_API_TOKEN`) | |
-| `jira_project_key` | JIRA project key | `"MYPROJ"` |
+| `jira_project_key` | Jira project key | `"MYPROJ"` |
 
 ### Optional fields
 
@@ -99,9 +109,24 @@ The field `jira_api_token` in `sova.toml` uses `repr=False` to prevent accidenta
 |-------|-------------|---------|
 | `jira_component` | Filter issues by component | `""` (all) |
 | `jira_jql_filter` | Additional JQL clause appended to queries | `""` |
-| `jira_status_mapping` | Map JIRA status names to SOVA states | `{}` |
+| `jira_status_mapping` | Map Jira status names to SOVA states | `{}` |
 | `jira_state_transitions` | Override transition names for state changes | `{}` |
 | `jira_track_agent_work` | Track agent work on issues | `false` |
+
+### Quick connection test
+
+After configuring the task source, verify SOVA can connect before proceeding:
+
+```bash
+sova triage --dry-run 1   # Replace 1 with a real issue number
+```
+
+If the connection fails, check:
+
+- API token is set in the environment (`echo $SOVA_TASK_JIRA_API_TOKEN`)
+- Email matches the account that owns the API token
+- `jira_base_url` does not have a trailing slash
+- `jira_project_key` is the short key (e.g., `RHCLOUD`), not the project name
 
 ## Step 3: Configure JQL Filters
 
@@ -114,6 +139,18 @@ SOVA builds JQL queries by combining multiple clauses with `AND`. The query is a
 3. `component = "COMPONENT"` (if `jira_component` is set)
 4. `(your_jql_filter)` (if `jira_jql_filter` is set, wrapped in parentheses)
 5. `labels = "label"` (for each label filter)
+
+The parentheses around `jira_jql_filter` matter for operator precedence. Without them, an `OR` in your filter would break the scoping:
+
+```
+# Without parentheses (hypothetical):
+project = MYPROJ AND status != Done AND type = Bug OR type = Story
+# Would match ALL Stories in ANY project due to OR precedence
+
+# With parentheses (actual SOVA behavior):
+project = MYPROJ AND status != Done AND (type = Bug OR type = Story)
+# Correctly scopes to MYPROJ only
+```
 
 For example, with this config:
 
@@ -196,9 +233,9 @@ jira_jql_filter = 'issuetype = Bug'
 
 ### Default mapping
 
-SOVA ships with these built-in JIRA-to-SOVA status mappings:
+SOVA ships with these built-in Jira-to-SOVA status mappings:
 
-| JIRA Status | SOVA State |
+| Jira Status | SOVA State |
 |-------------|------------|
 | `To Do` | `backlog` |
 | `Backlog` | `backlog` |
@@ -209,7 +246,7 @@ SOVA ships with these built-in JIRA-to-SOVA status mappings:
 | `Code Review` | `in_review` |
 | `Review` | `in_review` |
 
-Any JIRA status in the `Done` category (regardless of its name) is always mapped to `done`. This is checked before the custom mapping and cannot be overridden.
+Any Jira status in the `Done` category (regardless of its name) is always mapped to `done`. This is checked before the custom mapping and cannot be overridden.
 
 ### Valid SOVA states
 
@@ -228,7 +265,7 @@ These are the valid SOVA task states you can use as mapping targets:
 
 ### Custom status mapping
 
-If your JIRA project uses custom status names, add them to `jira_status_mapping`. The keys are exact JIRA status names (case-sensitive), and the values are SOVA state strings:
+If your Jira project uses custom status names, add them to `jira_status_mapping`. The keys are exact Jira status names (case-sensitive), and the values are SOVA state strings:
 
 ```toml
 [task_source.jira_status_mapping]
@@ -238,7 +275,7 @@ If your JIRA project uses custom status names, add them to `jira_status_mapping`
 "Waiting for Deployment" = "in_review"
 ```
 
-Custom mappings are merged on top of the defaults. To override a default, specify the same JIRA status name with a different SOVA state:
+Custom mappings are merged on top of the defaults. To override a default, specify the same Jira status name with a different SOVA state:
 
 ```toml
 [task_source.jira_status_mapping]
@@ -266,7 +303,7 @@ jira_status_mapping = {"Ready for Dev" = "backlog", "In Code Review" = "in_revie
 
 ### Unmapped status warning
 
-When SOVA encounters a JIRA status that is not in the default or custom mapping (and is not in the `Done` category), it logs a warning:
+When SOVA encounters a Jira status that is not in the default or custom mapping (and is not in the `Done` category), it logs a warning:
 
 ```
 status.unmapped  status="Awaiting QA"  issue=PROJ-42  hint="Add to [task_source] jira_status_mapping in sova.toml"
@@ -280,13 +317,13 @@ The adapter resolves SOVA state in this order:
 
 1. **`statusCategory = "Done"`**: always maps to `done`, overriding everything below (consistent with GitHub adapter where CLOSED always wins)
 2. **`agent:` labels**: if the issue has an `agent:triaged`, `agent:in-progress`, etc. label, that takes priority over status mapping
-3. **Custom `jira_status_mapping`**: checked against the JIRA status name
+3. **Custom `jira_status_mapping`**: checked against the Jira status name
 4. **Default mapping**: the built-in status mapping table
 5. **Fallback**: `backlog` (with an unmapped warning)
 
 ## Step 5: Configure State Transitions (Optional)
 
-When SOVA changes an issue's state (e.g., moving it to "In Progress" when starting development), it triggers JIRA workflow transitions. SOVA tries a list of common transition names by default:
+When SOVA changes an issue's state (e.g., moving it to "In Progress" when starting development), it triggers Jira workflow transitions. SOVA tries a list of common transition names by default:
 
 | Target State | Default Transition Names Tried |
 |--------------|-------------------------------|
@@ -304,14 +341,14 @@ in_review = "Move to Review"
 done = "Resolve Issue"
 ```
 
-The keys are SOVA state strings (the target state), and the values are the JIRA transition name to trigger. The custom transition name is tried first; if it does not match any available transition, the defaults are tried as a fallback.
+The keys are SOVA state strings (the target state), and the values are the Jira transition name to trigger. The custom transition name is tried first; if it does not match any available transition, the defaults are tried as a fallback.
 
 ### Discovering available transitions
 
 To see what transitions are available for a specific issue:
 
 ```bash
-curl -s -u "your-email@example.com:YOUR_API_TOKEN" \
+curl -s -u "$JIRA_EMAIL:$SOVA_TASK_JIRA_API_TOKEN" \
   "https://YOUR_DOMAIN.atlassian.net/rest/api/3/issue/PROJ-42/transitions" \
   | python3 -c "
 import json, sys
@@ -326,7 +363,7 @@ Note: available transitions depend on the issue's current status. Run this for i
 
 ## Reference Configuration
 
-Complete working example based on a real JIRA Cloud project:
+Complete working example based on a real Jira Cloud project:
 
 ```toml
 # sova.toml
@@ -363,37 +400,41 @@ export SOVA_TASK_JIRA_API_TOKEN="your-jira-api-token"
 
 ### What this configuration does
 
-1. Connects to JIRA Cloud at `acme.atlassian.net`
+1. Connects to Jira Cloud at `acme.atlassian.net`
 2. Scopes issues to the `RHCLOUD` project, `RBAC` component
 3. Filters to bugs, stories, and tasks in open sprints only
-4. Maps five JIRA statuses to SOVA states (anything in the `Done` category is automatically mapped to `done`)
+4. Maps five Jira statuses to SOVA states (anything in the `Done` category is automatically mapped to `done`)
 5. Configures explicit transition names for moving issues between states
-6. Uses GitHub for PRs and code hosting (JIRA for issue tracking only)
+6. Uses GitHub for PRs and code hosting (Jira for issue tracking only)
 
-### Verifying the configuration
+### Verifying the complete setup
 
-After configuring, verify SOVA can connect and list issues:
+After configuring all sections, verify the full setup works end-to-end:
 
 ```bash
 sova triage --dry-run 1   # Replace 1 with a real issue number
 ```
 
-If the connection fails, check:
-
-- API token is set in the environment (`echo $SOVA_TASK_JIRA_API_TOKEN`)
-- Email matches the account that owns the API token
-- `jira_base_url` does not have a trailing slash (SOVA strips it, but be consistent)
-- `jira_project_key` is the short key (e.g., `RHCLOUD`), not the project name
+This tests connection, JQL filters, status mapping, and transitions together. If the basic connection test (Step 2) passed but this fails, the issue is likely in your JQL filter or status mapping configuration.
 
 ## Troubleshooting
+
+### Authentication failures (401 Unauthorized)
+
+If you see 401 Unauthorized errors, verify:
+
+1. API token is valid and not expired (regenerate at https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Email matches the account that owns the token
+3. Environment variable is set: `echo $SOVA_TASK_JIRA_API_TOKEN`
+4. Token has access to the target project (some Jira instances restrict API access per project)
 
 ### "status.unmapped" warnings
 
 Add the reported status name to `jira_status_mapping` in `sova.toml`. See the warning log for the exact status name and issue key.
 
-### Issues stuck in backlog despite being "In Progress" in JIRA
+### Issues stuck in backlog despite being "In Progress" in Jira
 
-The most common cause is a missing status mapping. If your JIRA uses a custom status name like "Dev In Progress" instead of the default "In Progress", SOVA falls back to `backlog`. Add the mapping:
+The most common cause is a missing status mapping. If your Jira uses a custom status name like "Dev In Progress" instead of the default "In Progress", SOVA falls back to `backlog`. Add the mapping:
 
 ```toml
 [task_source.jira_status_mapping]
@@ -406,7 +447,7 @@ Run the transition discovery command (above) for the issue in question. The tran
 
 ### "Done" status overrides custom mapping
 
-This is by design. Any JIRA status in the `Done` category is always treated as `done` by SOVA. If you have a status like "Awaiting Deploy" that is in the `Done` category but should not be `done` in SOVA, you need to change its category in your JIRA workflow settings.
+This is by design. Any Jira status in the `Done` category is always treated as `done` by SOVA. If you have a status like "Awaiting Deploy" that is in the `Done` category but should not be `done` in SOVA, you need to change its category in your Jira workflow settings.
 
 ### Duplicate component in JQL
 
@@ -415,5 +456,5 @@ If you see unexpected query results, check that you are not specifying `componen
 ## Related Documentation
 
 - [Integration Guidelines](integration-guidelines.md): high-level integration patterns for all adapters
-- [Security Guidelines](security-guidelines.md): credential handling for JIRA API tokens
-- [AGENTS.md](../AGENTS.md): adapter ABC contract and JIRA-aware pipeline outputs
+- [Security Guidelines](security-guidelines.md): credential handling for Jira API tokens
+- [AGENTS.md](../AGENTS.md): adapter ABC contract and Jira-aware pipeline outputs
