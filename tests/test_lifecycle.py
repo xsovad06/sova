@@ -622,9 +622,7 @@ class TestSyntheticMergePhases:
 
         with patch("sova.dashboard.services.lifecycle_service.get_pr_status") as mock_get:
             async with session.begin():
-                await lifecycle_service.build_lifecycle_view(
-                    session, "42", github_repo="owner/repo", github_user=""
-                )
+                await lifecycle_service.build_lifecycle_view(session, "42", github_repo="owner/repo", github_user="")
             mock_get.assert_not_called()
 
 
@@ -926,9 +924,7 @@ class TestLinkTaskRunExceptionPath:
             session.add(run)
             await session.flush()
 
-        with patch.object(
-            lifecycle_service, "get_or_create_lifecycle", side_effect=RuntimeError("DB error")
-        ):
+        with patch.object(lifecycle_service, "get_or_create_lifecycle", side_effect=RuntimeError("DB error")):
             async with session.begin():
                 result = await lifecycle_service.link_task_run_to_lifecycle(session, run)
                 assert result is None
