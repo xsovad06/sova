@@ -36,9 +36,23 @@ async def list_active():
 @router.get("/issue/{issue_number}")
 async def get_by_issue(issue_number: str):
     """Get the lifecycle for an issue (real or reconstructed)."""
+    github_repo = ""
+    github_user = ""
+    try:
+        from sova.config.context import get_project_dir
+        from sova.config.loader import load_config
+
+        cfg = load_config(get_project_dir())
+        github_repo = cfg.github_repo or ""
+        github_user = cfg.github_user or ""
+    except (OSError, ValueError, AttributeError, ImportError):
+        log.debug("config.load_failed", exc_info=True)
+
     async with await get_session() as session:
         async with session.begin():
-            result = await lifecycle_service.build_lifecycle_view(session, issue_number)
+            result = await lifecycle_service.build_lifecycle_view(
+                session, issue_number, github_repo=github_repo, github_user=github_user
+            )
             if result is None:
                 return {"error": "No lifecycle found", "issue_number": issue_number}
             return result

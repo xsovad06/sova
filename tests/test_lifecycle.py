@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -243,6 +244,269 @@ class TestLifecycleReconstruction:
             assert view is not None
             assert view["reconstructed"] is False
             assert view["id"] == lc.id
+
+
+class TestSyntheticMergePhases:
+    """Tests for synthesizing integrate/post_merge phases from GitHub PR state."""
+
+    @pytest.fixture(autouse=True)
+    def clear_pr_cache(self):
+        lifecycle_service._pr_state_cache.clear()
+        yield
+        lifecycle_service._pr_state_cache.clear()
+
+    async def test_merged_pr_synthesizes_integrate_and_post_merge(self, session: AsyncSession):
+        """When PR is merged and no integrate phase exists, synthesize both phases."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                branch_name="feat/test",
+                pr_number=10,
+                total_cost_usd=Decimal("0.50"),
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+        assert view is not None
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" in phase_names
+        assert "post_merge" in phase_names
+
+        integrate = next(p for p in view["phases"] if p["phase"] == "integrate")
+        assert integrate["status"] == "completed"
+        assert integrate["source"] == "github"
+
+        post_merge = next(p for p in view["phases"] if p["phase"] == "post_merge")
+        assert post_merge["status"] == "completed"
+        assert post_merge["source"] == "github"
+
+    async def test_closed_pr_does_not_synthesize(self, session: AsyncSession):
+        """Closed but not merged PR should not get synthetic phases."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "CLOSED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" not in phase_names
+
+    async def test_no_pr_number_skips_check(self, session: AsyncSession):
+        """When no PR number is known, skip the merge check entirely."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status") as mock_get:
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+            mock_get.assert_not_called()
+
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" not in phase_names
+
+    async def test_no_github_repo_skips_check(self, session: AsyncSession):
+        """When github_repo is not provided, skip the merge check."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status") as mock_get:
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(session, "42")
+            mock_get.assert_not_called()
+
+    async def test_adapter_error_fails_open(self, session: AsyncSession):
+        """When the PR check raises, return phases as-is without synthetic entries."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        with patch(
+            "sova.dashboard.services.lifecycle_service.get_pr_status",
+            side_effect=RuntimeError("API error"),
+        ):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" not in phase_names
+
+    async def test_db_integrate_phase_takes_precedence(self, session: AsyncSession):
+        """If integrate phase already exists from DB, do not add synthetic one."""
+        async with session.begin():
+            dev_run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            integrate_run = TaskRun(
+                issue_number="42",
+                role="command:integrate-pr",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(dev_run)
+            session.add(integrate_run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+        integrate_phases = [p for p in view["phases"] if p["phase"] == "integrate"]
+        assert len(integrate_phases) == 1
+        assert "source" not in integrate_phases[0]
+
+    async def test_cache_prevents_repeated_api_calls(self, session: AsyncSession):
+        """Multiple calls within TTL should not re-call the API."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status) as mock_get:
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+            assert mock_get.call_count == 1
+
+    async def test_cache_expires_after_ttl(self, session: AsyncSession):
+        """After TTL expires, a new API call should be made."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status) as mock_get:
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+            # Clear the cache to simulate TTL expiry
+            lifecycle_service._pr_state_cache.clear()
+
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+            assert mock_get.call_count == 2
+
+    async def test_real_lifecycle_also_gets_synthetic_phases(self, session: AsyncSession):
+        """Real lifecycle (not reconstructed) with no integrate phase also benefits."""
+        async with session.begin():
+            lc = await lifecycle_service.get_or_create_lifecycle(session, "42")
+            await lifecycle_service.start_phase(session, lc.id, "development")
+            await lifecycle_service.complete_phase(session, lc.id, "development")
+            # Lifecycle is now at post_pr, no integrate phase
+            lc.pr_number = 10
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user="testuser"
+                )
+
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" in phase_names
+        assert "post_merge" in phase_names
 
 
 class TestLinkTaskRun:
