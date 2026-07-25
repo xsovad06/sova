@@ -59,30 +59,69 @@ function formatDuration(ms) {
   return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
 }
 
+var _WAITING_COLOR = { dot: 'bg-accent-peach', text: 'text-accent-peach', bg: 'bg-accent-peach/20' };
+
 var STATUS_COLORS = {
   pending:           { dot: 'bg-gray-500',        text: 'text-gray-400',         bg: 'bg-gray-500/20' },
-  assessing:         { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  assessing:         { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   researched:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
-  in_progress:       { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  developing:        { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  simplifying:       { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  reviewing:         { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  committing:        { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  addressing_review: { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  pushing:           { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
+  in_progress:       { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  developing:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  simplifying:       { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  reviewing:         { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  committing:        { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  addressing_review: { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  pushing:           { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
   pr_created:        { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
-  ci_monitoring:     { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  automated_review:  { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
-  done:              { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
+  ci_monitoring:     _WAITING_COLOR,
+  automated_review:  _WAITING_COLOR,
+  done:              { dot: 'bg-accent',          text: 'text-accent',           bg: 'bg-accent/20' },
   failed:            { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
   rejected:          { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
   paused:            { dot: 'bg-accent-purple',   text: 'text-accent-purple',    bg: 'bg-accent-purple/20' },
   interrupted:       { dot: 'bg-accent-red',      text: 'text-accent-red',       bg: 'bg-accent-red/20' },
-  running:           { dot: 'bg-accent-yellow',   text: 'text-accent-yellow',    bg: 'bg-accent-yellow/20' },
+  running:           { dot: 'bg-accent-green',    text: 'text-accent-green',     bg: 'bg-accent-green/20' },
 };
 
 var _STATUS_TERMINAL = { done: 1, failed: 1, rejected: 1, interrupted: 1, paused: 1 };
 var _STUCK_THRESHOLD_S = 300;
+
+var _STEP_LABELS = {
+  sync: 'Syncing',
+  assess: 'Assessing',
+  create_worktree: 'Creating worktree',
+  capture_baseline: 'Capturing baseline',
+  develop: 'Developing',
+  simplify: 'Simplifying',
+  self_review: 'Self-reviewing',
+  commit: 'Committing',
+  validate: 'Validating',
+  push: 'Pushing',
+  create_pr: 'Creating PR',
+  monitor_ci: 'CI checks',
+  extract_memory: 'Extracting memory',
+  rebase: 'Rebasing',
+  address_review: 'Addressing review',
+  resolve_external_reviews: 'Resolving reviews',
+  address_external_findings: 'Addressing findings',
+  ensure_worktree: 'Ensuring worktree',
+  fetch_task: 'Fetching task',
+  research: 'Researching',
+  spec: 'Writing spec',
+  scan_project: 'Scanning project',
+  generate_tasks: 'Generating tasks',
+  validate_tasks: 'Validating tasks',
+  wait_for_external_reviews: 'Reviews',
+  handoff_to_reviewer: 'Handoff',
+  handoff_to_user: 'Handoff',
+};
+
+var _WAITING_STEPS = {
+  monitor_ci: 1,
+  wait_for_external_reviews: 1,
+  handoff_to_reviewer: 1,
+  handoff_to_user: 1,
+};
 
 function formatElapsed(seconds) {
   if (!seconds) return '0s';
@@ -102,14 +141,34 @@ function statusDot(status) {
   return c.dot + (isActive ? ' animate-pulse' : '');
 }
 
+function _computeBadgeLabel(status, currentStep) {
+  if (_STATUS_TERMINAL[status]) {
+    return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+  if (!currentStep || currentStep === 'agent') {
+    return 'Starting...';
+  }
+  var stepLabel = _STEP_LABELS[currentStep] || currentStep.replace(/_/g, ' ');
+  var prefix = _WAITING_STEPS[currentStep] ? 'Waiting: ' : 'Running: ';
+  return prefix + stepLabel;
+}
+
+function _getBadgeColors(status, currentStep) {
+  if (_STATUS_TERMINAL[status]) return STATUS_COLORS[status] || STATUS_COLORS.pending;
+  if (currentStep && _WAITING_STEPS[currentStep]) {
+    return _WAITING_COLOR;
+  }
+  return STATUS_COLORS[status] || STATUS_COLORS.pending;
+}
+
 function renderStatusBadge(status, currentStep, stepIndex, totalSteps, elapsedSeconds, aggregatedLabel) {
-  var colors = STATUS_COLORS[status] || STATUS_COLORS.pending;
+  var colors = _getBadgeColors(status, currentStep);
   var isTerminal = !!_STATUS_TERMINAL[status];
   var isStuck = !isTerminal && elapsedSeconds != null && elapsedSeconds > _STUCK_THRESHOLD_S;
   var stuckClass = isStuck ? ' sova-status-stuck' : '';
   var pulseClass = isTerminal ? '' : ' animate-pulse';
 
-  var label = escapeHtml(aggregatedLabel || status);
+  var label = escapeHtml(aggregatedLabel || _computeBadgeLabel(status, currentStep));
 
   return '<span class="sova-status-badge ' + colors.bg + ' ' + colors.text + stuckClass + '">' +
     '<span class="sova-status-dot ' + colors.dot + pulseClass + '"></span>' +

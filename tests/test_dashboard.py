@@ -237,6 +237,40 @@ class TestDashboardHealth:
         resp = await client.get("/static/app.js")
         assert resp.status_code == 200
 
+    async def test_status_badge_has_step_label_mapping(self, client: AsyncClient) -> None:
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        assert "_STEP_LABELS" in js
+        assert "_WAITING_STEPS" in js
+        assert "_computeBadgeLabel" in js
+        assert "_getBadgeColors" in js
+        for step in ["monitor_ci", "wait_for_external_reviews", "handoff_to_reviewer", "handoff_to_user"]:
+            assert step in js, f"waiting step {step} missing from _WAITING_STEPS"
+
+    async def test_status_badge_five_state_colors(self, client: AsyncClient) -> None:
+        resp = await client.get("/static/app.js")
+        js = resp.text
+        assert "done:" in js
+        # Done uses blue (accent) not green
+        done_idx = js.index("done:")
+        done_section = js[done_idx : done_idx + 120]
+        assert "bg-accent'" in done_section or "bg-accent," in done_section or "'bg-accent'" in done_section
+        # Running states use green
+        running_idx = js.index("running:")
+        running_section = js[running_idx : running_idx + 120]
+        assert "bg-accent-green" in running_section
+        # CI monitoring uses peach (waiting) via _WAITING_COLOR constant
+        assert "_WAITING_COLOR" in js
+        ci_idx = js.index("ci_monitoring:")
+        ci_section = js[ci_idx : ci_idx + 120]
+        assert "_WAITING_COLOR" in ci_section
+
+    async def test_agents_page_has_ws_notification_tracking(self, client: AsyncClient) -> None:
+        resp = await client.get("/agents")
+        html = resp.text
+        assert "_wsPreviousStatuses" in html
+        assert "sendBrowserNotification" in html
+
     async def test_supervisor_page_loads(self, client: AsyncClient) -> None:
         from dataclasses import dataclass
         from unittest.mock import patch
