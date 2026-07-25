@@ -130,14 +130,13 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
             "ERROR",
             "TIMED_OUT",
             "STARTUP_FAILURE",
-            "CANCELLED",
             "ACTION_REQUIRED",
             "STALE",
         ):
             states.add("failed")
         elif conclusion == "SUCCESS":
             states.add("passed")
-        elif conclusion in ("SKIPPED", "NEUTRAL"):
+        elif conclusion in ("SKIPPED", "NEUTRAL", "CANCELLED"):
             states.add("skipped")
         elif status == "COMPLETED":
             states.add("passed")

@@ -736,10 +736,11 @@ class TestEvaluateAll:
         ):
             decisions = await engine.evaluate_all()
 
-        assert len(decisions) == 3
+        # DONE tasks with no milestone are excluded from the dependency graph
+        # and therefore produce no decision (supervisor has nothing to act on).
+        assert len(decisions) == 2
         by_issue = {d.issue_number: d for d in decisions}
         assert by_issue[1].action == ProgressionAction.SPAWN_RESEARCHER
-        assert by_issue[2].action == ProgressionAction.WAIT
         assert by_issue[3].action == ProgressionAction.WAIT
 
     @pytest.mark.asyncio
@@ -853,8 +854,9 @@ class TestExecuteDecision:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_researcher_calls_start_agent(self, mock_start: AsyncMock) -> None:
+    async def test_spawn_researcher_calls_start_agent(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 1}
         engine = _make_engine()
         decision = ProgressionDecision(
@@ -864,12 +866,13 @@ class TestExecuteDecision:
             reason="Ready",
         )
         result = await engine.execute_decision(decision)
-        mock_start.assert_called_once_with(issue="42", role="researcher")
+        mock_start.assert_called_once_with(issue="42", role="researcher", slug="test-project")
         assert result["run_id"] == 1
 
     @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_developer_calls_start_agent(self, mock_start: AsyncMock) -> None:
+    async def test_spawn_developer_calls_start_agent(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 2}
         engine = _make_engine()
         decision = ProgressionDecision(
@@ -879,12 +882,13 @@ class TestExecuteDecision:
             reason="Ready",
         )
         result = await engine.execute_decision(decision)
-        mock_start.assert_called_once_with(issue="10", role="developer")
+        mock_start.assert_called_once_with(issue="10", role="developer", slug="test-project")
         assert result["run_id"] == 2
 
     @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock) -> None:
+    async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 3}
         engine = _make_engine()
         engine._find_pr_for_issue = AsyncMock(return_value=55)
@@ -895,7 +899,7 @@ class TestExecuteDecision:
             reason="Ready",
         )
         result = await engine.execute_decision(decision)
-        mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", pr_number=55)
+        mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", slug="test-project", pr_number=55)
         assert result["run_id"] == 3
 
     @pytest.mark.asyncio
@@ -1413,8 +1417,9 @@ class TestEvaluateAllEdgeCases:
 
 class TestExecuteDecisionsRuns:
     @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
-    async def test_execute_decisions_calls_actionable(self, mock_start: AsyncMock) -> None:
+    async def test_execute_decisions_calls_actionable(self, mock_start: AsyncMock, _mock_slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 1}
         engine = _make_engine()
         decisions = [

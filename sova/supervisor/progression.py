@@ -278,6 +278,7 @@ class TaskProgressionEngine:
                 self._session_factory,
             )
 
+        from sova.config.registry import find_slug_for_path
         from sova.dashboard.services.agent_lifecycle import start_agent
 
         role = decision.role or _ACTION_TO_ROLE.get(decision.action)
@@ -285,6 +286,16 @@ class TaskProgressionEngine:
             return {"error": f"No role mapping for action {decision.action}"}
 
         kwargs: dict = {"issue": str(decision.issue_number), "role": role}
+
+        # Pass the correct project slug so start_agent writes to this project's DB
+        # (not the default project). Without this, multi-project supervisors spawn
+        # agents in the wrong project context and the circuit breaker never sees the
+        # failures.
+        if self._project_dir is not None:
+            slug = find_slug_for_path(self._project_dir)
+            if slug is None:
+                return {"error": f"Project path is not registered: {self._project_dir}"}
+            kwargs["slug"] = slug
 
         # For integrate-pr, we need the PR number
         if decision.action == ProgressionAction.SPAWN_INTEGRATE:

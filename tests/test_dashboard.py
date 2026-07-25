@@ -11665,6 +11665,89 @@ class TestPrsAPI:
         assert resp.json()["prs"] == []
 
 
+class TestSummarizeCi:
+    """Tests for _summarize_ci: CI rollup aggregation."""
+
+    def test_none_rollup_returns_none(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        assert _summarize_ci(None) == "none"
+
+    def test_empty_rollup_returns_none(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        assert _summarize_ci([]) == "none"
+
+    def test_all_success_returns_passed(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        assert _summarize_ci(rollup) == "passed"
+
+    def test_cancelled_plus_success_returns_passed(self) -> None:
+        """CANCELLED runs from a superseded push must not poison a later successful run."""
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        assert _summarize_ci(rollup) == "passed"
+
+    def test_cancelled_alone_returns_passed(self) -> None:
+        """CANCELLED without SUCCESS returns passed (via skipped-only path), not failed."""
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+        ]
+        assert _summarize_ci(rollup) == "passed"
+
+    def test_failure_plus_success_returns_failed(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        assert _summarize_ci(rollup) == "failed"
+
+    def test_cancelled_plus_failure_returns_failed(self) -> None:
+        """A real failure dominates over cancelled runs."""
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        assert _summarize_ci(rollup) == "failed"
+
+    def test_pending_check_returns_pending(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [
+            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": None},
+        ]
+        assert _summarize_ci(rollup) == "pending"
+
+    def test_status_context_success(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [{"__typename": "StatusContext", "state": "SUCCESS"}]
+        assert _summarize_ci(rollup) == "passed"
+
+    def test_status_context_failure(self) -> None:
+        from sova.dashboard.services.pr_service import _summarize_ci
+
+        rollup = [{"__typename": "StatusContext", "state": "FAILURE"}]
+        assert _summarize_ci(rollup) == "failed"
+
+
 class TestExtractLinkedIssue:
     """Tests for _extract_linked_issue PR-vs-issue disambiguation."""
 

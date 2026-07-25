@@ -154,6 +154,17 @@ def get_project_path(slug: str) -> Path | None:
     return resolved
 
 
+def find_slug_for_path(path: "Path | str") -> str | None:
+    """Return the slug for a registered project path, or None if not found."""
+    from pathlib import Path as _Path
+
+    target = _Path(path).resolve()
+    for slug, path_str in _load().items():
+        if _Path(path_str).resolve() == target:
+            return slug
+    return None
+
+
 def has_projects() -> bool:
     """Check if any projects are registered."""
     return bool(_load())
