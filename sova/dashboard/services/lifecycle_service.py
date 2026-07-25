@@ -6,7 +6,8 @@ phase transitions, and backward-compatible reconstruction from existing TaskRuns
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import subprocess
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from cachetools import TTLCache
@@ -22,8 +23,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.lifecycle")
 
-# TTL cache for PR merge state: pr_number -> state string
-_pr_state_cache: TTLCache[int, str] = TTLCache(maxsize=256, ttl=60)
+# TTL cache for PR merge state: (pr_number, github_repo) -> state string
+_pr_state_cache: TTLCache[tuple[int, str], str] = TTLCache(maxsize=256, ttl=60)
 
 _LIFECYCLE_TERMINAL = frozenset({"done", "abandoned"})
 
@@ -425,24 +426,27 @@ async def abandon_lifecycle(
 
 async def _get_pr_merge_state(pr_number: int, github_repo: str, github_user: str) -> str | None:
     """Check if a PR is merged, with 60s TTL cache. Returns state string or None on error."""
-    cached = _pr_state_cache.get(pr_number)
+    cache_key = (pr_number, github_repo)
+    cached = _pr_state_cache.get(cache_key)
     if cached is not None:
         return cached
 
     try:
         status = await get_pr_status(pr_number, repo=github_repo, github_user=github_user)
-        _pr_state_cache[pr_number] = status.state
+        _pr_state_cache[cache_key] = status.state
         return status.state
-    except Exception:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         log.debug("pr_merge_check.failed", pr_number=pr_number, exc_info=True)
         return None
 
 
 def _synthesize_merge_phases(phases: list[dict], seen_phases: set[str]) -> None:
     """Append synthetic integrate and post_merge phases for a merged PR."""
-    now_iso = iso_utc(datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    offsets = {"integrate": timedelta(seconds=0), "post_merge": timedelta(seconds=1)}
     for phase_name in ("integrate", "post_merge"):
         if phase_name not in seen_phases:
+            ts = iso_utc(now + offsets[phase_name])
             phases.append(
                 {
                     "phase": phase_name,
@@ -451,8 +455,8 @@ def _synthesize_merge_phases(phases: list[dict], seen_phases: set[str]) -> None:
                     "cost_usd": 0,
                     "attempt": 1,
                     "error_message": None,
-                    "started_at": now_iso,
-                    "completed_at": now_iso,
+                    "started_at": ts,
+                    "completed_at": ts,
                     "source": "github",
                 }
             )
@@ -482,12 +486,13 @@ async def build_lifecycle_view(
         view = lifecycle_to_dict(lifecycle)
         pr_num = view.get("pr_number")
         existing = {p["phase"] for p in view["phases"]}
-        if pr_num and github_repo and "integrate" not in existing:
+        if pr_num and github_repo and github_user and "integrate" not in existing:
             state = await _get_pr_merge_state(pr_num, github_repo, github_user)
             if state == "MERGED":
                 _synthesize_merge_phases(view["phases"], existing)
-                view["current_phase"] = "done"
-                view["phase_status"] = "completed"
+                if view.get("current_phase") not in _LIFECYCLE_TERMINAL:
+                    view["current_phase"] = "done"
+                    view["phase_status"] = "completed"
         return view
 
     # Reconstruct from TaskRuns
@@ -567,12 +572,13 @@ async def build_lifecycle_view(
             phase_status = "completed"
 
     # Synthesize integrate/post_merge from GitHub if PR is merged
-    if pr_number and github_repo and "integrate" not in seen_phases:
+    if pr_number and github_repo and github_user and "integrate" not in seen_phases:
         state = await _get_pr_merge_state(pr_number, github_repo, github_user)
         if state == "MERGED":
             _synthesize_merge_phases(phases, seen_phases)
-            current_phase = "done"
-            phase_status = "completed"
+            if current_phase not in _LIFECYCLE_TERMINAL:
+                current_phase = "done"
+                phase_status = "completed"
 
     return {
         "id": None,

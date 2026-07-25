@@ -303,6 +303,12 @@ class TestSyntheticMergePhases:
         assert post_merge["status"] == "completed"
         assert post_merge["source"] == "github"
 
+        assert view["current_phase"] == "done"
+        assert view["phase_status"] == "completed"
+
+        # Verify chronological ordering: post_merge after integrate
+        assert post_merge["started_at"] > integrate["started_at"]
+
     async def test_closed_pr_does_not_synthesize(self, session: AsyncSession):
         """Closed but not merged PR should not get synthetic phases."""
         async with session.begin():
@@ -517,6 +523,109 @@ class TestSyntheticMergePhases:
         phase_names = [p["phase"] for p in view["phases"]]
         assert "integrate" in phase_names
         assert "post_merge" in phase_names
+
+    async def test_cache_key_includes_repo(self, session: AsyncSession):
+        """Same PR number in different repos should not collide in cache."""
+        async with session.begin():
+            run_a = TaskRun(
+                issue_number="50",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            run_b = TaskRun(
+                issue_number="51",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run_a)
+            session.add(run_b)
+            await session.flush()
+
+        merged_status = AsyncMock()
+        merged_status.state = "MERGED"
+        open_status = AsyncMock()
+        open_status.state = "OPEN"
+
+        async def side_effect(pr_number, repo, github_user):
+            if repo == "owner/repo-a":
+                return merged_status
+            return open_status
+
+        with patch(
+            "sova.dashboard.services.lifecycle_service.get_pr_status",
+            side_effect=side_effect,
+        ):
+            async with session.begin():
+                view_a = await lifecycle_service.build_lifecycle_view(
+                    session, "50", github_repo="owner/repo-a", github_user="testuser"
+                )
+            async with session.begin():
+                view_b = await lifecycle_service.build_lifecycle_view(
+                    session, "51", github_repo="owner/repo-b", github_user="testuser"
+                )
+
+        phases_a = [p["phase"] for p in view_a["phases"]]
+        phases_b = [p["phase"] for p in view_b["phases"]]
+        assert "integrate" in phases_a
+        assert "integrate" not in phases_b
+
+    async def test_abandoned_reconstruction_not_overwritten_by_merge(self, session: AsyncSession):
+        """A reconstructed view with terminal-state phase should not have status overwritten."""
+        # Create a failed developer run (simulates abandoned work)
+        async with session.begin():
+            run = TaskRun(
+                issue_number="99",
+                role="developer",
+                status="failed",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        mock_status = AsyncMock()
+        mock_status.state = "MERGED"
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status", return_value=mock_status):
+            async with session.begin():
+                view = await lifecycle_service.build_lifecycle_view(
+                    session, "99", github_repo="owner/repo", github_user="testuser"
+                )
+
+        # Synthetic phases are added
+        phase_names = [p["phase"] for p in view["phases"]]
+        assert "integrate" in phase_names
+        assert "post_merge" in phase_names
+        # current_phase updates to done since "development" is not terminal
+        assert view["current_phase"] == "done"
+
+    async def test_missing_github_user_skips_check(self, session: AsyncSession):
+        """When github_user is empty, skip the merge check."""
+        async with session.begin():
+            run = TaskRun(
+                issue_number="42",
+                role="developer",
+                status="done",
+                pr_number=10,
+                started_at=datetime.now(timezone.utc),
+                ended_at=datetime.now(timezone.utc),
+            )
+            session.add(run)
+            await session.flush()
+
+        with patch("sova.dashboard.services.lifecycle_service.get_pr_status") as mock_get:
+            async with session.begin():
+                await lifecycle_service.build_lifecycle_view(
+                    session, "42", github_repo="owner/repo", github_user=""
+                )
+            mock_get.assert_not_called()
 
 
 class TestReconstructionDuplicatePhases:

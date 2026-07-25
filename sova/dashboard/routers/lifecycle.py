@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from sova.config.context import get_project_dir
+from sova.config.loader import load_config
 from sova.core.state import LifecyclePhase
 from sova.dashboard.services import lifecycle_service
 from sova.db.session import get_session
@@ -39,13 +41,10 @@ async def get_by_issue(issue_number: str):
     github_repo = ""
     github_user = ""
     try:
-        from sova.config.context import get_project_dir
-        from sova.config.loader import load_config
-
         cfg = load_config(get_project_dir())
         github_repo = cfg.github_repo or ""
         github_user = cfg.github_user or ""
-    except (OSError, ValueError, AttributeError, ImportError):
+    except (OSError, ValueError, AttributeError):
         log.debug("config.load_failed", exc_info=True)
 
     async with await get_session() as session:
