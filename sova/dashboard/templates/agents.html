@@ -122,9 +122,6 @@
 <!-- Memory Pressure Banner -->
 <div id="memory-pressure-banner" class="hidden mb-6"></div>
 
-<!-- Interrupted Runs Banner -->
-<div id="interrupted-banner" class="hidden mb-6"></div>
-
 <!-- Log Viewer -->
 <div id="log-viewer" class="hidden bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden mb-6">
   <div class="flex items-center border-b border-gray-700/50">
@@ -224,7 +221,7 @@ function stateTag(state, stateLabel, stateColor) {
 
 var _TIER2_PAGE_SIZE = 15;
 var _MIN_BEFORE_COLLAPSE = 8;
-var _expansionTier = 0; // 0=top priority only, 1=+15 more, 2=show all
+var _expansionTier = 0; // 0=top 8, 1=+15 more, 2=show all
 var _cardMenuOpen = false;
 var _completedCleanupTimer = null;
 var _workItems = [];
@@ -621,33 +618,33 @@ function renderTaskCards() {
   }
 
   if (hasHistory) {
-    var _highPriStates = {
-      agent_running: 1, handoff_pending: 1, spec_review: 1,
-      in_progress: 1, pr_ready_to_merge: 1, pr_approved: 1,
-      pr_ci_failed: 1, pr_changes_requested: 1, pr_awaiting_review: 1,
-      pr_review_addressed: 1, pr_ci_running: 1,
+    // Sort tier: running/handoff first, then PR stage, then spec_review, then in_progress, then rest
+    var _stateSortTier = function(item) {
+      if (item.state === 'agent_running') return 0;
+      if (item.state === 'handoff_pending') return 1;
+      if (item.state === 'pr_draft') return 5;
+      if (_PR_STAGE_STATES.has(item.state)) return 2;
+      if (item.state === 'spec_review') return 3;
+      if (item.state === 'in_progress') return 4;
+      return 5;
     };
-    var _highPriLabels = { critical: 1, high: 1 };
     var sorted = _agentHistory.slice().sort(function(a, b) {
+      var ta = _stateSortTier(a), tb = _stateSortTier(b);
+      if (ta !== tb) return ta - tb;
       if (a.priority !== b.priority) return a.priority - b.priority;
       var pa = _priorityOrder[_extractPriority(a.labels)];
       var pb = _priorityOrder[_extractPriority(b.labels)];
       return (pa === undefined ? 99 : pa) - (pb === undefined ? 99 : pb);
     });
 
-    var tier1 = sorted.filter(function(t) {
-      return _highPriStates[t.state] || _highPriLabels[_extractPriority(t.labels)];
-    });
-    if (tier1.length === 0 && sorted.length > 0) tier1 = sorted.slice(0, 3);
-    if (sorted.length <= _MIN_BEFORE_COLLAPSE) tier1 = sorted;
-
     var visible;
     var hiddenCount;
+    var initialCount = Math.min(sorted.length, _MIN_BEFORE_COLLAPSE);
     if (_expansionTier === 0) {
-      visible = tier1;
-      hiddenCount = sorted.length - tier1.length;
+      visible = sorted.slice(0, initialCount);
+      hiddenCount = sorted.length - initialCount;
     } else if (_expansionTier === 1) {
-      visible = sorted.slice(0, tier1.length + _TIER2_PAGE_SIZE);
+      visible = sorted.slice(0, initialCount + _TIER2_PAGE_SIZE);
       hiddenCount = Math.max(0, sorted.length - visible.length);
     } else {
       visible = sorted;
@@ -657,12 +654,18 @@ function renderTaskCards() {
     html += visible.map(renderTaskCard).join('');
 
     if (hiddenCount > 0) {
-      var label = hiddenCount <= _TIER2_PAGE_SIZE
-        ? 'Show ' + hiddenCount + ' more'
-        : 'Show ' + Math.min(hiddenCount, _TIER2_PAGE_SIZE) + ' more (' + hiddenCount + ' remaining)';
+      var showMoreLabel;
+      if (_expansionTier >= 1) {
+        // tier=1 -> tier=2 reveals everything; label must match
+        showMoreLabel = 'Show all ' + hiddenCount + ' remaining';
+      } else if (hiddenCount <= _TIER2_PAGE_SIZE) {
+        showMoreLabel = 'Show ' + hiddenCount + ' more';
+      } else {
+        showMoreLabel = 'Show ' + _TIER2_PAGE_SIZE + ' more (' + hiddenCount + ' remaining)';
+      }
       html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
         '<button onclick="expandTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
-        label + '</button></div>';
+        showMoreLabel + '</button></div>';
     } else if (_expansionTier > 0) {
       html += '<div class="px-4 py-2 border-t border-gray-700/30">' +
         '<button onclick="collapseTasks()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">' +
@@ -1604,52 +1607,8 @@ async function dismissHandoff(issue) {
   loadWorkItems();
 }
 
-// -- Interrupted runs --
-
-async function checkInterrupted() {
-  try {
-    var data = await fetchAPI(apiUrl('/agents/interrupted'));
-    var banner = document.getElementById('interrupted-banner');
-    if (!data.interrupted || data.interrupted.length === 0) {
-      banner.classList.add('hidden');
-      return;
-    }
-
-    banner.classList.remove('hidden');
-    banner.innerHTML = '<div class="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">' +
-      '<div class="flex items-center justify-between mb-2">' +
-        '<div class="flex items-center gap-2">' +
-          '<span class="text-sm font-medium text-accent-yellow">Interrupted Runs</span>' +
-          '<span class="text-xs text-gray-500">Dashboard was restarted while these were running</span>' +
-        '</div>' +
-        '<button onclick="dismissInterrupted()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-surface-hover transition-colors" data-tooltip="Clear interrupted run alerts">Dismiss all</button>' +
-      '</div>' +
-      '<div class="flex flex-wrap gap-2">' +
-      data.interrupted.map(function(r) {
-        var label = r.issue_number ? '#' + escapeHtml(String(r.issue_number)) : (r.pr_number ? 'PR #' + escapeHtml(String(r.pr_number)) : '--');
-        return '<button onclick="restartInterrupted(\'' + escapeJsStr(String(r.issue_number || '')) + '\', \'' + escapeJsStr(formatRole(r.role)) + '\')" ' +
-          'class="px-3 py-1.5 rounded text-xs bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 transition-colors">' +
-          label + ' ' + escapeHtml(formatRole(r.role)) +
-        '</button>';
-      }).join('') +
-      '</div>' +
-    '</div>';
-  } catch (e) { /* ignore */ }
-}
-
-async function dismissInterrupted() {
-  try {
-    await fetch(apiUrl('/agents/interrupted/dismiss'), { method: 'POST' });
-    document.getElementById('interrupted-banner').classList.add('hidden');
-  } catch (e) { /* ignore */ }
-}
-
-function restartInterrupted(issue, role) {
-  _doStartAgent(issue, role === 'auto' ? null : role, false);
-}
-
 function rerunAgent(issue, role, prNumber) {
-  _doStartAgent(issue, role === 'auto' ? null : role, false);
+  _doStartAgent(issue, role === 'auto' ? null : role, false, prNumber || null);
 }
 
 // Delegated click handler for .rerun-btn (avoids inline onclick XSS risks)
@@ -2064,7 +2023,6 @@ var _agentView = localStorage.getItem('sova-agents-view') || 'list';
 loadWorkItems();
 loadAgents();
 loadPrTracker();
-checkInterrupted();
 checkMemoryPressure();
 loadHistory();
 
@@ -2655,17 +2613,14 @@ document.addEventListener('visibilitychange', function() {
     _metricsInterval = setInterval(_refreshCardMetrics, 5000);
     loadTaskCards();
     loadPrTracker();
-    checkInterrupted();
     loadHistory();
     _prPollInterval = setInterval(loadPrTracker, 30000);
     if (_agentView === 'kanban') {
       loadKanban();
       _kanbanPollInterval = setInterval(loadKanban, 5000);
     }
-    _loadCrQuota();
-    _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
-    if (_crQuotaSyncInterval) { clearInterval(_crQuotaSyncInterval); _crQuotaSyncInterval = null; }
-    _crQuotaSyncInterval = setInterval(_syncCrQuota, 120000);
+    _syncCrQuota();
+    _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
     checkMemoryPressure();
     _memPressureInterval = setInterval(checkMemoryPressure, 3000);
     if (activeLogRunId !== null) {
@@ -2720,14 +2675,16 @@ async function _loadCrQuota() {
 
 async function _syncCrQuota() {
   try {
-    await fetch(apiUrl('/quota/coderabbit/sync'), {method: 'POST'});
-    await _loadCrQuota();
-  } catch (e) { /* non-fatal */ }
+    var ctrl = new AbortController();
+    var tid = setTimeout(function() { ctrl.abort(); }, 10000);
+    await fetch(apiUrl('/quota/coderabbit/sync'), {method: 'POST', signal: ctrl.signal});
+    clearTimeout(tid);
+  } catch (e) { /* non-fatal: network error or timeout */ }
+  await _loadCrQuota();
 }
 
-_loadCrQuota();
-var _crQuotaPollInterval = setInterval(_loadCrQuota, 30000);
-var _crQuotaSyncInterval = setInterval(_syncCrQuota, 120000);
+_syncCrQuota();
+var _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
 
 // -- Memory Pressure Banner --
 
