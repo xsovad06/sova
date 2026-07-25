@@ -509,6 +509,99 @@ class TestRepeatedFailuresGate:
 
 
 # ---------------------------------------------------------------------------
+# _check_repeated_failures_gate -- DB-backed integration
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatedFailuresGateIntegration:
+    """Verify the correlated subquery correctly resets the failure count after a success."""
+
+    @pytest.fixture
+    async def session_factory(self):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+        from sova.db.models import Base
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        yield factory
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_failures_before_last_success_excluded(self, session_factory) -> None:
+        """Failures before the most recent done run must not count toward the threshold."""
+        from sova.db.models import TaskRun
+
+        async with session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="done"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                    ]
+                )
+
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = session_factory
+
+        # Only 1 failure since the last success; threshold is 3: gate must pass.
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_failures_since_last_success_trigger_block(self, session_factory) -> None:
+        """Gate fires when failures since the last done run reach the threshold."""
+        from sova.db.models import TaskRun
+
+        async with session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="done"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                    ]
+                )
+
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = session_factory
+
+        # 3 failures since the last success == threshold; gate must block.
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is not None
+        assert result.gate == "repeated_failure"
+        assert "3" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_no_prior_success_counts_all_failures(self, session_factory) -> None:
+        """When there is no prior done run, all historical failures count."""
+        from sova.db.models import TaskRun
+
+        async with session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                        TaskRun(issue_number="42", role="researcher", status="failed"),
+                    ]
+                )
+
+        engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
+        engine._session_factory = session_factory
+
+        result = await engine._check_repeated_failures_gate(42)
+        assert result is not None
+        assert result.gate == "repeated_failure"
+
+
+# ---------------------------------------------------------------------------
 # evaluate_task (integration of state machine + gates)
 # ---------------------------------------------------------------------------
 
