@@ -84,67 +84,91 @@
 
 {% block scripts %}
 <script>
-async function loadCosts() {
-  const [summary, daily, byIssue, byPhase, byModel, byRouting, energy] = await Promise.all([
-    fetchAPI(apiUrl('/costs/summary')),
-    fetchAPI(apiUrl('/costs/daily')),
-    fetchAPI(apiUrl('/costs/by-issue')),
-    fetchAPI(apiUrl('/costs/by-phase')),
-    fetchAPI(apiUrl('/costs/by-model')),
-    fetchAPI(apiUrl('/costs/by-routing')),
-    fetchAPI(apiUrl('/resources/energy/total')).catch(function() { return {total_energy_wh: 0, run_count: 0}; }),
-  ]);
+function renderSectionError(containerId, message) {
+  var el = document.getElementById(containerId);
+  if (el) el.innerHTML = '<p class="text-red-400 text-sm">' + escapeHtml(message) + '</p>';
+}
 
-  document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
-  document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
-  document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
-  document.getElementById('cost-invocations').textContent = summary.total_invocations;
-
-  var ewh = parseFloat(energy.total_energy_wh || 0);
-  document.getElementById('cost-energy').textContent = ewh >= 1 ? ewh.toFixed(2) + ' Wh' : (ewh * 1000).toFixed(1) + ' mWh';
-  var co2g = parseFloat(energy.total_co2_grams || 0);
-  document.getElementById('cost-co2').textContent = co2g >= 1 ? co2g.toFixed(2) + ' g' : (co2g * 1000).toFixed(1) + ' mg';
-  if (energy.run_count > 0) {
-    document.getElementById('cost-energy-detail').textContent = energy.run_count + ' runs tracked';
-    document.getElementById('cost-co2-detail').textContent = energy.run_count + ' runs tracked';
+async function loadSummary() {
+  try {
+    var summary = await fetchAPI(apiUrl('/costs/summary'));
+    document.getElementById('cost-total').textContent = '$' + parseFloat(summary.total_cost_usd || 0).toFixed(2);
+    document.getElementById('cost-today').textContent = '$' + parseFloat(summary.today_cost_usd || 0).toFixed(2);
+    document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
+    document.getElementById('cost-invocations').textContent = summary.total_invocations;
+  } catch (err) {
+    var el = document.getElementById('cost-total');
+    if (el) { el.textContent = 'Error'; el.classList.remove('text-accent-green'); el.classList.add('text-red-400'); }
+    console.error('Failed to load cost summary:', err);
   }
+}
 
-  // Daily chart (CSS bars)
-  const maxCost = Math.max(...daily.map(d => parseFloat(d.cost_usd || 0)), 0.01);
-  document.getElementById('daily-chart').innerHTML = daily.length === 0
-    ? '<p class="text-gray-500 text-sm">No cost data</p>'
-    : `<div class="flex gap-1 h-32">
-        ${daily.map(d => {
-          const pct = (parseFloat(d.cost_usd || 0) / maxCost) * 100;
-          return `<div class="flex flex-col items-center flex-1 group">
-            <div class="flex-1 flex flex-col items-center justify-end w-full">
-              <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${parseFloat(d.cost_usd || 0).toFixed(2)}</span>
-              <div class="w-full bg-accent/70 rounded-t transition-all" style="height: ${Math.max(pct, 2)}%"></div>
-            </div>
-            <span class="text-xs text-gray-600 mt-1">${d.date.substring(5)}</span>
-          </div>`;
-        }).join('')}
-      </div>`;
+async function loadEnergy() {
+  try {
+    var energy = await fetchAPI(apiUrl('/resources/energy/total'));
+    var ewh = parseFloat(energy.total_energy_wh || 0);
+    document.getElementById('cost-energy').textContent = ewh >= 1 ? ewh.toFixed(2) + ' Wh' : (ewh * 1000).toFixed(1) + ' mWh';
+    var co2g = parseFloat(energy.total_co2_grams || 0);
+    document.getElementById('cost-co2').textContent = co2g >= 1 ? co2g.toFixed(2) + ' g' : (co2g * 1000).toFixed(1) + ' mg';
+    if (energy.run_count > 0) {
+      document.getElementById('cost-energy-detail').textContent = energy.run_count + ' runs tracked';
+      document.getElementById('cost-co2-detail').textContent = energy.run_count + ' runs tracked';
+    }
+  } catch (err) {
+    var el = document.getElementById('cost-energy');
+    if (el) { el.textContent = 'Error'; el.classList.remove('text-accent-purple'); el.classList.add('text-red-400'); }
+    var el2 = document.getElementById('cost-co2');
+    if (el2) { el2.textContent = 'Error'; el2.classList.remove('text-accent-purple'); el2.classList.add('text-red-400'); }
+    console.error('Failed to load energy data:', err);
+  }
+}
 
-  // By issue
-  document.getElementById('by-issue').innerHTML = byIssue.length === 0
-    ? '<p class="text-gray-500 text-sm">No data</p>'
-    : renderCostTable(byIssue, 'issue');
+async function loadDailyChart() {
+  try {
+    var daily = await fetchAPI(apiUrl('/costs/daily'));
+    var maxCost = Math.max(...daily.map(d => parseFloat(d.cost_usd || 0)), 0.01);
+    document.getElementById('daily-chart').innerHTML = daily.length === 0
+      ? '<p class="text-gray-500 text-sm">No cost data</p>'
+      : `<div class="flex gap-1 h-32">
+          ${daily.map(d => {
+            const pct = (parseFloat(d.cost_usd || 0) / maxCost) * 100;
+            return `<div class="flex flex-col items-center flex-1 group">
+              <div class="flex-1 flex flex-col items-center justify-end w-full">
+                <span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">$${parseFloat(d.cost_usd || 0).toFixed(2)}</span>
+                <div class="w-full bg-accent/70 rounded-t transition-all" style="height: ${Math.max(pct, 2)}%"></div>
+              </div>
+              <span class="text-xs text-gray-600 mt-1">${d.date.substring(5)}</span>
+            </div>`;
+          }).join('')}
+        </div>`;
+  } catch (err) {
+    renderSectionError('daily-chart', 'Failed to load daily costs');
+    console.error('Failed to load daily chart:', err);
+  }
+}
 
-  // By phase
-  document.getElementById('by-phase').innerHTML = byPhase.length === 0
-    ? '<p class="text-gray-500 text-sm">No data</p>'
-    : renderCostTable(byPhase, 'phase');
+async function loadCostTable(endpoint, containerId, keyField, emptyMessage) {
+  try {
+    var data = await fetchAPI(apiUrl(endpoint));
+    document.getElementById(containerId).innerHTML = data.length === 0
+      ? '<p class="text-gray-500 text-sm">' + escapeHtml(emptyMessage) + '</p>'
+      : renderCostTable(data, keyField);
+  } catch (err) {
+    renderSectionError(containerId, 'Failed to load data');
+    console.error('Failed to load ' + containerId + ':', err);
+  }
+}
 
-  // By model
-  document.getElementById('by-model').innerHTML = byModel.length === 0
-    ? '<p class="text-gray-500 text-sm">No data</p>'
-    : renderCostTable(byModel, 'model');
-
-  // By routing reason
-  document.getElementById('by-routing').innerHTML = byRouting.length === 0
-    ? '<p class="text-gray-500 text-sm">No routing data yet</p>'
-    : renderCostTable(byRouting, 'reason');
+async function loadCosts() {
+  await Promise.all([
+    loadSummary(),
+    loadEnergy(),
+    loadDailyChart(),
+    loadCostTable('/costs/by-issue', 'by-issue', 'issue', 'No data'),
+    loadCostTable('/costs/by-phase', 'by-phase', 'phase', 'No data'),
+    loadCostTable('/costs/by-model', 'by-model', 'model', 'No data'),
+    loadCostTable('/costs/by-routing', 'by-routing', 'reason', 'No routing data yet'),
+  ]);
 }
 
 function renderCostTable(data, keyField) {

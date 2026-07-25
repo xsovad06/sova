@@ -204,6 +204,17 @@ class TestDashboardHealth:
         assert resp.status_code == 200
         assert "Cost" in resp.text
 
+    async def test_costs_page_has_per_section_error_handling(self, client: AsyncClient) -> None:
+        resp = await client.get("/costs")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "function loadSummary()" in body
+        assert "function loadEnergy()" in body
+        assert "function loadDailyChart()" in body
+        assert "function loadCostTable(" in body
+        assert "function renderSectionError(" in body
+        assert "} catch (err)" in body
+
     async def test_overview_redirects_to_dashboard(self, client: AsyncClient) -> None:
         resp = await client.get("/overview", follow_redirects=False)
         assert resp.status_code == 301
