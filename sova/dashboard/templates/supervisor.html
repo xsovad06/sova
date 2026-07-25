@@ -167,7 +167,7 @@ async function loadStatus() {
 // -- Quota --
 async function loadQuota() {
   try {
-    const res = await fetch(`${apiBase}/quota/status`);
+    const res = await fetch(`${apiBase}/quota/coderabbit`);
     if (!res.ok) {
       document.getElementById('quota-panel').innerHTML = '<p class="text-xs text-gray-500">CodeRabbit quota tracking not configured</p>';
       return;
