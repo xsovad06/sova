@@ -55,6 +55,7 @@ class TaskFilters:
     milestone: str = ""
     labels: list[str] = field(default_factory=list)
     state: str = "open"
+    limit: int = 100
 
 
 @dataclass

@@ -77,7 +77,7 @@ class GitHubAdapter(TaskAdapter):
             "--json",
             "number,title,body,state,labels,assignees,milestone,url,createdAt",
             "--limit",
-            "200",
+            str(filters.limit),
         ]
 
         if filters.milestone:
@@ -238,7 +238,7 @@ class GitHubAdapter(TaskAdapter):
         if data.get("state") == "CLOSED":
             return TaskState.DONE
 
-        label_set = {lbl["name"] for lbl in data.get("labels", [])}
+        labels = set(lbl["name"] for lbl in data.get("labels", []))
         for priority_state in (
             TaskState.HUMAN_ONLY,
             TaskState.IN_REVIEW,
@@ -248,7 +248,7 @@ class GitHubAdapter(TaskAdapter):
             TaskState.TRIAGED,
         ):
             label_name = _STATE_LABELS.get(priority_state)
-            if label_name and label_name in label_set:
+            if label_name and label_name in labels:
                 return priority_state
 
         return TaskState.BACKLOG
