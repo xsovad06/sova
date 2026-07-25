@@ -6,19 +6,25 @@ phase transitions, and backward-compatible reconstruction from existing TaskRuns
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import subprocess
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from cachetools import TTLCache
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from sova.core.state import PHASE_ORDER, PHASE_TRANSITIONS, LifecyclePhase, PhaseStatus
 from sova.db.models import IssueLifecycle, LifecyclePhaseRecord, TaskRun
+from sova.git.pr import get_pr_status
 from sova.utils.formatting import iso_utc
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.lifecycle")
+
+# TTL cache for PR merge state: (pr_number, github_repo) -> state string
+_pr_state_cache: TTLCache[tuple[int, str], str] = TTLCache(maxsize=256, ttl=60)
 
 _LIFECYCLE_TERMINAL = frozenset({"done", "abandoned"})
 
@@ -415,6 +421,48 @@ async def abandon_lifecycle(
     return True
 
 
+# -- PR merge state cache -----------------------------------------------------
+
+
+async def _get_pr_merge_state(pr_number: int, github_repo: str, github_user: str) -> str | None:
+    """Check if a PR is merged, with 60s TTL cache. Returns state string or None on error."""
+    cache_key = (pr_number, github_repo)
+    cached = _pr_state_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        status = await get_pr_status(pr_number, repo=github_repo, github_user=github_user)
+        _pr_state_cache[cache_key] = status.state
+        return status.state
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        log.debug("pr_merge_check.failed", pr_number=pr_number, exc_info=True)
+        return None
+
+
+def _synthesize_merge_phases(phases: list[dict], seen_phases: set[str]) -> None:
+    """Append synthetic integrate and post_merge phases for a merged PR."""
+    now = datetime.now(timezone.utc)
+    offsets = {"integrate": timedelta(seconds=0), "post_merge": timedelta(seconds=1)}
+    for phase_name in ("integrate", "post_merge"):
+        if phase_name not in seen_phases:
+            ts = iso_utc(now + offsets[phase_name])
+            phases.append(
+                {
+                    "phase": phase_name,
+                    "status": "completed",
+                    "task_run_id": None,
+                    "cost_usd": 0,
+                    "attempt": 1,
+                    "error_message": None,
+                    "started_at": ts,
+                    "completed_at": ts,
+                    "source": "github",
+                }
+            )
+            seen_phases.add(phase_name)
+
+
 # -- Backward-compatible reconstruction --------------------------------------
 
 
@@ -422,6 +470,8 @@ async def build_lifecycle_view(
     session: AsyncSession,
     issue_number: str,
     project_slug: str = "",
+    github_repo: str = "",
+    github_user: str = "",
 ) -> dict | None:
     """Reconstruct a lifecycle view from existing TaskRun records.
 
@@ -433,7 +483,17 @@ async def build_lifecycle_view(
     # First try to find a real lifecycle
     lifecycle = await get_lifecycle_for_issue(session, issue_number, project_slug)
     if lifecycle is not None:
-        return lifecycle_to_dict(lifecycle)
+        view = lifecycle_to_dict(lifecycle)
+        pr_num = view.get("pr_number")
+        existing = {p["phase"] for p in view["phases"]}
+        if pr_num and github_repo and github_user and "integrate" not in existing:
+            state = await _get_pr_merge_state(pr_num, github_repo, github_user)
+            if state == "MERGED":
+                _synthesize_merge_phases(view["phases"], existing)
+                if view.get("current_phase") not in _LIFECYCLE_TERMINAL:
+                    view["current_phase"] = "done"
+                    view["phase_status"] = "completed"
+        return view
 
     # Reconstruct from TaskRuns
     stmt = select(TaskRun).where(TaskRun.issue_number == issue_number).order_by(TaskRun.started_at)
@@ -510,6 +570,15 @@ async def build_lifecycle_view(
             )
             current_phase = "post_pr"
             phase_status = "completed"
+
+    # Synthesize integrate/post_merge from GitHub if PR is merged
+    if pr_number and github_repo and github_user and "integrate" not in seen_phases:
+        state = await _get_pr_merge_state(pr_number, github_repo, github_user)
+        if state == "MERGED":
+            _synthesize_merge_phases(phases, seen_phases)
+            if current_phase not in _LIFECYCLE_TERMINAL:
+                current_phase = "done"
+                phase_status = "completed"
 
     return {
         "id": None,
