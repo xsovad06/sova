@@ -2247,9 +2247,6 @@ class TestWorkflowDB:
     async def test_step_in_status_map_sets_final_status(self) -> None:
         """A step whose name is in _STEP_STATUS_MAP updates final_status mid-pipeline."""
         ctx = _make_ctx()
-        # "sync" is in _STEP_STATUS_MAP (maps to PENDING). A following gate failure
-        # overrides to PAUSED. We spy on _update_task_run_status to verify the
-        # mapped status was applied before the gate failure overwrote it.
         step_sync = DummyStep(should_pass=True, gate_pass=True, name="sync")
         step_fail = DummyStep(should_pass=True, gate_pass=False, name="next")
         engine = WorkflowEngine(steps=[step_sync, step_fail], ctx=ctx)
@@ -2265,10 +2262,7 @@ class TestWorkflowDB:
 
         result = await engine.run()
 
-        # Gate failure on step_fail sets PAUSED as the final status
         assert result.final_status == TaskStatus.PAUSED
-        # The mapped status (PENDING for "sync") was applied to the DB before
-        # the gate failure overwrote it with PAUSED
         assert TaskStatus.PAUSED in status_updates
 
     async def test_step_execute_generic_exception(self) -> None:
@@ -2320,7 +2314,6 @@ class TestWorkflowDB:
         ctx = _make_ctx()
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
-        # Should not raise
         await engine._update_step_execution_status(None, "done")
 
     async def test_update_step_execution_status_db_error(self) -> None:
@@ -2330,7 +2323,6 @@ class TestWorkflowDB:
 
         with patch("sova.core.workflow.get_session", side_effect=RuntimeError("db down")):
             with patch("sova.core.workflow.log") as mock_log:
-                # Should not raise (exception is caught and logged)
                 await engine._update_step_execution_status(999, "done")
 
             mock_log.warning.assert_called_once()
@@ -2384,20 +2376,17 @@ class TestWorkflowDB:
 
         result = await engine.run()
 
-        # Manually set ended_at to a known value
         known_time = datetime(2025, 1, 1, tzinfo=timezone.utc)
         session = await get_session()
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
             task_run.ended_at = known_time
 
-        # Call _finalize_task_run again
         await engine._finalize_task_run()
 
         session = await get_session()
         async with session.begin():
             task_run = await session.get(TaskRun, result.task_run_id)
-            # SQLite strips tzinfo, so compare without it
             assert task_run.ended_at.replace(tzinfo=None) == known_time.replace(tzinfo=None)
 
 
