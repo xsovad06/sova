@@ -213,7 +213,11 @@ class TestDashboardHealth:
         assert "function loadDailyChart()" in body
         assert "function loadCostTable(" in body
         assert "function renderSectionError(" in body
+        assert "function setElementError(" in body
         assert "} catch (err)" in body
+        # Verify energy error handler clears detail elements
+        assert "cost-energy-detail" in body
+        assert "cost-co2-detail" in body
 
     async def test_overview_redirects_to_dashboard(self, client: AsyncClient) -> None:
         resp = await client.get("/overview", follow_redirects=False)

@@ -86,7 +86,20 @@
 <script>
 function renderSectionError(containerId, message) {
   var el = document.getElementById(containerId);
-  if (el) el.innerHTML = '<p class="text-red-400 text-sm">' + escapeHtml(message) + '</p>';
+  if (!el) return;
+  el.innerHTML = '';
+  var p = document.createElement('p');
+  p.className = 'text-red-400 text-sm';
+  p.textContent = message;
+  el.appendChild(p);
+}
+
+function setElementError(elementId, errorText, removeClasses) {
+  var el = document.getElementById(elementId);
+  if (!el) return;
+  el.textContent = errorText;
+  if (removeClasses) removeClasses.forEach(function(c) { el.classList.remove(c); });
+  el.classList.add('text-red-400');
 }
 
 async function loadSummary() {
@@ -97,8 +110,7 @@ async function loadSummary() {
     document.getElementById('cost-7d').textContent = '$' + parseFloat(summary.rolling_7d_usd || 0).toFixed(2);
     document.getElementById('cost-invocations').textContent = summary.total_invocations;
   } catch (err) {
-    var el = document.getElementById('cost-total');
-    if (el) { el.textContent = 'Error'; el.classList.remove('text-accent-green'); el.classList.add('text-red-400'); }
+    setElementError('cost-total', 'Error', ['text-accent-green']);
     console.error('Failed to load cost summary:', err);
   }
 }
@@ -115,10 +127,12 @@ async function loadEnergy() {
       document.getElementById('cost-co2-detail').textContent = energy.run_count + ' runs tracked';
     }
   } catch (err) {
-    var el = document.getElementById('cost-energy');
-    if (el) { el.textContent = 'Error'; el.classList.remove('text-accent-purple'); el.classList.add('text-red-400'); }
-    var el2 = document.getElementById('cost-co2');
-    if (el2) { el2.textContent = 'Error'; el2.classList.remove('text-accent-purple'); el2.classList.add('text-red-400'); }
+    setElementError('cost-energy', 'Error', ['text-accent-purple']);
+    setElementError('cost-co2', 'Error', ['text-accent-purple']);
+    var detail1 = document.getElementById('cost-energy-detail');
+    if (detail1) detail1.textContent = '';
+    var detail2 = document.getElementById('cost-co2-detail');
+    if (detail2) detail2.textContent = '';
     console.error('Failed to load energy data:', err);
   }
 }
@@ -150,9 +164,16 @@ async function loadDailyChart() {
 async function loadCostTable(endpoint, containerId, keyField, emptyMessage) {
   try {
     var data = await fetchAPI(apiUrl(endpoint));
-    document.getElementById(containerId).innerHTML = data.length === 0
-      ? '<p class="text-gray-500 text-sm">' + escapeHtml(emptyMessage) + '</p>'
-      : renderCostTable(data, keyField);
+    var container = document.getElementById(containerId);
+    if (data.length === 0) {
+      container.innerHTML = '';
+      var p = document.createElement('p');
+      p.className = 'text-gray-500 text-sm';
+      p.textContent = emptyMessage;
+      container.appendChild(p);
+    } else {
+      container.innerHTML = renderCostTable(data, keyField);
+    }
   } catch (err) {
     renderSectionError(containerId, 'Failed to load data');
     console.error('Failed to load ' + containerId + ':', err);
