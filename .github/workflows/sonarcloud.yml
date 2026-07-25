@@ -7,37 +7,9 @@ on:
   # runs on fork code; secrets are scoped to individual steps.
   pull_request_target:
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - 'personas/**'
-      - 'knowledge/**'
-      - 'assets/**'
-      - 'guidelines/**'
-      - 'skills/**'
-      - 'templates/**'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'CODE_OF_CONDUCT.md'
-      - 'CONTRIBUTING.md'
-      - 'SECURITY.md'
   push:
     branches:
       - main
-    paths-ignore:
-      - 'docs/**'
-      - 'personas/**'
-      - 'knowledge/**'
-      - 'assets/**'
-      - 'guidelines/**'
-      - 'skills/**'
-      - 'templates/**'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'CODE_OF_CONDUCT.md'
-      - 'CONTRIBUTING.md'
-      - 'SECURITY.md'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

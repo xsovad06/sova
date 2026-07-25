@@ -83,7 +83,7 @@ class SupervisorDaemon:
             await asyncio.sleep(self._config.supervisor.poll_interval_seconds)
 
     async def _poll_once(self) -> dict:
-        """Single ordered poll: progression -> quota -> health."""
+        """Single ordered poll: quota -> progression -> health."""
         from sova.adapters import create_adapter
 
         try:
@@ -95,11 +95,12 @@ class SupervisorDaemon:
 
         results: dict = {}
 
-        # Phase 1: Progression engine
-        results["progression"] = await self._poll_progression(adapter)
-
-        # Phase 2: CodeRabbit quota sync
+        # Phase 1: CodeRabbit quota sync (must run before progression so the
+        # progression engine reads fresh data, not last cycle's cached counts).
         results["quota"] = await self._poll_quota()
+
+        # Phase 2: Progression engine (evaluates against freshly synced quota)
+        results["progression"] = await self._poll_progression(adapter)
 
         # Phase 3: Health check
         results["health"] = await self._poll_health()
