@@ -23,7 +23,7 @@ async def cost_summary() -> dict:
 
 
 @router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
-async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list:
+async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_daily(session, days)
@@ -33,7 +33,7 @@ async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list:
 
 
 @router.get("/costs/by-issue", response_model=None, responses={500: {"description": "Failed to fetch costs by issue"}})
-async def costs_by_issue() -> list:
+async def costs_by_issue() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_issue(session)
@@ -43,7 +43,7 @@ async def costs_by_issue() -> list:
 
 
 @router.get("/costs/by-phase", response_model=None, responses={500: {"description": "Failed to fetch costs by phase"}})
-async def costs_by_phase() -> list:
+async def costs_by_phase() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_phase(session)
@@ -53,7 +53,7 @@ async def costs_by_phase() -> list:
 
 
 @router.get("/costs/by-model", response_model=None, responses={500: {"description": "Failed to fetch costs by model"}})
-async def costs_by_model() -> list:
+async def costs_by_model() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_model(session)
@@ -67,7 +67,7 @@ async def costs_by_model() -> list:
     response_model=None,
     responses={500: {"description": "Failed to fetch costs by routing"}},
 )
-async def costs_by_routing() -> list:
+async def costs_by_routing() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_routing(session)

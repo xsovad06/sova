@@ -81,7 +81,7 @@ async def system_metrics() -> dict:
 
 
 @router.get("/resources/system/history", response_model=None, responses={500: {"description": "Internal error"}})
-async def system_metrics_history() -> list:
+async def system_metrics_history() -> list[dict]:
     try:
         return resource_service.get_system_metrics_history()
     except Exception as exc:
