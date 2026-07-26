@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -236,7 +237,7 @@ async def test_jira_connection(req: JiraTestRequest):
     except (ValueError, KeyError) as exc:
         log.warning("setup.jira.test.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
-    except Exception as exc:
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
         log.error("setup.jira.test.connection_error", exc_info=True)
         raise HTTPException(status_code=503, detail="Connection test failed") from exc
 
@@ -255,7 +256,7 @@ async def discover_jira_projects(req: JiraProjectsRequest):
     except (ValueError, KeyError) as exc:
         log.warning("setup.jira.projects.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
-    except Exception as exc:
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
         log.error("setup.jira.projects.connection_error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to discover Jira projects") from exc
 
@@ -274,6 +275,6 @@ async def discover_jira_statuses(req: JiraStatusesRequest):
     except (ValueError, KeyError) as exc:
         log.warning("setup.jira.statuses.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
-    except Exception as exc:
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
         log.error("setup.jira.statuses.connection_error", exc_info=True)
         raise HTTPException(status_code=503, detail="Failed to discover Jira statuses") from exc

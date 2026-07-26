@@ -103,7 +103,7 @@ async def update_role(name: str, req: UpdateRoleRequest) -> dict[str, Any]:
     if req.graph_json is not None:
         errors, _ = validate_dag(req.graph_json)
         if errors:
-            detail = "; ".join(errors) if errors else "Invalid DAG"
+            detail = "; ".join(errors)
             raise HTTPException(status_code=400, detail=f"Invalid DAG: {detail}")
 
     async with await get_session() as session:

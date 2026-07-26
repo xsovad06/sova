@@ -64,8 +64,9 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
     except Exception:
         log.warning("spec.approve.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
-    if isinstance(agent_result, dict) and "error" in agent_result:
-        raise HTTPException(status_code=409, detail=agent_result.get("detail", agent_result["error"]))
+    if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
+        detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
+        raise HTTPException(status_code=409, detail=detail)
     handoff_service.clear_handoff(issue=issue_number)
     result["agent"] = agent_result
     return result
@@ -80,8 +81,9 @@ async def revise_spec(issue_number: str) -> dict:
     except Exception:
         log.warning("spec.revise.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
-    if isinstance(agent_result, dict) and "error" in agent_result:
-        raise HTTPException(status_code=409, detail=agent_result.get("detail", agent_result["error"]))
+    if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
+        detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
+        raise HTTPException(status_code=409, detail=detail)
     handoff_service.clear_handoff(issue=issue_number)
     return {"status": "revision_started", "agent": agent_result}
 
@@ -95,8 +97,9 @@ async def skip_spec(issue_number: str) -> dict:
     except Exception:
         log.warning("spec.skip.agent_spawn_failed", issue=issue_number, exc_info=True)
         raise
-    if isinstance(agent_result, dict) and "error" in agent_result:
-        raise HTTPException(status_code=409, detail=agent_result.get("detail", agent_result["error"]))
+    if isinstance(agent_result, dict) and ("error" in agent_result or agent_result.get("status") == "error"):
+        detail = agent_result.get("detail") or agent_result.get("error") or "Agent start failed"
+        raise HTTPException(status_code=409, detail=detail)
     handoff_service.clear_handoff(issue=issue_number)
     return {"status": "skipped", "agent": agent_result}
 

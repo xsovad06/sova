@@ -113,6 +113,18 @@ class TestSetupRouterErrors:
             )
         assert resp.status_code == 503
 
+    async def test_jira_test_programming_error_propagates(self, client: AsyncClient) -> None:
+        with (
+            patch(
+                "sova.dashboard.routers.setup.setup_service.test_jira_connection",
+                side_effect=TypeError("NoneType has no len()"),
+            ),
+            pytest.raises(TypeError, match="NoneType"),
+        ):
+            await client.post(
+                "/api/setup/jira/test",
+                json={"base_url": "http://jira", "email": "a@b.com", "api_token": "tok"},
+            )
 
 class TestRolesRouterErrors:
     async def test_update_role_dag_error_is_string(self, client: AsyncClient) -> None:
@@ -180,6 +192,22 @@ class TestAgentsRouterErrors:
         assert resp.status_code == 409
         assert "Agent already running" in resp.json()["detail"]
 
+    async def test_run_command_status_error_dict_returns_409(self, client: AsyncClient) -> None:
+        """Error dict with 'status': 'error' (no 'error' key) still returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        with patch.object(
+            cs,
+            "start_command",
+            new_callable=AsyncMock,
+            return_value={"status": "error", "detail": "Issue conflict"},
+        ):
+            resp = await client.post(
+                "/api/agents/command",
+                json={"command": "integrate-pr", "args": {}},
+            )
+        assert resp.status_code == 409
+        assert "Issue conflict" in resp.json()["detail"]
 
 class TestQueueRouterErrors:
     async def test_start_from_queue_error_dict_returns_409(self, client: AsyncClient) -> None:
@@ -228,3 +256,109 @@ class TestSettingsRouterErrors:
             )
         assert resp.status_code == 500
         assert "Failed to update configuration" in resp.json()["detail"]
+
+class TestHandoffRouterErrors:
+    """Tests for handoff.py execute_handoff_action error dict handling."""
+
+    async def test_execute_agent_action_error_dict_returns_409(self, client: AsyncClient) -> None:
+        """Error dict from start_agent with 'error' key returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        handoff_data = {
+            "issue": "10",
+            "pr_number": 5,
+            "next_actions": [
+                {"id": "run-dev", "label": "Run Developer", "type": "agent", "role": "developer", "issue": "10"},
+            ],
+        }
+        with (
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.get_all_handoffs",
+                return_value=[handoff_data],
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.build_action_command",
+                return_value={"type": "agent", "issue": "10", "role": "developer"},
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.clear_handoff",
+            ),
+            patch.object(
+                cs,
+                "start_agent",
+                new_callable=AsyncMock,
+                return_value={"error": "conflict", "detail": "Slot full"},
+            ),
+        ):
+            resp = await client.post("/api/handoff/execute", json={"action_id": "run-dev"})
+        assert resp.status_code == 409
+        assert "Slot full" in resp.json()["detail"]
+
+    async def test_execute_agent_action_status_error_returns_409(self, client: AsyncClient) -> None:
+        """Error dict from start_agent with 'status': 'error' (no 'error' key) returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        handoff_data = {
+            "issue": "10",
+            "pr_number": 5,
+            "next_actions": [
+                {"id": "run-dev", "label": "Run Developer", "type": "agent", "role": "developer", "issue": "10"},
+            ],
+        }
+        with (
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.get_all_handoffs",
+                return_value=[handoff_data],
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.build_action_command",
+                return_value={"type": "agent", "issue": "10", "role": "developer"},
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.clear_handoff",
+            ),
+            patch.object(
+                cs,
+                "start_agent",
+                new_callable=AsyncMock,
+                return_value={"status": "error", "detail": "Issue already running"},
+            ),
+        ):
+            resp = await client.post("/api/handoff/execute", json={"action_id": "run-dev"})
+        assert resp.status_code == 409
+        assert "Issue already running" in resp.json()["detail"]
+
+    async def test_execute_command_action_error_dict_returns_409(self, client: AsyncClient) -> None:
+        """Error dict from start_command with 'status': 'error' returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        handoff_data = {
+            "issue": "10",
+            "pr_number": 5,
+            "next_actions": [
+                {"id": "integrate", "label": "Integrate PR",
+                 "type": "claude-command", "command": "integrate-pr", "args": {}},
+            ],
+        }
+        with (
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.get_all_handoffs",
+                return_value=[handoff_data],
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.build_action_command",
+                return_value={"type": "claude-command", "command": "integrate-pr", "args": {}},
+            ),
+            patch(
+                "sova.dashboard.routers.handoff.handoff_service.clear_handoff",
+            ),
+            patch.object(
+                cs,
+                "start_command",
+                new_callable=AsyncMock,
+                return_value={"status": "error", "detail": "No agent slots available"},
+            ),
+        ):
+            resp = await client.post("/api/handoff/execute", json={"action_id": "integrate"})
+        assert resp.status_code == 409
+        assert "No agent slots available" in resp.json()["detail"]
