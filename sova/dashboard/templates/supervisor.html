@@ -57,6 +57,7 @@
       <div class="flex items-center gap-2 mb-1 flex-wrap">
         <span id="drawer-dot" class="w-2.5 h-2.5 rounded-full bg-gray-500 shrink-0"></span>
         <a id="drawer-gh-link" href="#" target="_blank" class="text-xs font-mono text-accent hover:underline shrink-0"></a>
+        <span id="drawer-pr-badge" class="hidden text-xs font-mono shrink-0"></span>
         <span id="drawer-state" class="text-xs text-gray-400 capitalize"></span>
         <span id="drawer-milestone" class="text-xs text-gray-600 truncate ml-1"></span>
       </div>
@@ -125,7 +126,7 @@ let _svgSel = null;
 let _fitTransform = null;
 
 function _computeGraphKey(data) {
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -137,6 +138,17 @@ function stateColor(state) {
   if (s === 'awaiting_approval') return '#f9e2af';
   if (s === 'blocked') return '#f38ba8';
   return '#6c7086';
+}
+
+function prStateColor(prState) {
+  const s = (prState || '');
+  if (s === 'approved_ci_green') return '#a6e3a1';
+  if (s === 'changes_requested') return '#fab387';
+  if (s === 'ci_failed')         return '#f38ba8';
+  if (s === 'ci_running')        return '#f9e2af';
+  if (s === 'awaiting_review')   return '#89b4fa';
+  if (s === 'draft')             return '#6c7086';
+  return null;
 }
 
 function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
@@ -619,9 +631,10 @@ function renderGraph(data) {
       const nid = +this.dataset.nid;
       const active = id == null || nid === id || ancestors.has(nid) || descendants.has(nid);
       const color = this.dataset.color;
+      const border = this.dataset.border || (color + '66');
       d3.select(this).attr('opacity', active ? (this.dataset.done === '1' ? 0.35 : 1) : 0.08);
       d3.select(this).select('rect.node-bg')
-        .attr('stroke', nid === id ? '#cdd6f4' : color + (active ? '66' : '1a'))
+        .attr('stroke', nid === id ? '#cdd6f4' : (active ? border : color + '1a'))
         .attr('stroke-width', nid === id ? 2 : 1);
     });
 
@@ -720,15 +733,18 @@ function renderGraph(data) {
     const color = stateColor(n.state);
     const isDone = n.state === 'done' || n.state === 'closed';
 
+    const prc = n.pr_state ? prStateColor(n.pr_state) : null;
+    const borderColor = prc || (color + '66');
+
     const g = mainG.append('g')
       .attr('class', 'dep-node')
-      .attr('data-nid', n.id).attr('data-color', color).attr('data-done', isDone ? '1' : '0')
+      .attr('data-nid', n.id).attr('data-color', color).attr('data-border', borderColor).attr('data-done', isDone ? '1' : '0')
       .attr('opacity', isDone ? 0.35 : 1)
       .style('cursor', 'pointer');
 
     g.append('rect').attr('class', 'node-bg')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
-      .attr('fill', color + '18').attr('stroke', color + '66').attr('stroke-width', 1);
+      .attr('fill', color + '18').attr('stroke', borderColor).attr('stroke-width', prc ? 1.5 : 1);
 
     g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
 
@@ -737,7 +753,21 @@ function renderGraph(data) {
       .attr('fill', '#cdd6f4').attr('font-size', '10.5px').attr('font-weight', '700').attr('font-family', 'monospace')
       .text(`#${n.id}`);
 
-    const t1 = (n.title || '').slice(0, 28) + ((n.title || '').length > 28 ? '…' : '');
+    // PR badge (small pill at the top-right corner of the node)
+    if (n.pr_number && prc) {
+      const badgeX = pos.x + NW - 38, badgeY = pos.y + 4;
+      g.append('rect')
+        .attr('x', badgeX).attr('y', badgeY).attr('width', 34).attr('height', 14).attr('rx', 7)
+        .attr('fill', prc + '30').attr('stroke', prc).attr('stroke-width', 0.5);
+      g.append('text')
+        .attr('x', badgeX + 17).attr('y', badgeY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', prc).attr('font-size', '7.5px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text(`PR#${n.pr_number}`);
+    }
+
+    const titleMax = n.pr_number ? 22 : 28;
+    const t1 = (n.title || '').slice(0, titleMax) + ((n.title || '').length > titleMax ? '…' : '');
     g.append('text')
       .attr('x', pos.x + 24).attr('y', pos.y + 35)
       .attr('fill', '#a6adc8').attr('font-size', '9px').attr('font-family', 'sans-serif')
@@ -745,11 +775,11 @@ function renderGraph(data) {
 
     g.on('mouseenter', function() {
       if (+this.dataset.nid !== _selectedNodeId)
-        d3.select(this).select('rect.node-bg').attr('stroke', color + 'bb');
+        d3.select(this).select('rect.node-bg').attr('stroke', prc || (color + 'bb'));
     })
     .on('mouseleave', function() {
       if (+this.dataset.nid !== _selectedNodeId)
-        d3.select(this).select('rect.node-bg').attr('stroke', color + '66');
+        d3.select(this).select('rect.node-bg').attr('stroke', borderColor);
     })
     .on('click', event => {
       event.stopPropagation();
@@ -781,6 +811,18 @@ function showDrawer(node) {
   const ghLink = document.getElementById('drawer-gh-link');
   ghLink.textContent = `#${node.id}`;
   ghLink.href = githubRepo ? `https://github.com/${githubRepo}/issues/${node.id}` : '#';
+
+  const prBadge = document.getElementById('drawer-pr-badge');
+  if (node.pr_number) {
+    const prc = prStateColor(node.pr_state) || '#6c7086';
+    prBadge.classList.remove('hidden');
+    prBadge.style.color = prc;
+    const prUrl = node.pr_url || (githubRepo ? `https://github.com/${githubRepo}/pull/${node.pr_number}` : '#');
+    prBadge.innerHTML = `<a href="${esc(prUrl)}" target="_blank" class="hover:underline">PR#${node.pr_number}</a> <span class="text-gray-500">${esc(node.pr_state_label || '')}</span>`;
+  } else {
+    prBadge.classList.add('hidden');
+    prBadge.innerHTML = '';
+  }
 
   const actions = document.getElementById('drawer-actions');
   const actionBtns = (node.available_actions || []).map(a =>

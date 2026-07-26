@@ -131,6 +131,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Rebase loop cap checks must track commits processed, not conflicts resolved** -- `conflicts_resolved` counts files, not commits. Use `for...else` pattern: the `else` clause fires only when the loop exhausts `range(max_commits)`. PR #425 review. [confirmed: 1]
 - **Initialize loop variables before the loop body** -- `remaining = await _get_conflicted_files()` inside the inner loop leaves `remaining` undefined if `max_attempts=0`. Declare `remaining: list[str] = []` before the loop. PR #425 review. [confirmed: 1]
 - **Log diagnostic context before silent break/continue exits** -- when a `break` exits a loop on failure, log `stdout[:200]` and `stderr[:200]` before breaking. The final error message should include the reason, not just "could not be completed". PR #425 review. [confirmed: 1]
+- **New step `validate_output` must implement all four gate checks from architecture.md** -- new steps frequently implement two of the four required gate checks (unstaged diff, staged diff) but skip the other two (commits ahead of base via `git log {base}..HEAD --oneline`, untracked files via `git status --porcelain` lines starting with `??`). The architecture.md rule exists but gets missed when writing new steps. Checklist before shipping a new step: (1) `git diff --stat HEAD`, (2) `git diff --cached --stat`, (3) `git log {base}..HEAD --oneline`, (4) `git status --porcelain | grep "^??"`. PR #498 SOVA review finding. [confirmed: 1]
 
 ## GitHub API
 

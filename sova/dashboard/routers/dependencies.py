@@ -2,15 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 
 from sova.adapters.base import TaskState
 from sova.dashboard.project_context import get_project_dir
+from sova.dashboard.services.pr_service import ComputedPRState
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.dependencies")
 
 router = APIRouter(prefix="/dependencies", tags=["dependencies"])
+
+# Simplified PR state strings for the graph API.  Mapped from ComputedPRState
+# so internal enum names are not leaked to the frontend.
+_PR_STATE_MAP: dict[str, str] = {
+    ComputedPRState.APPROVED_CI_GREEN: "approved_ci_green",
+    ComputedPRState.APPROVED: "approved_ci_green",
+    ComputedPRState.CHANGES_REQUESTED: "changes_requested",
+    ComputedPRState.REVIEW_ADDRESSED: "awaiting_review",
+    ComputedPRState.CI_RUNNING: "ci_running",
+    ComputedPRState.CI_FAILED: "ci_failed",
+    ComputedPRState.AWAITING_REVIEW: "awaiting_review",
+    ComputedPRState.DRAFT: "draft",
+}
+
+# PR-state-aware actions for IN_REVIEW nodes.  Overrides _STATE_ACTIONS when
+# a PR is linked and its state is known.
+_PR_STATE_ACTIONS: dict[str, list[dict]] = {
+    "approved_ci_green": [{"id": "integrate-pr", "label": "Integrate PR", "role": "integrate-pr"}],
+    "changes_requested": [{"id": "address-pr", "label": "Address PR", "role": "address-pr"}],
+    "ci_failed": [{"id": "address-pr", "label": "Fix CI", "role": "address-pr"}],
+    "ci_running": [],
+    "awaiting_review": [],
+    "draft": [],
+}
 
 
 class _ConfigError(Exception):
@@ -32,6 +59,33 @@ async def _build_graph(milestone: str = ""):
     return await build_dependency_graph(adapter, milestone=milestone)
 
 
+async def _fetch_pr_map() -> dict[int, dict]:
+    """Build {issue_number: pr_info} from open PRs.  Fail-open: returns {} on error."""
+    from sova.dashboard.services.pr_service import list_open_prs_with_state
+
+    try:
+        prs = await list_open_prs_with_state(author_filter_override="all")
+    except Exception:
+        log.warning("dependency_graph.pr_fetch_failed", exc_info=True)
+        return {}
+
+    result: dict[int, dict] = {}
+    for pr in prs:
+        for issue_num in pr.get("linked_issues") or []:
+            # Multiple PRs per issue: keep the most recent (highest number)
+            if issue_num not in result or pr["number"] > result[issue_num]["pr_number"]:
+                computed = pr.get("computed_state", "")
+                pr_state = _PR_STATE_MAP.get(computed, "awaiting_review")
+                result[issue_num] = {
+                    "pr_number": pr["number"],
+                    "pr_url": pr.get("url", ""),
+                    "pr_state": pr_state,
+                    "pr_state_label": pr.get("state_label", ""),
+                }
+
+    return result
+
+
 @router.get(
     "/graph",
     responses={
@@ -46,8 +100,11 @@ async def get_graph(milestone: str = "") -> dict:
     Dependencies outside the milestone are still fetched individually.
     """
     try:
-        graph = await _build_graph(milestone)
-        return graph.to_dict()
+        graph, pr_map = await asyncio.gather(
+            _build_graph(milestone),
+            _fetch_pr_map(),
+        )
+        return graph.to_dict(pr_map=pr_map, pr_state_actions=_PR_STATE_ACTIONS)
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")

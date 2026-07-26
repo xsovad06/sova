@@ -238,13 +238,23 @@ class DependencyGraph:
                     to_visit.append(dep)
         return visited
 
-    def to_dict(self) -> dict:
+    def to_dict(
+        self,
+        *,
+        pr_map: dict[int, dict] | None = None,
+        pr_state_actions: dict[str, list[dict]] | None = None,
+    ) -> dict:
         """Serialize the graph for API responses.
+
+        *pr_map* maps issue IDs to PR info dicts (pr_number, pr_url, pr_state,
+        pr_state_label).  When provided, nodes are enriched with PR fields and
+        IN_REVIEW nodes get PR-state-aware available_actions via *pr_state_actions*.
 
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
         cache the result if multiple reads are needed.
         """
+        effective_pr_map = pr_map or {}
         nodes = []
         for tid, task in sorted(self._tasks.items()):
             body = task.body or ""
@@ -256,17 +266,31 @@ class DependencyGraph:
                 if ln.strip() and not ln.strip().startswith("#") and not ln.strip().startswith("-")
             ]
             excerpt = " ".join(excerpt_lines)[:_BODY_EXCERPT_LEN].strip()
-            nodes.append(
-                {
-                    "id": tid,
-                    "title": task.title,
-                    "state": task.state.value,
-                    "milestone": task.milestone,
-                    "dependencies": sorted(self._deps.get(tid, set())),
-                    "body_excerpt": excerpt,
-                    "available_actions": list(_STATE_ACTIONS.get(task.state, [])),
-                }
-            )
+
+            actions = list(_STATE_ACTIONS.get(task.state, []))
+            pr_info = effective_pr_map.get(tid)
+
+            # Override actions for IN_REVIEW nodes when PR state is known
+            if pr_info and task.state == TaskState.IN_REVIEW and pr_state_actions:
+                pr_state = pr_info.get("pr_state", "")
+                if pr_state in pr_state_actions:
+                    actions = list(pr_state_actions[pr_state])
+
+            node: dict = {
+                "id": tid,
+                "title": task.title,
+                "state": task.state.value,
+                "milestone": task.milestone,
+                "dependencies": sorted(self._deps.get(tid, set())),
+                "body_excerpt": excerpt,
+                "available_actions": actions,
+            }
+            if pr_info:
+                node["pr_number"] = pr_info.get("pr_number")
+                node["pr_url"] = pr_info.get("pr_url", "")
+                node["pr_state"] = pr_info.get("pr_state", "")
+                node["pr_state_label"] = pr_info.get("pr_state_label", "")
+            nodes.append(node)
 
         validation = self.validate()
         ready = self.get_ready_tasks()
