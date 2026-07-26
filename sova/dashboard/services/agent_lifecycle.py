@@ -924,6 +924,20 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
 
     log.info("agent.completed", run_id=run_id, issue=agent.issue, status=status, cost=cost)
 
+    # Schedule non-blocking telemetry push if hub is configured
+    try:
+        from sova.config.loader import load_config as _load_cfg_tel
+
+        tel_cfg = _load_cfg_tel(agent.project_dir)
+        if tel_cfg.telemetry.hub_url and run_id:
+            from sova.dashboard.services.telemetry_push import push_telemetry
+
+            t = asyncio.create_task(push_telemetry(run_id, agent.project_dir, tel_cfg))
+            _background_tasks.add(t)
+            t.add_done_callback(_background_tasks.discard)
+    except Exception:
+        log.debug("telemetry.schedule_failed", run_id=run_id, exc_info=True)
+
     if exit_code == 0:
         await _process_auto_handoff(agent)
 

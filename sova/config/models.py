@@ -541,6 +541,16 @@ class OversightConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SOVA_OVERSIGHT_")
 
 
+class TelemetryConfig(BaseSettings):
+    """Outbound telemetry push to a remote hub after pipeline finalization."""
+
+    hub_url: str = ""
+    hub_token: str = Field("", repr=False)
+    machine_id: str = ""
+
+    model_config = SettingsConfigDict(env_prefix="SOVA_TELEMETRY_")
+
+
 class FleetConfig(BaseSettings):
     """Fleet insights: cross-project aggregation from local SOVA databases."""
 
@@ -641,6 +651,7 @@ class ProjectConfig(BaseSettings):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     memory_guard: MemoryGuardConfig = Field(default_factory=MemoryGuardConfig)
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
