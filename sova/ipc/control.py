@@ -11,6 +11,7 @@ import asyncio
 import enum
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,34 +29,29 @@ class ExitClassification(enum.StrEnum):
     CRASH = "crash"
 
 
-class AgentProcess:
-    """Wrapper around an async subprocess running Claude CLI."""
+class _BaseAgentProcess:
+    """Shared process-delegation logic for AgentProcess and FileAgentProcess."""
 
     def __init__(self, proc: asyncio.subprocess.Process) -> None:
         self._proc = proc
 
     @property
     def pid(self) -> int:
-        """Process ID of the subprocess."""
         return self._proc.pid
 
     @property
     def is_running(self) -> bool:
-        """Whether the subprocess is still alive."""
         return self._proc.returncode is None
 
     @property
     def returncode(self) -> int | None:
-        """Exit code, or None if still running."""
         return self._proc.returncode
 
     async def wait(self) -> int:
-        """Wait for the process to finish and return its exit code."""
         await self._proc.wait()
         return self._proc.returncode
 
     async def stop(self, timeout: float = 10.0) -> None:
-        """Gracefully stop the process (SIGTERM, then SIGKILL after timeout)."""
         if not self.is_running:
             return
 
@@ -69,6 +65,22 @@ class AgentProcess:
             log.warning("process.kill", pid=self.pid)
             self._proc.kill()
             await self._proc.wait()
+
+    @staticmethod
+    def classify_exit(returncode: int) -> ExitClassification:
+        if returncode == 0:
+            return ExitClassification.SUCCESS
+        if returncode < 128:
+            return ExitClassification.ERROR
+        return ExitClassification.CRASH
+
+    async def wait_classified(self) -> tuple[int, ExitClassification]:
+        code = await self.wait()
+        return code, self.classify_exit(code)
+
+
+class AgentProcess(_BaseAgentProcess):
+    """Wrapper around an async subprocess running Claude CLI (pipe-based I/O)."""
 
     async def stdout_lines(self) -> AsyncIterator[str]:
         """Yield stdout lines as they arrive (for dashboard streaming)."""
@@ -92,19 +104,76 @@ class AgentProcess:
                 break
             yield line.decode("utf-8", errors="replace").rstrip("\n")
 
-    @staticmethod
-    def classify_exit(returncode: int) -> ExitClassification:
-        """Classify an exit code into SUCCESS, ERROR, or CRASH."""
-        if returncode == 0:
-            return ExitClassification.SUCCESS
-        if returncode < 128:
-            return ExitClassification.ERROR
-        return ExitClassification.CRASH
 
-    async def wait_classified(self) -> tuple[int, ExitClassification]:
-        """Wait for the process and return (exit_code, classification)."""
-        code = await self.wait()
-        return code, self.classify_exit(code)
+_TAIL_POLL_INTERVAL = 0.1
+
+
+class FileAgentProcess(_BaseAgentProcess):
+    """AgentProcess variant that reads output from files instead of pipes.
+
+    Used for dashboard-spawned agents where stdout/stderr are redirected to
+    files. This decouples agent I/O from the parent process, allowing agents
+    to survive dashboard restarts (no SIGPIPE when the parent dies).
+    """
+
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        *,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> None:
+        super().__init__(proc)
+        self._stdout_path = stdout_path
+        self._stderr_path = stderr_path
+
+    @property
+    def stdout_path(self) -> Path:
+        return self._stdout_path
+
+    @property
+    def stderr_path(self) -> Path:
+        return self._stderr_path
+
+    async def stdout_lines(self) -> AsyncIterator[str]:
+        async for line in self._tail_file(self._stdout_path):
+            yield line
+
+    async def stderr_lines(self) -> AsyncIterator[str]:
+        async for line in self._tail_file(self._stderr_path):
+            yield line
+
+    async def _tail_file(self, path: Path) -> AsyncIterator[str]:
+        """Tail a file, yielding complete lines as they appear.
+
+        Stops when the process has exited and no new data remains.
+        """
+        if not path.exists():
+            return
+
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")  # NOSONAR
+        except OSError:
+            log.warning("tail.open_failed", path=str(path), exc_info=True)
+            return
+
+        try:
+            remainder = ""
+            while True:
+                chunk = fh.read(8192)
+                if chunk:
+                    remainder += chunk
+                    while "\n" in remainder:
+                        line, remainder = remainder.split("\n", 1)
+                        yield line
+                else:
+                    if self._proc.returncode is not None:
+                        if remainder:
+                            yield remainder
+                        return
+                    await asyncio.sleep(_TAIL_POLL_INTERVAL)
+        finally:
+            fh.close()
 
 
 class ProcessTracker:

@@ -19,7 +19,7 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.dashboard.services.output_service import OutputWriter
-    from sova.ipc.control import AgentProcess
+    from sova.ipc.control import AgentProcess, FileAgentProcess
     from sova.monitoring.collector import ResourceCollector
     from sova.monitoring.writer import ResourceWriter
 
@@ -38,7 +38,7 @@ class AgentState:
     run_id: int
     issue: str
     role: str
-    process: AgentProcess
+    process: AgentProcess | FileAgentProcess
     output_lines: deque[str] = field(default_factory=lambda: deque(maxlen=5000))
     output_writer: OutputWriter | None = None
     reader_task: asyncio.Task | None = None

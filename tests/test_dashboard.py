@@ -2544,7 +2544,7 @@ class TestDuplicateAgentPrevention:
 
         spawned_prompt: list[str] = []
 
-        async def _capture_spawn(prompt, cwd, env=None):
+        async def _capture_spawn(prompt, cwd, **kwargs):
             spawned_prompt.append(prompt)
             return mock_process
 
@@ -2562,6 +2562,7 @@ class TestDuplicateAgentPrevention:
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
             patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_update_task_run_output_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(
                 agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/issue-344"
@@ -2610,7 +2611,7 @@ class TestDuplicateAgentPrevention:
 
         spawned_prompt: list[str] = []
 
-        async def _capture_spawn(prompt, cwd, env=None):
+        async def _capture_spawn(prompt, cwd, **kwargs):
             spawned_prompt.append(prompt)
             return mock_process
 
@@ -2628,6 +2629,7 @@ class TestDuplicateAgentPrevention:
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=88),
             patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_update_task_run_output_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value=""),
             patch.object(

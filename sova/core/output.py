@@ -134,9 +134,9 @@ def read_lines_from_file(path: Path, since: int = 0) -> tuple[list[str], int]:
     if not path.exists():
         return [], 0
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             all_lines = [line.rstrip("\n") for line in f]
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return [], 0
     total = len(all_lines)
     return all_lines[since:], total

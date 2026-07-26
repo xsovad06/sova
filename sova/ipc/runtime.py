@@ -15,7 +15,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from pathlib import Path
 
-from sova.ipc.control import AgentProcess
+from sova.ipc.control import AgentProcess, FileAgentProcess
 from sova.llm.models import LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
@@ -114,7 +114,9 @@ class AgentRuntime(ABC):
         env: dict[str, str] | None = None,
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
-    ) -> AgentProcess:
+        output_dir: Path | None = None,
+        run_label: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
         """Spawn a coding agent process.
 
         Args:
@@ -123,9 +125,14 @@ class AgentRuntime(ABC):
             env: Environment variables (None inherits parent).
             model: Optional model override.
             max_budget_usd: Optional budget cap.
+            output_dir: When set, redirect stdout/stderr to files in this
+                directory and return a FileAgentProcess. When None, use
+                pipes and return AgentProcess (backward compat).
+            run_label: Filename prefix for output files (e.g., the run ID).
+                Required when output_dir is set.
 
         Returns:
-            An AgentProcess wrapping the subprocess.
+            An AgentProcess (pipe-based) or FileAgentProcess (file-based).
         """
         ...
 
@@ -172,7 +179,9 @@ class ClaudeCodeRuntime(AgentRuntime):
         env: dict[str, str] | None = None,
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
-    ) -> AgentProcess:
+        output_dir: Path | None = None,
+        run_label: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
         args: list[str] = [
             "claude",
             "-p",
@@ -191,6 +200,9 @@ class ClaudeCodeRuntime(AgentRuntime):
             args.extend(["--max-budget-usd", str(max_budget_usd)])
 
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
+
+        if output_dir is not None:
+            return await _spawn_with_file_output(args, cwd, env, output_dir, run_label)
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -297,7 +309,9 @@ class AiderRuntime(AgentRuntime):
         env: dict[str, str] | None = None,
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
-    ) -> AgentProcess:
+        output_dir: Path | None = None,
+        run_label: str | None = None,
+    ) -> AgentProcess | FileAgentProcess:
         transformed = self.transform_prompt(prompt)
 
         # If the prompt was a sova CLI command, execute it directly
@@ -307,6 +321,10 @@ class AiderRuntime(AgentRuntime):
             import shlex as _shlex
 
             cmd_parts = _shlex.split(transformed)
+
+            if output_dir is not None:
+                return await _spawn_with_file_output(cmd_parts, cwd, env, output_dir, run_label)
+
             proc = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
@@ -338,6 +356,9 @@ class AiderRuntime(AgentRuntime):
 
         log.info("aider.spawn", cwd=str(cwd), model=model, prompt_len=len(transformed))
 
+        if output_dir is not None:
+            return await _spawn_with_file_output(args, cwd, env, output_dir, run_label)
+
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
@@ -356,6 +377,41 @@ class AiderRuntime(AgentRuntime):
 
     async def check_available(self) -> tuple[bool, str]:
         return await _check_cli_available("aider", "pip install aider-chat")
+
+
+# ---------------------------------------------------------------------------
+# File-based output helper
+# ---------------------------------------------------------------------------
+
+
+async def _spawn_with_file_output(
+    args: list[str],
+    cwd: str | Path,
+    env: dict[str, str] | None,
+    output_dir: Path,
+    run_label: str,
+) -> FileAgentProcess:
+    """Spawn a subprocess with stdout/stderr redirected to files.
+
+    Creates ``{output_dir}/{run_label}.stdout`` and ``.stderr``, opens them
+    for writing, and passes the file descriptors to the subprocess. Returns
+    a ``FileAgentProcess`` that tails these files for streaming.
+    """
+    if not run_label:
+        raise ValueError("run_label is required when output_dir is set")
+    stdout_path = output_dir / f"{run_label}.stdout"
+    stderr_path = output_dir / f"{run_label}.stderr"
+
+    with open(stdout_path, "wb") as stdout_fh, open(stderr_path, "wb") as stderr_fh:  # NOSONAR
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=stdout_fh,
+            stderr=stderr_fh,
+            cwd=cwd,
+            env=env,
+        )
+
+    return FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=stderr_path)
 
 
 # ---------------------------------------------------------------------------

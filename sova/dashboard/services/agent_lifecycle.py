@@ -47,6 +47,7 @@ from sova.dashboard.services.agent_db import (
     _fetch_run_states,
     _finalize_orphaned_run,
     _finalize_task_run,
+    _update_task_run_output_path,
     _update_task_run_pid,
     _validate_command_outcome,
     _validate_pipeline_outcome,
@@ -605,14 +606,17 @@ async def start_agent(
         )
 
         gh_env = await _resolve_project_gh_env(project_dir)
+        output_dir = project_dir / ".claude" / "agent-output"
         try:
-            process = await get_runtime().spawn(prompt, cwd, env=gh_env)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            process = await get_runtime().spawn(prompt, cwd, env=gh_env, output_dir=output_dir, run_label=str(run_id))
         except Exception:
             log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
             return {"error": "Failed to spawn agent process"}
         pid = process.pid
         await _update_task_run_pid(run_id, pid, project_dir)
+        await _update_task_run_output_path(run_id, str(output_dir / f"{run_id}.stdout"), project_dir)
 
         # Link to lifecycle (only for issue-based runs)
         if issue:
@@ -754,16 +758,26 @@ async def start_command(
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         gh_env = await _resolve_project_gh_env(project_dir)
+        output_dir = project_dir / ".claude" / "agent-output"
+
+        role = f"command:{command}"
+        pre_run_id = await _create_task_run(issue, role, project_dir, pr_number=pr_number)
+        if pre_run_id is None:
+            return {"error": "Failed to create task run record"}
+
         try:
-            process = await get_runtime().spawn(prompt, cwd, env=gh_env)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            process = await get_runtime().spawn(
+                prompt, cwd, env=gh_env, output_dir=output_dir, run_label=str(pre_run_id)
+            )
         except Exception as exc:
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
+            await _finalize_orphaned_run(pre_run_id, project_dir)
             return {"error": f"Failed to spawn runtime: {exc}"}
-        role = f"command:{command}"
-        run_id = await _create_task_run(issue, role, project_dir, pid=process.pid, pr_number=pr_number)
-        if run_id is None:
-            await process.stop()
-            return {"error": "Failed to create task run record"}
+
+        run_id = pre_run_id
+        await _update_task_run_pid(run_id, process.pid, project_dir)
+        await _update_task_run_output_path(run_id, str(output_dir / f"{run_id}.stdout"), project_dir)
 
         # Link to lifecycle
         await _link_run_to_lifecycle(run_id, issue, role, project_dir)

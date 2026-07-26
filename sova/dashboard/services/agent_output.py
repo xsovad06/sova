@@ -36,6 +36,10 @@ async def get_output(since: int = 0, slug: str | None = None, *, run_id: int | N
         lines, total = await read_lines(pa.project_dir, run_id, since)
         if lines or total > 0:
             return lines
+        file_output_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.stdout"
+        lines, _total = read_lines_from_file(file_output_path, since)
+        if lines:
+            return lines
         legacy_path = pa.project_dir / ".claude" / "agent-output" / f"{run_id}.log"
         lines, _total = read_lines_from_file(legacy_path, since)
         return lines
