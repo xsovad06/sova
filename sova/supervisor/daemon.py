@@ -36,6 +36,7 @@ class SupervisorDaemon:
         self._poll_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._running = False
+        self._last_poll_at: datetime | None = None
 
     @property
     def running(self) -> bool:
@@ -68,6 +69,7 @@ class SupervisorDaemon:
             "poll_interval_seconds": self._config.supervisor.poll_interval_seconds,
             "log_retention_days": self._config.supervisor.log_retention_days,
             "project_dir": str(self._project_dir),
+            "last_poll_at": self._last_poll_at.isoformat().replace("+00:00", "Z") if self._last_poll_at else None,
         }
 
     async def _run_loop(self) -> None:
@@ -105,6 +107,7 @@ class SupervisorDaemon:
         # Phase 3: Health check
         results["health"] = await self._poll_health()
 
+        self._last_poll_at = datetime.now(timezone.utc)
         return results
 
     async def _poll_progression(self, adapter) -> dict:
