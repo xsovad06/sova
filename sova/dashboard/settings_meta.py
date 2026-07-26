@@ -50,6 +50,7 @@ GROUPS: dict[str, str] = {
     "supervisor": "Supervisor",
     "memory_guard": "Memory Guard",
     "watchdog": "Agent Watchdog",
+    "telemetry": "Telemetry",
     "fleet": "Fleet Insights",
     "awareness": "Awareness",
     "oversight": "Oversight Agent",
@@ -89,6 +90,7 @@ GROUP_ORDER: list[str] = [
     "supervisor",
     "memory_guard",
     "watchdog",
+    "telemetry",
     "fleet",
     "awareness",
     "oversight",
@@ -1042,6 +1044,26 @@ _REGISTRY: list[SettingMeta] = [
         "Minutes between repeated alerts for the same run and signal type",
         "watchdog",
         "number",
+    ),
+    # -- Telemetry --
+    SettingMeta(
+        "telemetry.hub_url",
+        "Hub URL",
+        "Remote hub URL to push run telemetry to (empty = disabled)",
+        "telemetry",
+    ),
+    SettingMeta(
+        "telemetry.hub_token",
+        "Hub token",
+        "Bearer token for hub authentication (or set via SOVA_TELEMETRY_HUB_TOKEN env var)",
+        "telemetry",
+        "secret",
+    ),
+    SettingMeta(
+        "telemetry.machine_id",
+        "Machine ID",
+        "Unique machine identifier for telemetry (auto-derived from hostname+username if empty)",
+        "telemetry",
     ),
     # -- Fleet Insights --
     SettingMeta(

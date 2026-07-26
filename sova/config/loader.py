@@ -8,6 +8,7 @@ Supports:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,7 @@ _NESTED_SECTIONS = (
     "supervisor",
     "memory_guard",
     "watchdog",
+    "telemetry",
     "fleet",
     "awareness",
     "oversight",
@@ -108,6 +110,21 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
     for section in _NESTED_SECTIONS:
         if section in data:
             result[section] = data[section]
+
+    # For the telemetry section, allow SOVA_TELEMETRY_* env vars to override TOML values.
+    # Pydantic Settings treats init kwargs as highest priority, so TOML values passed via
+    # ProjectConfig(telemetry=...) would otherwise silently win over env vars.
+    if "telemetry" in result and isinstance(result["telemetry"], dict):
+        tel = dict(result["telemetry"])
+        for field, env_var in [
+            ("hub_url", "SOVA_TELEMETRY_HUB_URL"),
+            ("hub_token", "SOVA_TELEMETRY_HUB_TOKEN"),
+            ("machine_id", "SOVA_TELEMETRY_MACHINE_ID"),
+        ]:
+            env_val = os.environ.get(env_var)
+            if env_val is not None:
+                tel[field] = env_val
+        result["telemetry"] = tel
 
     # Root-level keys that don't belong to a [section] map to ProjectConfig fields.
     # Filter to known fields to avoid validation errors from typos or custom keys.

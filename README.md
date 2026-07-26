@@ -159,6 +159,11 @@ max_wait = 900              # Seconds to wait for CI checks
 [pipeline]
 auto_handoff = true         # Developer auto-hands off to Reviewer
 auto_address_review = true  # Reviewer auto-triggers address-review
+
+[telemetry]
+hub_url = "https://your-hub.example.com"  # Push run summaries to a central hub (SOVA_TELEMETRY_HUB_URL)
+hub_token = ""                             # Bearer token (SOVA_TELEMETRY_HUB_TOKEN)
+machine_id = ""                            # Auto-derived from hostname+username when empty (SOVA_TELEMETRY_MACHINE_ID)
 ```
 
 For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
