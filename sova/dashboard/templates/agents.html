@@ -387,18 +387,15 @@ function renderTaskCard(item) {
     var viewBtn = '<a href="' + specUrl + '" onclick="event.stopPropagation()" ' +
       'class="text-xs px-3 py-1 rounded transition-colors whitespace-nowrap bg-accent/20 text-accent hover:bg-accent/30">View Spec</a>';
     var approveBtn = '';
-    var rejectBtn = '';
     handoffActions.forEach(function(ha) {
       var aid = ha.id || ha.action || '';
       if (aid === 'approve-spec') {
         approveBtn = _renderHandoffBtn(ha, issueKey);
-      } else if (aid === 'reject-spec') {
-        rejectBtn = _renderHandoffBtn(ha, issueKey);
       } else {
         specMenuActions.push(ha);
       }
     });
-    specPrimaryBtns = viewBtn + approveBtn + rejectBtn;
+    specPrimaryBtns = viewBtn + approveBtn;
   }
 
   var actionBtn;
@@ -535,8 +532,10 @@ function renderTaskCard(item) {
         ? '<button onclick="stopAgent(' + (item.running_agent ? item.running_agent.run_id : 0) + ')" class="w-full text-left px-3 py-1.5 text-xs text-accent-red hover:bg-surface-hover transition-colors">Stop Agent</button>'
         : (isSpecReview && specMenuActions.length
           ? specMenuActions.map(function(ha) {
-              return '<button onclick="executeHandoffAction(\'' + escapeJsStr(ha.id || ha.action || ha.label) + '\', \'' + escapeJsStr(issueKey) + '\')" ' +
-                'class="w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-hover transition-colors">' +
+              var aid = ha.id || ha.action || '';
+              var menuColor = (aid === 'reject-spec') ? 'text-accent-red' : 'text-gray-300';
+              return '<button onclick="executeHandoffAction(\'' + escapeJsStr(aid || ha.label) + '\', \'' + escapeJsStr(issueKey) + '\')" ' +
+                'class="w-full text-left px-3 py-1.5 text-xs ' + menuColor + ' hover:bg-surface-hover transition-colors">' +
                 escapeHtml(ha.label) + '</button>';
             }).join('')
           : (item.issue_number
