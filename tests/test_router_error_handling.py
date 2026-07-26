@@ -126,6 +126,7 @@ class TestSetupRouterErrors:
                 json={"base_url": "http://jira", "email": "a@b.com", "api_token": "tok"},
             )
 
+
 class TestRolesRouterErrors:
     async def test_update_role_dag_error_is_string(self, client: AsyncClient) -> None:
         with patch("sova.dashboard.routers.roles.validate_dag", return_value=(["cycle detected", "missing node"], {})):
@@ -209,6 +210,7 @@ class TestAgentsRouterErrors:
         assert resp.status_code == 409
         assert "Issue conflict" in resp.json()["detail"]
 
+
 class TestQueueRouterErrors:
     async def test_start_from_queue_error_dict_returns_409(self, client: AsyncClient) -> None:
         with patch(
@@ -256,6 +258,7 @@ class TestSettingsRouterErrors:
             )
         assert resp.status_code == 500
         assert "Failed to update configuration" in resp.json()["detail"]
+
 
 class TestHandoffRouterErrors:
     """Tests for handoff.py execute_handoff_action error dict handling."""
@@ -336,8 +339,13 @@ class TestHandoffRouterErrors:
             "issue": "10",
             "pr_number": 5,
             "next_actions": [
-                {"id": "integrate", "label": "Integrate PR",
-                 "type": "claude-command", "command": "integrate-pr", "args": {}},
+                {
+                    "id": "integrate",
+                    "label": "Integrate PR",
+                    "type": "claude-command",
+                    "command": "integrate-pr",
+                    "args": {},
+                },
             ],
         }
         with (
