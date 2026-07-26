@@ -20,7 +20,7 @@ _CACHE_TTL = 60
 
 
 @router.get("/tasks/issues")
-async def list_issues():
+async def list_issues() -> dict:
     """Get all open issues from the task source (cached 60s)."""
     project_dir = get_project_dir()
     cache_key = str(project_dir or "default")
@@ -54,7 +54,7 @@ async def list_issues():
 
 
 @router.get("/tasks/active")
-async def active_tasks():
+async def active_tasks() -> dict:
     """Get currently active (non-terminal) tasks."""
     project_dir = get_project_dir()
     async with await get_session(project_dir) as session:
@@ -63,7 +63,7 @@ async def active_tasks():
 
 
 @router.get("/tasks/history")
-async def task_history(limit: int = Query(default=50, ge=1, le=500)):
+async def task_history(limit: int = Query(default=50, ge=1, le=500)) -> dict:
     """Get completed/failed task history."""
     project_dir = get_project_dir()
     async with await get_session(project_dir) as session:

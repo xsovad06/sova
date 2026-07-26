@@ -18,7 +18,7 @@ log = get_logger(component="dashboard.resources")
     "/resources/{run_id}/summary",
     responses={404: {"description": "Run not found"}, 500: {"description": "Internal error"}},
 )
-async def resource_summary(run_id: int):
+async def resource_summary(run_id: int) -> dict:
     try:
         async with await get_session() as session:
             result = await resource_service.get_resource_summary(session, run_id)
@@ -36,7 +36,7 @@ async def resource_summary(run_id: int):
     "/resources/{run_id}/samples",
     responses={404: {"description": "Run not found"}, 500: {"description": "Internal error"}},
 )
-async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le=2000)):
+async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le=2000)) -> dict:
     try:
         async with await get_session() as session:
             result = await resource_service.get_resource_samples(session, run_id, limit=limit)
@@ -51,7 +51,7 @@ async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le
 
 
 @router.get("/resources/live/{run_id}", responses={500: {"description": "Internal error"}})
-async def live_metrics(run_id: int):
+async def live_metrics(run_id: int) -> dict:
     try:
         result = resource_service.get_live_metrics(run_id)
         if result is None:
@@ -63,7 +63,7 @@ async def live_metrics(run_id: int):
 
 
 @router.get("/resources/system", responses={500: {"description": "Internal error"}})
-async def system_info():
+async def system_info() -> dict:
     try:
         return resource_service.get_system_info()
     except Exception as exc:
@@ -72,7 +72,7 @@ async def system_info():
 
 
 @router.get("/resources/system/metrics", responses={500: {"description": "Internal error"}})
-async def system_metrics():
+async def system_metrics() -> dict:
     try:
         return await asyncio.to_thread(resource_service.get_system_metrics)
     except Exception as exc:
@@ -80,8 +80,8 @@ async def system_metrics():
         raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from exc
 
 
-@router.get("/resources/system/history", responses={500: {"description": "Internal error"}})
-async def system_metrics_history():
+@router.get("/resources/system/history", response_model=None, responses={500: {"description": "Internal error"}})
+async def system_metrics_history() -> list[dict]:
     try:
         return resource_service.get_system_metrics_history()
     except Exception as exc:
@@ -101,7 +101,7 @@ async def cross_project_metrics() -> dict:
         raise HTTPException(status_code=500, detail="Failed to fetch cross-project metrics") from exc
 
 
-@router.get("/resources/capacity", responses={500: {"description": "Internal error"}})
+@router.get("/resources/capacity", response_model=None, responses={500: {"description": "Internal error"}})
 async def capacity_recommendation() -> dict:
     from sova.dashboard.project_context import get_project_dir
 
@@ -113,7 +113,7 @@ async def capacity_recommendation() -> dict:
         raise HTTPException(status_code=500, detail="Failed to fetch capacity recommendation") from exc
 
 
-@router.get("/resources/energy/total", responses={500: {"description": "Internal error"}})
+@router.get("/resources/energy/total", response_model=None, responses={500: {"description": "Internal error"}})
 async def total_energy() -> dict:
     from sova.dashboard.project_context import get_project_dir
 

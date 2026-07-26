@@ -11,7 +11,7 @@ router = APIRouter(tags=["work"])
 
 
 @router.get("/work/active")
-async def get_active():
+async def get_active() -> dict:
     """Get non-terminal task runs with step progress."""
     async with await get_session() as session:
         async with session.begin():
@@ -20,7 +20,7 @@ async def get_active():
 
 
 @router.get("/work/active-grouped")
-async def get_active_grouped():
+async def get_active_grouped() -> dict:
     """Get non-terminal runs grouped by issue (latest run per issue + previous)."""
     async with await get_session() as session:
         async with session.begin():
@@ -34,7 +34,7 @@ async def get_history(
     role: str | None = None,
     limit: int = 15,
     offset: int = 0,
-):
+) -> dict:
     """Get completed/failed task run history with pagination."""
     async with await get_session() as session:
         async with session.begin():
@@ -42,7 +42,7 @@ async def get_history(
 
 
 @router.get("/work/summary")
-async def get_summary():
+async def get_summary() -> dict:
     """Get aggregate counts for overview cards."""
     async with await get_session() as session:
         async with session.begin():
@@ -51,7 +51,7 @@ async def get_summary():
 
 
 @router.get("/work/issue/{issue_number}")
-async def get_issue_runs(issue_number: str):
+async def get_issue_runs(issue_number: str) -> dict:
     """Get all runs for a specific issue."""
     async with await get_session() as session:
         async with session.begin():
@@ -60,7 +60,7 @@ async def get_issue_runs(issue_number: str):
 
 
 @router.get("/work/{run_id}", responses={404: {"description": "Run not found"}})
-async def get_detail(run_id: int):
+async def get_detail(run_id: int) -> dict:
     """Get a single run with step details and pipeline progress."""
     async with await get_session() as session:
         async with session.begin():
@@ -71,7 +71,7 @@ async def get_detail(run_id: int):
 
 
 @router.post("/work/{run_id}/mark-failed", responses={404: {"description": "Run not found"}})
-async def mark_failed(run_id: int):
+async def mark_failed(run_id: int) -> dict:
     """Mark a non-terminal run as failed and kill the agent process."""
     from sova.dashboard.services import control_service, run_service
 

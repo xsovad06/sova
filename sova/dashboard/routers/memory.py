@@ -23,7 +23,7 @@ async def list_memories(
     tier: str | None = None,
     limit: int = 100,
     semantic: bool = False,
-):
+) -> dict:
     try:
         if semantic and q:
             memories, total = await memory_service.semantic_list_memories(
@@ -48,7 +48,7 @@ async def list_memories(
 
 
 @router.post("/memory/export", responses={500: {"description": "Failed to export memories"}})
-async def export_memories(dry_run: bool = False):
+async def export_memories(dry_run: bool = False) -> dict:
     try:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)
@@ -65,7 +65,7 @@ async def export_memories(dry_run: bool = False):
 
 
 @router.post("/memory/import", responses={500: {"description": "Failed to import memories"}})
-async def import_memories(dry_run: bool = False):
+async def import_memories(dry_run: bool = False) -> dict:
     try:
         project_dir = get_project_dir()
         cfg = load_config(project_dir)

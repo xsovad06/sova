@@ -27,7 +27,7 @@ class AdvanceRequest(BaseModel):
 
 
 @router.get("/active")
-async def list_active():
+async def list_active() -> dict:
     """List all active lifecycles."""
     async with await get_session() as session, session.begin():
         lifecycles = await lifecycle_service.list_active_lifecycles(session)
@@ -35,7 +35,7 @@ async def list_active():
 
 
 @router.get("/issue/{issue_number}")
-async def get_by_issue(issue_number: str):
+async def get_by_issue(issue_number: str) -> dict:
     """Get the lifecycle for an issue (real or reconstructed)."""
     github_repo = ""
     github_user = ""
@@ -56,7 +56,7 @@ async def get_by_issue(issue_number: str):
 
 
 @router.get("/{lifecycle_id}")
-async def get_lifecycle(lifecycle_id: int):
+async def get_lifecycle(lifecycle_id: int) -> dict:
     """Get a lifecycle by ID with full phase detail."""
     async with await get_session() as session, session.begin():
         lc = await lifecycle_service.get_lifecycle(session, lifecycle_id)
@@ -69,7 +69,7 @@ async def get_lifecycle(lifecycle_id: int):
 
 
 @router.post("/{lifecycle_id}/phase/{phase}/start")
-async def start_phase(lifecycle_id: int, phase: str):
+async def start_phase(lifecycle_id: int, phase: str) -> dict:
     """Start a phase within a lifecycle."""
     if phase not in _VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
@@ -81,7 +81,7 @@ async def start_phase(lifecycle_id: int, phase: str):
 
 
 @router.post("/{lifecycle_id}/phase/{phase}/skip")
-async def skip_phase(lifecycle_id: int, phase: str):
+async def skip_phase(lifecycle_id: int, phase: str) -> dict:
     """Skip a phase and advance."""
     if phase not in _VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
@@ -94,7 +94,7 @@ async def skip_phase(lifecycle_id: int, phase: str):
 
 
 @router.post("/{lifecycle_id}/phase/{phase}/restart")
-async def restart_phase(lifecycle_id: int, phase: str):
+async def restart_phase(lifecycle_id: int, phase: str) -> dict:
     """Restart a failed phase."""
     if phase not in _VALID_PHASES:
         raise HTTPException(status_code=400, detail=f"Invalid phase: {phase}")
@@ -106,7 +106,7 @@ async def restart_phase(lifecycle_id: int, phase: str):
 
 
 @router.post("/{lifecycle_id}/advance")
-async def force_advance(lifecycle_id: int, req: AdvanceRequest):
+async def force_advance(lifecycle_id: int, req: AdvanceRequest) -> dict:
     """Force-advance the lifecycle to a specific phase."""
     async with await get_session() as session, session.begin():
         ok = await lifecycle_service.force_advance(session, lifecycle_id, req.to_phase)
@@ -116,7 +116,7 @@ async def force_advance(lifecycle_id: int, req: AdvanceRequest):
 
 
 @router.post("/{lifecycle_id}/abandon")
-async def abandon(lifecycle_id: int):
+async def abandon(lifecycle_id: int) -> dict:
     """Abandon a lifecycle."""
     async with await get_session() as session, session.begin():
         ok = await lifecycle_service.abandon_lifecycle(session, lifecycle_id)

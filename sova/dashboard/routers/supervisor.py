@@ -34,7 +34,7 @@ def set_daemon_registry(registry: dict) -> None:
 
 
 @router.get("/status")
-async def get_status():
+async def get_status() -> dict:
     """Return supervisor daemon status."""
     daemon = _get_daemon()
     if daemon is None:
@@ -43,7 +43,7 @@ async def get_status():
 
 
 @router.post("/poll", status_code=202, responses={404: {"description": "Supervisor daemon is not running"}})
-async def trigger_poll():
+async def trigger_poll() -> dict:
     """Trigger a manual poll cycle (fire-and-forget)."""
     daemon = _get_daemon()
     if daemon is None:
@@ -59,7 +59,7 @@ async def get_decisions(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     component: str | None = None,
     event_type: str | None = None,
-):
+) -> dict:
     """Return recent supervisor decisions."""
     from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_recent_decisions
@@ -134,7 +134,7 @@ async def stop_supervisor() -> dict[str, Any]:
 
 
 @router.get("/counts")
-async def get_counts():
+async def get_counts() -> dict:
     """Return per-component decision counts."""
     from sova.config.loader import load_config
     from sova.dashboard.services.supervisor_service import get_decision_counts

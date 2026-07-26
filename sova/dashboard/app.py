@@ -528,7 +528,7 @@ def _setup_single_project(
 
     # -- Page routes --
     @app.get("/")
-    async def home(request: Request):
+    async def home(request: Request) -> RedirectResponse:
         return RedirectResponse(url="/dashboard")
 
     _register_page_routes(app, templates)
@@ -549,24 +549,24 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # -- Home page (Fleet Manager command center) --
     @app.get("/")
-    async def home(request: Request):
+    async def home(request: Request) -> Response:
         projects = list_projects()
         return templates.TemplateResponse(request, "home.html", {"projects": projects})
 
     # -- Project API --
     @app.get("/api/projects")
-    async def api_list_projects():
+    async def api_list_projects() -> dict:
         return {"projects": list_projects()}
 
     @app.post("/api/projects/register")
-    async def api_register_project(req: RegisterRequest):
+    async def api_register_project(req: RegisterRequest) -> dict:
         p = Path(req.path)
         result_slug = register_project(p, req.slug)
         await init_db_for_project(p)
         return {"slug": result_slug, "path": str(p)}
 
     @app.post("/api/projects/unregister")
-    async def api_unregister_project(req: UnregisterRequest):
+    async def api_unregister_project(req: UnregisterRequest) -> dict:
         removed = unregister_project(req.slug)
         return {"removed": removed}
 
@@ -606,86 +606,86 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # -- Setup page (global, not project-scoped) --
     @app.get("/setup")
-    async def setup_page(request: Request):
+    async def setup_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "setup.html", {"page": "setup"})
 
     # -- Project-scoped page routes (new) --
     @app.get("/p/{slug}")
-    async def project_redirect(slug: str):
+    async def project_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/dashboard")
 
     @app.get("/p/{slug}/dashboard")
-    async def project_dashboard(request: Request, slug: str):
+    async def project_dashboard(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "dashboard.html", "dashboard")
 
     @app.get("/p/{slug}/agents")
-    async def project_agents(request: Request, slug: str):
+    async def project_agents(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "agents.html", "agents")
 
     @app.get("/p/{slug}/work")
-    async def project_work_redirect(slug: str):
+    async def project_work_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/work/{run_id}")
-    async def project_work_detail(request: Request, slug: str, run_id: int):
+    async def project_work_detail(request: Request, slug: str, run_id: int) -> Response:
         return _project_page(request, templates, slug, "run_detail.html", "agents", run_id=run_id)
 
     # -- Old routes as redirects --
     @app.get("/p/{slug}/overview")
-    async def project_overview_redirect(slug: str):
+    async def project_overview_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/dashboard", status_code=301)
 
     @app.get("/p/{slug}/control")
-    async def project_control_redirect(slug: str):
+    async def project_control_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/tasks")
-    async def project_tasks_redirect(slug: str):
+    async def project_tasks_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/runs")
-    async def project_runs_redirect(slug: str):
+    async def project_runs_redirect(slug: str) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/agents", status_code=301)
 
     @app.get("/p/{slug}/runs/{run_id}")
-    async def project_run_detail_redirect(slug: str, run_id: int):
+    async def project_run_detail_redirect(slug: str, run_id: int) -> RedirectResponse:
         return RedirectResponse(url=f"/p/{slug}/work/{run_id}", status_code=301)
 
     # -- Unchanged project pages --
     @app.get("/p/{slug}/costs")
-    async def project_costs(request: Request, slug: str):
+    async def project_costs(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "costs.html", "costs")
 
     @app.get("/p/{slug}/queue")
-    async def project_queue(request: Request, slug: str):
+    async def project_queue(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "queue.html", "queue")
 
     @app.get("/p/{slug}/specs")
-    async def project_specs(request: Request, slug: str):
+    async def project_specs(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "specs.html", "specs")
 
     @app.get("/p/{slug}/logs")
-    async def project_logs(request: Request, slug: str):
+    async def project_logs(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "logs.html", "logs")
 
     @app.get("/p/{slug}/settings")
-    async def project_settings(request: Request, slug: str):
+    async def project_settings(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "settings.html", "settings")
 
     @app.get("/p/{slug}/memory")
-    async def project_memory(request: Request, slug: str):
+    async def project_memory(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "memory.html", "memory")
 
     @app.get("/p/{slug}/lifecycle/{issue_number}")
-    async def project_lifecycle(request: Request, slug: str, issue_number: int):
+    async def project_lifecycle(request: Request, slug: str, issue_number: int) -> Response:
         return _project_page(request, templates, slug, "lifecycle.html", "agents", issue_number=issue_number)
 
     @app.get("/p/{slug}/roles")
-    async def project_roles(request: Request, slug: str):
+    async def project_roles(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "roles.html", "roles")
 
     @app.get("/p/{slug}/roles/{name}")
-    async def project_role_detail(request: Request, slug: str, name: str):
+    async def project_role_detail(request: Request, slug: str, name: str) -> Response:
         return _project_page(request, templates, slug, "role_editor.html", "roles", role_name=name)
 
     @app.get("/p/{slug}/spec/{issue_number}")
@@ -693,7 +693,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return _project_page(request, templates, slug, "spec.html", "agents", issue_number=issue_number)
 
     @app.get("/p/{slug}/supervisor")
-    async def project_supervisor(request: Request, slug: str):
+    async def project_supervisor(request: Request, slug: str) -> Response:
         from sova.config.registry import get_project_path
 
         github_repo = ""
@@ -705,11 +705,11 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
         return _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
 
     @app.get("/p/{slug}/fleet")
-    async def project_fleet(request: Request, slug: str):
+    async def project_fleet(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "fleet.html", "fleet")
 
     @app.get("/p/{slug}/style-guide")
-    async def project_style_guide(request: Request, slug: str):
+    async def project_style_guide(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
 
     # -- Project-scoped API --
@@ -747,11 +747,11 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # -- New pages --
     @app.get("/dashboard")
-    async def dashboard_page(request: Request):
+    async def dashboard_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "dashboard.html", {"page": "dashboard"})
 
     @app.get("/agents")
-    async def agents_page(request: Request):
+    async def agents_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "agents.html", {"page": "agents"})
 
     @app.get("/work")
@@ -759,7 +759,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return RedirectResponse(url=_AGENTS_URL, status_code=301)
 
     @app.get("/work/{run_id}")
-    async def work_detail_page(request: Request, run_id: int):
+    async def work_detail_page(request: Request, run_id: int) -> Response:
         return templates.TemplateResponse(request, "run_detail.html", {"page": "agents", "run_id": run_id})
 
     # -- Old pages kept as redirects --
@@ -785,39 +785,39 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # -- Unchanged pages --
     @app.get("/costs")
-    async def costs_page(request: Request):
+    async def costs_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "costs.html", {"page": "costs"})
 
     @app.get("/queue")
-    async def queue_page(request: Request):
+    async def queue_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "queue.html", {"page": "queue"})
 
     @app.get("/specs")
-    async def specs_page(request: Request):
+    async def specs_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "specs.html", {"page": "specs"})
 
     @app.get("/logs")
-    async def logs_page(request: Request):
+    async def logs_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "logs.html", {"page": "logs"})
 
     @app.get("/settings")
-    async def settings_page(request: Request):
+    async def settings_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "settings.html", {"page": "settings"})
 
     @app.get("/memory")
-    async def memory_page(request: Request):
+    async def memory_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "memory.html", {"page": "memory"})
 
     @app.get("/lifecycle/{issue_number}")
-    async def lifecycle_page(request: Request, issue_number: int):
+    async def lifecycle_page(request: Request, issue_number: int) -> Response:
         return templates.TemplateResponse(request, "lifecycle.html", {"page": "agents", "issue_number": issue_number})
 
     @app.get("/roles")
-    async def roles_page(request: Request):
+    async def roles_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "roles.html", {"page": "roles"})
 
     @app.get("/roles/{name}")
-    async def role_detail_page(request: Request, name: str):
+    async def role_detail_page(request: Request, name: str) -> Response:
         return templates.TemplateResponse(request, "role_editor.html", {"page": "roles", "role_name": name})
 
     @app.get("/spec/{issue_number}")
@@ -825,7 +825,7 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         return templates.TemplateResponse(request, "spec.html", {"page": "agents", "issue_number": issue_number})
 
     @app.get("/supervisor")
-    async def supervisor_page(request: Request):
+    async def supervisor_page(request: Request) -> Response:
         try:
             from sova.config.loader import load_config
             from sova.dashboard.project_context import get_project_dir
@@ -840,11 +840,11 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
         )
 
     @app.get("/fleet")
-    async def fleet_page(request: Request):
+    async def fleet_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "fleet.html", {"page": "fleet"})
 
     @app.get("/style-guide")
-    async def style_guide_page(request: Request):
+    async def style_guide_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
 
 

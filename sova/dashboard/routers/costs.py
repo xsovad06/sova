@@ -12,8 +12,8 @@ router = APIRouter()
 log = get_logger(component="dashboard.costs")
 
 
-@router.get("/costs/summary", responses={500: {"description": "Failed to fetch cost summary"}})
-async def cost_summary():
+@router.get("/costs/summary", response_model=None, responses={500: {"description": "Failed to fetch cost summary"}})
+async def cost_summary() -> dict:
     try:
         async with await get_session() as session:
             return await cost_service.get_summary(session)
@@ -23,7 +23,7 @@ async def cost_summary():
 
 
 @router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
-async def daily_costs(days: int = Query(default=14, ge=1, le=90)):
+async def daily_costs(days: int = Query(default=14, ge=1, le=90)) -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_daily(session, days)
@@ -32,8 +32,8 @@ async def daily_costs(days: int = Query(default=14, ge=1, le=90)):
         raise HTTPException(status_code=500, detail="Failed to fetch daily costs")
 
 
-@router.get("/costs/by-issue", responses={500: {"description": "Failed to fetch costs by issue"}})
-async def costs_by_issue():
+@router.get("/costs/by-issue", response_model=None, responses={500: {"description": "Failed to fetch costs by issue"}})
+async def costs_by_issue() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_issue(session)
@@ -42,8 +42,8 @@ async def costs_by_issue():
         raise HTTPException(status_code=500, detail="Failed to fetch costs by issue")
 
 
-@router.get("/costs/by-phase", responses={500: {"description": "Failed to fetch costs by phase"}})
-async def costs_by_phase():
+@router.get("/costs/by-phase", response_model=None, responses={500: {"description": "Failed to fetch costs by phase"}})
+async def costs_by_phase() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_phase(session)
@@ -52,8 +52,8 @@ async def costs_by_phase():
         raise HTTPException(status_code=500, detail="Failed to fetch costs by phase")
 
 
-@router.get("/costs/by-model", responses={500: {"description": "Failed to fetch costs by model"}})
-async def costs_by_model():
+@router.get("/costs/by-model", response_model=None, responses={500: {"description": "Failed to fetch costs by model"}})
+async def costs_by_model() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_model(session)
@@ -62,8 +62,12 @@ async def costs_by_model():
         raise HTTPException(status_code=500, detail="Failed to fetch costs by model")
 
 
-@router.get("/costs/by-routing", responses={500: {"description": "Failed to fetch costs by routing"}})
-async def costs_by_routing():
+@router.get(
+    "/costs/by-routing",
+    response_model=None,
+    responses={500: {"description": "Failed to fetch costs by routing"}},
+)
+async def costs_by_routing() -> list[dict]:
     try:
         async with await get_session() as session:
             return await cost_service.get_by_routing(session)

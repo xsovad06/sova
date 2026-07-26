@@ -12,8 +12,8 @@ router = APIRouter()
 log = get_logger(component="dashboard.overview")
 
 
-@router.get("/overview", responses={500: {"description": "Failed to fetch overview data"}})
-async def overview():
+@router.get("/overview", response_model=None, responses={500: {"description": "Failed to fetch overview data"}})
+async def overview() -> dict:
     try:
         async with await get_session() as session:
             runs = await run_service.get_run_summary(session)

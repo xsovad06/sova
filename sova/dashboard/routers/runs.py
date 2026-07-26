@@ -16,14 +16,14 @@ class MarkFailedRequest(BaseModel):
 
 
 @router.get("/runs")
-async def list_runs(limit: int = 50, status: str | None = None):
+async def list_runs(limit: int = 50, status: str | None = None) -> dict:
     async with await get_session() as session:
         runs = await run_service.list_runs(session, limit=limit, status=status)
     return {"runs": runs}
 
 
 @router.get("/runs/{run_id}", responses={404: {"description": "Run not found"}})
-async def get_run(run_id: int):
+async def get_run(run_id: int) -> dict:
     async with await get_session() as session:
         run = await run_service.get_run(session, run_id)
         if run is None:
@@ -39,7 +39,7 @@ async def get_run(run_id: int):
         409: {"description": "Run already in terminal state"},
     },
 )
-async def mark_run_failed(run_id: int, req: MarkFailedRequest | None = None):
+async def mark_run_failed(run_id: int, req: MarkFailedRequest | None = None) -> dict:
     reason = req.reason if req else "Manually abandoned"
     async with await get_session() as session:
         async with session.begin():

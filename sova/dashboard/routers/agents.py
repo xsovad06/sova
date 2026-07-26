@@ -188,13 +188,13 @@ async def get_work_items() -> dict:
 
 
 @router.get("/agents/active")
-async def get_active_agents():
+async def get_active_agents() -> dict:
     """Get all running + recently completed agents (dashboard + external)."""
     return await control_service.get_unified_agents()
 
 
 @router.get("/agents/interrupted")
-async def interrupted_runs():
+async def interrupted_runs() -> dict:
     """Get recently interrupted runs (from dashboard crash/restart)."""
     from sova.dashboard.services.agent_recovery import get_interrupted_runs
 
@@ -203,7 +203,7 @@ async def interrupted_runs():
 
 
 @router.post("/agents/interrupted/dismiss")
-async def dismiss_interrupted():
+async def dismiss_interrupted() -> dict:
     """Mark all interrupted runs as failed so they no longer show in the banner."""
     from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
 
@@ -212,7 +212,7 @@ async def dismiss_interrupted():
 
 
 @router.get("/agents/pipeline")
-async def get_pipeline():
+async def get_pipeline() -> dict:
     """Get the developer pipeline step names."""
     return {"steps": control_service.DEVELOPER_PIPELINE}
 
@@ -237,7 +237,7 @@ async def get_kanban(per_column: Annotated[int, Query(ge=1, le=100)] = 10) -> di
 
 
 @router.get("/agents/{run_id}/output")
-async def get_agent_output(run_id: int, since: int = 0):
+async def get_agent_output(run_id: int, since: int = 0) -> dict:
     """Get output lines for a specific agent."""
     lines = await control_service.get_output(since, run_id=run_id)
     return {"lines": lines, "total": since + len(lines)}
@@ -293,7 +293,7 @@ async def _check_run_terminal(run_id: int) -> bool:
 
 
 @router.post("/agents/start")
-async def start_agent(req: StartAgentRequest):
+async def start_agent(req: StartAgentRequest) -> dict:
     """Start a new agent process."""
     if not req.issue and not req.role:
         raise HTTPException(status_code=400, detail="Either issue or role is required for starting an agent")
@@ -310,7 +310,7 @@ async def start_agent(req: StartAgentRequest):
 
 
 @router.post("/agents/{run_id}/stop")
-async def stop_agent(run_id: int):
+async def stop_agent(run_id: int) -> dict:
     """Stop a specific running agent."""
     return await control_service.stop_agent(run_id=run_id)
 
@@ -336,7 +336,7 @@ async def resume_from_approval(run_id: int) -> dict:
 
 
 @router.get("/agents/issue/{issue_number}/pr-status")
-async def get_issue_pr_status(issue_number: str):
+async def get_issue_pr_status(issue_number: str) -> dict:
     """Get PR status for an issue -- approval state, CI, mergeability."""
     from sova.dashboard.services.agent_recovery import get_pr_status_for_issue
 
@@ -344,7 +344,7 @@ async def get_issue_pr_status(issue_number: str):
 
 
 @router.post("/agents/command")
-async def run_command(req: RunCommandRequest):
+async def run_command(req: RunCommandRequest) -> dict:
     """Execute a Claude Code command (e.g. /integrate-pr, /address-pr)."""
     result = await control_service.start_command(req.command, req.args or {})
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
