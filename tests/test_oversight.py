@@ -72,7 +72,7 @@ class TestOversightAgent:
 
         recorded: list[dict] = []
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             recorded.append(
                 {
                     "run_id": run_id,
@@ -83,8 +83,14 @@ class TestOversightAgent:
                 }
             )
 
-        with patch.object(agent, "_record_run", side_effect=_mock_record):
-            # Patch sleep to cancel immediately after the first cycle
+        async def _noop_observe():
+            return {"projects": [], "partial": False}
+
+        with (
+            patch.object(agent, "_observe", side_effect=_noop_observe),
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+        ):
+
             async def _fake_sleep(seconds):
                 raise asyncio.CancelledError
 
@@ -115,7 +121,11 @@ class TestOversightAgent:
             if call_count > 2:
                 raise asyncio.CancelledError
 
+        async def _noop_observe():
+            return None
+
         with (
+            patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
@@ -135,14 +145,18 @@ class TestOversightAgent:
 
         recorded: list[dict] = []
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             recorded.append({"status": status, "error": error})
 
         async def _fake_sleep(seconds):
             raise asyncio.CancelledError
 
+        async def _noop_observe():
+            return {"projects": [], "partial": False}
+
         # First cycle runs immediately, then sleep raises CancelledError
         with (
+            patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
@@ -198,7 +212,7 @@ class TestOversightAgent:
 
         recorded: list[dict] = []
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             recorded.append({"status": status, "error": error})
 
         sleep_count = 0
@@ -216,14 +230,27 @@ class TestOversightAgent:
         call_count = 0
         original_mock_record = _mock_record
 
-        async def _cancel_then_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _cancel_then_record(
+            run_id,
+            cycle,
+            status,
+            duration_ms,
+            *,
+            started_at=None,
+            error=None,
+            snapshot=None,
+        ):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise asyncio.CancelledError
             await original_mock_record(run_id, cycle, status, duration_ms, started_at=started_at, error=error)
 
+        async def _noop_observe():
+            return None
+
         with (
+            patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_cancel_then_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
@@ -255,7 +282,11 @@ class TestOversightAgent:
                 raise asyncio.CancelledError
             raise RuntimeError("DB gone during cancellation")
 
+        async def _noop_observe():
+            return None
+
         with (
+            patch.object(agent, "_observe", side_effect=_noop_observe),
             patch.object(agent, "_record_run", side_effect=_failing_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
@@ -265,6 +296,37 @@ class TestOversightAgent:
 
         # The CancelledError was still re-raised despite the inner _record_run failure
         assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_observe_none_records_error(self) -> None:
+        """When _observe returns None the cycle is recorded as ERROR, not DONE."""
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        recorded: list[dict] = []
+
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
+            recorded.append({"status": status, "error": error})
+
+        async def _observe_none():
+            return None
+
+        with (
+            patch.object(agent, "_observe", side_effect=_observe_none),
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+        ):
+
+            async def _fake_sleep(seconds):
+                raise asyncio.CancelledError
+
+            with patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep):
+                task = agent.start()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        assert len(recorded) == 1
+        assert recorded[0]["status"] == OversightRunStatus.ERROR
+        assert recorded[0]["error"] == "observation_failed"
 
     @pytest.mark.asyncio
     async def test_record_run_db_failure_does_not_raise(self) -> None:
