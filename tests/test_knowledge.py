@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -459,6 +460,101 @@ def test_detect_persona_no_match(tmp_path: Path) -> None:
     from sova.knowledge.personas import detect_persona
 
     assert detect_persona(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# personas.py -- _package_json_mention
+# ---------------------------------------------------------------------------
+
+
+def test_package_json_mention_found_in_deps(tmp_path: Path) -> None:
+    """_package_json_mention detects package in dependencies."""
+    pkg = json.dumps({"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is True
+
+
+def test_package_json_mention_found_in_devdeps(tmp_path: Path) -> None:
+    """_package_json_mention detects package in devDependencies."""
+    pkg = json.dumps({"name": "test", "devDependencies": {"@patternfly/react-core": "^5.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is True
+
+
+def test_package_json_mention_not_found(tmp_path: Path) -> None:
+    """_package_json_mention returns False when package not listed."""
+    pkg = json.dumps({"name": "test", "dependencies": {"react": "^18.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
+
+
+def test_package_json_mention_no_file(tmp_path: Path) -> None:
+    """_package_json_mention returns False when no package.json."""
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
+
+
+def test_package_json_mention_malformed(tmp_path: Path) -> None:
+    """_package_json_mention returns False for malformed JSON."""
+    (tmp_path / "package.json").write_text("{bad json")
+
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
+
+
+def test_package_json_mention_non_dict(tmp_path: Path) -> None:
+    """_package_json_mention returns False when JSON is not a dict."""
+    (tmp_path / "package.json").write_text("[1, 2, 3]")
+
+    from sova.knowledge.personas import package_json_mention
+
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
+
+
+# ---------------------------------------------------------------------------
+# personas.py -- PatternFly detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_persona_patternfly(tmp_path: Path) -> None:
+    """detect_persona() returns 'patternfly' for @patternfly/react-core in package.json."""
+    pkg = json.dumps({"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0", "react": "^18.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "patternfly"
+
+
+def test_detect_persona_patternfly_over_node(tmp_path: Path) -> None:
+    """PatternFly detection takes priority over generic node."""
+    pkg = json.dumps({"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "patternfly"
+
+
+def test_detect_persona_node_without_patternfly(tmp_path: Path) -> None:
+    """Plain node project without PatternFly still returns 'node'."""
+    pkg = json.dumps({"name": "test", "dependencies": {"express": "^4.0.0"}})
+    (tmp_path / "package.json").write_text(pkg)
+
+    from sova.knowledge.personas import detect_persona
+
+    assert detect_persona(tmp_path) == "node"
 
 
 # ---------------------------------------------------------------------------

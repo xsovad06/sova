@@ -19,6 +19,13 @@ def _has_file(project_dir: Path, name: str) -> bool:
     return (project_dir / name).is_file()
 
 
+def package_json_mention(project_dir: Path, package_name: str) -> bool:
+    """Check if package.json lists a package in dependencies or devDependencies."""
+    from sova.utils.package_json import has_dependency
+
+    return has_dependency(project_dir, package_name)
+
+
 def _requirements_mention(project_dir: Path, keyword: str) -> bool:
     """Check if any requirements-style file mentions a keyword.
 
@@ -87,6 +94,10 @@ def detect_persona(project_dir: Path) -> str | None:
     # FastAPI: "fastapi" in any requirements file (including nested)
     if _requirements_mention(project_dir, "fastapi"):
         return "fastapi"
+
+    # PatternFly React: @patternfly/react-core in package.json (before generic node)
+    if package_json_mention(project_dir, "@patternfly/react-core"):
+        return "patternfly"
 
     # Node / frontend
     if _has_file(project_dir, "package.json"):
