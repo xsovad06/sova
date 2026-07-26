@@ -349,6 +349,55 @@ class TestDependencyGraph:
         assert by_id[4] == []
         assert by_id[5] == []
 
+    def test_to_dict_no_pr_map_backward_compatible(self) -> None:
+        """to_dict without pr_map returns nodes without PR fields."""
+        tasks = [_task(1, state=TaskState.IN_REVIEW)]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert "pr_number" not in node
+        assert "pr_state" not in node
+
+    def test_to_dict_pr_enrichment(self) -> None:
+        """Nodes with linked PRs include pr_number, pr_url, pr_state, pr_state_label."""
+        tasks = [_task(1, state=TaskState.IN_REVIEW), _task(2, state=TaskState.BACKLOG)]
+        pr_map = {
+            1: {
+                "pr_number": 42,
+                "pr_url": "https://github.com/test/pull/42",
+                "pr_state": "approved_ci_green",
+                "pr_state_label": "Ready to Merge",
+            },
+        }
+        d = DependencyGraph(tasks).to_dict(pr_map=pr_map)
+        by_id = {n["id"]: n for n in d["nodes"]}
+        assert by_id[1]["pr_number"] == 42
+        assert by_id[1]["pr_state"] == "approved_ci_green"
+        assert by_id[1]["pr_url"] == "https://github.com/test/pull/42"
+        # Node without PR should not have PR fields
+        assert "pr_number" not in by_id[2]
+
+    def test_to_dict_pr_state_overrides_actions_for_in_review(self) -> None:
+        """IN_REVIEW nodes with PR state get PR-aware actions."""
+        tasks = [_task(1, state=TaskState.IN_REVIEW)]
+        pr_map = {1: {"pr_number": 42, "pr_url": "", "pr_state": "approved_ci_green", "pr_state_label": ""}}
+        pr_actions = {
+            "approved_ci_green": [{"id": "integrate-pr", "label": "Integrate PR", "role": "integrate-pr"}],
+            "changes_requested": [{"id": "address-pr", "label": "Address PR", "role": "address-pr"}],
+        }
+        d = DependencyGraph(tasks).to_dict(pr_map=pr_map, pr_state_actions=pr_actions)
+        node = d["nodes"][0]
+        assert len(node["available_actions"]) == 1
+        assert node["available_actions"][0]["role"] == "integrate-pr"
+
+    def test_to_dict_pr_state_no_override_for_non_in_review(self) -> None:
+        """Nodes not IN_REVIEW keep state-based actions even if PR is linked."""
+        tasks = [_task(1, state=TaskState.IN_PROGRESS)]
+        pr_map = {1: {"pr_number": 42, "pr_url": "", "pr_state": "ci_running", "pr_state_label": ""}}
+        pr_actions = {"ci_running": []}
+        d = DependencyGraph(tasks).to_dict(pr_map=pr_map, pr_state_actions=pr_actions)
+        node = d["nodes"][0]
+        # IN_PROGRESS has no static actions, and PR should not override
+        assert node["available_actions"] == []
+
     def test_self_reference_filtered(self) -> None:
         tasks = [_task(5, body="## Dependencies\n- #5\n- #10\n")]
         graph = DependencyGraph(tasks)
@@ -507,6 +556,69 @@ async def client(setup_db):
         yield ac
 
 
+class TestFetchPrMap:
+    @pytest.mark.asyncio
+    async def test_builds_issue_to_pr_mapping(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [
+            {
+                "number": 42,
+                "url": "https://github.com/test/pull/42",
+                "computed_state": "approved_ci_green",
+                "state_label": "Ready to Merge",
+                "linked_issues": [10],
+            },
+            {
+                "number": 43,
+                "url": "https://github.com/test/pull/43",
+                "computed_state": "ci_running",
+                "state_label": "CI Running",
+                "linked_issues": [20],
+            },
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert 10 in result
+        assert result[10]["pr_number"] == 42
+        assert result[10]["pr_state"] == "approved_ci_green"
+        assert 20 in result
+        assert result[20]["pr_state"] == "ci_running"
+
+    @pytest.mark.asyncio
+    async def test_multiple_prs_per_issue_keeps_highest_number(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [
+            {"number": 10, "url": "", "computed_state": "ci_failed", "state_label": "", "linked_issues": [5]},
+            {"number": 20, "url": "", "computed_state": "approved_ci_green", "state_label": "", "linked_issues": [5]},
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result[5]["pr_number"] == 20
+
+    @pytest.mark.asyncio
+    async def test_pr_fetch_failure_returns_empty(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", side_effect=Exception("API error")):
+            result = await _fetch_pr_map()
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_no_linked_issues_skipped(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [{"number": 42, "url": "", "computed_state": "draft", "state_label": "", "linked_issues": []}]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result == {}
+
+
 class TestDependencyAPI:
     @pytest.mark.asyncio
     async def test_graph_endpoint(self, client: AsyncClient) -> None:
@@ -515,13 +627,46 @@ class TestDependencyAPI:
             _task(2, title="Feature", body="## Dependencies\n- #1\n"),
         ]
         p1, p2, p3 = _mock_graph_context(tasks)
-        with p1, p2, p3:
+        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value={}):
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 200
         data = resp.json()
         assert "nodes" in data
         assert "edges" in data
         assert "validation" in data
+
+    @pytest.mark.asyncio
+    async def test_graph_endpoint_with_pr_enrichment(self, client: AsyncClient) -> None:
+        tasks = [_task(1, title="In Review", state=TaskState.IN_REVIEW)]
+        pr_map = {
+            1: {
+                "pr_number": 99,
+                "pr_url": "https://github.com/test/pull/99",
+                "pr_state": "approved_ci_green",
+                "pr_state_label": "Ready to Merge",
+            }
+        }
+        p1, p2, p3 = _mock_graph_context(tasks)
+        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value=pr_map):
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 200
+        node = resp.json()["nodes"][0]
+        assert node["pr_number"] == 99
+        assert node["pr_state"] == "approved_ci_green"
+        # PR-state-aware action override: approved_ci_green -> integrate-pr only
+        assert len(node["available_actions"]) == 1
+        assert node["available_actions"][0]["role"] == "integrate-pr"
+
+    @pytest.mark.asyncio
+    async def test_graph_endpoint_pr_fetch_failure(self, client: AsyncClient) -> None:
+        """PR fetch failure should not break the graph endpoint (fail-open)."""
+        tasks = [_task(1, title="Feature")]
+        p1, p2, p3 = _mock_graph_context(tasks)
+        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value={}):
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 200
+        node = resp.json()["nodes"][0]
+        assert "pr_number" not in node
 
     @pytest.mark.asyncio
     async def test_ready_endpoint(self, client: AsyncClient) -> None:
