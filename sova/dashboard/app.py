@@ -441,6 +441,9 @@ def create_app(
 
         # Start oversight agent
         from sova.oversight.agent import OversightAgent as _OversightAgent
+        from sova.oversight.persona import ensure_persona_exists
+
+        ensure_persona_exists(cfg.oversight.persona_path)
 
         oversight_agent: OversightAgent | None = None
         if cfg.oversight.enabled:

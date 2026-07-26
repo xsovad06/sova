@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRun, OversightRunStatus
+from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
 
 log = get_logger(component="oversight.agent")
@@ -26,6 +27,7 @@ class OversightAgent:
         self._config = config
         self._task: asyncio.Task | None = None
         self._cycle_number: int = 0
+        self._persona: str = ""
 
     def start(self) -> asyncio.Task:
         """Start the oversight background loop. Returns the task for cancellation."""
@@ -55,7 +57,8 @@ class OversightAgent:
             t0 = time.monotonic()
             try:
                 log.debug("oversight.cycle_start", cycle=cycle, run_id=run_id)
-                # Future hooks (#445, #446, #447) execute here.
+                self._persona = load_persona(self._config.persona_path)
+                # Future hooks (#445, #446, #447) use self._persona as LLM system context.
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 await self._record_run(run_id, cycle, OversightRunStatus.DONE, duration_ms, started_at=started_at)
                 log.debug("oversight.cycle_done", cycle=cycle, run_id=run_id, duration_ms=duration_ms)
