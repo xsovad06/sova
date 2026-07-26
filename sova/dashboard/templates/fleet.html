@@ -12,6 +12,9 @@
   </div>
 </div>
 
+<!-- Error Banner -->
+<div id="fleet-error" class="hidden mb-4 px-4 py-3 rounded bg-accent-red/10 border border-accent-red/30 text-accent-red text-sm"></div>
+
 <!-- Health Summary -->
 <div id="health-summary" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
   <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
@@ -109,10 +112,7 @@ function rateColorClass(rate) {
 }
 
 function renderFleet(data) {
-  const key = [data.total_runs, data.success_rate, data.total_cost_usd,
-    data.retry_success_rate, data.projects_scanned.length,
-    data.step_failure_stats.length, data.failure_clusters.length,
-    data.cost_by_project.length].join(',');
+  const key = JSON.stringify(data);
   if (key === _lastFleetKey) return;
   _lastFleetKey = key;
 
@@ -131,6 +131,8 @@ function renderFleet(data) {
   if (data.generated_at) {
     const d = new Date(data.generated_at * 1000);
     updatedEl.textContent = 'Updated ' + d.toLocaleTimeString();
+  } else {
+    updatedEl.textContent = '';
   }
 
   // Step Failure Leaderboard
@@ -210,7 +212,7 @@ function renderFleet(data) {
   if (data.total_runs === 0) {
     reEl.innerHTML = '<p class="text-sm text-gray-500">No run data</p>';
   } else if (data.retry_success_rate === 0) {
-    reEl.innerHTML = '<p class="text-sm text-gray-500">No retried runs or all retries failed</p>';
+    reEl.innerHTML = '<p class="text-sm text-gray-500">No retried runs in last 30 days</p>';
   } else {
     const rc = data.retry_success_rate >= 0.5 ? 'text-accent-green' : 'text-accent-yellow';
     reEl.innerHTML = `<div class="flex items-center gap-4">` +
@@ -246,15 +248,19 @@ function renderFleet(data) {
 }
 
 async function loadFleet(force) {
+  const errorBanner = document.getElementById('fleet-error');
   try {
     const url = force ? `${apiBase}/fleet-insights/data?force=true` : `${apiBase}/fleet-insights/data`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (force) _lastFleetKey = null;
+    errorBanner.classList.add('hidden');
     renderFleet(data);
   } catch (err) {
     console.error('Failed to load fleet insights:', err);
+    errorBanner.textContent = 'Failed to load fleet insights. Retrying in 5 minutes.';
+    errorBanner.classList.remove('hidden');
   }
 }
 

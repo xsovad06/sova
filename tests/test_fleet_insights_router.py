@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sova.dashboard.routers.fleet_insights import _get_fleet_service
 from sova.dashboard.services.fleet_service import (
     FailureCluster,
     FleetInsights,
@@ -54,6 +55,13 @@ def _make_insights(
     )
 
 
+def _mock_service(insights: FleetInsights) -> object:
+    """Create a mock FleetService returning the given insights."""
+    svc = AsyncMock()
+    svc.get_insights = AsyncMock(return_value=insights)
+    return svc
+
+
 @pytest.fixture
 async def client():
     from sova.dashboard.app import create_app
@@ -62,6 +70,21 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+@pytest.fixture
+def override_fleet(client: AsyncClient) -> object:
+    """Return a helper that sets the FleetService dependency override on the app."""
+    # Extract the app from the transport
+    app = client._transport.app  # type: ignore[union-attr]
+
+    def _set(insights: FleetInsights) -> AsyncMock:
+        mock_svc = _mock_service(insights)
+        app.dependency_overrides[_get_fleet_service] = lambda: mock_svc
+        return mock_svc
+
+    yield _set
+    app.dependency_overrides.pop(_get_fleet_service, None)
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +119,8 @@ class TestFleetPage:
 
 
 class TestFleetInsightsAPI:
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_get_insights_returns_json(self, mock_service: AsyncMock, client: AsyncClient) -> None:
-        mock_service.get_insights = AsyncMock(return_value=_make_insights())
+    async def test_get_insights_returns_json(self, client: AsyncClient, override_fleet) -> None:
+        override_fleet(_make_insights())
         resp = await client.get("/api/fleet-insights/data")
         assert resp.status_code == 200
         data = resp.json()
@@ -108,17 +130,15 @@ class TestFleetInsightsAPI:
         assert data["total_cost_usd"] == 12.5
         assert data["projects_scanned"] == ["alpha", "beta"]
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_get_insights_with_force(self, mock_service: AsyncMock, client: AsyncClient) -> None:
-        mock_service.get_insights = AsyncMock(return_value=_make_insights())
+    async def test_get_insights_with_force(self, client: AsyncClient, override_fleet) -> None:
+        mock_svc = override_fleet(_make_insights())
         resp = await client.get("/api/fleet-insights/data?force=true")
         assert resp.status_code == 200
-        mock_service.get_insights.assert_called_once_with(force_refresh=True)
+        mock_svc.get_insights.assert_called_once_with(force_refresh=True)
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_empty_registry(self, mock_service: AsyncMock, client: AsyncClient) -> None:
-        mock_service.get_insights = AsyncMock(
-            return_value=_make_insights(
+    async def test_empty_registry(self, client: AsyncClient, override_fleet) -> None:
+        override_fleet(
+            _make_insights(
                 total_runs=0,
                 success_rate=0.0,
                 retry_success_rate=0.0,
@@ -132,40 +152,36 @@ class TestFleetInsightsAPI:
         assert data["total_runs"] == 0
         assert data["projects_scanned"] == []
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_skipped_projects_included(self, mock_service: AsyncMock, client: AsyncClient) -> None:
-        mock_service.get_insights = AsyncMock(return_value=_make_insights(skipped=["broken-proj"]))
+    async def test_skipped_projects_included(self, client: AsyncClient, override_fleet) -> None:
+        override_fleet(_make_insights(skipped=["broken-proj"]))
         resp = await client.get("/api/fleet-insights/data")
         data = resp.json()
         assert data["projects_skipped"] == ["broken-proj"]
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_step_failure_stats_serialized(self, mock_service: AsyncMock, client: AsyncClient) -> None:
+    async def test_step_failure_stats_serialized(self, client: AsyncClient, override_fleet) -> None:
         steps = [
             StepFailureStat(step_name="develop", total_count=50, failure_count=10, failure_rate=0.2),
             StepFailureStat(step_name="push", total_count=40, failure_count=0, failure_rate=0.0),
         ]
-        mock_service.get_insights = AsyncMock(return_value=_make_insights(steps=steps))
+        override_fleet(_make_insights(steps=steps))
         resp = await client.get("/api/fleet-insights/data")
         data = resp.json()
         assert len(data["step_failure_stats"]) == 2
         assert data["step_failure_stats"][0]["step_name"] == "develop"
         assert data["step_failure_stats"][0]["failure_rate"] == 0.2
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_failure_clusters_serialized(self, mock_service: AsyncMock, client: AsyncClient) -> None:
+    async def test_failure_clusters_serialized(self, client: AsyncClient, override_fleet) -> None:
         clusters = [
             FailureCluster(pattern="Tests failed at <PATH>", count=5, projects=["alpha"]),
         ]
-        mock_service.get_insights = AsyncMock(return_value=_make_insights(clusters=clusters))
+        override_fleet(_make_insights(clusters=clusters))
         resp = await client.get("/api/fleet-insights/data")
         data = resp.json()
         assert len(data["failure_clusters"]) == 1
         assert data["failure_clusters"][0]["count"] == 5
         assert data["failure_clusters"][0]["projects"] == ["alpha"]
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_cost_breakdown_decimal_serialization(self, mock_service: AsyncMock, client: AsyncClient) -> None:
+    async def test_cost_breakdown_decimal_serialization(self, client: AsyncClient, override_fleet) -> None:
         costs = [
             ProjectCostStat(
                 slug="alpha",
@@ -174,16 +190,24 @@ class TestFleetInsightsAPI:
                 avg_cost_per_run=Decimal("0.512346"),
             ),
         ]
-        mock_service.get_insights = AsyncMock(return_value=_make_insights(costs=costs))
+        override_fleet(_make_insights(costs=costs))
         resp = await client.get("/api/fleet-insights/data")
         data = resp.json()
         assert len(data["cost_by_project"]) == 1
         assert isinstance(data["cost_by_project"][0]["total_cost_usd"], float)
         assert data["cost_by_project"][0]["slug"] == "alpha"
 
-    @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_zero_retry_rate(self, mock_service: AsyncMock, client: AsyncClient) -> None:
-        mock_service.get_insights = AsyncMock(return_value=_make_insights(retry_success_rate=0.0))
+    async def test_zero_retry_rate(self, client: AsyncClient, override_fleet) -> None:
+        override_fleet(_make_insights(retry_success_rate=0.0))
         resp = await client.get("/api/fleet-insights/data")
         data = resp.json()
         assert data["retry_success_rate"] == 0.0
+
+    async def test_service_error_returns_503(self, client: AsyncClient, override_fleet) -> None:
+        mock_svc = _mock_service(_make_insights())
+        mock_svc.get_insights = AsyncMock(side_effect=RuntimeError("db connection failed"))
+        app = client._transport.app  # type: ignore[union-attr]
+        app.dependency_overrides[_get_fleet_service] = lambda: mock_svc
+        resp = await client.get("/api/fleet-insights/data")
+        assert resp.status_code == 503
+        app.dependency_overrides.pop(_get_fleet_service, None)
