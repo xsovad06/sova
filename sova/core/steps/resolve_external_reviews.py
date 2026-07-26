@@ -6,6 +6,7 @@ import json
 
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
+from sova.utils.gh import get_active_gh_user
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
 
@@ -101,6 +102,9 @@ class ResolveExternalReviewsStep(BaseStep):
             authors = set(_DEFAULT_CODERABBIT_AUTHORS)
             if ctx.config.github_user:
                 authors.add(ctx.config.github_user)
+            active_user = await get_active_gh_user()
+            if active_user:
+                authors.add(active_user)
 
             cr_result = await _fetch_coderabbit_threads(
                 ctx.repo,

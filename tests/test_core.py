@@ -5672,6 +5672,11 @@ class TestResolveExternalReviewsStep:
                 new_callable=AsyncMock,
                 return_value=1,
             ),
+            patch(
+                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             result = await step.execute(ctx)
 
@@ -5707,6 +5712,11 @@ class TestResolveExternalReviewsStep:
                 new_callable=AsyncMock,
                 return_value=0,
             ),
+            patch(
+                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             result = await step.execute(ctx)
 
@@ -5715,6 +5725,86 @@ class TestResolveExternalReviewsStep:
         call_kwargs = mock_fetch.call_args[1]
         assert "xsovad06" in call_kwargs["authors"]
         assert "coderabbitai" in call_kwargs["authors"]
+
+    async def test_includes_active_gh_user_in_authors(self) -> None:
+        """When active gh user differs from config, both should be in the authors filter."""
+        from sova.adapters.external_reviews import _ThreadsResult
+        from sova.config.models import ProjectConfig
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
+        ctx = _make_ctx(pr_number=42, config=config)
+        step = ResolveExternalReviewsStep()
+
+        cr_result = _ThreadsResult(thread_ids=["thread-sova"])
+        with (
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=cr_result,
+            ) as mock_fetch,
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value="dsova06",
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        call_kwargs = mock_fetch.call_args[1]
+        assert "xsovad06" in call_kwargs["authors"], "configured github_user must be included"
+        assert "dsova06" in call_kwargs["authors"], "active gh auth user must be included"
+        assert "coderabbitai" in call_kwargs["authors"], "default bot authors must be included"
+
+    async def test_active_gh_user_failure_does_not_break_resolution(self) -> None:
+        """If get_active_gh_user fails, resolution should still work with configured user."""
+        from sova.adapters.external_reviews import _ThreadsResult
+        from sova.config.models import ProjectConfig
+        from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
+
+        config = ProjectConfig(github_user="xsovad06", github_repo="user/repo")
+        ctx = _make_ctx(pr_number=42, config=config)
+        step = ResolveExternalReviewsStep()
+
+        cr_result = _ThreadsResult(thread_ids=["thread-1"])
+        with (
+            patch(
+                "sova.adapters.external_reviews._fetch_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=cr_result,
+            ) as mock_fetch,
+            patch(
+                "sova.adapters.external_reviews.resolve_coderabbit_threads",
+                new_callable=AsyncMock,
+                return_value=1,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await step.execute(ctx)
+
+        assert result.success
+        call_kwargs = mock_fetch.call_args[1]
+        assert "xsovad06" in call_kwargs["authors"]
 
     async def test_no_threads_to_resolve(self) -> None:
         from sova.adapters.external_reviews import _ThreadsResult
@@ -5733,6 +5823,11 @@ class TestResolveExternalReviewsStep:
                 "sova.core.steps.resolve_external_reviews._dismiss_bot_reviews",
                 new_callable=AsyncMock,
                 return_value=0,
+            ),
+            patch(
+                "sova.core.steps.resolve_external_reviews.get_active_gh_user",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
         ):
             result = await step.execute(ctx)
@@ -6621,3 +6716,77 @@ class TestDevelopStepInnerCheckLoop:
             result = await _get_dirty_test_files(Path("/tmp/worktree"))
 
         assert result == {"tests/test_core.py", "utils_test.py"}
+
+
+# ---------------------------------------------------------------------------
+# get_active_gh_user (sova/utils/gh.py)
+# ---------------------------------------------------------------------------
+
+
+class TestGetActiveGhUser:
+    async def test_returns_active_login(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        auth_json = json.dumps(
+            {
+                "hosts": {
+                    "github.com": [
+                        {"active": True, "login": "dsova06"},
+                        {"active": False, "login": "xsovad06"},
+                    ]
+                }
+            }
+        )
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=auth_json, stderr="")
+            result = await get_active_gh_user()
+
+        assert result == "dsova06"
+
+    async def test_returns_none_on_command_failure(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=False, stdout="", stderr="gh not found")
+            result = await get_active_gh_user()
+
+        assert result is None
+
+    async def test_returns_none_on_bad_json(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="not json", stderr="")
+            result = await get_active_gh_user()
+
+        assert result is None
+
+    async def test_returns_none_when_no_active_account(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        auth_json = json.dumps({"hosts": {"github.com": [{"active": False, "login": "xsovad06"}]}})
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=auth_json, stderr="")
+            result = await get_active_gh_user()
+
+        assert result is None
+
+    async def test_returns_none_when_hosts_empty(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        auth_json = json.dumps({"hosts": {}})
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=auth_json, stderr="")
+            result = await get_active_gh_user()
+
+        assert result is None
+
+    async def test_returns_none_on_unexpected_structure(self) -> None:
+        from sova.utils.gh import get_active_gh_user
+
+        auth_json = json.dumps({"hosts": "not-a-dict"})
+        with patch("sova.utils.gh.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout=auth_json, stderr="")
+            result = await get_active_gh_user()
+
+        assert result is None
