@@ -13,7 +13,7 @@ import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,26 +117,6 @@ def _collect_supervisor_configs(project_dirs: dict[str, str]) -> list[tuple[Path
     return result
 
 
-async def _mark_dead_run(run: object, project_dir: Path) -> None:
-    """Mark a single dead-PID TaskRun as done (if merged) or interrupted."""
-    from datetime import datetime, timezone
-
-    from sova.dashboard.services.agent_lifecycle import _MERGE_ROLES, _check_pr_merged_on_failure
-
-    cmd_name = (run.role or "").removeprefix("command:").removeprefix("/").split()[0]
-    if cmd_name in _MERGE_ROLES and run.pr_number is not None:
-        if await _check_pr_merged_on_failure(run.pr_number, project_dir):
-            run.status = "done"
-            run.error_message = f"Agent process died but PR #{run.pr_number} was merged successfully"
-            run.ended_at = datetime.now(timezone.utc)
-            log.info("sweep.merged_despite_crash", run_id=run.id, pr=run.pr_number)
-            return
-
-    run.status = "interrupted"
-    run.error_message = "Agent process died unexpectedly"
-    run.ended_at = datetime.now(timezone.utc)
-
-
 def _collect_sweep_dirs(project_dir: Path | None, *, is_multi: bool) -> list[Path]:
     """Build the list of project directories to sweep."""
     dirs: list[Path] = []
@@ -150,10 +130,32 @@ def _collect_sweep_dirs(project_dir: Path | None, *, is_multi: bool) -> list[Pat
     return dirs
 
 
+class _DeadRunRecord(TypedDict):
+    run_id: int
+    pr_number: int | None
+    pid: int
+    final_status: str
+    error_msg: str
+    needs_merge_check: bool
+
+
 async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> None:
-    """Single pass: check for dead agent processes and mark their TaskRuns."""
+    """Single pass: check for dead agent processes and mark their TaskRuns.
+
+    Three-phase approach to prevent GitHub API calls from blocking DB write locks:
+
+      1. Read-only query per directory (no write lock).
+      2. Concurrent GitHub merge checks outside any session, bounded by a total timeout.
+         Mirrors the pattern used in recover_stale_runs() in agent_recovery.py.
+      3. Write transaction per directory with terminal-status re-check to handle
+         concurrent finalizations (e.g. _wait_and_finalize completing between phases).
+    """
+    from datetime import datetime, timezone
+
     from sqlalchemy import select
 
+    from sova.dashboard.services.agent_lifecycle import _MERGE_ROLES, _check_pr_merged_on_failure
+    from sova.dashboard.services.agent_recovery import _MERGE_CHECK_TIMEOUT, _RECOVERY_TOTAL_TIMEOUT
     from sova.dashboard.services.control_service import _is_process_alive, _projects
     from sova.db.models import TaskRun
     from sova.db.session import get_session
@@ -164,19 +166,87 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 
     for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
         managed = managed_run_ids_by_dir.get(d, set())
+
+        # Phase 1: read-only query, no write lock held.
+        async with await get_session(project_dir=d) as session:
+            stmt = select(TaskRun).where(
+                TaskRun.status.notin_(_TERMINAL),
+                TaskRun.pid.isnot(None),
+            )
+            result = await session.execute(stmt)
+            runs = result.scalars().all()
+
+        dead_runs: list[_DeadRunRecord] = []
+        for run in runs:
+            if run.id in managed or _is_process_alive(run.pid):
+                continue
+            cmd_parts = (run.role or "").removeprefix("command:").removeprefix("/").split()
+            needs_merge_check = run.pr_number is not None and bool(cmd_parts) and cmd_parts[0] in _MERGE_ROLES
+            dead_runs.append(
+                {
+                    "run_id": run.id,
+                    "pr_number": run.pr_number,
+                    "pid": run.pid,
+                    "final_status": "interrupted",
+                    "error_msg": "Agent process died unexpectedly",
+                    "needs_merge_check": needs_merge_check,
+                }
+            )
+
+        if not dead_runs:
+            continue
+
+        # Phase 2: concurrent GitHub merge checks, outside any session.
+        # _d is bound via default argument so each closure captures the correct
+        # directory even if the loop advances before the gather completes.
+        merge_candidates = [r for r in dead_runs if r["needs_merge_check"]]
+        if merge_candidates:
+
+            async def _check_one(rec: _DeadRunRecord, _d: Path = d) -> tuple[int, bool]:
+                try:
+                    merged = await asyncio.wait_for(
+                        _check_pr_merged_on_failure(rec["pr_number"], _d),
+                        timeout=_MERGE_CHECK_TIMEOUT,
+                    )
+                    return rec["run_id"], merged
+                except Exception:
+                    log.debug("sweep.merge_check_skipped", run_id=rec["run_id"], exc_info=True)
+                    return rec["run_id"], False
+
+            dead_by_id = {r["run_id"]: r for r in dead_runs}
+            try:
+                merge_results = await asyncio.wait_for(
+                    asyncio.gather(*(_check_one(r) for r in merge_candidates)),
+                    timeout=_RECOVERY_TOTAL_TIMEOUT,
+                )
+                for rid, merged in merge_results:
+                    if merged:
+                        rec = dead_by_id[rid]
+                        rec["final_status"] = "done"
+                        rec["error_msg"] = f"Agent process died but PR #{rec['pr_number']} was merged successfully"
+                        log.info("sweep.merged_despite_crash", run_id=rid, pr=rec["pr_number"])
+            except asyncio.TimeoutError:
+                log.warning("sweep.merge_checks_timed_out", total_timeout=_RECOVERY_TOTAL_TIMEOUT, exc_info=True)
+
+        # Phase 3: single write transaction with terminal-status re-check.
+        # Re-reading inside the transaction ensures we see any status change
+        # committed by _wait_and_finalize between Phase 1 and now.
+        now = datetime.now(timezone.utc)
         async with await get_session(project_dir=d) as session:
             async with session.begin():
-                stmt = select(TaskRun).where(
-                    TaskRun.status.notin_(_TERMINAL),
-                    TaskRun.pid.isnot(None),
-                )
+                stmt = select(TaskRun).where(TaskRun.id.in_([r["run_id"] for r in dead_runs]))
                 result = await session.execute(stmt)
-                runs = result.scalars().all()
+                runs_by_id = {r.id: r for r in result.scalars().all()}
 
-                for run in runs:
-                    if run.id in managed or _is_process_alive(run.pid):
+                for rec in dead_runs:
+                    run = runs_by_id.get(rec["run_id"])
+                    if run is None:
                         continue
-                    await _mark_dead_run(run, d)
+                    if run.status in _TERMINAL:
+                        continue  # finalized by concurrent writer between Phase 1 and Phase 3
+                    run.status = rec["final_status"]
+                    run.error_message = rec["error_msg"]
+                    run.ended_at = now
 
 
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
