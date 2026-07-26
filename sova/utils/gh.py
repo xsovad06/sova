@@ -42,6 +42,36 @@ async def resolve_gh_env(github_user: str | None) -> dict[str, str] | None:
     return {**os.environ, "GH_TOKEN": token}
 
 
+async def get_active_gh_user() -> str | None:
+    """Return the login of the currently active ``gh auth`` account.
+
+    Parses the JSON output of ``gh auth status --json hosts`` to find
+    the account with ``active: true``. Returns None on any failure
+    (gh not installed, no active account, parse error).
+    """
+    result = await run("gh", "auth", "status", "--json", "hosts")
+    if not result.success:
+        log.debug("gh.active_user_failed", stderr=result.stderr[:200])
+        return None
+
+    try:
+        data = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        log.debug("gh.active_user_parse_failed")
+        return None
+
+    try:
+        for accounts in data.get("hosts", {}).values():
+            for account in accounts:
+                if account.get("active"):
+                    return account.get("login")
+    except (AttributeError, TypeError, KeyError):
+        log.debug("gh.active_user_traverse_failed")
+        return None
+
+    return None
+
+
 _CLOSES_RE = re.compile(r"(?:closes|fixes|resolves)\s+#(\d+)", re.IGNORECASE)
 
 
