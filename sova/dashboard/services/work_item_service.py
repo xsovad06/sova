@@ -122,6 +122,7 @@ _STATE_COLORS: dict[WorkItemState, str] = {
 }
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
+_REVIEW_ACTION_IDS = frozenset({"review", "review_pr"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
 _ROLE_LABELS: dict[str, str] = {
@@ -254,6 +255,9 @@ def compute_work_item_state(
         so "Review" is shown directly (no inline comments to address on bot-free projects).
       - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
         upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
+      - Handoff has only review actions and SOVA already approved: bypass the handoff and use PR
+        state directly (stale handoff from a timing race where the reviewer ran before the developer
+        wrote its "please review" handoff).
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
@@ -272,7 +276,16 @@ def compute_work_item_state(
             action_ids = {a.get("id") or a.get("action") or a.get("command") or "" for a in next_actions}
             if action_ids & _SPEC_ACTION_IDS:
                 return WorkItemState.SPEC_REVIEW
-            return WorkItemState.HANDOFF_PENDING
+            # Review-only handoffs are superseded when SOVA already approved:
+            # fall through to PR state so "Integrate PR" is shown. This handles
+            # the race where a reviewer ran before the developer wrote its handoff.
+            if not (
+                action_ids
+                and action_ids.issubset(_REVIEW_ACTION_IDS)
+                and sova_verdict
+                and sova_verdict.get("has_sova_review")
+            ):
+                return WorkItemState.HANDOFF_PENDING
         if sova_blocks and pr_data is None:
             return WorkItemState.PR_SOVA_CHANGES
 

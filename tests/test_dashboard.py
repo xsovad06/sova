@@ -1848,6 +1848,278 @@ class TestAutoHandoffCircuitBreaker:
 
 
 # ---------------------------------------------------------------------------
+# Stale-handoff bypass in compute_state
+# ---------------------------------------------------------------------------
+
+
+class TestComputeStateStaleHandoffBypass:
+    def test_review_only_handoff_bypassed_when_sova_approved(self) -> None:
+        """A review-only handoff is superseded when SOVA already approved the PR."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {
+            "status": "awaiting_action",
+            "next_actions": [{"id": "review", "label": "Review PR"}],
+        }
+        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green", "mergeable": "MERGEABLE"}
+        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+            external_reviews_enabled=True,
+        )
+
+        assert result == WorkItemState.PR_READY_TO_MERGE
+
+    def test_review_pr_action_id_also_bypassed(self) -> None:
+        """The 'review_pr' action id variant is also treated as a stale review handoff."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {
+            "status": "awaiting_action",
+            "next_actions": [{"id": "review_pr", "label": "Review PR"}],
+        }
+        pr_data = {"state": "OPEN", "computed_state": "awaiting_review"}
+        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+        )
+
+        assert result == WorkItemState.PR_APPROVED
+
+    def test_mixed_handoff_not_bypassed(self) -> None:
+        """A handoff with non-review actions is not treated as stale."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {
+            "status": "awaiting_action",
+            "next_actions": [
+                {"id": "review", "label": "Review PR"},
+                {"id": "integrate", "label": "Integrate PR"},
+            ],
+        }
+        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green"}
+        sova_verdict = {"has_sova_review": True, "verdict": "approve"}
+
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+        )
+
+        assert result == WorkItemState.HANDOFF_PENDING
+
+    def test_revise_verdict_not_bypassed(self) -> None:
+        """A revise verdict does not bypass the handoff (sova_blocks applies)."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {
+            "status": "awaiting_action",
+            "next_actions": [{"id": "review", "label": "Review PR"}],
+        }
+        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green", "latest_approval_at": None}
+        sova_verdict = {"has_sova_review": True, "verdict": "revise", "reviewed_at": "2026-01-01T00:00:00Z"}
+
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+        )
+
+        assert result == WorkItemState.PR_SOVA_CHANGES
+
+    def test_no_sova_review_not_bypassed(self) -> None:
+        """A review-only handoff is not bypassed when SOVA has not reviewed yet."""
+        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
+
+        handoff = {
+            "status": "awaiting_action",
+            "next_actions": [{"id": "review", "label": "Review PR"}],
+        }
+        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green"}
+        sova_verdict = {"has_sova_review": False, "verdict": None}
+
+        result = compute_work_item_state(
+            task_state=None,
+            pr_data=pr_data,
+            handoff=handoff,
+            running_agent=None,
+            sova_verdict=sova_verdict,
+        )
+
+        assert result == WorkItemState.HANDOFF_PENDING
+
+
+# ---------------------------------------------------------------------------
+# Pre-spawn guard in _process_auto_handoff
+# ---------------------------------------------------------------------------
+
+
+class TestAutoHandoffReviewAlreadyDone:
+    async def test_clears_handoff_when_review_already_done(self) -> None:
+        """Auto-handoff must not spawn a reviewer if one already ran for the PR."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 99, "issue": "481", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="481",
+            pr_number=510,
+            summary="PR ready for review",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review PR",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "481", "role": "reviewer", "pr": 510},
+                ),
+            ],
+        )
+
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                AsyncMock(return_value=sova_verdict),
+            ),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_not_awaited()
+        mock_clear.assert_called_once()
+
+    async def test_spawns_reviewer_when_no_existing_review(self) -> None:
+        """Auto-handoff proceeds normally when no prior reviewer run exists."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 100, "issue": "500", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="developer",
+            status="awaiting_action",
+            issue="500",
+            pr_number=600,
+            summary="PR ready for review",
+            next_actions=[
+                HandoffAction(
+                    id="review",
+                    label="Review PR",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "500", "role": "reviewer", "pr": 600},
+                ),
+            ],
+        )
+
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        no_review = {"has_sova_review": False, "verdict": None}
+
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 2
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                AsyncMock(return_value=no_review),
+            ),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_validation.check_memory_pressure", return_value=(None, None)),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_awaited_once()
+
+    async def test_non_review_action_skips_guard(self) -> None:
+        """Guard is not triggered for non-review actions (e.g., address_review)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": 101, "issue": "501", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="501",
+            pr_number=601,
+            summary="Findings to address",
+            next_actions=[
+                HandoffAction(
+                    id="address_review",
+                    label="Address Review",
+                    auto_execute=True,
+                    mode="agent",
+                    args={"issue": "501", "role": "developer", "pr": 601},
+                ),
+            ],
+        )
+
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        mock_verdict = AsyncMock()
+        mock_cfg = MagicMock()
+        mock_cfg.pipeline.max_address_review_cycles = 0
+
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+            patch("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch("sova.dashboard.services.agent_validation.check_memory_pressure", return_value=(None, None)),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_verdict.assert_not_awaited()
+        mock_start.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Queue service -- cross-run PR number lookup
 # ---------------------------------------------------------------------------
 
