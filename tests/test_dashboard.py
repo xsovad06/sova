@@ -4493,13 +4493,13 @@ class TestKanbanAPI:
             total_cost_usd=Decimal("0.10"),
             started_at=now - timedelta(minutes=5),
         )
-        # Address-review run at 'commit' with step history containing
+        # Address-review run at 'rearrange_commits' with step history containing
         # address_review-only steps so variant detection identifies it correctly.
         ar_run = TaskRun(
             issue_number="501",
             role="developer",
             status="developing",
-            current_step="commit",
+            current_step="rearrange_commits",
             pr_number=42,
             total_cost_usd=Decimal("0.05"),
             started_at=now - timedelta(minutes=2),
@@ -4522,17 +4522,14 @@ class TestKanbanAPI:
         assert resp.status_code == 200
         columns = resp.json()["columns"]
 
-        # Both are at 'commit' but different variants -> separate columns
+        # Developer run is at 'commit', address-review run is at 'rearrange_commits'
         commit_cols = [c for c in columns if c["name"] == "commit"]
-        assert len(commit_cols) == 2
+        assert len(commit_cols) == 1
+        assert commit_cols[0]["pipeline"] == "developer"
 
-        pipelines = {c["pipeline"] for c in commit_cols}
-        assert "developer" in pipelines
-        assert "address_review" in pipelines
-
-        # Each column has exactly one run
-        for col in commit_cols:
-            assert col["count"] == 1
+        rearrange_cols = [c for c in columns if c["name"] == "rearrange_commits"]
+        assert len(rearrange_cols) == 1
+        assert rearrange_cols[0]["pipeline"] == "address_review"
 
     async def test_kanban_endpoint_returns_mode(self, client: AsyncClient) -> None:
         """The /api/agents/kanban response includes a 'mode' field."""

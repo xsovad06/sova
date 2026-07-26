@@ -273,7 +273,15 @@ def _format_findings_prompt(findings: list[dict], *, spec_context: str = "") -> 
         if f.get("suggestion"):
             lines.append(f"   Fix: {f['suggestion']}")
         lines.append("")
-    lines.append("After fixing all issues, make sure all tests still pass.")
+    lines.extend(
+        [
+            "After fixing all issues, make sure all tests still pass.",
+            "",
+            "IMPORTANT: Do NOT commit your changes. Fix the code, run tests, then stop.",
+            "Leave all changes staged or unstaged. A commit reorganization step runs",
+            "immediately after this to fold your fixes cleanly into the existing commits.",
+        ]
+    )
     return "\n".join(lines)
 
 
