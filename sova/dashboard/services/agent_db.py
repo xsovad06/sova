@@ -61,6 +61,21 @@ async def _update_task_run_pid(run_id: int, pid: int, project_dir: Path) -> None
         log.warning("task_run.pid_update_failed", run_id=run_id, exc_info=True)
 
 
+async def _update_task_run_output_path(run_id: int, output_path: str, project_dir: Path) -> None:
+    """Store the output file path on a TaskRun for reconnection after restart."""
+    try:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                task_run = await session.get(TaskRun, run_id)
+                if task_run:
+                    task_run.output_file_path = output_path
+    except Exception:
+        log.warning("task_run.output_path_update_failed", run_id=run_id, exc_info=True)
+
+
 async def _finalize_orphaned_run(run_id: int, project_dir: Path) -> None:
     """Mark a TaskRun as failed when the process never started."""
     try:
