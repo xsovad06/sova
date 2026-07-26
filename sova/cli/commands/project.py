@@ -195,12 +195,14 @@ _PATTERNFLY_MCP_CONFIG = {
 
 def _configure_mcp_servers(project_dir: Path, claude_dir: Path) -> None:
     """Auto-detect tech stack and inject relevant MCP server configs."""
-    from sova.knowledge.personas import _package_json_mention
     from sova.utils.mcp_config import inject_mcp_server
+    from sova.utils.package_json import has_dependency
 
-    if _package_json_mention(project_dir, "@patternfly/react-core"):
+    if has_dependency(project_dir, "@patternfly/react-core"):
         if inject_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME, _PATTERNFLY_MCP_CONFIG):
             console.print("[green]PatternFly MCP server configured.[/green]")
+        else:
+            console.print("[dim]PatternFly MCP server already configured.[/dim]")
 
 
 def _create_agent_memory(claude_dir: Path) -> None:

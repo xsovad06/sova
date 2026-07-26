@@ -375,8 +375,8 @@ def test_configure_mcp_skips_without_patternfly(tmp_path: Path) -> None:
     assert not (claude_dir / "settings.json").exists()
 
 
-def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
-    """_uninstall removes PatternFly MCP server from settings.json."""
+def test_remove_mcp_server_cleans_settings(tmp_path: Path) -> None:
+    """remove_mcp_server removes a named MCP entry from settings.json."""
     from sova.utils.mcp_config import remove_mcp_server
 
     claude_dir = tmp_path / ".claude"
@@ -389,3 +389,63 @@ def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
     assert result is True
     data = json.loads((claude_dir / "settings.json").read_text())
     assert "mcpServers" not in data
+
+
+def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
+    """_uninstall removes PatternFly MCP server from settings.json."""
+    import asyncio
+
+    from sova.cli.commands.project import _uninstall
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
+    settings = {"mcpServers": {"patternfly-mcp": pf_config}}
+    (claude_dir / "settings.json").write_text(json.dumps(settings))
+
+    asyncio.run(
+        _uninstall(path=project_dir, remove_config=False, remove_memory=False)
+    )
+
+    data = json.loads((claude_dir / "settings.json").read_text())
+    assert "patternfly-mcp" not in data.get("mcpServers", {})
+
+
+# -- _detect_tech_stack PatternFly detection --
+
+
+def test_detect_tech_stack_patternfly_in_deps(tmp_path: Path) -> None:
+    """_detect_tech_stack returns patternfly when listed in dependencies."""
+    from sova.dashboard.services.setup_service import _detect_tech_stack
+
+    pkg = {"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg))
+
+    stack = _detect_tech_stack(tmp_path)
+    assert "patternfly" in stack
+    assert "javascript" in stack
+
+
+def test_detect_tech_stack_patternfly_in_devdeps(tmp_path: Path) -> None:
+    """_detect_tech_stack returns patternfly when listed in devDependencies."""
+    from sova.dashboard.services.setup_service import _detect_tech_stack
+
+    pkg = {"name": "test", "devDependencies": {"@patternfly/react-core": "^5.0.0"}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg))
+
+    stack = _detect_tech_stack(tmp_path)
+    assert "patternfly" in stack
+
+
+def test_detect_tech_stack_no_patternfly(tmp_path: Path) -> None:
+    """_detect_tech_stack does not return patternfly when package is absent."""
+    from sova.dashboard.services.setup_service import _detect_tech_stack
+
+    pkg = {"name": "test", "dependencies": {"react": "^18.0.0"}}
+    (tmp_path / "package.json").write_text(json.dumps(pkg))
+
+    stack = _detect_tech_stack(tmp_path)
+    assert "patternfly" not in stack
+    assert "javascript" in stack

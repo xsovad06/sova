@@ -245,15 +245,20 @@ def _detect_tech_stack(project: Path) -> list[str]:
             stack.append("fastapi")
     if (project / _PACKAGE_JSON).exists():
         stack.append("javascript")
-        pkg = (project / _PACKAGE_JSON).read_text(errors="ignore")
+        try:
+            pkg = (project / _PACKAGE_JSON).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            pkg = ""
         if '"react"' in pkg:
             stack.append("react")
-        if '"@patternfly/react-core"' in pkg:
-            stack.append("patternfly")
         if '"next"' in pkg:
             stack.append("nextjs")
         if (project / "tsconfig.json").exists():
             stack.append("typescript")
+        from sova.utils.package_json import has_dependency
+
+        if has_dependency(project, "@patternfly/react-core"):
+            stack.append("patternfly")
     if (project / "go.mod").exists():
         stack.append("go")
     if (project / "Cargo.toml").exists():

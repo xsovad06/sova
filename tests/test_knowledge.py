@@ -472,9 +472,9 @@ def test_package_json_mention_found_in_deps(tmp_path: Path) -> None:
     pkg = json.dumps({"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}})
     (tmp_path / "package.json").write_text(pkg)
 
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is True
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is True
 
 
 def test_package_json_mention_found_in_devdeps(tmp_path: Path) -> None:
@@ -482,9 +482,9 @@ def test_package_json_mention_found_in_devdeps(tmp_path: Path) -> None:
     pkg = json.dumps({"name": "test", "devDependencies": {"@patternfly/react-core": "^5.0.0"}})
     (tmp_path / "package.json").write_text(pkg)
 
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is True
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is True
 
 
 def test_package_json_mention_not_found(tmp_path: Path) -> None:
@@ -492,34 +492,34 @@ def test_package_json_mention_not_found(tmp_path: Path) -> None:
     pkg = json.dumps({"name": "test", "dependencies": {"react": "^18.0.0"}})
     (tmp_path / "package.json").write_text(pkg)
 
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is False
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
 
 
 def test_package_json_mention_no_file(tmp_path: Path) -> None:
     """_package_json_mention returns False when no package.json."""
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is False
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
 
 
 def test_package_json_mention_malformed(tmp_path: Path) -> None:
     """_package_json_mention returns False for malformed JSON."""
     (tmp_path / "package.json").write_text("{bad json")
 
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is False
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
 
 
 def test_package_json_mention_non_dict(tmp_path: Path) -> None:
     """_package_json_mention returns False when JSON is not a dict."""
     (tmp_path / "package.json").write_text("[1, 2, 3]")
 
-    from sova.knowledge.personas import _package_json_mention
+    from sova.knowledge.personas import package_json_mention
 
-    assert _package_json_mention(tmp_path, "@patternfly/react-core") is False
+    assert package_json_mention(tmp_path, "@patternfly/react-core") is False
 
 
 # ---------------------------------------------------------------------------
