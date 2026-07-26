@@ -556,6 +556,59 @@ async def client(setup_db):
         yield ac
 
 
+class TestBuildGraphConfigError:
+    @pytest.mark.asyncio
+    async def test_config_load_failure_raises_config_error(self) -> None:
+        from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
+
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/fake"),
+            patch("sova.config.loader.load_config", side_effect=FileNotFoundError("no sova.toml")),
+        ):
+            with pytest.raises(_ConfigError, match="no sova.toml"):
+                await _build_graph()
+
+    @pytest.mark.asyncio
+    async def test_adapter_creation_failure_raises_config_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.routers.dependencies import _build_graph, _ConfigError
+
+        with (
+            patch("sova.dashboard.project_context.get_project_dir", return_value="/tmp/fake"),
+            patch("sova.config.loader.load_config", return_value=MagicMock()),
+            patch("sova.adapters.create_adapter", side_effect=ValueError("missing repo")),
+        ):
+            with pytest.raises(_ConfigError, match="missing repo"):
+                await _build_graph()
+
+
+class TestFetchPrMapUnknownState:
+    @pytest.mark.asyncio
+    async def test_unknown_computed_state_falls_back_to_awaiting_review(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [
+            {"number": 1, "url": "", "computed_state": "totally_unknown", "state_label": "", "linked_issues": [10]},
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result[10]["pr_state"] == "awaiting_review"
+
+    @pytest.mark.asyncio
+    async def test_none_linked_issues_treated_as_empty(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_pr_map
+
+        mock_prs = [
+            {"number": 1, "url": "", "computed_state": "draft", "state_label": "", "linked_issues": None},
+        ]
+        with patch("sova.dashboard.services.pr_service.list_open_prs_with_state", return_value=mock_prs):
+            result = await _fetch_pr_map()
+
+        assert result == {}
+
+
 class TestFetchPrMap:
     @pytest.mark.asyncio
     async def test_builds_issue_to_pr_mapping(self) -> None:
@@ -714,6 +767,17 @@ class TestDependencyAPI:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_graph_endpoint_config_error(self, client: AsyncClient) -> None:
+        from sova.dashboard.routers.dependencies import _ConfigError
+
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=_ConfigError("bad config"),
+        ):
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
     async def test_ready_endpoint_error(self, client: AsyncClient) -> None:
         with patch(
             "sova.dashboard.routers.dependencies._build_graph",
@@ -723,6 +787,17 @@ class TestDependencyAPI:
         assert resp.status_code == 500
 
     @pytest.mark.asyncio
+    async def test_ready_endpoint_config_error(self, client: AsyncClient) -> None:
+        from sova.dashboard.routers.dependencies import _ConfigError
+
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=_ConfigError("bad config"),
+        ):
+            resp = await client.get("/api/dependencies/ready")
+        assert resp.status_code == 503
+
+    @pytest.mark.asyncio
     async def test_chain_endpoint_error(self, client: AsyncClient) -> None:
         with patch(
             "sova.dashboard.routers.dependencies._build_graph",
@@ -730,3 +805,14 @@ class TestDependencyAPI:
         ):
             resp = await client.get("/api/dependencies/chain/1")
         assert resp.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_chain_endpoint_config_error(self, client: AsyncClient) -> None:
+        from sova.dashboard.routers.dependencies import _ConfigError
+
+        with patch(
+            "sova.dashboard.routers.dependencies._build_graph",
+            side_effect=_ConfigError("bad config"),
+        ):
+            resp = await client.get("/api/dependencies/chain/1")
+        assert resp.status_code == 503
