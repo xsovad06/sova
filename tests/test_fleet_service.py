@@ -324,6 +324,31 @@ class TestFleetServiceCaching:
         second = await svc.get_insights()
         assert first is second
 
+    async def test_concurrent_callers_reuse_cache_after_lock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Second caller hitting the lock re-check returns cached result (line 133)."""
+        monkeypatch.setattr("sova.dashboard.services.fleet_service.list_projects", dict)
+        svc = FleetService(FleetConfig(cache_ttl_seconds=300))
+
+        scan_count = 0
+        original_scan = svc._scan_all_projects
+
+        async def _slow_scan() -> FleetInsights:
+            nonlocal scan_count
+            scan_count += 1
+            await asyncio.sleep(0.05)
+            return await original_scan()
+
+        svc._scan_all_projects = _slow_scan  # type: ignore[assignment]
+
+        # Two concurrent callers: first acquires lock and scans, second waits
+        # and then hits the re-check-after-lock path (line 133)
+        first, second = await asyncio.gather(
+            svc.get_insights(),
+            svc.get_insights(),
+        )
+        assert first is second
+        assert scan_count == 1  # Only one scan happened
+
     async def test_force_refresh_bypasses_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """force_refresh=True always re-scans."""
         monkeypatch.setattr("sova.dashboard.services.fleet_service.list_projects", dict)
