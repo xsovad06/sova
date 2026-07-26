@@ -165,7 +165,7 @@ class TestFleetInsightsAPI:
         assert data["failure_clusters"][0]["projects"] == ["alpha"]
 
     @patch("sova.dashboard.routers.fleet_insights._service")
-    async def test_cost_breakdown_decimal_to_float(self, mock_service: AsyncMock, client: AsyncClient) -> None:
+    async def test_cost_breakdown_decimal_serialization(self, mock_service: AsyncMock, client: AsyncClient) -> None:
         costs = [
             ProjectCostStat(
                 slug="alpha",
