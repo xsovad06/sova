@@ -405,9 +405,7 @@ def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
     settings = {"mcpServers": {"patternfly-mcp": pf_config}}
     (claude_dir / "settings.json").write_text(json.dumps(settings))
 
-    asyncio.run(
-        _uninstall(path=project_dir, remove_config=False, remove_memory=False)
-    )
+    asyncio.run(_uninstall(path=project_dir, remove_config=False, remove_memory=False))
 
     data = json.loads((claude_dir / "settings.json").read_text())
     assert "patternfly-mcp" not in data.get("mcpServers", {})
