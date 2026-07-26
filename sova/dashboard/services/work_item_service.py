@@ -443,7 +443,7 @@ def _build_task_item(
     last_run = task.get("last_run")
     last_run_status = last_run.get("status") if last_run else None
     spec_handoff_actions: list[dict] = []
-    if not handoff and not running and last_run and last_run_status == _AWAITING_APPROVAL:
+    if not handoff and not running and pr_data is None and last_run and last_run_status == _AWAITING_APPROVAL:
         state = WorkItemState.SPEC_REVIEW
         primary = _build_action(
             "resume-approval",

@@ -796,6 +796,23 @@ class TestBuildTaskItem:
         assert item["pr_details"]["number"] == 100
         assert item["pr_number"] == 100
 
+    def test_awaiting_approval_run_does_not_override_pr_state(self) -> None:
+        # Regression: a stale awaiting_approval run must not set state=spec_review
+        # when an open PR exists. PR state takes priority.
+        task = {
+            "issue": "42",
+            "title": "Fix bug",
+            "state": "in_review",
+            "labels": [],
+            "priority": -1,
+            "last_run": {"status": "awaiting_approval", "id": 7},
+        }
+        pr = {"number": 99, "computed_state": "awaiting_review", "state": "OPEN"}
+        item = _build_task_item(task, pr_data=pr, running=None, handoff=None)
+        assert item["state"] != "spec_review", "PR state must win over stale awaiting_approval run"
+        assert item["state"] == "pr_awaiting_review"
+        assert item["pr_details"]["number"] == 99
+
     def test_task_with_running_agent(self) -> None:
         task = {"issue": "42", "title": "Fix bug", "state": "in_progress", "labels": [], "priority": 1}
         running = {"run_id": 5, "role": "developer", "elapsed_seconds": 60}
