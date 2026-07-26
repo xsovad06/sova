@@ -24,22 +24,29 @@
 
 <!-- Dependency Graph (full width, primary board) -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
-  <div class="flex items-center justify-between mb-3">
-    <h3 class="text-sm font-medium text-gray-300">Dependency Graph</h3>
-    <div class="flex items-center gap-4 text-xs text-gray-500">
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent-green inline-block"></span> Done</span>
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent inline-block"></span> In Progress</span>
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full" style="background:#f9e2af" ></span> Awaiting</span>
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-gray-500 inline-block"></span> Open</span>
-      <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+  <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+    <h3 class="text-sm font-medium text-gray-300">Dependency Graph <span class="text-xs text-gray-600 font-normal ml-1">left = ready, right = blocked &middot; click node to highlight chain</span></h3>
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block"></span> Done</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent inline-block"></span> In Progress</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#f9e2af"></span> Awaiting</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-gray-500 inline-block"></span> Open</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
+        <button type="button" onclick="zoomOut()" title="Zoom out" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">&minus;</button>
+        <button type="button" onclick="zoomFit()" title="Fit to view" class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Fit</button>
+      </div>
     </div>
   </div>
-  <div id="graph-container" class="relative overflow-x-auto" style="min-height: 200px; max-height: 62vh;">
-    <div id="graph-loading" class="flex items-center justify-center py-16 text-gray-500 text-sm">Loading graph...</div>
-    <div id="graph-error" class="hidden flex items-center justify-center py-16">
+  <div id="graph-container" class="relative overflow-hidden rounded" style="height: calc(100vh - 420px); min-height: 520px; background: rgba(17,17,27,0.4);">
+    <div id="graph-loading" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Loading graph...</div>
+    <div id="graph-error" class="hidden absolute inset-0 flex items-center justify-center">
       <p class="text-sm text-accent-red bg-accent-red/10 px-4 py-2 rounded"></p>
     </div>
-    <svg id="graph-svg"></svg>
+    <svg id="graph-svg" style="width:100%;height:100%;display:block;"></svg>
   </div>
 </div>
 
@@ -113,9 +120,12 @@ const esc = window.escapeHtml || function(str) {
 
 // -- Graph state --
 let _graphKey = null;
+let _zoomBehavior = null;
+let _svgSel = null;
+let _fitTransform = null;
 
 function _computeGraphKey(data) {
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -128,6 +138,10 @@ function stateColor(state) {
   if (s === 'blocked') return '#f38ba8';
   return '#6c7086';
 }
+
+function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
+function zoomOut() { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 0.74); }
+function zoomFit() { if (_svgSel && _zoomBehavior && _fitTransform) _svgSel.transition().duration(350).call(_zoomBehavior.transform, _fitTransform); }
 
 // -- Toggle / enable / disable --
 let _toggleBusy = false;
@@ -159,7 +173,7 @@ async function enableSupervisor() {
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: 'supervisor.enabled', value: true }),
+    body: JSON.stringify({ key: 'supervisor.enabled', value: 'true' }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -201,7 +215,7 @@ async function disableSupervisor() {
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: 'supervisor.enabled', value: false }),
+    body: JSON.stringify({ key: 'supervisor.enabled', value: 'false' }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -229,6 +243,8 @@ async function loadStatus() {
       label.textContent = 'Disabled';
       label.className = 'text-xs text-gray-400';
       pollBtn.disabled = true;
+      document.getElementById('status-panel').innerHTML =
+        '<p class="text-xs text-gray-500">Supervisor is disabled. Enable it above to start the daemon.</p>';
       return;
     }
 
@@ -242,9 +258,14 @@ async function loadStatus() {
       pollBtn.disabled = true;
     }
 
+    const lastPoll = data.last_poll_at
+      ? new Date(data.last_poll_at.endsWith('Z') ? data.last_poll_at : data.last_poll_at + 'Z').toLocaleTimeString()
+      : 'never';
     document.getElementById('status-panel').innerHTML = `
-      <div class="flex justify-between"><span>Poll interval</span><span class="text-gray-300">${data.poll_interval_seconds}s</span></div>
-      <div class="flex justify-between"><span>Log retention</span><span class="text-gray-300">${data.log_retention_days}d</span></div>
+      <div class="flex justify-between"><span>Status</span><span class="${data.running ? 'text-accent-green' : 'text-accent-yellow'}">${data.running ? 'Running' : 'Starting...'}</span></div>
+      <div class="flex justify-between"><span>Poll interval</span><span class="text-gray-300">${data.poll_interval_seconds ?? '—'}s</span></div>
+      <div class="flex justify-between"><span>Log retention</span><span class="text-gray-300">${data.log_retention_days ?? '—'}d</span></div>
+      <div class="flex justify-between"><span>Last poll</span><span class="text-gray-300">${lastPoll}</span></div>
     `;
   } catch (e) {
     console.error('Failed to load supervisor status:', e);
@@ -316,147 +337,433 @@ async function loadGraph() {
 }
 
 function renderGraph(data) {
-  // Layout constants
-  const NW = 160, NH = 38;
-  const NPY = 10;       // vertical gap between nodes in the same tier
-  const TIER_W = NW + 72; // horizontal stride between tier columns
-  const GP = 12, GH = 20; // group box padding / header height
-  const MARGIN = 16;
+  const container = document.getElementById('graph-container');
+  const cw = container.clientWidth  || 900;
+  const ch = container.clientHeight || 560;
 
-  // Build tier map from parallel_groups: {node_id -> tier}
+  // Node and layout constants
+  const NW = 190, NH = 52;    // node width / height
+  const NPX = 20, NPY = 18;   // gap between nodes within a group
+  const GH  = 28;              // group header height
+  const GP  = 20;              // group inner padding
+  const GGX = 72;              // horizontal gap between group columns
+  const GGY = 64;              // vertical gap between group rows
+  const LARGE_GROUP_THRESH = 8;// groups with more nodes than this get subgroup labels
+  const MAX_SG_COL = 4;        // max nodes per column within a subgroup
+  const SG_LABEL_H = 18;       // height of a subgroup label row
+  const SG_SEP_H   = 30;       // vertical gap between subgroups (includes divider)
+  const MARGIN = 36;
+
+  // Build tier map from parallel_groups
   const tierMap = {};
   (data.parallel_groups || []).forEach(g => g.task_ids.forEach(id => { tierMap[id] = g.tier; }));
-  // Nodes absent from any group are placed at tier 0 (leftmost column).
-  // Placing them at maxTier+1 would cause edges from grouped dependents
-  // (lower tier) to point rightward to the ungrouped dependency (higher tier),
-  // violating the left-to-right edge invariant and drawing backwards arrows.
   (data.nodes || []).forEach(n => { if (tierMap[n.id] == null) tierMap[n.id] = 0; });
 
-  // Collect and sort nodes per tier: sort by (milestone, id) for visual grouping
-  const tierNodes = {};
+  // Group nodes by milestone; nodes without a milestone go into "(Independent)"
+  const msMap = new Map();
   (data.nodes || []).forEach(n => {
-    const t = tierMap[n.id];
-    if (!tierNodes[t]) tierNodes[t] = [];
-    tierNodes[t].push(n);
+    const m = n.milestone || '(Independent)';
+    if (!msMap.has(m)) msMap.set(m, []);
+    msMap.get(m).push(n);
   });
-  const tiers = Object.keys(tierNodes).map(Number).sort((a, b) => a - b);
-  tiers.forEach(t => {
-    tierNodes[t].sort((a, b) => {
-      const ma = a.milestone || '', mb = b.milestone || '';
-      return ma !== mb ? ma.localeCompare(mb) : a.id - b.id;
+  // Sort within each group by (global tier, id)
+  msMap.forEach(nodes => nodes.sort((a, b) => {
+    const d = (tierMap[a.id] ?? 0) - (tierMap[b.id] ?? 0);
+    return d !== 0 ? d : a.id - b.id;
+  }));
+
+  // Sort groups: by min tier, then alpha, "(Independent)" last
+  function groupMinTier(m) { return Math.min(...msMap.get(m).map(n => tierMap[n.id] ?? 0)); }
+  const sortedMs = [...msMap.keys()].sort((a, b) => {
+    const td = groupMinTier(a) - groupMinTier(b);
+    if (td !== 0) return td;
+    if (a === '(Independent)') return 1;
+    if (b === '(Independent)') return -1;
+    return a.localeCompare(b);
+  });
+
+  // Distinct palette: opaque bg + accent border + header text color (Catppuccin-inspired)
+  const PALETTE = [
+    { bg: '#1e1e32', border: '#585b70', head: '#cba6f7' },  // mauve
+    { bg: '#192a19', border: '#3d6b3d', head: '#a6e3a1' },  // green
+    { bg: '#2a1919', border: '#7a4040', head: '#f38ba8' },  // red
+    { bg: '#192a2a', border: '#3d6b6b', head: '#89dceb' },  // teal
+    { bg: '#2a2a19', border: '#6b6b3d', head: '#f9e2af' },  // yellow
+    { bg: '#19192a', border: '#3d3d7a', head: '#89b4fa' },  // blue
+    { bg: '#2a192a', border: '#6b3d6b', head: '#f5c2e7' },  // pink
+    { bg: '#192a2e', border: '#3d6b70', head: '#94e2d5' },  // sky
+    { bg: '#2a2419', border: '#6b603d', head: '#fab387' },  // peach
+    { bg: '#1e2a19', border: '#4f6b3d', head: '#b5e8a1' },  // lime
+  ];
+  const groupPal = new Map();
+  sortedMs.forEach((m, i) => groupPal.set(m, PALETTE[i % PALETTE.length]));
+
+  // Helper: extract a human-readable subgroup label from an issue title
+  function sgLabel(title) {
+    const t = (title || '').toLowerCase();
+    const cc = t.match(/^(?:feat|fix|refactor|docs|chore|test|perf|bug)\(([^)]+)\):/);
+    if (cc) {
+      const s = cc[1];
+      if (s.includes('awareness'))                          return 'Awareness';
+      if (s.includes('oversight'))                          return 'Oversight';
+      if (s.includes('dashboard'))                          return 'Dashboard';
+      if (s.includes('supervisor') || s.includes('orchestrator')) return 'Supervisor';
+      if (s.includes('adapter'))                            return 'Adapters';
+      if (s.includes('db'))                                 return 'Database';
+      if (s.includes('cli'))                               return 'CLI';
+      if (s.includes('core') || s === 'sova')              return 'Core';
+      if (s.includes('knowledge'))                         return 'Knowledge';
+      if (s.includes('commands'))                          return 'Commands';
+      if (s.includes('llm'))                               return 'LLM';
+      if (s.includes('config'))                            return 'Config';
+      if (s.includes('ipc'))                               return 'IPC';
+      return s.slice(0, 1).toUpperCase() + s.slice(1);
+    }
+    const plain = t.match(/^(feat|fix|refactor|docs|bug|chore):\s/);
+    if (plain) {
+      if (t.includes('gitlab') || t.includes('forge')) return 'GitLab';
+      if (t.includes('jira'))   return 'JIRA';
+      if (t.includes('llm'))    return 'LLM';
+      return plain[1].slice(0, 1).toUpperCase() + plain[1].slice(1);
+    }
+    return 'Other';
+  }
+
+  // Compute internal layout for each group.
+  // Small groups (≤ LARGE_GROUP_THRESH nodes): flat tier-column layout.
+  // Large groups: split by subgroup label, each subgroup laid out as its own
+  //   tier-column section, stacked vertically with a separator and label.
+  const groupLayouts = new Map();
+  sortedMs.forEach(m => {
+    const nodes = msMap.get(m);
+    const nodeLPos   = new Map();
+    const subgroupMeta = []; // [{text, labelLY, dividerLY}] – drawn when rendering boxes
+
+    if (nodes.length <= LARGE_GROUP_THRESH) {
+      // -- flat layout (same as before) --
+      const byTier = new Map();
+      nodes.forEach(n => {
+        const t = tierMap[n.id] ?? 0;
+        if (!byTier.has(t)) byTier.set(t, []);
+        byTier.get(t).push(n);
+      });
+      const tiers = [...byTier.keys()].sort((a, b) => a - b);
+      let col = 0, maxRows = 0;
+      tiers.forEach(t => {
+        byTier.get(t).forEach((n, row) => {
+          nodeLPos.set(n.id, { lx: GP + col * (NW + NPX), ly: GH + GP + row * (NH + NPY) });
+          if (row + 1 > maxRows) maxRows = row + 1;
+        });
+        col++;
+      });
+      const boxW = GP * 2 + col * (NW + NPX) - NPX;
+      const boxH = GH + GP * 2 + maxRows * (NH + NPY) - NPY;
+      groupLayouts.set(m, { nodeLPos, boxW: Math.max(boxW, NW + GP * 2), boxH, subgroupMeta });
+
+    } else {
+      // -- subgroup layout --
+      const subMap = new Map();
+      nodes.forEach(n => {
+        const sg = sgLabel(n.title);
+        if (!subMap.has(sg)) subMap.set(sg, []);
+        subMap.get(sg).push(n);
+      });
+      // Sort subgroups by their earliest global tier then alpha
+      const sortedSgs = [...subMap.keys()].sort((a, b) => {
+        const minT = s => Math.min(...subMap.get(s).map(n => tierMap[n.id] ?? 0));
+        const td = minT(a) - minT(b);
+        return td !== 0 ? td : a.localeCompare(b);
+      });
+
+      let curY = GH + GP;
+      let maxW  = 0;
+
+      sortedSgs.forEach((sg, sgi) => {
+        const sgNodes = subMap.get(sg);
+
+        // Divider line above all subgroups except the first
+        const dividerLY = sgi > 0 ? curY - SG_SEP_H / 2 : null;
+        const labelLY   = curY + SG_LABEL_H - 5;
+        subgroupMeta.push({ text: sg.toUpperCase(), labelLY, dividerLY });
+        curY += SG_LABEL_H;
+
+        // Internal tier columns
+        const byTier = new Map();
+        sgNodes.forEach(n => {
+          const t = tierMap[n.id] ?? 0;
+          if (!byTier.has(t)) byTier.set(t, []);
+          byTier.get(t).push(n);
+        });
+        const tiers = [...byTier.keys()].sort((a, b) => a - b);
+
+        let sgCol = 0, sgMaxRows = 0;
+        const placements = [];
+        tiers.forEach(t => {
+          const colNodes = byTier.get(t);
+          for (let i = 0; i < colNodes.length; i += MAX_SG_COL) {
+            const chunk = colNodes.slice(i, i + MAX_SG_COL);
+            chunk.forEach((n, row) => {
+              placements.push({ id: n.id, col: sgCol, row });
+              if (row + 1 > sgMaxRows) sgMaxRows = row + 1;
+            });
+            sgCol++;
+          }
+        });
+
+        placements.forEach(({ id, col, row }) => {
+          nodeLPos.set(id, {
+            lx: GP + col * (NW + NPX),
+            ly: curY + row * (NH + NPY),
+          });
+        });
+
+        const sgH = sgMaxRows > 0 ? sgMaxRows * (NH + NPY) - NPY : NH;
+        const sgW = GP * 2 + sgCol * (NW + NPX) - NPX;
+        if (sgW > maxW) maxW = sgW;
+        curY += sgH + SG_SEP_H;
+      });
+
+      const boxW = Math.max(maxW, NW + GP * 2);
+      const boxH = curY - SG_SEP_H + GP;
+      groupLayouts.set(m, { nodeLPos, boxW, boxH, subgroupMeta });
+    }
+  });
+
+  // Arrange groups in a 2-column grid (even-index groups = left column, odd = right)
+  const col0MaxW = Math.max(...sortedMs.filter((_, i) => i % 2 === 0).map(m => groupLayouts.get(m).boxW), NW + GP * 2);
+  const col0X = MARGIN;
+  const col1X = col0X + col0MaxW + GGX;
+
+  const groupPos = new Map();
+  let curY0 = MARGIN, curY1 = MARGIN;
+  sortedMs.forEach((m, i) => {
+    const { boxH } = groupLayouts.get(m);
+    if (i % 2 === 0) { groupPos.set(m, { x: col0X, y: curY0 }); curY0 += boxH + GGY; }
+    else             { groupPos.set(m, { x: col1X, y: curY1 }); curY1 += boxH + GGY; }
+  });
+
+  // Build global nodePos from group origin + local position
+  const nodePos = {};
+  sortedMs.forEach(m => {
+    const { x: gx, y: gy } = groupPos.get(m);
+    groupLayouts.get(m).nodeLPos.forEach((lp, id) => {
+      const nx = gx + lp.lx, ny = gy + lp.ly;
+      nodePos[id] = { x: nx, y: ny, cx: nx + NW / 2, cy: ny + NH / 2 };
     });
   });
 
-  // Position each node at its tier column; Y = index within tier.
-  // Top offset includes space for the group header (GH + GP) so the
-  // milestone box header is never clipped off the top of the SVG.
-  const nodePos = {}; // id -> {x, y, cx, cy}
-  const TOP = MARGIN + GH + GP;
-  tiers.forEach((t, ti) => {
-    const x = MARGIN + ti * TIER_W;
-    tierNodes[t].forEach((n, i) => {
-      const y = TOP + i * (NH + NPY);
-      nodePos[n.id] = { x, y, cx: x + NW / 2, cy: y + NH / 2 };
-    });
-  });
-
-  // Milestone bounding boxes: compute from actual node positions
-  const milestoneMap = {};
-  (data.nodes || []).forEach(n => {
-    const m = n.milestone || '(no milestone)';
-    if (!milestoneMap[m]) milestoneMap[m] = [];
-    milestoneMap[m].push(n);
-  });
-
-  // SVG dimensions
   const allX = Object.values(nodePos).map(p => p.x + NW);
   const allY = Object.values(nodePos).map(p => p.y + NH);
-  const svgW = Math.max(allX.length ? Math.max(...allX) + MARGIN : 400, 400);
-  const svgH = Math.max(allY.length ? Math.max(...allY) + MARGIN * 3 + GH : 200, 200);
+  const contentW = (allX.length ? Math.max(...allX) + GP : 600) + MARGIN;
+  const contentH = (allY.length ? Math.max(...allY) + GP : 400) + MARGIN;
 
-  const svg = d3.select('#graph-svg')
-    .attr('width', svgW).attr('height', svgH)
-    .attr('viewBox', `0 0 ${svgW} ${svgH}`);
+  // --- SVG setup (zoom, markers, background click) ---
+  const svg = d3.select('#graph-svg').style('cursor', 'grab');
   svg.selectAll('*').remove();
+  _svgSel = svg;
 
-  // Arrow marker
-  svg.append('defs').append('marker')
-    .attr('id', 'dep-arrow').attr('viewBox', '0 -4 8 8')
-    .attr('refX', 7).attr('refY', 0)
-    .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
-    .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', '#45475a');
+  const defs = svg.append('defs');
+  function addMarker(id, color) {
+    defs.append('marker')
+      .attr('id', id).attr('viewBox', '0 -4 8 8')
+      .attr('refX', 7).attr('refY', 0)
+      .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-4L8,0L0,4').attr('fill', color);
+  }
+  addMarker('arr-dim',  '#2a2a3a');
+  addMarker('arr-def',  '#45475a');
+  addMarker('arr-anc',  '#f9e2af');
+  addMarker('arr-desc', '#89b4fa');
 
-  // Milestone group boxes drawn behind nodes
-  Object.entries(milestoneMap).forEach(([m, nodes]) => {
-    const xs = nodes.map(n => nodePos[n.id]?.x).filter(v => v != null);
-    const ys = nodes.map(n => nodePos[n.id]?.y).filter(v => v != null);
-    if (!xs.length) return;
-    const bx = Math.min(...xs) - GP;
-    const by = Math.min(...ys) - GH - GP;
-    const bw = Math.max(...xs) + NW + GP - bx;
-    const bh = Math.max(...ys) + NH + GP - by;
-    svg.append('rect')
-      .attr('x', bx).attr('y', by).attr('width', bw).attr('height', bh)
-      .attr('rx', 6).attr('fill', 'rgba(17,17,27,0.55)')
-      .attr('stroke', 'rgba(88,91,112,0.2)').attr('stroke-width', 1);
-    svg.append('text')
-      .attr('x', bx + GP).attr('y', by + GH - 4)
-      .attr('fill', '#45475a').attr('font-size', '10px').attr('font-family', 'sans-serif')
-      .text(m.length > 44 ? m.slice(0, 42) + '...' : m);
+  const zoom = d3.zoom()
+    .scaleExtent([0.08, 3])
+    .on('zoom', event => {
+      mainG.attr('transform', event.transform);
+      svg.style('cursor', event.sourceEvent?.buttons === 1 ? 'grabbing' : 'grab');
+    });
+  _zoomBehavior = zoom;
+  svg.call(zoom);
+
+  svg.append('rect').attr('width', '100%').attr('height', '100%').attr('fill', 'transparent')
+    .on('click', () => { _selectedNodeId = null; applyHighlight(); hideDrawer(); });
+
+  const mainG = svg.append('g').attr('class', 'main-group');
+
+  // --- adjacency maps ---
+  const edges = data.edges || [];
+  const adjDeps = {}, adjDependents = {};
+  (data.nodes || []).forEach(n => { adjDeps[n.id] = []; adjDependents[n.id] = []; });
+  edges.forEach(e => {
+    if (adjDeps[e.from])     adjDeps[e.from].push(e.to);
+    if (adjDependents[e.to]) adjDependents[e.to].push(e.from);
   });
 
-  // Dependency edges: from right edge of dependency (e.to) to left edge of dependent (e.from)
-  // Edges always flow left-to-right because tier[e.to] <= tier[e.from].
-  (data.edges || []).forEach(e => {
-    const dep = nodePos[e.to];
-    const dnt = nodePos[e.from];
+  function bfsSet(startId, adj) {
+    const visited = new Set();
+    const queue = [startId];
+    while (queue.length) {
+      const cur = queue.shift();
+      (adj[cur] || []).forEach(d => { if (!visited.has(d)) { visited.add(d); queue.push(d); } });
+    }
+    return visited;
+  }
+
+  let _selectedNodeId = null;
+
+  function applyHighlight() {
+    const id = _selectedNodeId;
+    const ancestors   = id != null ? bfsSet(id, adjDeps)       : new Set();
+    const descendants = id != null ? bfsSet(id, adjDependents) : new Set();
+
+    mainG.selectAll('.dep-node').each(function() {
+      const nid = +this.dataset.nid;
+      const active = id == null || nid === id || ancestors.has(nid) || descendants.has(nid);
+      const color = this.dataset.color;
+      d3.select(this).attr('opacity', active ? (this.dataset.done === '1' ? 0.35 : 1) : 0.08);
+      d3.select(this).select('rect.node-bg')
+        .attr('stroke', nid === id ? '#cdd6f4' : color + (active ? '66' : '1a'))
+        .attr('stroke-width', nid === id ? 2 : 1);
+    });
+
+    // Also dim non-involved group boxes
+    mainG.selectAll('.group-box').each(function() {
+      if (id == null) { d3.select(this).attr('opacity', 1); return; }
+      const members = JSON.parse(this.dataset.members);
+      const hasActive = members.some(nid => nid === id || ancestors.has(nid) || descendants.has(nid));
+      d3.select(this).attr('opacity', hasActive ? 1 : 0.25);
+    });
+
+    mainG.selectAll('.dep-edge').each(function() {
+      const ef = +this.dataset.from, et = +this.dataset.to;
+      if (id == null) {
+        d3.select(this).attr('stroke', '#45475a').attr('opacity', 0.45).attr('stroke-width', 1).attr('marker-end', 'url(#arr-def)');
+        return;
+      }
+      const onAnc  = (ancestors.has(ef)   || ef === id) && (ancestors.has(et)   || et === id);
+      const onDesc = (descendants.has(ef) || ef === id) && (descendants.has(et) || et === id);
+      if      (onAnc)  d3.select(this).attr('stroke', '#f9e2af').attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-anc)');
+      else if (onDesc) d3.select(this).attr('stroke', '#89b4fa').attr('opacity', 0.9).attr('stroke-width', 1.8).attr('marker-end', 'url(#arr-desc)');
+      else             d3.select(this).attr('stroke', '#1e1e2e').attr('opacity', 0.08).attr('stroke-width', 1).attr('marker-end', 'url(#arr-dim)');
+    });
+  }
+
+  // --- draw group boxes (behind edges and nodes) ---
+  sortedMs.forEach(m => {
+    const { x, y } = groupPos.get(m);
+    const { boxW, boxH, nodeLPos, subgroupMeta } = groupLayouts.get(m);
+    const { bg, border, head } = groupPal.get(m);
+    const memberIds = JSON.stringify([...nodeLPos.keys()]);
+
+    const grp = mainG.append('g').attr('class', 'group-box').attr('data-members', memberIds);
+
+    // Main box
+    grp.append('rect')
+      .attr('x', x).attr('y', y).attr('width', boxW).attr('height', boxH)
+      .attr('rx', 10)
+      .attr('fill', bg)
+      .attr('stroke', border).attr('stroke-width', 1.5);
+
+    // Separator line under milestone header
+    grp.append('line')
+      .attr('x1', x + GP).attr('x2', x + boxW - GP)
+      .attr('y1', y + GH).attr('y2', y + GH)
+      .attr('stroke', border).attr('stroke-width', 0.5).attr('opacity', 0.5);
+
+    // Milestone title
+    const label = m.replace(/^Phase \d+:\s*/i, '');
+    const display = label.length > 54 ? label.slice(0, 53) + '…' : label;
+    grp.append('text')
+      .attr('x', x + GP).attr('y', y + GH - 8)
+      .attr('fill', head).attr('font-size', '10.5px').attr('font-weight', '700')
+      .attr('font-family', 'system-ui, sans-serif').attr('letter-spacing', '0.04em')
+      .text(display.toUpperCase());
+
+    // Subgroup dividers and labels (for large groups only)
+    subgroupMeta.forEach(sg => {
+      // Divider line above this subgroup (except first)
+      if (sg.dividerLY != null) {
+        grp.append('line')
+          .attr('x1', x + GP).attr('x2', x + boxW - GP)
+          .attr('y1', y + sg.dividerLY).attr('y2', y + sg.dividerLY)
+          .attr('stroke', border).attr('stroke-width', 0.75).attr('stroke-dasharray', '4 3')
+          .attr('opacity', 0.4);
+      }
+      // Subgroup label
+      grp.append('text')
+        .attr('x', x + GP).attr('y', y + sg.labelLY)
+        .attr('fill', head).attr('font-size', '8.5px').attr('font-weight', '600')
+        .attr('font-family', 'system-ui, sans-serif').attr('letter-spacing', '0.06em')
+        .attr('opacity', 0.6)
+        .text(sg.text);
+    });
+  });
+
+  // --- edges (drawn above boxes, below nodes) ---
+  edges.forEach(e => {
+    const dep = nodePos[e.to], dnt = nodePos[e.from];
     if (!dep || !dnt) return;
     const sx = dep.x + NW, sy = dep.cy;
-    const tx = dnt.x, ty = dnt.cy;
-    const dx = Math.max((tx - sx) * 0.45, 20);
-    svg.append('path')
+    const tx = dnt.x,      ty = dnt.cy;
+    const dx = Math.max(Math.abs(tx - sx) * 0.5, 40);
+    mainG.append('path')
+      .attr('class', 'dep-edge')
+      .attr('data-from', e.from).attr('data-to', e.to)
       .attr('d', `M${sx},${sy} C${sx+dx},${sy} ${tx-dx},${ty} ${tx},${ty}`)
-      .attr('fill', 'none').attr('stroke', '#45475a').attr('stroke-width', 1)
-      .attr('marker-end', 'url(#dep-arrow)').attr('opacity', 0.65);
+      .attr('fill', 'none').attr('stroke', '#45475a').attr('stroke-width', 1).attr('opacity', 0.45)
+      .attr('marker-end', 'url(#arr-def)');
   });
 
-  // Nodes
+  // --- nodes ---
   (data.nodes || []).forEach(n => {
     const pos = nodePos[n.id];
     if (!pos) return;
     const color = stateColor(n.state);
     const isDone = n.state === 'done' || n.state === 'closed';
-    const opacity = isDone ? 0.4 : 1;
 
-    const g = svg.append('g').attr('class', 'dep-node').style('cursor', 'pointer')
-      .attr('opacity', opacity);
+    const g = mainG.append('g')
+      .attr('class', 'dep-node')
+      .attr('data-nid', n.id).attr('data-color', color).attr('data-done', isDone ? '1' : '0')
+      .attr('opacity', isDone ? 0.35 : 1)
+      .style('cursor', 'pointer');
 
-    g.append('rect')
-      .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH)
-      .attr('rx', 4)
-      .attr('fill', color + '15')
-      .attr('stroke', color + '55').attr('stroke-width', 1);
+    g.append('rect').attr('class', 'node-bg')
+      .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
+      .attr('fill', color + '18').attr('stroke', color + '66').attr('stroke-width', 1);
 
-    g.append('circle')
-      .attr('cx', pos.x + 11).attr('cy', pos.cy)
-      .attr('r', 4).attr('fill', color);
+    g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
 
     g.append('text')
-      .attr('x', pos.x + 22).attr('y', pos.y + 14)
-      .attr('fill', '#cdd6f4').attr('font-size', '10px')
-      .attr('font-weight', '600').attr('font-family', 'monospace')
+      .attr('x', pos.x + 24).attr('y', pos.y + 21)
+      .attr('fill', '#cdd6f4').attr('font-size', '10.5px').attr('font-weight', '700').attr('font-family', 'monospace')
       .text(`#${n.id}`);
 
-    const titleTrunc = n.title && n.title.length > 22 ? n.title.slice(0, 21) + '...' : (n.title || '');
+    const t1 = (n.title || '').slice(0, 28) + ((n.title || '').length > 28 ? '…' : '');
     g.append('text')
-      .attr('x', pos.x + 22).attr('y', pos.y + 27)
-      .attr('fill', '#6c7086').attr('font-size', '9px').attr('font-family', 'sans-serif')
-      .text(titleTrunc);
+      .attr('x', pos.x + 24).attr('y', pos.y + 35)
+      .attr('fill', '#a6adc8').attr('font-size', '9px').attr('font-family', 'sans-serif')
+      .text(t1);
 
-    g.on('mouseenter', function() { d3.select(this).select('rect').attr('stroke', color + 'aa'); })
-     .on('mouseleave', function() { d3.select(this).select('rect').attr('stroke', color + '55'); })
-     .on('click', () => showDrawer(n));
+    g.on('mouseenter', function() {
+      if (+this.dataset.nid !== _selectedNodeId)
+        d3.select(this).select('rect.node-bg').attr('stroke', color + 'bb');
+    })
+    .on('mouseleave', function() {
+      if (+this.dataset.nid !== _selectedNodeId)
+        d3.select(this).select('rect.node-bg').attr('stroke', color + '66');
+    })
+    .on('click', event => {
+      event.stopPropagation();
+      if (_selectedNodeId === n.id) { _selectedNodeId = null; applyHighlight(); hideDrawer(); }
+      else                          { _selectedNodeId = n.id; applyHighlight(); showDrawer(n); }
+    });
   });
+
+  // --- fit to view ---
+  const scale = Math.max(Math.min(cw / contentW, ch / contentH, 1), 0.08);
+  const tx = (cw - contentW * scale) / 2;
+  const ty = Math.max((ch - contentH * scale) / 2, MARGIN * scale);
+  _fitTransform = d3.zoomIdentity.translate(tx, ty).scale(scale);
+  svg.call(zoom.transform, _fitTransform);
 }
 
 // -- Action drawer --
