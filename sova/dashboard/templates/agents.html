@@ -1514,7 +1514,7 @@ async function stopAgent(runId) {
     await fetch(apiUrl('/agents/' + runId + '/stop'), { method: 'POST' });
     loadAgents();
   } catch (e) {
-    alert('Failed to stop agent: ' + e.message);
+    showToast('Failed to stop agent: ' + e.message, 'error');
   }
 }
 

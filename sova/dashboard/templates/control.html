@@ -479,7 +479,7 @@ async function executeHandoffAction(actionId) {
       '<p class="text-gray-500 text-xs animate-pulse">Starting: ' + escapeHtml(data.action || actionId) + '...</p>';
     document.getElementById('start-panel').classList.remove('hidden');
   } catch (e) {
-    alert('Failed to execute action: ' + e.message);
+    showToast('Failed to execute action: ' + e.message, 'error');
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
   }
 }

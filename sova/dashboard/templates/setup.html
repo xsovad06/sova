@@ -576,7 +576,7 @@ async function onJiraProjectSelected(projectKey) {
 
 document.getElementById('setup-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (!currentProjectPath) { alert('Select and scan a project first'); return; }
+  if (!currentProjectPath) { showToast('Select and scan a project first', 'warning'); return; }
 
   const fd = new FormData(e.target);
   const taskSource = fd.get('task_source');
@@ -637,5 +637,6 @@ document.getElementById('setup-form').addEventListener('submit', async (e) => {
 
 browseTo('~');
 </script>
+<script src="/static/app.js"></script>
 </body>
 </html>

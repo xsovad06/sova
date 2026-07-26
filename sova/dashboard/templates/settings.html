@@ -277,11 +277,11 @@ async function toggleBool(key, checked) {
     });
     var data = await res.json();
     if (data.error) {
-      alert(data.error);
+      showToast(data.error, 'error');
     }
     loadConfig();
   } catch (e) {
-    alert('Failed to save: ' + e.message);
+    showToast('Failed to save: ' + e.message, 'error');
     loadConfig();
   }
 }
@@ -356,7 +356,7 @@ async function saveConfig(key, value, span, input) {
     });
     var data = await res.json();
     if (data.error) {
-      alert(data.error);
+      showToast(data.error, 'error');
       cancelEdit(span, input);
     } else {
       input.onblur = null;
@@ -364,7 +364,7 @@ async function saveConfig(key, value, span, input) {
       loadConfig();
     }
   } catch (e) {
-    alert('Failed to save: ' + e.message);
+    showToast('Failed to save: ' + e.message, 'error');
     cancelEdit(span, input);
   }
 }
