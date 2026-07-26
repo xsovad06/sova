@@ -1058,6 +1058,13 @@ _REGISTRY: list[SettingMeta] = [
         "fleet",
         "number",
     ),
+    SettingMeta(
+        "fleet.telemetry_window_days",
+        "Telemetry window (days)",
+        "Number of days of remote telemetry data to include in fleet insights",
+        "fleet",
+        "number",
+    ),
     # -- Awareness --
     SettingMeta(
         "awareness.enabled",

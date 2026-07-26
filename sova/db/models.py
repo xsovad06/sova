@@ -507,6 +507,34 @@ class PRCreationQueue(Base):
     )
 
 
+class TelemetryEvent(Base):
+    """Ingested telemetry from remote SOVA instances."""
+
+    __tablename__ = "telemetry_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    machine_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    run_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    project_slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False, default=Decimal(0))
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    step_outcomes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("machine_id", "run_id", name="uq_telemetry_machine_run"),
+        Index("ix_telemetry_events_machine", "machine_id"),
+        Index("ix_telemetry_events_project", "project_slug"),
+        Index("ix_telemetry_events_received", "received_at"),
+    )
+
+
 class SupervisorDecision(Base):
     """Append-only log of supervisor daemon decisions for diagnostics."""
 
