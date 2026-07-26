@@ -178,7 +178,7 @@ async function enableSupervisor() {
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
-    alert(`Failed to enable supervisor: ${msg}`);
+    showToast(`Failed to enable supervisor: ${msg}`, 'error');
     await loadStatus();
     return;
   }
@@ -220,7 +220,7 @@ async function disableSupervisor() {
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     const msg = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
-    alert(`Failed to disable supervisor: ${msg}`);
+    showToast(`Failed to disable supervisor: ${msg}`, 'error');
     throw new Error(msg);
   }
   // Stop the running daemon so it doesn't keep polling with a stale config.
@@ -815,7 +815,7 @@ async function spawnAgent(issue, role) {
     hideDrawer();
     setTimeout(loadGraph, 1500);
   } catch (e) {
-    alert(`Failed to start agent: ${e.message}`);
+    showToast(`Failed to start agent: ${e.message}`, 'error');
   }
 }
 

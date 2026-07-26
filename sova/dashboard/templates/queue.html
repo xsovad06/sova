@@ -415,7 +415,7 @@ async function startFromQueue(issue, e) {
     });
     window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
   } catch (e) {
-    alert('Failed to start agent: ' + e.message);
+    showToast('Failed to start agent: ' + e.message, 'error');
     btn.disabled = false;
     btn.textContent = 'Start';
     btn.style.opacity = '1';

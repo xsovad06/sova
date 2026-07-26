@@ -285,10 +285,10 @@
         var data = await resp.json().catch(function() { return {}; });
         var msg = data.detail;
         if (typeof msg !== 'string') msg = JSON.stringify(msg) || resp.statusText;
-        alert('Uninstall failed: ' + msg);
+        showToast('Uninstall failed: ' + msg, 'error');
       }
     } catch (err) {
-      alert('Uninstall failed: ' + err.message);
+      showToast('Uninstall failed: ' + err.message, 'error');
     }
   }
   </script>

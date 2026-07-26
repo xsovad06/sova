@@ -520,12 +520,12 @@ async function markFailed() {
     });
     if (!res.ok) {
       var err = await res.json();
-      alert('Error: ' + (err.detail || res.status));
+      showToast('Error: ' + (err.detail || res.status), 'error');
       return;
     }
     loadRunDetail();
   } catch (e) {
-    alert('Failed to mark run: ' + e.message);
+    showToast('Failed to mark run: ' + e.message, 'error');
   }
 }
 
