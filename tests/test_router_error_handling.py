@@ -210,6 +210,40 @@ class TestAgentsRouterErrors:
         assert resp.status_code == 409
         assert "Issue conflict" in resp.json()["detail"]
 
+    async def test_start_agent_error_dict_returns_409(self, client: AsyncClient) -> None:
+        """Error dict from start_agent with 'error' key returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        with patch.object(
+            cs,
+            "start_agent",
+            new_callable=AsyncMock,
+            return_value={"error": "conflict", "detail": "Agent already running"},
+        ):
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "42"},
+            )
+        assert resp.status_code == 409
+        assert "Agent already running" in resp.json()["detail"]
+
+    async def test_start_agent_status_error_dict_returns_409(self, client: AsyncClient) -> None:
+        """Error dict from start_agent with 'status': 'error' (no 'error' key) returns 409."""
+        from sova.dashboard.services import control_service as cs
+
+        with patch.object(
+            cs,
+            "start_agent",
+            new_callable=AsyncMock,
+            return_value={"status": "error", "detail": "Issue already running"},
+        ):
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "42"},
+            )
+        assert resp.status_code == 409
+        assert "Issue already running" in resp.json()["detail"]
+
 
 class TestQueueRouterErrors:
     async def test_start_from_queue_error_dict_returns_409(self, client: AsyncClient) -> None:

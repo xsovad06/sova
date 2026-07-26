@@ -112,7 +112,7 @@ async def install_project(req: InstallRequest):
         slug = register_project(project)
         return {"status": "ok", "slug": slug}
     except Exception as exc:
-        log.error("setup.install.error", project=str(project), exc_info=True)
+        log.exception("setup.install.error", project=str(project))
         raise HTTPException(status_code=500, detail="Installation failed") from exc
 
 
@@ -238,7 +238,7 @@ async def test_jira_connection(req: JiraTestRequest):
         log.warning("setup.jira.test.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
     except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
-        log.error("setup.jira.test.connection_error", exc_info=True)
+        log.exception("setup.jira.test.connection_error")
         raise HTTPException(status_code=503, detail="Connection test failed") from exc
 
 
@@ -257,7 +257,7 @@ async def discover_jira_projects(req: JiraProjectsRequest):
         log.warning("setup.jira.projects.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
     except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
-        log.error("setup.jira.projects.connection_error", exc_info=True)
+        log.exception("setup.jira.projects.connection_error")
         raise HTTPException(status_code=503, detail="Failed to discover Jira projects") from exc
 
 
@@ -276,5 +276,5 @@ async def discover_jira_statuses(req: JiraStatusesRequest):
         log.warning("setup.jira.statuses.config_error", exc_info=True)
         raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
     except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
-        log.error("setup.jira.statuses.connection_error", exc_info=True)
+        log.exception("setup.jira.statuses.connection_error")
         raise HTTPException(status_code=503, detail="Failed to discover Jira statuses") from exc

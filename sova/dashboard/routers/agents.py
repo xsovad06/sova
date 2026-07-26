@@ -304,7 +304,7 @@ async def start_agent(req: StartAgentRequest):
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
     )
-    if "error" in result:
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
     return result
 
@@ -330,7 +330,7 @@ async def resume_from_approval(run_id: int) -> dict:
         raise HTTPException(status_code=404, detail=result["detail"])
     if result.get("error") == "conflict":
         raise HTTPException(status_code=409, detail=result["detail"])
-    if "error" in result:
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
     return result
 

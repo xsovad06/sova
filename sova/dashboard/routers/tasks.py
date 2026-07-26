@@ -48,9 +48,9 @@ async def list_issues():
         ]
         _issues_cache[cache_key] = (time.time(), issues)
         return {"issues": issues}
-    except Exception:
+    except Exception as exc:
         log.warning("Failed to fetch issues from task source", exc_info=True)
-        raise HTTPException(status_code=503, detail="Task source unavailable")
+        raise HTTPException(status_code=503, detail="Task source unavailable") from exc
 
 
 @router.get("/tasks/active")
