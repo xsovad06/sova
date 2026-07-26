@@ -12727,6 +12727,152 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
 
+    async def test_sweep_terminal_recheck_prevents_overwrite(self) -> None:
+        """A run finalized as 'done' between Phase 1 and Phase 3 must not be overwritten.
+
+        Simulates _wait_and_finalize() completing concurrently by having the
+        GitHub API side effect mark the run 'done' before Phase 3 opens the
+        write transaction.  Phase 3's terminal re-check must skip the write.
+        """
+        from datetime import datetime, timezone
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="60",
+                    role="command:integrate-pr",
+                    status="running",
+                    pid=888880,
+                    pr_number=200,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        async def finalize_and_return_false(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
+            """Simulate _wait_and_finalize writing 'done' while Phase 2 runs."""
+            async with await get_session() as s:
+                async with s.begin():
+                    r = await s.get(TaskRun, run_id)
+                    if r is not None:
+                        r.status = "done"
+                        r.ended_at = datetime.now(timezone.utc)
+                        r.error_message = "Finalized by concurrent writer"
+            return False
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure": {
+                    "new": finalize_and_return_false,
+                },
+            }
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        async with await get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "done", (
+                "terminal re-check must prevent 'interrupted' from overwriting a concurrent 'done'"
+            )
+            assert "concurrent writer" in (refreshed.error_message or "").lower()
+
+    async def test_sweep_github_api_called_before_write_transaction(self) -> None:
+        """GitHub API (Phase 2) must be called before the write transaction opens (Phase 3).
+
+        Tracks call order using a shared log: 'github_api' must precede
+        'write_begin' to confirm the API is not inside the DB write lock.
+        """
+        from unittest.mock import patch
+
+        call_log: list[str] = []
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="62",
+                    role="command:integrate-pr",
+                    status="running",
+                    pid=888860,
+                    pr_number=202,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+
+        async def tracking_get_session(project_dir: object = None) -> object:  # noqa: ARG001
+            """Wrap the real session to record begin() calls."""
+            sess = await get_session()
+            original_begin = sess.begin
+
+            def tracked_begin() -> object:
+                call_log.append("write_begin")
+                return original_begin()
+
+            sess.begin = tracked_begin
+            return sess
+
+        async def tracking_check_pr_merged(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
+            call_log.append("github_api")
+            return False
+
+        with (
+            patch("sova.db.session.get_session", tracking_get_session),
+            patch("sova.dashboard.services.control_service._is_process_alive", return_value=False),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+                new=tracking_check_pr_merged,
+            ),
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        # Phase 1 is a read-only SELECT (no begin()), Phase 2 calls GitHub API,
+        # Phase 3 opens the write transaction.  Expected order: github_api then write_begin.
+        assert "github_api" in call_log, "GitHub API must be called for merge-role runs"
+        assert "write_begin" in call_log, "write transaction must be opened in Phase 3"
+        github_idx = call_log.index("github_api")
+        write_begin_idx = call_log.index("write_begin")
+        assert github_idx < write_begin_idx, f"GitHub API must precede write transaction; got call order: {call_log}"
+
+    async def test_sweep_gather_checks_all_merge_candidates(self) -> None:
+        """All merge-role dead runs must be checked, not just the first one."""
+        checked_prs: list[int] = []
+
+        async with await get_session() as session:
+            async with session.begin():
+                for idx, pr in enumerate([301, 302]):
+                    run = TaskRun(
+                        issue_number=str(70 + idx),
+                        role="command:integrate-pr",
+                        status="running",
+                        pid=777700 + idx,
+                        pr_number=pr,
+                        project_slug="test",
+                    )
+                    session.add(run)
+                    await session.flush()
+
+        async def tracking_check(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
+            checked_prs.append(pr_number)
+            return False
+
+        with self._patch_sweep_deps(
+            **{
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure": {
+                    "new": tracking_check,
+                },
+            }
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        assert sorted(checked_prs) == [301, 302], "all merge-role dead runs must be checked"
+
 
 class TestWaitAndFinalizeOutputWriter:
     """Cover the output_writer.close() try/except in _wait_and_finalize."""
