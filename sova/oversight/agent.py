@@ -48,11 +48,7 @@ class OversightAgent:
         """
         if not self._persona:
             return ""
-        return (
-            "# Operations Persona (user-defined oversight guidance)\n\n"
-            f"{self._persona}\n\n"
-            "---\n\n"
-        )
+        return f"# Operations Persona (user-defined oversight guidance)\n\n{self._persona}\n\n---\n\n"
 
     async def stop(self) -> None:
         """Cancel the oversight background task."""
