@@ -310,3 +310,81 @@ class TestPersonaEndpoints:
 
             assert resp.status_code == 400
             assert "Edit manually" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_open_persona_success(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock
+
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=tmp_path)
+        persona_file = tmp_path / "persona.md"
+
+        mock_proc = AsyncMock()
+
+        with (
+            patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
+            ),
+            patch("sova.oversight.persona.get_open_command", return_value="code"),
+            patch("sova.oversight.persona.ensure_persona_exists", return_value=persona_file),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/settings/persona/open")
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "ok"
+            assert data["path"] == str(persona_file)
+            mock_exec.assert_called_once_with("code", str(persona_file))
+
+    @pytest.mark.asyncio
+    async def test_open_persona_editor_not_found(self, tmp_path: Path) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=tmp_path)
+        persona_file = tmp_path / "persona.md"
+
+        with (
+            patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=type("C", (), {"oversight": type("O", (), {"persona_path": ""})()})(),
+            ),
+            patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
+            patch("sova.oversight.persona.ensure_persona_exists", return_value=persona_file),
+            patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/settings/persona/open")
+
+            assert resp.status_code == 400
+            assert "not found" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_open_persona_config_error(self, tmp_path: Path) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from sova.dashboard.app import create_app
+
+        app = create_app(project_dir=tmp_path)
+
+        with (
+            patch("sova.dashboard.routers.settings.get_project_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.post("/api/settings/persona/open")
+
+            assert resp.status_code == 500
+            assert "Failed to load" in resp.json()["detail"]

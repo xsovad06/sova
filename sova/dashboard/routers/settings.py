@@ -200,8 +200,6 @@ async def get_operations_persona():
 )
 async def open_persona_in_editor():
     """Open the operations persona file in the OS default editor."""
-    import subprocess
-
     from sova.config.loader import load_config
     from sova.oversight.persona import ensure_persona_exists, get_open_command
 
@@ -221,7 +219,7 @@ async def open_persona_in_editor():
         )
 
     try:
-        subprocess.Popen([cmd, str(path)])  # noqa: S603 - trusted path from config
+        await asyncio.create_subprocess_exec(cmd, str(path))
         return {"status": "ok", "path": str(path)}
     except FileNotFoundError:
         raise HTTPException(
