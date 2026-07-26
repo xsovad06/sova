@@ -248,6 +248,8 @@ def _detect_tech_stack(project: Path) -> list[str]:
         pkg = (project / _PACKAGE_JSON).read_text(errors="ignore")
         if '"react"' in pkg:
             stack.append("react")
+        if '"@patternfly/react-core"' in pkg:
+            stack.append("patternfly")
         if '"next"' in pkg:
             stack.append("nextjs")
         if (project / "tsconfig.json").exists():
@@ -270,6 +272,7 @@ def _detect_persona(stack: list[str]) -> str:
         ("django", "django"),
         ("fastapi", "fastapi"),
         ("odoo", "odoo"),
+        ("patternfly", "patternfly"),
         ("react", "react"),
         ("go", "go-service"),
         ("rust", "rust"),

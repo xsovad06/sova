@@ -336,3 +336,56 @@ def test_is_rtk_entry_non_dict() -> None:
     assert _is_rtk_entry(None) is False
     assert _is_rtk_entry({"command": "other"}) is False
     assert _is_rtk_entry({"command": "rtk"}) is True
+
+
+# -- MCP auto-configuration in install --
+
+
+def test_configure_mcp_injects_patternfly(tmp_path: Path) -> None:
+    """_configure_mcp_servers injects PatternFly MCP when PF detected."""
+    from sova.cli.commands.project import _configure_mcp_servers
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    pkg = {"name": "test", "dependencies": {"@patternfly/react-core": "^5.0.0"}}
+    (project_dir / "package.json").write_text(json.dumps(pkg))
+
+    _configure_mcp_servers(project_dir, claude_dir)
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert "patternfly-mcp" in settings["mcpServers"]
+    assert settings["mcpServers"]["patternfly-mcp"]["command"] == "npx"
+
+
+def test_configure_mcp_skips_without_patternfly(tmp_path: Path) -> None:
+    """_configure_mcp_servers does nothing when no PatternFly detected."""
+    from sova.cli.commands.project import _configure_mcp_servers
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    claude_dir = project_dir / ".claude"
+    claude_dir.mkdir()
+    pkg = {"name": "test", "dependencies": {"react": "^18.0.0"}}
+    (project_dir / "package.json").write_text(json.dumps(pkg))
+
+    _configure_mcp_servers(project_dir, claude_dir)
+
+    assert not (claude_dir / "settings.json").exists()
+
+
+def test_uninstall_removes_patternfly_mcp(tmp_path: Path) -> None:
+    """_uninstall removes PatternFly MCP server from settings.json."""
+    from sova.utils.mcp_config import remove_mcp_server
+
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    pf_config = {"command": "npx", "args": ["-y", "@patternfly/patternfly-mcp@latest"]}
+    settings = {"mcpServers": {"patternfly-mcp": pf_config}}
+    (claude_dir / "settings.json").write_text(json.dumps(settings))
+
+    result = remove_mcp_server(claude_dir, "patternfly-mcp")
+    assert result is True
+    data = json.loads((claude_dir / "settings.json").read_text())
+    assert "mcpServers" not in data

@@ -121,7 +121,13 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     except Exception as exc:
         console.print(f"[yellow]Warning: RTK setup failed: {exc}[/yellow]")
 
-    # Stage 6: Agent memory (non-fatal)
+    # Stage 6: MCP auto-configuration (non-fatal)
+    try:
+        _configure_mcp_servers(project_dir, claude_dir)
+    except Exception as exc:
+        console.print(f"[yellow]Warning: MCP auto-configuration failed: {exc}[/yellow]")
+
+    # Stage 7: Agent memory (non-fatal)
     if not update:
         try:
             _create_agent_memory(claude_dir)
@@ -178,6 +184,23 @@ def _configure_rtk(cfg: ProjectConfig, claude_dir: Path) -> None:
 
     if inject_rtk_hook(claude_dir):
         console.print("[green]RTK compression hook configured.[/green]")
+
+
+_PATTERNFLY_MCP_NAME = "patternfly-mcp"
+_PATTERNFLY_MCP_CONFIG = {
+    "command": "npx",
+    "args": ["-y", "@patternfly/patternfly-mcp@latest"],
+}
+
+
+def _configure_mcp_servers(project_dir: Path, claude_dir: Path) -> None:
+    """Auto-detect tech stack and inject relevant MCP server configs."""
+    from sova.knowledge.personas import _package_json_mention
+    from sova.utils.mcp_config import inject_mcp_server
+
+    if _package_json_mention(project_dir, "@patternfly/react-core"):
+        if inject_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME, _PATTERNFLY_MCP_CONFIG):
+            console.print("[green]PatternFly MCP server configured.[/green]")
 
 
 def _create_agent_memory(claude_dir: Path) -> None:
@@ -314,7 +337,16 @@ async def _uninstall(
     except Exception as exc:
         failed.append(f"RTK hook: {exc}")
 
-    # 6. Agent memory (opt-in removal)
+    # 6. MCP servers (always removed: SOVA-managed)
+    try:
+        from sova.utils.mcp_config import remove_mcp_server
+
+        if remove_mcp_server(claude_dir, _PATTERNFLY_MCP_NAME):
+            removed.append("PatternFly MCP server from .claude/settings.json")
+    except Exception as exc:
+        failed.append(f"MCP servers: {exc}")
+
+    # 7. Agent memory (opt-in removal)
     if remove_memory:
         try:
             memory_dir = claude_dir / "agent-memory"
@@ -324,7 +356,7 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f"agent memory: {exc}")
 
-    # 7. Config file (opt-in removal)
+    # 8. Config file (opt-in removal)
     if remove_config:
         try:
             toml_file = project_dir / "sova.toml"
@@ -334,7 +366,7 @@ async def _uninstall(
         except OSError as exc:
             failed.append(f"config: {exc}")
 
-    # 8. Remove .claude/ if empty
+    # 9. Remove .claude/ if empty
     try:
         if claude_dir.is_dir() and not any(claude_dir.iterdir()):
             claude_dir.rmdir()
@@ -342,7 +374,7 @@ async def _uninstall(
     except OSError:
         pass
 
-    # 9. Unregister from project registry
+    # 10. Unregister from project registry
     try:
         from sova.config.registry import list_projects, unregister_project
 
