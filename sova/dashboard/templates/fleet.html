@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+{% block title %}Fleet Insights - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Fleet Insights</h2>
+  <div class="flex items-center gap-3">
+    <span id="fleet-updated" class="text-xs text-gray-500"></span>
+    <button type="button" onclick="loadFleet(true)" id="refresh-btn"
+            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+      Refresh
+    </button>
+  </div>
+</div>
+
+<!-- Error Banner -->
+<div id="fleet-error" class="hidden mb-4 px-4 py-3 rounded bg-accent-red/10 border border-accent-red/30 text-accent-red text-sm"></div>
+
+<!-- Health Summary -->
+<div id="health-summary" class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Total Runs</p>
+    <p class="text-2xl font-bold" id="stat-total-runs">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Success Rate</p>
+    <p class="text-2xl font-bold" id="stat-success-rate">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Total Cost</p>
+    <p class="text-2xl font-bold text-accent-green" id="stat-total-cost">--</p>
+  </div>
+  <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+    <p class="text-xs text-gray-500 uppercase">Projects Scanned</p>
+    <p class="text-2xl font-bold" id="stat-projects">--</p>
+  </div>
+</div>
+
+<!-- Step Failure Leaderboard -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Step Failure Leaderboard</h3>
+  </div>
+  <div id="step-failures" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Error Clusters -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Error Clusters</h3>
+  </div>
+  <div id="error-clusters" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Cost Breakdown -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Cost by Project</h3>
+  </div>
+  <div id="cost-breakdown" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Retry Effectiveness -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Retry Effectiveness</h3>
+  </div>
+  <div id="retry-effectiveness" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Project Scan Status -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Project Scan Status</h3>
+  </div>
+  <div id="scan-status" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<script>
+const prefix = '{{ prefix|default("") }}';
+const apiBase = prefix ? `${prefix}/api` : '/api';
+const POLL_MS = 5 * 60 * 1000;
+let _lastFleetKey = null;
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function fmtRate(rate) {
+  return (rate * 100).toFixed(1) + '%';
+}
+
+function fmtCost(cost) {
+  return '$' + Number(cost).toFixed(2);
+}
+
+function rateColorClass(rate) {
+  if (rate === 0) return 'text-accent-green';
+  if (rate < 0.1) return 'text-accent-yellow';
+  return 'text-accent-red';
+}
+
+function renderFleet(data) {
+  const key = JSON.stringify(data);
+  if (key === _lastFleetKey) return;
+  _lastFleetKey = key;
+
+  // Health Summary
+  document.getElementById('stat-total-runs').textContent = data.total_runs.toLocaleString();
+
+  const srEl = document.getElementById('stat-success-rate');
+  srEl.textContent = fmtRate(data.success_rate);
+  srEl.className = 'text-2xl font-bold ' + (data.success_rate >= 0.8 ? 'text-accent-green' : data.success_rate >= 0.5 ? 'text-accent-yellow' : 'text-accent-red');
+
+  document.getElementById('stat-total-cost').textContent = fmtCost(data.total_cost_usd);
+  document.getElementById('stat-projects').textContent = data.projects_scanned.length;
+
+  // Updated timestamp
+  const updatedEl = document.getElementById('fleet-updated');
+  if (data.generated_at) {
+    const d = new Date(data.generated_at * 1000);
+    updatedEl.textContent = 'Updated ' + d.toLocaleTimeString();
+  } else {
+    updatedEl.textContent = '';
+  }
+
+  // Step Failure Leaderboard
+  const sfEl = document.getElementById('step-failures');
+  sfEl.innerHTML = '';
+  if (data.step_failure_stats.length === 0) {
+    sfEl.innerHTML = '<p class="text-sm text-gray-500">No step execution data</p>';
+  } else {
+    let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
+      '<th class="text-left py-1 pr-4">Step</th>' +
+      '<th class="text-right py-1 pr-4">Total</th>' +
+      '<th class="text-right py-1 pr-4">Failures</th>' +
+      '<th class="text-right py-1">Rate</th>' +
+      '</tr></thead><tbody>';
+    for (const s of data.step_failure_stats) {
+      const cc = rateColorClass(s.failure_rate);
+      html += `<tr class="border-t border-gray-700/30 cursor-pointer step-row" data-step="${esc(s.step_name)}">` +
+        `<td class="py-2 pr-4 text-gray-300">${esc(s.step_name)}</td>` +
+        `<td class="py-2 pr-4 text-right text-gray-400">${s.total_count}</td>` +
+        `<td class="py-2 pr-4 text-right text-gray-400">${s.failure_count}</td>` +
+        `<td class="py-2 text-right ${cc}">${fmtRate(s.failure_rate)}</td>` +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    sfEl.innerHTML = html;
+  }
+
+  // Error Clusters
+  const ecEl = document.getElementById('error-clusters');
+  ecEl.innerHTML = '';
+  if (data.failure_clusters.length === 0) {
+    ecEl.innerHTML = '<p class="text-sm text-gray-500">No failure clusters</p>';
+  } else {
+    let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
+      '<th class="text-left py-1 pr-4">Pattern</th>' +
+      '<th class="text-right py-1 pr-4">Count</th>' +
+      '<th class="text-left py-1">Projects</th>' +
+      '</tr></thead><tbody>';
+    for (const c of data.failure_clusters) {
+      html += '<tr class="border-t border-gray-700/30">' +
+        `<td class="py-2 pr-4 text-gray-300 font-mono text-xs max-w-md truncate" title="${esc(c.pattern)}">${esc(c.pattern)}</td>` +
+        `<td class="py-2 pr-4 text-right text-accent-red">${c.count}</td>` +
+        `<td class="py-2 text-gray-400 text-xs">${c.projects.map(esc).join(', ')}</td>` +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    ecEl.innerHTML = html;
+  }
+
+  // Cost Breakdown
+  const cbEl = document.getElementById('cost-breakdown');
+  cbEl.innerHTML = '';
+  if (data.cost_by_project.length === 0) {
+    cbEl.innerHTML = '<p class="text-sm text-gray-500">No cost data</p>';
+  } else {
+    let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
+      '<th class="text-left py-1 pr-4">Project</th>' +
+      '<th class="text-right py-1 pr-4">Runs</th>' +
+      '<th class="text-right py-1 pr-4">Total Cost</th>' +
+      '<th class="text-right py-1">Avg/Run</th>' +
+      '</tr></thead><tbody>';
+    for (const p of data.cost_by_project) {
+      html += '<tr class="border-t border-gray-700/30">' +
+        `<td class="py-2 pr-4 text-gray-300">${esc(p.slug)}</td>` +
+        `<td class="py-2 pr-4 text-right text-gray-400">${p.run_count}</td>` +
+        `<td class="py-2 pr-4 text-right text-accent-green">${fmtCost(p.total_cost_usd)}</td>` +
+        `<td class="py-2 text-right text-gray-400">${fmtCost(p.avg_cost_per_run)}</td>` +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    cbEl.innerHTML = html;
+  }
+
+  // Retry Effectiveness
+  const reEl = document.getElementById('retry-effectiveness');
+  reEl.innerHTML = '';
+  if (data.total_runs === 0) {
+    reEl.innerHTML = '<p class="text-sm text-gray-500">No run data</p>';
+  } else if (data.retry_success_rate === 0) {
+    reEl.innerHTML = '<p class="text-sm text-gray-500">No retried runs in last 30 days</p>';
+  } else {
+    const rc = data.retry_success_rate >= 0.5 ? 'text-accent-green' : 'text-accent-yellow';
+    reEl.innerHTML = `<div class="flex items-center gap-4">` +
+      `<div><p class="text-xs text-gray-500 uppercase">Retry Success Rate</p>` +
+      `<p class="text-2xl font-bold ${rc}">${fmtRate(data.retry_success_rate)}</p></div></div>`;
+  }
+
+  // Project Scan Status
+  const ssEl = document.getElementById('scan-status');
+  ssEl.innerHTML = '';
+  if (data.projects_scanned.length === 0 && data.projects_skipped.length === 0) {
+    ssEl.innerHTML = '<p class="text-sm text-gray-500">No projects scanned</p>';
+  } else {
+    let html = '';
+    if (data.projects_scanned.length > 0) {
+      html += '<div class="mb-3"><p class="text-xs text-gray-500 uppercase mb-1">Scanned (' + data.projects_scanned.length + ')</p>';
+      html += '<div class="flex flex-wrap gap-2">';
+      for (const s of data.projects_scanned) {
+        html += `<span class="text-xs px-2 py-1 rounded bg-accent-green/10 text-accent-green">${esc(s)}</span>`;
+      }
+      html += '</div></div>';
+    }
+    if (data.projects_skipped.length > 0) {
+      html += '<div><p class="text-xs text-gray-500 uppercase mb-1">Skipped (' + data.projects_skipped.length + ')</p>';
+      html += '<div class="flex flex-wrap gap-2">';
+      for (const s of data.projects_skipped) {
+        html += `<span class="text-xs px-2 py-1 rounded bg-accent-yellow/10 text-accent-yellow">${esc(s)}</span>`;
+      }
+      html += '</div></div>';
+    }
+    ssEl.innerHTML = html;
+  }
+}
+
+async function loadFleet(force) {
+  const errorBanner = document.getElementById('fleet-error');
+  try {
+    const url = force ? `${apiBase}/fleet-insights/data?force=true` : `${apiBase}/fleet-insights/data`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (force) _lastFleetKey = null;
+    errorBanner.classList.add('hidden');
+    renderFleet(data);
+  } catch (err) {
+    console.error('Failed to load fleet insights:', err);
+    errorBanner.textContent = 'Failed to load fleet insights. Retrying in 5 minutes.';
+    errorBanner.classList.remove('hidden');
+  }
+}
+
+loadFleet(false);
+setInterval(() => loadFleet(false), POLL_MS);
+</script>
+{% endblock %}
