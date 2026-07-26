@@ -7,7 +7,7 @@ import json
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -1979,6 +1979,122 @@ class TestAddressReviewStep:
         assert "No review findings" in result.summary
 
 
+class TestRearrangeCommitsStep:
+    async def test_execute_invokes_rearrange_command(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.return_value = MagicMock(cost_usd=Decimal("0.02"), text="Commits reorganized")
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "reorganized" in result.summary
+        mock_invoke.assert_awaited_once_with(
+            "/rearrange-commits",
+            model=ctx.config.agent.model,
+            cwd=ctx.working_dir,
+            max_budget_usd=ANY,
+            timeout=ANY,
+        )
+
+    async def test_execute_returns_failure_on_error(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.invoke_command", new_callable=AsyncMock) as mock_invoke:
+            mock_invoke.side_effect = RuntimeError("command not found")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "failed" in result.summary
+
+    async def test_validate_passes_when_commits_ahead_and_clean(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout=""),  # status --porcelain (no untracked)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_fails_when_untracked_files_remain(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout="?? new_file.py\n"),  # status --porcelain (untracked)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "Untracked" in gate.reason
+
+    async def test_validate_fails_when_no_commits(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = MagicMock(success=True, stdout="")  # no commits
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "No commits" in gate.reason
+
+    async def test_validate_fails_when_uncommitted_changes_remain(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log (commits exist)
+                MagicMock(success=True, stdout=" file.py | 3 +++\n"),  # diff --stat (dirty)
+                MagicMock(success=True, stdout=""),  # staged
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "Uncommitted" in gate.reason
+
+    async def test_can_skip_when_already_completed(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"), completed_steps=frozenset({"rearrange_commits"}))
+        step = RearrangeCommitsStep()
+
+        assert await step.can_skip(ctx)
+
+    async def test_cannot_skip_when_not_completed(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        assert not await step.can_skip(ctx)
+
+
 class TestStepRegistry:
     def test_get_developer_steps_returns_all(self) -> None:
         from sova.core.steps import get_developer_steps
@@ -2013,7 +2129,7 @@ class TestStepRegistry:
             "ensure_worktree",
             "rebase",
             "address_review",
-            "commit",
+            "rearrange_commits",
             "validate",
             "push",
             "monitor_ci",

@@ -16,7 +16,7 @@ SOVA has four main components:
 - `core/output.py` -- OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
 - `core/steps/` -- 29 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (16 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> extract_memory -> handoff_to_reviewer
-  - **Address-review pipeline** (9 steps): rebase -> address_review -> commit -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
+  - **Address-review pipeline** (9 steps): rebase -> address_review -> rearrange_commits -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory
   - **Planner pipeline** (4 steps): scan_project -> generate_tasks -> validate_tasks -> extract_memory
 - `core/dag.py` -- DAGExecutor: runs command-based workflow graphs with topological sort, condition evaluation, and cycle detection

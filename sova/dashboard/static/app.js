@@ -995,8 +995,8 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var steps = PIPELINE_STEPS;
   var labels = STEP_LABELS;
   if (pipelineVariant === 'address_review') {
-    steps = ['rebase', 'address_review', 'commit', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_user'];
-    labels = {rebase: 'Rebase', address_review: 'Address', commit: 'Commit', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_user: 'Handoff'};
+    steps = ['rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_user'];
+    labels = {rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_user: 'Handoff'};
   } else if (pipelineVariant === 'researcher') {
     steps = ['fetch_task', 'research', 'spec', 'extract_memory'];
     labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};

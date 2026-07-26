@@ -22,6 +22,7 @@ from sova.core.steps.handoff_to_reviewer import HandoffToReviewerStep
 from sova.core.steps.handoff_to_user import HandoffToUserStep
 from sova.core.steps.monitor_ci import MonitorCIStep
 from sova.core.steps.push import PushStep
+from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 from sova.core.steps.rebase import RebaseStep
 from sova.core.steps.research import ResearchStep
 from sova.core.steps.resolve_external_reviews import ResolveExternalReviewsStep
@@ -71,7 +72,7 @@ def get_address_review_steps() -> list[BaseStep]:
         EnsureWorktreeStep(),
         RebaseStep(),
         AddressReviewStep(),
-        CommitStep(),
+        RearrangeCommitsStep(),
         ValidateStep(),
         PushStep(),
         MonitorCIStep(),
