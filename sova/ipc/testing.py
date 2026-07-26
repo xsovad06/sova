@@ -131,6 +131,8 @@ class MockRuntime(AgentRuntime):
         env: dict[str, str] | None = None,
         model: str | None = None,
         max_budget_usd: Decimal | None = None,
+        output_dir: Path | None = None,
+        run_label: str | None = None,
     ) -> MockAgentProcess:
         self._last_prompt = prompt
         process = MockAgentProcess(
