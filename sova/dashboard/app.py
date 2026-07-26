@@ -37,6 +37,7 @@ from sova.dashboard.routers import (
     costs,
     dependencies,
     feed,
+    fleet_insights,
     handoff,
     lifecycle,
     logs,
@@ -699,6 +700,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
                 github_repo = cfg.github_repo or ""
         return _project_page(request, templates, slug, "supervisor.html", "supervisor", github_repo=github_repo)
 
+    @app.get("/p/{slug}/fleet")
+    async def project_fleet(request: Request, slug: str):
+        return _project_page(request, templates, slug, "fleet.html", "fleet")
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str):
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -829,6 +834,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
             request, "supervisor.html", {"page": "supervisor", "github_repo": github_repo}
         )
 
+    @app.get("/fleet")
+    async def fleet_page(request: Request):
+        return templates.TemplateResponse(request, "fleet.html", {"page": "fleet"})
+
     @app.get("/style-guide")
     async def style_guide_page(request: Request):
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
@@ -858,3 +867,4 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(resources.router, prefix=prefix)
     app.include_router(supervisor.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
+    app.include_router(fleet_insights.router, prefix=prefix)
