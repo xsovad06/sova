@@ -81,13 +81,13 @@ class JiraStatusesRequest(BaseModel):
 
 
 @router.post("/setup/browse")
-async def browse_directory(req: BrowseRequest):
+async def browse_directory(req: BrowseRequest) -> dict:
     """List directories for the project browser."""
     return await asyncio.to_thread(setup_service.browse_directory, req.path)
 
 
 @router.post("/setup/scan")
-async def scan_project(req: ScanRequest):
+async def scan_project(req: ScanRequest) -> dict:
     """Scan a project to detect tech stack and suggest configuration."""
     return await setup_service.scan_project(req.project_path)
 
@@ -99,7 +99,7 @@ async def scan_project(req: ScanRequest):
         500: {"description": "Installation failed"},
     },
 )
-async def install_project(req: InstallRequest):
+async def install_project(req: InstallRequest) -> dict:
     """Run sova install on a project."""
     from sova.cli.commands.project import _install
 
@@ -117,7 +117,7 @@ async def install_project(req: InstallRequest):
 
 
 @router.post("/setup/configure", responses={404: {"description": "Directory not found"}})
-async def configure_project(req: ConfigureRequest):
+async def configure_project(req: ConfigureRequest) -> dict:
     """Generate sova.toml from wizard input and register the project."""
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
@@ -214,7 +214,7 @@ class CreateMilestonesRequest(BaseModel):
 
 
 @router.post("/setup/milestones/create", responses={404: {"description": "Project directory not found"}})
-async def create_milestones(req: CreateMilestonesRequest):
+async def create_milestones(req: CreateMilestonesRequest) -> dict:
     """Create default phase milestones on the tracker."""
     project = Path(req.project_path).expanduser().resolve()
     if not project.is_dir():
@@ -230,7 +230,7 @@ async def create_milestones(req: CreateMilestonesRequest):
         503: {"description": "Jira server unreachable"},
     },
 )
-async def test_jira_connection(req: JiraTestRequest):
+async def test_jira_connection(req: JiraTestRequest) -> dict:
     """Test Jira connection credentials."""
     try:
         return await setup_service.test_jira_connection(req.base_url, req.email, req.api_token)
@@ -249,7 +249,7 @@ async def test_jira_connection(req: JiraTestRequest):
         503: {"description": "Jira server unreachable"},
     },
 )
-async def discover_jira_projects(req: JiraProjectsRequest):
+async def discover_jira_projects(req: JiraProjectsRequest) -> dict:
     """List accessible Jira projects."""
     try:
         return await setup_service.discover_jira_projects(req.base_url, req.email, req.api_token)
@@ -268,7 +268,7 @@ async def discover_jira_projects(req: JiraProjectsRequest):
         503: {"description": "Jira server unreachable"},
     },
 )
-async def discover_jira_statuses(req: JiraStatusesRequest):
+async def discover_jira_statuses(req: JiraStatusesRequest) -> dict:
     """Discover workflow statuses for a Jira project."""
     try:
         return await setup_service.discover_jira_statuses(req.base_url, req.email, req.api_token, req.project_key)

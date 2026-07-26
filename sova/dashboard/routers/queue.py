@@ -50,7 +50,7 @@ class BatchRequest(BaseModel):
 
 
 @router.get("/queue")
-async def queue():
+async def queue() -> dict:
     """Get the priority-sorted issue queue."""
     project_dir = get_project_dir()
     items = await get_priority_queue(project_dir)
@@ -58,7 +58,7 @@ async def queue():
 
 
 @router.post("/queue/start/{issue}")
-async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pattern=r"^\d+$")):
+async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pattern=r"^\d+$")) -> dict:
     """Start an agent run for an issue from the queue."""
     result = await start_agent(issue=issue, role=req.role, force=req.force)
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
@@ -67,7 +67,7 @@ async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pa
 
 
 @router.post("/queue/batch")
-async def start_batch(req: BatchRequest):
+async def start_batch(req: BatchRequest) -> dict:
     """Start a batch action on selected issues."""
     project_dir = get_project_dir()
 
@@ -84,7 +84,7 @@ async def start_batch(req: BatchRequest):
 
 
 @router.get("/queue/batch/active")
-async def active_batch():
+async def active_batch() -> dict:
     """Return the currently running batch for the current project, if any."""
     project_dir = get_project_dir()
     active = batch_service.get_active_batch(project_dir)
@@ -94,7 +94,7 @@ async def active_batch():
 
 
 @router.get("/queue/batch/{batch_id}/status", responses={404: {"description": "Batch not found"}})
-async def batch_status(batch_id: str):
+async def batch_status(batch_id: str) -> dict:
     """Get progress of a batch operation."""
     status = batch_service.get_batch_status(batch_id)
     if status is None:
@@ -103,7 +103,7 @@ async def batch_status(batch_id: str):
 
 
 @router.post("/queue/batch/{batch_id}/cancel")
-async def cancel_batch(batch_id: str):
+async def cancel_batch(batch_id: str) -> dict:
     """Cancel a running batch operation."""
     cancelled = batch_service.cancel_batch(batch_id)
     return {"cancelled": cancelled}

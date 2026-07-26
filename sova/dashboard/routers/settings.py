@@ -43,7 +43,7 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @router.get("/settings/config", responses={500: {"description": "Failed to fetch configuration"}})
-async def get_config():
+async def get_config() -> dict:
     """Get the current project configuration (flat, for backward compat)."""
     try:
         project_dir = get_project_dir()
@@ -58,7 +58,7 @@ async def get_config():
     "/settings/config/grouped",
     responses={500: {"description": "Failed to fetch configuration"}},
 )
-async def get_config_grouped():
+async def get_config_grouped() -> dict:
     """Get configuration organized into labeled groups with descriptions."""
     try:
         project_dir = get_project_dir()
@@ -71,7 +71,7 @@ async def get_config_grouped():
 
 
 @router.post("/settings/config", responses={500: {"description": "Failed to update configuration"}})
-async def update_config(req: ConfigUpdateRequest):
+async def update_config(req: ConfigUpdateRequest) -> dict:
     """Update a single configuration key."""
     try:
         project_dir = get_project_dir()
@@ -153,7 +153,7 @@ async def installation_status() -> dict[str, object]:
 
 
 @router.get("/settings/invariants", responses={500: {"description": "Failed to fetch invariants"}})
-async def list_invariants():
+async def list_invariants() -> dict:
     """List invariant scripts."""
     try:
         project_dir = get_project_dir()
@@ -164,7 +164,7 @@ async def list_invariants():
 
 
 @router.get("/settings/personas", responses={500: {"description": "Failed to fetch personas"}})
-async def list_personas():
+async def list_personas() -> dict:
     """List available personas and detected persona."""
     try:
         project_dir = get_project_dir()

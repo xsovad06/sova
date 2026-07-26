@@ -39,7 +39,7 @@ async def _build_graph(milestone: str = ""):
         503: {"description": "Project configuration unavailable"},
     },
 )
-async def get_graph(milestone: str = ""):
+async def get_graph(milestone: str = "") -> dict:
     """Build and return the full dependency graph.
 
     Optional ``milestone`` query param filters to issues in that milestone.
@@ -63,7 +63,7 @@ async def get_graph(milestone: str = ""):
         503: {"description": "Project configuration unavailable"},
     },
 )
-async def get_ready(milestone: str = ""):
+async def get_ready(milestone: str = "") -> dict:
     """Return issues whose dependencies are all satisfied (ready to work on)."""
     try:
         graph = await _build_graph(milestone)
@@ -98,7 +98,7 @@ async def get_ready(milestone: str = ""):
         503: {"description": "Project configuration unavailable"},
     },
 )
-async def get_chain(issue_number: int, milestone: str = ""):
+async def get_chain(issue_number: int, milestone: str = "") -> dict:
     """Return the transitive dependency chain for a specific issue."""
     try:
         graph = await _build_graph(milestone)

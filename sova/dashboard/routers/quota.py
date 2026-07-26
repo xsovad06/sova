@@ -15,7 +15,7 @@ log = get_logger(component="dashboard.quota")
 
 
 @router.get("/quota/coderabbit", responses={500: {"description": "Failed to fetch quota status"}})
-async def coderabbit_quota():
+async def coderabbit_quota() -> dict:
     cfg = load_config(get_project_dir())
     if not cfg.coderabbit_quota.enabled:
         return {"enabled": False}
@@ -41,7 +41,7 @@ async def coderabbit_quota():
 
 
 @router.post("/quota/coderabbit/sync", responses={500: {"description": "Failed to sync quota data"}})
-async def sync_coderabbit_quota():
+async def sync_coderabbit_quota() -> dict:
     cfg = load_config(get_project_dir())
     if not cfg.coderabbit_quota.enabled:
         return {"enabled": False, "synced": 0}
@@ -65,7 +65,7 @@ async def sync_coderabbit_quota():
 
 
 @router.get("/quota/pr-queue", responses={500: {"description": "Failed to fetch PR queue status"}})
-async def pr_queue_status():
+async def pr_queue_status() -> dict:
     """Get the current PR creation queue status."""
     from sqlalchemy import func, select
 

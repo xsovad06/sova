@@ -22,14 +22,14 @@ class SlotUpdateRequest(BaseModel):
 
 
 @router.get("/status")
-async def get_fleet_status():
+async def get_fleet_status() -> dict:
     """Return aggregated live fleet status across all projects."""
     status = await _service.get_fleet_status()
     return asdict(status)
 
 
 @router.patch("/projects/{slug}/slots", responses={404: {"description": "Project not found"}})
-async def update_project_slots(slug: str, req: SlotUpdateRequest):
+async def update_project_slots(slug: str, req: SlotUpdateRequest) -> dict:
     """Update max_concurrent slots for a project."""
     ok = _service.set_max_concurrent(slug, req.value)
     if not ok:

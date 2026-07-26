@@ -19,7 +19,7 @@ async def logs(
     search: str = "",
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-):
+) -> dict:
     """Get filtered log entries."""
     try:
         project_dir = get_project_dir()
@@ -37,7 +37,7 @@ async def logs(
 
 
 @router.get("/logs/components", responses={500: {"description": "Failed to fetch log components"}})
-async def log_components():
+async def log_components() -> dict:
     """Get distinct component names for the filter dropdown."""
     try:
         project_dir = get_project_dir()
