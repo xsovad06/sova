@@ -173,7 +173,7 @@ async function enableSupervisor() {
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: 'supervisor.enabled', value: true }),
+    body: JSON.stringify({ key: 'supervisor.enabled', value: 'true' }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -215,7 +215,7 @@ async function disableSupervisor() {
   const r = await fetch(`${apiBase}/settings/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key: 'supervisor.enabled', value: false }),
+    body: JSON.stringify({ key: 'supervisor.enabled', value: 'false' }),
   });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
