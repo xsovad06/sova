@@ -158,6 +158,25 @@ async def _process_auto_handoff(agent: AgentState) -> None:
                     log.warning("auto_handoff.invalid_pr_number", raw_pr=raw_pr, run_id=agent.run_id)
                     pr_num = None
 
+                # Skip spawning if a reviewer already ran for this PR: the
+                # developer may have written a "please review" handoff after the
+                # reviewer already completed (timing race), making the handoff stale.
+                if action.id in {"review", "review_pr"} and pr_num is not None:
+                    from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+                    verdict = await get_sova_review_verdict(
+                        target_issue, pr_number=pr_num, project_dir=agent.project_dir
+                    )
+                    if verdict.get("has_sova_review"):
+                        log.info(
+                            "auto_handoff.review_already_done",
+                            run_id=agent.run_id,
+                            issue=target_issue,
+                            pr_number=pr_num,
+                        )
+                        handoff_service.clear_handoff(agent.project_dir, issue=agent.issue)
+                        return
+
                 # Check circuit breaker for address-review spawns
                 reason = await _check_address_review_circuit_breaker(
                     target_issue, pr_num, target_role, agent.project_dir
