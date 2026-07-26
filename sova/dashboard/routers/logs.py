@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services.log_service import get_components, get_logs
@@ -17,8 +17,8 @@ async def logs(
     level: str = "",
     component: str = "",
     search: str = "",
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ):
     """Get filtered log entries."""
     try:

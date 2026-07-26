@@ -167,11 +167,15 @@ async def execute_handoff_action(req: ExecuteActionRequest) -> dict:
             role=exec_params.get("role"),
             pr_number=exec_params.get("pr_number"),
         )
+        if isinstance(result, dict) and "error" in result:
+            raise HTTPException(status_code=409, detail=result.get("detail", result["error"]))
     elif exec_params["type"] == "claude-command":
         result = await control_service.start_command(
             exec_params["command"],
             exec_params.get("args", {}),
         )
+        if isinstance(result, dict) and "error" in result:
+            raise HTTPException(status_code=409, detail=result.get("detail", result["error"]))
     elif exec_params["type"] == "shell":
         raise HTTPException(status_code=400, detail="Shell mode not yet supported in SOVA dashboard")
     else:

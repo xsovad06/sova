@@ -346,7 +346,10 @@ async def get_issue_pr_status(issue_number: str):
 @router.post("/agents/command")
 async def run_command(req: RunCommandRequest):
     """Execute a Claude Code command (e.g. /integrate-pr, /address-pr)."""
-    return await control_service.start_command(req.command, req.args or {})
+    result = await control_service.start_command(req.command, req.args or {})
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(status_code=409, detail=result.get("detail", result["error"]))
+    return result
 
 
 @router.websocket("/ws/agents/status")

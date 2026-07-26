@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from sova.dashboard.services import cost_service
 from sova.db.session import get_session
@@ -23,10 +23,10 @@ async def cost_summary():
 
 
 @router.get("/costs/daily", responses={500: {"description": "Failed to fetch daily costs"}})
-async def daily_costs(days: int = 14):
+async def daily_costs(days: int = Query(default=14, ge=1, le=90)):
     try:
         async with await get_session() as session:
-            return await cost_service.get_daily(session, min(days, 90))
+            return await cost_service.get_daily(session, days)
     except Exception:
         log.warning("costs.daily.error", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch daily costs")

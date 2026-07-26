@@ -87,9 +87,9 @@ async def update_config(req: ConfigUpdateRequest):
 
             sync_max_concurrent(project_dir)
         return result
-    except Exception:
+    except Exception as exc:
         log.warning("settings.config.update.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to update configuration")
+        raise HTTPException(status_code=500, detail="Failed to update configuration") from exc
 
 
 @router.get(

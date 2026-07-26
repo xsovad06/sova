@@ -10485,9 +10485,9 @@ class TestRolesAPI:
             json={"graph_json": graph_bad},
         )
         assert resp.status_code == 400
-        data = resp.json()
-        detail = data["detail"]
-        assert "validation_errors" in detail
+        detail = resp.json()["detail"]
+        assert isinstance(detail, str)
+        assert "Invalid DAG" in detail
 
     async def test_update_custom_role(self, client):
         """PUT /api/roles/{name} updates a custom role."""

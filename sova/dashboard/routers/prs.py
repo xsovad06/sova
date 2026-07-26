@@ -65,8 +65,9 @@ async def get_integration_gates(pr_number: int) -> dict:
 
     try:
         cfg = load_config(project_dir)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Failed to load project configuration")
+    except Exception as exc:
+        log.warning("prs.gates.config_error", pr=pr_number, exc_info=True)
+        raise HTTPException(status_code=400, detail="Failed to load project configuration") from exc
 
     prs = await list_open_prs_with_state()
     pr_data = next((p for p in prs if p["number"] == pr_number), None)

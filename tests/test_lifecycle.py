@@ -1008,9 +1008,8 @@ class TestLifecycleRouter:
     async def test_get_by_issue_not_found(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/lifecycle/issue/999")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert "error" in data
+            assert resp.status_code == 404
+            assert "detail" in resp.json()
 
     async def test_get_by_issue_config_load_failure(self, app, session: AsyncSession):
         """Config load failure should not break the endpoint (covers except branch)."""
@@ -1020,9 +1019,9 @@ class TestLifecycleRouter:
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.get("/api/lifecycle/issue/999")
-                assert resp.status_code == 200
+                assert resp.status_code == 404
                 # Falls through to build_lifecycle_view with empty github_repo/user
-                assert "error" in resp.json()
+                assert "detail" in resp.json()
 
     async def test_get_by_issue_returns_result(self, app, session: AsyncSession):
         """When lifecycle exists, return it."""
@@ -1040,8 +1039,8 @@ class TestLifecycleRouter:
     async def test_get_lifecycle_not_found(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/lifecycle/99999")
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "Lifecycle not found"
+            assert resp.status_code == 404
+            assert resp.json()["detail"] == "Lifecycle not found"
 
     async def test_start_phase_invalid_phase(self, app, session: AsyncSession):
         async with session.begin():
@@ -1049,14 +1048,13 @@ class TestLifecycleRouter:
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/start")
-            assert resp.status_code == 200
-            assert "error" in resp.json()
+            assert resp.status_code == 400
+            assert "detail" in resp.json()
 
     async def test_start_phase_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/lifecycle/99999/phase/development/start")
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "Failed to start phase"
+            assert resp.status_code == 404
 
     async def test_skip_phase_invalid_phase(self, app, session: AsyncSession):
         async with session.begin():
@@ -1064,14 +1062,13 @@ class TestLifecycleRouter:
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/skip")
-            assert resp.status_code == 200
-            assert "error" in resp.json()
+            assert resp.status_code == 400
+            assert "detail" in resp.json()
 
     async def test_skip_phase_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/lifecycle/99999/phase/development/skip")
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "Failed to skip phase"
+            assert resp.status_code == 400
 
     async def test_restart_phase_invalid_phase(self, app, session: AsyncSession):
         async with session.begin():
@@ -1079,8 +1076,8 @@ class TestLifecycleRouter:
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/bogus/restart")
-            assert resp.status_code == 200
-            assert "error" in resp.json()
+            assert resp.status_code == 400
+            assert "detail" in resp.json()
 
     async def test_restart_phase_no_failed(self, app, session: AsyncSession):
         async with session.begin():
@@ -1088,8 +1085,8 @@ class TestLifecycleRouter:
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post(f"/api/lifecycle/{lc.id}/phase/development/restart")
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "No failed phase to restart"
+            assert resp.status_code == 400
+            assert resp.json()["detail"] == "No failed phase to restart"
 
     async def test_restart_phase_success(self, app, session: AsyncSession):
         """Successfully restart a previously failed phase."""
@@ -1111,14 +1108,12 @@ class TestLifecycleRouter:
                 "/api/lifecycle/99999/advance",
                 json={"to_phase": "integrate"},
             )
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "Failed to advance"
+            assert resp.status_code == 400
 
     async def test_abandon_failed(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.post("/api/lifecycle/99999/abandon")
-            assert resp.status_code == 200
-            assert resp.json()["error"] == "Failed to abandon lifecycle"
+            assert resp.status_code == 400
 
     async def test_lifecycle_page_renders(self, app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
