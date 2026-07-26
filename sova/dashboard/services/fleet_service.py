@@ -144,22 +144,49 @@ class FleetService:
     async def _scan_all_projects(self) -> FleetInsights:
         """Scan every registered project and merge results."""
         registry = list_projects()
-        if not registry:
-            return self._empty_insights()
+        try:
+            remote_runs, remote_steps = await self._query_telemetry_events()
+        except Exception:
+            log.debug("fleet.telemetry_query_failed", exc_info=True)
+            remote_runs, remote_steps = [], []
 
+        if not registry:
+            if not remote_runs:
+                return self._empty_insights()
+            return self._merge([], [], remote_runs, remote_steps, [], [])
+
+        skipped, queryable = self._partition_projects(registry)
+
+        if not queryable:
+            return self._merge([], skipped, remote_runs, remote_steps, [], [])
+
+        scanned, all_runs, all_steps, all_failures, all_resumed, query_skipped = await self._run_project_queries(
+            queryable
+        )
+        skipped.extend(query_skipped)
+
+        all_runs.extend(remote_runs)
+        all_steps.extend(remote_steps)
+
+        return self._merge(scanned, skipped, all_runs, all_steps, all_failures, all_resumed)
+
+    @staticmethod
+    def _partition_projects(registry: dict[str, str]) -> tuple[list[str], list[tuple[str, Path]]]:
+        """Split registry into skipped (no DB) and queryable (has DB) lists."""
         skipped: list[str] = []
         queryable: list[tuple[str, Path]] = []
-
         for slug, path_str in registry.items():
             db_path = Path(path_str) / ".claude" / _DB_FILENAME
             if not db_path.exists():
                 skipped.append(slug)
             else:
                 queryable.append((slug, db_path))
+        return skipped, queryable
 
-        if not queryable:
-            return self._merge([], skipped, [], [], [], [])
-
+    async def _run_project_queries(
+        self, queryable: list[tuple[str, Path]]
+    ) -> tuple[list[str], list[_RunRow], list[_StepRow], list[_FailureRow], list[_ResumedRow], list[str]]:
+        """Run queries across all queryable projects with concurrency control."""
         sem = asyncio.Semaphore(_MAX_CONCURRENT_SCANS)
 
         async def _safe_query(slug: str, db_path: Path) -> tuple[str, _ProjectResult | None]:
@@ -180,6 +207,7 @@ class FleetService:
         results = await asyncio.gather(*[_safe_query(s, p) for s, p in queryable])
 
         scanned: list[str] = []
+        skipped: list[str] = []
         all_runs: list[_RunRow] = []
         all_steps: list[_StepRow] = []
         all_failures: list[_FailureRow] = []
@@ -196,7 +224,7 @@ class FleetService:
             all_failures.extend(failures)
             all_resumed.extend(resumed)
 
-        return self._merge(scanned, skipped, all_runs, all_steps, all_failures, all_resumed)
+        return scanned, all_runs, all_steps, all_failures, all_resumed, skipped
 
     async def _query_project(
         self,
@@ -398,6 +426,31 @@ class FleetService:
             cost_by_project=cost_by_project,
         )
 
+    async def _query_telemetry_events(self) -> tuple[list[_RunRow], list[_StepRow]]:
+        """Query TelemetryEvent table for remote run data.
+
+        Uses SQL aggregation for run-level totals. Step-level stats still
+        require Python-side parsing of step_outcomes JSON values.
+        Falls back to empty lists if the table does not exist (fresh DB).
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import case, func, select
+
+        from sova.db.session import get_session
+
+        try:
+            from sova.db.models import TelemetryEvent
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=self._cfg.telemetry_window_days)
+            run_rows = await _query_telemetry_run_aggregates(TelemetryEvent, get_session, func, case, select, cutoff)
+            step_rows = await _query_telemetry_step_stats(TelemetryEvent, get_session, select, cutoff)
+
+            return run_rows, step_rows
+        except Exception:
+            log.debug("fleet.telemetry_query_failed", exc_info=True)
+            return [], []
+
     def _empty_insights(self) -> FleetInsights:
         return FleetInsights(
             generated_at=time.time(),
@@ -411,6 +464,84 @@ class FleetService:
             failure_clusters=[],
             cost_by_project=[],
         )
+
+
+# ---------------------------------------------------------------------------
+# Telemetry query helpers (module-level to reduce class cognitive complexity)
+# ---------------------------------------------------------------------------
+
+
+async def _query_telemetry_run_aggregates(
+    model: type,
+    get_session_fn: object,
+    func: object,
+    case: object,
+    select: object,
+    cutoff: object = None,
+) -> list[_RunRow]:
+    """Run SQL aggregation for telemetry run totals, grouped by machine_id + project_slug."""
+    async with await get_session_fn() as session:  # type: ignore[operator]
+        stmt = select(  # type: ignore[operator]
+            model.machine_id,
+            model.project_slug,
+            func.count(model.id).label("total"),
+            func.sum(case((model.status == "done", 1), else_=0)).label("done"),
+            func.sum(case((model.status == "failed", 1), else_=0)).label("failed"),
+            func.coalesce(func.sum(model.cost_usd), 0).label("cost"),
+        )
+        if cutoff is not None:
+            stmt = stmt.where(model.received_at >= cutoff)
+        stmt = stmt.group_by(model.machine_id, model.project_slug)
+        result = await session.execute(stmt)
+        rows = result.all()
+
+    return [
+        _RunRow(
+            slug=f"remote:{row.machine_id}:{row.project_slug}",
+            total=row.total,
+            done=int(row.done),
+            failed=int(row.failed),
+            cost=Decimal(str(row.cost)),
+        )
+        for row in rows
+    ]
+
+
+async def _query_telemetry_step_stats(
+    model: type,
+    get_session_fn: object,
+    select: object,
+    cutoff: object = None,
+) -> list[_StepRow]:
+    """Parse step_outcomes JSON from telemetry events for step-level stats."""
+    async with await get_session_fn() as session:  # type: ignore[operator]
+        stmt = select(model.step_outcomes).where(model.step_outcomes.isnot(None))  # type: ignore[operator]
+        if cutoff is not None:
+            stmt = stmt.where(model.received_at >= cutoff)
+        result = await session.execute(stmt)
+        outcomes_list = result.scalars().all()
+
+    step_stats: dict[str, list[int]] = {}
+    for outcomes in outcomes_list:
+        if not isinstance(outcomes, dict):
+            continue
+        for step_name, outcome in outcomes.items():
+            try:
+                if isinstance(outcome, str):
+                    status = outcome
+                elif isinstance(outcome, dict):
+                    raw = outcome.get("status", "")
+                    status = str(raw) if not isinstance(raw, str) else raw
+                else:
+                    continue
+            except Exception:
+                continue
+            counts = step_stats.setdefault(step_name, [0, 0])
+            counts[0] += 1
+            if status == "failed":
+                counts[1] += 1
+
+    return [_StepRow(step_name=name, total=counts[0], failures=counts[1]) for name, counts in step_stats.items()]
 
 
 # ---------------------------------------------------------------------------

@@ -533,6 +533,7 @@ def _setup_single_project(
 
     _register_page_routes(app, templates)
     _register_api_routers(app, prefix="/api")
+    _register_telemetry_router(app)
 
 
 def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -716,6 +717,7 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     # Also keep non-prefixed API for backward compat / fallback
     _register_api_routers(app, prefix="/api")
+    _register_telemetry_router(app)
 
 
 def _project_page(
@@ -871,3 +873,14 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(supervisor.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
     app.include_router(fleet_insights.router, prefix=prefix)
+
+
+def _register_telemetry_router(app: FastAPI) -> None:
+    """Register telemetry ingest router under global /api prefix.
+
+    Registered separately from _register_api_routers because the telemetry
+    endpoint is project-agnostic (project identity is in the payload body).
+    """
+    from sova.dashboard.routers import telemetry
+
+    app.include_router(telemetry.router, prefix="/api")
