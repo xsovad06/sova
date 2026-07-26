@@ -1152,7 +1152,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "oversight.persona_path",
         "Persona path",
-        "Path to a custom persona file for the oversight agent (placeholder, not yet wired)",
+        "Override path for the operations persona file (default: ~/.config/sova/operations_persona.md)",
         "oversight",
     ),
     SettingMeta(

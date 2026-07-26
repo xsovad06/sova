@@ -1,8 +1,9 @@
 """OversightAgent: background daemon that wakes on a configurable interval.
 
-Records each wake cycle to the OversightRun DB table. The cycle body is
-intentionally a no-op in this initial implementation; subsequent issues
-(#445, #446, #447) add observation, LLM analysis, and issue creation hooks.
+Records each wake cycle to the OversightRun DB table. The persona is loaded
+fresh each cycle and available via ``get_system_prompt()`` for LLM context
+injection. Subsequent issues (#445, #446, #447) add observation, LLM
+analysis, and issue creation hooks that consume the system prompt.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 
 from sova.config.models import OversightConfig
 from sova.db.models import OversightRun, OversightRunStatus
+from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
 
 log = get_logger(component="oversight.agent")
@@ -26,6 +28,7 @@ class OversightAgent:
         self._config = config
         self._task: asyncio.Task | None = None
         self._cycle_number: int = 0
+        self._persona: str = ""
 
     def start(self) -> asyncio.Task:
         """Start the oversight background loop. Returns the task for cancellation."""
@@ -35,6 +38,17 @@ class OversightAgent:
             interval_minutes=self._config.wake_interval_minutes,
         )
         return self._task
+
+    def get_system_prompt(self) -> str:
+        """Return the current system prompt with persona context for LLM calls.
+
+        The persona is loaded fresh each wake cycle (no caching) so edits to the
+        persona file take effect immediately. Hooks (#445, #446, #447) call this
+        method to inject persona guidance into their LLM requests.
+        """
+        if not self._persona:
+            return ""
+        return f"# Operations Persona (user-defined oversight guidance)\n\n{self._persona}\n\n---\n\n"
 
     async def stop(self) -> None:
         """Cancel the oversight background task."""
@@ -55,7 +69,8 @@ class OversightAgent:
             t0 = time.monotonic()
             try:
                 log.debug("oversight.cycle_start", cycle=cycle, run_id=run_id)
-                # Future hooks (#445, #446, #447) execute here.
+                # TODO: guard behind hook-enabled check when LLM hooks land (#445-#447)
+                self._persona = load_persona(self._config.persona_path)
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 await self._record_run(run_id, cycle, OversightRunStatus.DONE, duration_ms, started_at=started_at)
                 log.debug("oversight.cycle_done", cycle=cycle, run_id=run_id, duration_ms=duration_ms)

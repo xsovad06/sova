@@ -48,6 +48,7 @@ sova/
       static/                      # JS + CSS + favicon + logo
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models)
+    oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
     supervisor/                    # Supervisor-level services (TaskProgressionEngine: dependency-aware deterministic state machine; CodeRabbit quota tracking; task dependency graph)
     commands/                      # Command + guideline distribution (catalog, templates, manifest, distribution)
     config/                        # Pydantic Settings + TOML config + project registry + request context
@@ -64,7 +65,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 4664 at last count)
+  tests/                           # pytest suite (3200+ tests, 4654 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)
