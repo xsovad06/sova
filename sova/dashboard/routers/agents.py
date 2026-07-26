@@ -304,8 +304,8 @@ async def start_agent(req: StartAgentRequest):
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
     )
-    if "error" in result:
-        raise HTTPException(status_code=409, detail=result.get("detail", result["error"]))
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+        raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
     return result
 
 
@@ -330,7 +330,7 @@ async def resume_from_approval(run_id: int) -> dict:
         raise HTTPException(status_code=404, detail=result["detail"])
     if result.get("error") == "conflict":
         raise HTTPException(status_code=409, detail=result["detail"])
-    if "error" in result:
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         raise HTTPException(status_code=500, detail=result.get("detail", result["error"]))
     return result
 
@@ -346,7 +346,10 @@ async def get_issue_pr_status(issue_number: str):
 @router.post("/agents/command")
 async def run_command(req: RunCommandRequest):
     """Execute a Claude Code command (e.g. /integrate-pr, /address-pr)."""
-    return await control_service.start_command(req.command, req.args or {})
+    result = await control_service.start_command(req.command, req.args or {})
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+        raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
+    return result
 
 
 @router.websocket("/ws/agents/status")

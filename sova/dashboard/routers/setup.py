@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sova.config.registry import register_project
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import setup_service
+from sova.utils.logging import get_logger
+
+log = get_logger(component="dashboard.setup")
 
 router = APIRouter(tags=["setup"])
 
@@ -107,8 +111,9 @@ async def install_project(req: InstallRequest):
         await _install(path=project, no_dashboard=True, update=req.update_only)
         slug = register_project(project)
         return {"status": "ok", "slug": slug}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as exc:
+        log.exception("setup.install.error", project=str(project))
+        raise HTTPException(status_code=500, detail="Installation failed") from exc
 
 
 @router.post("/setup/configure", responses={404: {"description": "Directory not found"}})
@@ -218,19 +223,58 @@ async def create_milestones(req: CreateMilestonesRequest):
     return await setup_service.create_starter_milestones(project, titles=req.titles)
 
 
-@router.post("/setup/jira/test")
+@router.post(
+    "/setup/jira/test",
+    responses={
+        400: {"description": "Invalid Jira credentials or configuration"},
+        503: {"description": "Jira server unreachable"},
+    },
+)
 async def test_jira_connection(req: JiraTestRequest):
     """Test Jira connection credentials."""
-    return await setup_service.test_jira_connection(req.base_url, req.email, req.api_token)
+    try:
+        return await setup_service.test_jira_connection(req.base_url, req.email, req.api_token)
+    except (ValueError, KeyError) as exc:
+        log.warning("setup.jira.test.config_error", exc_info=True)
+        raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
+        log.exception("setup.jira.test.connection_error")
+        raise HTTPException(status_code=503, detail="Connection test failed") from exc
 
 
-@router.post("/setup/jira/projects")
+@router.post(
+    "/setup/jira/projects",
+    responses={
+        400: {"description": "Invalid Jira credentials"},
+        503: {"description": "Jira server unreachable"},
+    },
+)
 async def discover_jira_projects(req: JiraProjectsRequest):
     """List accessible Jira projects."""
-    return await setup_service.discover_jira_projects(req.base_url, req.email, req.api_token)
+    try:
+        return await setup_service.discover_jira_projects(req.base_url, req.email, req.api_token)
+    except (ValueError, KeyError) as exc:
+        log.warning("setup.jira.projects.config_error", exc_info=True)
+        raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
+        log.exception("setup.jira.projects.connection_error")
+        raise HTTPException(status_code=503, detail="Failed to discover Jira projects") from exc
 
 
-@router.post("/setup/jira/statuses")
+@router.post(
+    "/setup/jira/statuses",
+    responses={
+        400: {"description": "Invalid Jira credentials or project key"},
+        503: {"description": "Jira server unreachable"},
+    },
+)
 async def discover_jira_statuses(req: JiraStatusesRequest):
     """Discover workflow statuses for a Jira project."""
-    return await setup_service.discover_jira_statuses(req.base_url, req.email, req.api_token, req.project_key)
+    try:
+        return await setup_service.discover_jira_statuses(req.base_url, req.email, req.api_token, req.project_key)
+    except (ValueError, KeyError) as exc:
+        log.warning("setup.jira.statuses.config_error", exc_info=True)
+        raise HTTPException(status_code=400, detail="Configuration validation failed") from exc
+    except (ConnectionError, TimeoutError, OSError, httpx.HTTPError) as exc:
+        log.exception("setup.jira.statuses.connection_error")
+        raise HTTPException(status_code=503, detail="Failed to discover Jira statuses") from exc

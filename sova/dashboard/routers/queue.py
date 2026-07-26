@@ -61,6 +61,8 @@ async def queue():
 async def start_from_queue(req: StartFromQueueRequest, issue: str = Path(..., pattern=r"^\d+$")):
     """Start an agent run for an issue from the queue."""
     result = await start_agent(issue=issue, role=req.role, force=req.force)
+    if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
+        raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Agent start failed")
     return result
 
 

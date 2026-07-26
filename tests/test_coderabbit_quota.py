@@ -387,10 +387,8 @@ class TestQuotaAPI:
         with patch("sova.dashboard.routers.quota.load_config", return_value=cfg):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post("/api/quota/coderabbit/sync")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["synced"] == 0
-        assert "error" in data
+        assert resp.status_code == 503
+        assert "github_repo" in resp.json()["detail"]
 
     async def test_sync_endpoint_error_returns_500(self) -> None:
         from httpx import ASGITransport, AsyncClient

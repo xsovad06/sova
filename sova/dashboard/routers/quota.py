@@ -47,7 +47,7 @@ async def sync_coderabbit_quota():
         return {"enabled": False, "synced": 0}
 
     if not cfg.github_repo:
-        return {"enabled": True, "synced": 0, "error": "No github_repo configured"}
+        raise HTTPException(status_code=503, detail="No github_repo configured")
 
     try:
         async with await get_session() as session:

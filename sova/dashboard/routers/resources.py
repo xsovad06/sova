@@ -27,9 +27,9 @@ async def resource_summary(run_id: int):
         return result
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         log.warning("resources.summary.error", run_id=run_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch resource summary") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch resource summary") from exc
 
 
 @router.get(
@@ -45,9 +45,9 @@ async def resource_samples(run_id: int, limit: int = Query(default=500, ge=1, le
         return result
     except HTTPException:
         raise
-    except Exception:
+    except Exception as exc:
         log.warning("resources.samples.error", run_id=run_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch resource samples") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch resource samples") from exc
 
 
 @router.get("/resources/live/{run_id}", responses={500: {"description": "Internal error"}})
@@ -57,36 +57,36 @@ async def live_metrics(run_id: int):
         if result is None:
             return {"run_id": run_id, "cpu_percent": None, "memory_rss_bytes": None}
         return result
-    except Exception:
+    except Exception as exc:
         log.warning("resources.live.error", run_id=run_id, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch live metrics") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch live metrics") from exc
 
 
 @router.get("/resources/system", responses={500: {"description": "Internal error"}})
 async def system_info():
     try:
         return resource_service.get_system_info()
-    except Exception:
+    except Exception as exc:
         log.warning("resources.system.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch system info") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch system info") from exc
 
 
 @router.get("/resources/system/metrics", responses={500: {"description": "Internal error"}})
 async def system_metrics():
     try:
         return await asyncio.to_thread(resource_service.get_system_metrics)
-    except Exception:
+    except Exception as exc:
         log.warning("resources.system_metrics.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch system metrics") from exc
 
 
 @router.get("/resources/system/history", responses={500: {"description": "Internal error"}})
 async def system_metrics_history():
     try:
         return resource_service.get_system_metrics_history()
-    except Exception:
+    except Exception as exc:
         log.warning("resources.system_history.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch system metrics history") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch system metrics history") from exc
 
 
 @router.get("/resources/cross-project", responses={500: {"description": "Internal error"}})
@@ -96,9 +96,9 @@ async def cross_project_metrics() -> dict:
     project_dir = get_project_dir()
     try:
         return await asyncio.to_thread(resource_service.get_cross_project_metrics, project_dir)
-    except Exception:
+    except Exception as exc:
         log.warning("resources.cross_project.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch cross-project metrics") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch cross-project metrics") from exc
 
 
 @router.get("/resources/capacity", responses={500: {"description": "Internal error"}})
@@ -108,9 +108,9 @@ async def capacity_recommendation() -> dict:
     project_dir = get_project_dir()
     try:
         return await resource_service.get_capacity_recommendation(project_dir)
-    except Exception:
+    except Exception as exc:
         log.warning("resources.capacity.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch capacity recommendation") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch capacity recommendation") from exc
 
 
 @router.get("/resources/energy/total", responses={500: {"description": "Internal error"}})
@@ -120,6 +120,6 @@ async def total_energy() -> dict:
     project_dir = get_project_dir()
     try:
         return await resource_service.get_total_energy(project_dir)
-    except Exception:
+    except Exception as exc:
         log.warning("resources.energy_total.error", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch total energy") from None
+        raise HTTPException(status_code=500, detail="Failed to fetch total energy") from exc
