@@ -199,7 +199,12 @@ async def get_operations_persona():
     responses={400: {"description": "Cannot open editor"}, 500: {"description": "Failed to open editor"}},
 )
 async def open_persona_in_editor():
-    """Open the operations persona file in the OS default editor."""
+    """Open the operations persona file in the OS default editor.
+
+    Fire-and-forget: spawns the editor process without waiting for it to exit.
+    The response confirms the process was spawned, not that the editor opened
+    successfully.
+    """
     from sova.config.loader import load_config
     from sova.oversight.persona import ensure_persona_exists, get_open_command
 
@@ -220,9 +225,15 @@ async def open_persona_in_editor():
 
     try:
         await asyncio.create_subprocess_exec(cmd, str(path))
-        return {"status": "ok", "path": str(path)}
+        return {"status": "spawned", "path": str(path)}
     except FileNotFoundError:
         raise HTTPException(
             status_code=400,
             detail=f"'{cmd}' not found. Edit the file manually: {path}",
+        )
+    except Exception:
+        log.warning("settings.persona.open.subprocess_error", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to open editor. Edit manually: {path}",
         )

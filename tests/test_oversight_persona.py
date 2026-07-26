@@ -245,6 +245,40 @@ class TestOversightAgentPersona:
         assert personas_seen[0] == "# Version 1"
         assert personas_seen[1] == "# Version 2"
 
+    @pytest.mark.asyncio
+    async def test_persona_available_via_get_system_prompt(self, tmp_path: Path) -> None:
+        """Verify get_system_prompt() returns persona content for LLM injection."""
+        from sova.config.models import OversightConfig
+        from sova.oversight.agent import OversightAgent
+
+        persona_path = tmp_path / "persona.md"
+        persona_path.write_text("# Priority: unblock downstream tasks first", encoding="utf-8")
+
+        cfg = OversightConfig(wake_interval_minutes=1, persona_path=str(persona_path))
+        agent = OversightAgent(config=cfg)
+
+        # Before any cycle, system prompt is empty (no persona loaded yet)
+        assert agent.get_system_prompt() == ""
+
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+            pass
+
+        async def _fake_sleep(seconds):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # After a cycle, system prompt contains the persona content
+        prompt = agent.get_system_prompt()
+        assert "# Priority: unblock downstream tasks first" in prompt
+        assert "Operations Persona" in prompt
+
 
 # ---------------------------------------------------------------------------
 # API endpoint tests
@@ -340,7 +374,7 @@ class TestPersonaEndpoints:
 
             assert resp.status_code == 200
             data = resp.json()
-            assert data["status"] == "ok"
+            assert data["status"] == "spawned"
             assert data["path"] == str(persona_file)
             mock_exec.assert_called_once_with("code", str(persona_file))
 

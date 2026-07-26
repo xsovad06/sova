@@ -1,8 +1,9 @@
 """OversightAgent: background daemon that wakes on a configurable interval.
 
-Records each wake cycle to the OversightRun DB table. The cycle body is
-intentionally a no-op in this initial implementation; subsequent issues
-(#445, #446, #447) add observation, LLM analysis, and issue creation hooks.
+Records each wake cycle to the OversightRun DB table. The persona is loaded
+fresh each cycle and available via ``get_system_prompt()`` for LLM context
+injection. Subsequent issues (#445, #446, #447) add observation, LLM
+analysis, and issue creation hooks that consume the system prompt.
 """
 
 from __future__ import annotations
@@ -38,6 +39,21 @@ class OversightAgent:
         )
         return self._task
 
+    def get_system_prompt(self) -> str:
+        """Return the current system prompt with persona context for LLM calls.
+
+        The persona is loaded fresh each wake cycle (no caching) so edits to the
+        persona file take effect immediately. Hooks (#445, #446, #447) call this
+        method to inject persona guidance into their LLM requests.
+        """
+        if not self._persona:
+            return ""
+        return (
+            "# Operations Persona (user-defined oversight guidance)\n\n"
+            f"{self._persona}\n\n"
+            "---\n\n"
+        )
+
     async def stop(self) -> None:
         """Cancel the oversight background task."""
         if self._task is not None:
@@ -57,8 +73,8 @@ class OversightAgent:
             t0 = time.monotonic()
             try:
                 log.debug("oversight.cycle_start", cycle=cycle, run_id=run_id)
+                # TODO: guard behind hook-enabled check when LLM hooks land (#445-#447)
                 self._persona = load_persona(self._config.persona_path)
-                # Future hooks (#445, #446, #447) use self._persona as LLM system context.
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 await self._record_run(run_id, cycle, OversightRunStatus.DONE, duration_ms, started_at=started_at)
                 log.debug("oversight.cycle_done", cycle=cycle, run_id=run_id, duration_ms=duration_ms)

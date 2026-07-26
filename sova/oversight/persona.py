@@ -90,14 +90,27 @@ def load_persona(persona_path_override: str = "") -> str:
 
 
 def get_persona_info(persona_path_override: str = "") -> dict:
-    """Return persona metadata for the dashboard settings API."""
+    """Return persona metadata for the dashboard settings API.
+
+    Derives ``exists`` from whether the file was actually read successfully,
+    avoiding a TOCTOU race between ``is_file()`` and ``load_persona()``.
+    """
     path = _get_persona_path(persona_path_override)
-    content = load_persona(persona_path_override)
+    try:
+        raw = path.read_text(encoding="utf-8")
+        file_existed = True
+        content = raw if raw.strip() else DEFAULT_PERSONA_TEMPLATE
+    except FileNotFoundError:
+        file_existed = False
+        content = DEFAULT_PERSONA_TEMPLATE
+    except OSError:
+        file_existed = False
+        content = DEFAULT_PERSONA_TEMPLATE
     is_default = content == DEFAULT_PERSONA_TEMPLATE
 
     return {
         "path": str(path),
-        "exists": path.is_file(),
+        "exists": file_existed,
         "is_default": is_default,
         "content": content,
     }
