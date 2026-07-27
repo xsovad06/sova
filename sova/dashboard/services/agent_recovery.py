@@ -457,6 +457,10 @@ async def get_sova_review_verdict(
 
                 if next_action == "approve":
                     verdict = "approve"
+                elif next_action == "review_post_failed":
+                    # Reviewer ran but could not post to GitHub. Return a distinct
+                    # verdict so callers do not trigger address-review pipeline.
+                    verdict = "post_failed"
                 elif findings:
                     max_sev = max((f.get("severity", 0) for f in findings), default=0)
                     verdict = "block" if max_sev >= 7 else "revise"
