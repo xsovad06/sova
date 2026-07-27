@@ -67,6 +67,9 @@ async def rebase_with_conflict_resolution(
     for each commit (capped by *max_attempts*). This prevents a multi-commit
     rebase from exhausting all retry attempts on the first commit.
 
+    Stashes any uncommitted changes before rebasing and restores them after,
+    so the worktree does not need to be clean before calling this function.
+
     Returns a (RebaseResult, cost_usd) tuple.  On unrecoverable failure the
     rebase is aborted so the worktree is never left in a broken state.
     """
@@ -76,18 +79,47 @@ async def rebase_with_conflict_resolution(
     if not fetch.success:
         return RebaseResult(success=False, error=f"Fetch failed: {fetch.stderr[:200]}"), cost
 
+    stash_result = await run("git", "stash", "--include-untracked", cwd=cwd)
+    stashed = stash_result.success and "No local changes to save" not in stash_result.stdout
+    if not stash_result.success:
+        log.warning("git.rebase.stash_failed", stderr=(stash_result.stderr or "")[:200])
+
+    async def _pop_stash() -> bool:
+        """Restore stashed changes. Returns False if the pop failed."""
+        if not stashed:
+            return True
+        pop = await run("git", "stash", "pop", cwd=cwd)
+        if not pop.success:
+            log.warning("git.rebase.stash_pop_failed", stderr=(pop.stderr or "")[:200])
+            return False
+        return True
+
     result = await run("git", "rebase", f"origin/{base}", cwd=cwd)
     if result.success:
+        if not await _pop_stash():
+            return RebaseResult(success=False, error="Stash restore failed after clean rebase"), cost
         return RebaseResult(success=True), cost
+
+    # Rebase failed. Check whether a rebase is actually in progress (i.e. the
+    # failure was due to merge conflicts). If there are no conflicted files the
+    # rebase never started or immediately aborted; surface the original error
+    # rather than masking it with a spurious "no rebase in progress" message.
+    initial_error = (result.stderr or result.stdout or "")[:300]
+    conflicted = await _get_conflicted_files(cwd=cwd)
+    if not conflicted:
+        await run("git", "rebase", "--abort", cwd=cwd)
+        await _pop_stash()
+        return RebaseResult(success=False, error=f"Rebase failed: {initial_error}"), cost
 
     conflicts_resolved = 0
     hit_commit_cap = False
     for commit_idx in range(max_commits):
-        conflicted = await _get_conflicted_files(cwd=cwd)
         if not conflicted:
             env = {**os.environ, "GIT_EDITOR": "true"}
             cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
             if cont.success:
+                if not await _pop_stash():
+                    return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
                 return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
             log.warning(
                 "git.rebase.continue_failed",
@@ -111,6 +143,7 @@ async def rebase_with_conflict_resolution(
             except RuntimeError as exc:
                 log.warning("git.rebase.llm_failed", commit=commit_idx + 1, attempt=attempt, error=str(exc))
                 await run("git", "rebase", "--abort", cwd=cwd)
+                await _pop_stash()
                 return RebaseResult(success=False, conflicts_resolved=conflicts_resolved, error=str(exc)), cost
 
             remaining = await _get_conflicted_files(cwd=cwd)
@@ -121,6 +154,7 @@ async def rebase_with_conflict_resolution(
         if remaining:
             log.warning("git.rebase.unresolved", remaining=remaining, commit=commit_idx + 1)
             await run("git", "rebase", "--abort", cwd=cwd)
+            await _pop_stash()
             return RebaseResult(
                 success=False,
                 conflicts_resolved=conflicts_resolved,
@@ -131,11 +165,15 @@ async def rebase_with_conflict_resolution(
         env = {**os.environ, "GIT_EDITOR": "true"}
         cont = await run("git", "rebase", "--continue", cwd=cwd, env=env)
         if cont.success:
+            if not await _pop_stash():
+                return RebaseResult(success=False, error="Stash restore failed after rebase"), cost
             return RebaseResult(success=True, conflicts_resolved=conflicts_resolved), cost
+        conflicted = await _get_conflicted_files(cwd=cwd)
     else:
         hit_commit_cap = True
 
     await run("git", "rebase", "--abort", cwd=cwd)
+    await _pop_stash()
     if hit_commit_cap:
         error = f"Exceeded max commits cap ({max_commits}, processed {commit_idx + 1} commits) during rebase"
     else:

@@ -194,6 +194,7 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_ok(),  # rebase (no conflicts)
             ]
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
@@ -210,15 +211,16 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
-                _shell_ok(stdout="file1.py"),  # commit 1 conflicted
-                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_ok(stdout="file1.py"),  # initial conflicted check (before loop)
+                _shell_ok(stdout=""),  # commit 1 resolved after LLM
                 _shell_fail(stderr="could not apply"),  # continue pauses on commit 2
-                _shell_ok(stdout="file2.py"),  # commit 2 conflicted
-                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_ok(stdout="file2.py"),  # update conflicted for next iteration
+                _shell_ok(stdout=""),  # commit 2 resolved after LLM
                 _shell_fail(stderr="could not apply"),  # continue pauses on commit 3
-                _shell_ok(stdout="file3.py"),  # commit 3 conflicted
-                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_ok(stdout="file3.py"),  # update conflicted for next iteration
+                _shell_ok(stdout=""),  # commit 3 resolved after LLM
                 _shell_ok(),  # final continue succeeds (rebase done)
             ]
 
@@ -245,13 +247,15 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
-                _shell_ok(stdout="file.py"),  # commit 1 conflicted
-                _shell_ok(stdout=""),  # resolved
-                _shell_fail(stderr="could not apply"),  # continue pauses
-                _shell_ok(stdout="file.py"),  # commit 2 conflicted
-                _shell_ok(stdout=""),  # resolved
-                _shell_fail(stderr="could not apply"),  # continue pauses (loop ends)
+                _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
+                _shell_ok(stdout=""),  # commit 1 resolved after LLM
+                _shell_fail(stderr="could not apply"),  # continue pauses (iter 0 done)
+                _shell_ok(stdout="file.py"),  # update conflicted for iter 1
+                _shell_ok(stdout=""),  # commit 2 resolved after LLM
+                _shell_fail(stderr="could not apply"),  # continue pauses (loop cap reached)
+                _shell_ok(stdout="file.py"),  # update conflicted (consumed before for...else fires)
                 _shell_ok(),  # abort
             ]
 
@@ -272,11 +276,12 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="tried", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
-                _shell_ok(stdout="file.py"),  # attempt 1 conflicted
-                _shell_ok(stdout="file.py"),  # still conflicted after LLM
-                _shell_ok(stdout="file.py"),  # attempt 2 still conflicted
-                _shell_ok(stdout="file.py"),  # attempt 3 still conflicted
+                _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
+                _shell_ok(stdout="file.py"),  # still conflicted after LLM attempt 1
+                _shell_ok(stdout="file.py"),  # still conflicted after LLM attempt 2
+                _shell_ok(stdout="file.py"),  # still conflicted after LLM attempt 3 (exhausted)
                 _shell_ok(),  # abort
             ]
 
@@ -296,6 +301,7 @@ class TestRebaseWithConflictResolution:
             mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout="file.py"),  # commit 1 conflicted
                 _shell_ok(stdout=""),  # resolved after LLM
@@ -310,6 +316,33 @@ class TestRebaseWithConflictResolution:
             assert not result.success
             assert "could not be completed" in result.error
 
+    async def test_stash_command_failure_logs_and_continues(self) -> None:
+        """When git stash itself fails, a warning is logged and rebase proceeds without stash guard."""
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="cannot stash: index unmerged"),  # stash fails
+                _shell_ok(),  # rebase succeeds (no pop since stash was never created)
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+
+        assert result.success
+        assert cost == Decimal("0")
+
+    async def test_stash_pop_failure_after_clean_rebase_returns_error(self) -> None:
+        """When stash pop fails after a successful rebase, an error is propagated."""
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_ok(stdout="Saved working directory"),  # stash (changes stashed)
+                _shell_ok(),  # rebase succeeds
+                _shell_fail(stderr="CONFLICT (modify/delete): foo.py"),  # stash pop fails
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+
+        assert not result.success
+        assert "Stash restore failed" in result.error
+
     async def test_llm_failure_aborts_immediately(self) -> None:
         with (
             patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
@@ -321,8 +354,9 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
-                _shell_ok(stdout="file.py"),  # conflicted
+                _shell_ok(stdout="file.py"),  # initial conflicted check (before loop)
                 _shell_ok(),  # abort
             ]
 
@@ -336,31 +370,32 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout=""),  # _get_conflicted_files returns empty
-                _shell_ok(),  # rebase --continue succeeds
+                _shell_ok(),  # rebase --abort
             ]
 
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
 
-            assert result.success
-            assert result.conflicts_resolved == 0
+            assert not result.success
+            assert "Rebase failed" in result.error
 
     async def test_no_conflicted_files_continue_fails_aborts(self) -> None:
         """When no conflicted files remain but continue fails, abort and report error."""
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 _shell_ok(),  # fetch
+                _shell_ok(stdout="No local changes to save"),  # stash (nothing to stash)
                 _shell_fail(stderr="CONFLICT"),  # rebase fails
                 _shell_ok(stdout=""),  # _get_conflicted_files returns empty
-                _shell_fail(stderr="cannot continue"),  # rebase --continue fails
-                _shell_ok(),  # abort
+                _shell_ok(),  # rebase --abort
             ]
 
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
 
             assert not result.success
-            assert "cannot continue" in result.error
+            assert "Rebase failed" in result.error
 
 
 # ---------------------------------------------------------------------------
