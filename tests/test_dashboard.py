@@ -6644,6 +6644,226 @@ class TestMergeAwareFinalization:
 
 
 # ---------------------------------------------------------------------------
+# WebSocket graph_invalidated broadcast
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcastEvent:
+    async def test_noop_when_no_connections(self) -> None:
+        from sova.dashboard.routers.agents import _ConnectionManager
+
+        mgr = _ConnectionManager()
+        await mgr.broadcast_event("graph_invalidated", None)
+
+    async def test_sends_event_when_connections_exist(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.routers.agents import _ConnectionManager
+
+        mgr = _ConnectionManager()
+        ws = AsyncMock()
+        ws.send_json = AsyncMock()
+        mgr._groups[None] = [ws]
+
+        await mgr.broadcast_event("graph_invalidated", None)
+
+        ws.send_json.assert_awaited_once_with({"type": "graph_invalidated"})
+        mgr._groups.clear()
+
+    async def test_skips_mismatched_project_dir(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.routers.agents import _ConnectionManager
+
+        mgr = _ConnectionManager()
+        ws = AsyncMock()
+        ws.send_json = AsyncMock()
+        mgr._groups[Path("/other")] = [ws]
+
+        await mgr.broadcast_event("graph_invalidated", None)
+
+        ws.send_json.assert_not_awaited()
+        mgr._groups.clear()
+
+
+class TestFinalizeTaskRunReturnValue:
+    async def test_returns_true_on_status_transition(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="508", role="developer", status="running")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.1
+        mock_agent.project_dir = None
+        mock_agent.issue = ""
+        mock_agent.role = "developer"
+
+        result = await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        assert result is True
+
+    async def test_returns_false_when_already_terminal(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="508", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.0
+        mock_agent.project_dir = None
+        mock_agent.issue = ""
+
+        result = await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        assert result is False
+
+    async def test_returns_false_for_missing_run(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0.0
+        mock_agent.project_dir = None
+        mock_agent.issue = ""
+
+        result = await _finalize_task_run(999999, exit_code=0, agent=mock_agent)
+
+        assert result is False
+
+
+class TestWaitAndFinalizeGraphBroadcast:
+    async def test_broadcasts_graph_invalidated_on_finalization(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=42,
+            issue="508",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[42] = agent
+
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock()
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
+
+    async def test_skips_broadcast_when_already_terminal(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=43,
+            issue="508",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[43] = agent
+
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock()
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=False),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+        ):
+            await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        mock_ws_manager.broadcast_event.assert_not_awaited()
+
+    async def test_broadcasts_even_when_auto_handoff_raises(self) -> None:
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+
+        mock_process = AsyncMock()
+        mock_process.wait = AsyncMock(return_value=0)
+
+        agent = AgentState(
+            run_id=44,
+            issue="508",
+            role="developer",
+            process=mock_process,
+            project_dir=Path("/tmp/test-project"),
+        )
+
+        pa = ProjectAgents()
+        pa.agents[44] = agent
+
+        mock_ws_manager = MagicMock()
+        mock_ws_manager.broadcast_event = AsyncMock()
+
+        import pytest
+
+        with (
+            patch.object(agent_lifecycle, "_finalize_task_run", new_callable=AsyncMock, return_value=True),
+            patch.object(agent_lifecycle, "_finalize_lifecycle_phase", new_callable=AsyncMock),
+            patch(
+                "sova.dashboard.services.agent_handoff._process_auto_handoff",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("handoff exploded"),
+            ),
+            patch("sova.config.loader.load_config", side_effect=Exception("skip notifications")),
+            patch("sova.dashboard.routers.agents._ws_manager", mock_ws_manager),
+        ):
+            with pytest.raises(RuntimeError, match="handoff exploded"):
+                await agent_lifecycle._wait_and_finalize(pa, agent)
+
+        mock_ws_manager.broadcast_event.assert_awaited_once_with("graph_invalidated", Path("/tmp/test-project"))
+
+
+# ---------------------------------------------------------------------------
 # Per-issue budget check
 # ---------------------------------------------------------------------------
 

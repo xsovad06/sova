@@ -859,7 +859,7 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     # Finalize the DB record BEFORE removing from pa.agents so the
     # liveness sweep (which skips managed run_ids) cannot race us and
     # stamp the run "interrupted" in the window between pop and finalize.
-    await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
+    status_changed = await _finalize_task_run(run_id, exit_code=exit_code, agent=agent)
 
     # Validate that command runs actually produced expected outcomes.
     # Downgrades "done" to "failed" if the command exited cleanly but
@@ -874,6 +874,14 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
             status = "failed"
             exit_code = 1
             log.warning("agent.outcome_validation_failed", run_id=run_id, reason=failure_reason)
+
+    if status_changed:
+        try:
+            from sova.dashboard.routers.agents import _ws_manager
+
+            await _ws_manager.broadcast_event("graph_invalidated", agent.project_dir)
+        except Exception:
+            log.debug("ws.graph_invalidated_failed", run_id=run_id, exc_info=True)
 
     async with pa._lock:
         pa.agents.pop(run_id, None)
