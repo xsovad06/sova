@@ -699,11 +699,14 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     max_concurrent = pa.max_concurrent if pa else 3
     running_count = sum(1 for i in items if i["state"] == WorkItemState.AGENT_RUNNING)
 
+    github_user = cfg.github_user if cfg else ""
+
     return {
         "items": items,
         "running_count": running_count,
         "slots_available": max(0, max_concurrent - running_count),
         "max_concurrent": max_concurrent,
+        "github_user": github_user,
     }
 
 
