@@ -515,7 +515,13 @@ def _build_bypass_message(role: str, pr_number: int | None, prompt: str | None, 
 
 
 async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
-    """Check if a developer run reached push/create_pr but has no pr_number."""
+    """Check if a developer run committed code but never produced a PR.
+
+    Two cases:
+    1. push/create_pr step completed but pr_number is still None (existing).
+    2. commit step completed but push/create_pr never ran: pipeline stopped
+       mid-flight after committing code.
+    """
     from sqlalchemy import select
 
     from sova.core.state import STEP_DONE_STATUSES
@@ -529,6 +535,8 @@ async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
     done_names = {row[0] for row in result.fetchall()}
     if "create_pr" in done_names or "push" in done_names:
         return "Pipeline incomplete: developer agent reached push/create_pr step but pr_number is still None"
+    if "commit" in done_names:
+        return "Pipeline incomplete: developer agent committed code but never pushed or created a PR"
     return None
 
 
