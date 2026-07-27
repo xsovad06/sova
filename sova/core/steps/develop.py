@@ -328,7 +328,7 @@ class DevelopStep(BaseStep):
         return None
 
     async def _detect_fix_changes(self, ctx: ExecutionContext, pre_hash: str) -> dict[str, bool]:
-        """Detect whether the LLM fix produced any changes (unstaged, staged, or new commits).
+        """Detect whether the LLM fix produced any changes (unstaged, staged, commits, or untracked).
 
         Commit detection is defense-in-depth: the prompt instructs the LLM not to commit,
         but agents sometimes disobey. Detecting commits here lets _try_fix_cycle handle
@@ -340,11 +340,16 @@ class DevelopStep(BaseStep):
         has_staged = staged.success and bool(staged.stdout.strip())
         post_hash = await self._get_head_hash(ctx)
         has_new_commits = pre_hash != post_hash
+        status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+        has_untracked = bool(
+            status_result.success and any(line.startswith("??") for line in status_result.stdout.splitlines())
+        )
         return {
             "has_unstaged": has_unstaged,
             "has_staged": has_staged,
             "has_new_commits": has_new_commits,
-            "any": has_unstaged or has_staged or has_new_commits,
+            "has_untracked": has_untracked,
+            "any": has_unstaged or has_staged or has_new_commits or has_untracked,
         }
 
     async def _check_test_weakening(

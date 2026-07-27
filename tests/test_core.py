@@ -6291,6 +6291,7 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (post)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=True, stdout=""),  # _get_dirty_test_files post
                 MagicMock(success=True, stdout="All tests passed", stderr=""),  # re-check passes
             ]
@@ -6330,11 +6331,13 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=""),  # git diff
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 # Cycle 2: no changes
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (pre)
                 MagicMock(success=True, stdout=""),  # git diff
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
             ]
             mock_invoke.return_value = LLMResult(
                 text="",
@@ -6416,6 +6419,7 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=True),  # git checkout to restore tests
             ]
             mock_invoke.return_value = LLMResult(
@@ -6459,6 +6463,7 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=""),  # git diff --stat HEAD (no unstaged)
                 MagicMock(success=True, stdout=""),  # git diff --cached --stat (no staged)
                 MagicMock(success=True, stdout="def456\n"),  # git rev-parse HEAD (post, DIFFERENT)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 # _check_test_weakening: committed diff check
                 MagicMock(success=True, stdout="tests/test_foo.py\n"),  # git diff --name-only abc123 HEAD
                 MagicMock(success=True),  # git reset --hard abc123
@@ -6551,12 +6556,14 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (unstaged)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=False, stdout="FAIL again", stderr="err2"),  # re-check fails
                 # Cycle 2: has changes, re-check fails
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (unstaged)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=False, stdout="FAIL still", stderr="err3"),  # re-check fails
             ]
             mock_invoke.return_value = LLMResult(
@@ -6597,12 +6604,14 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=True),  # git checkout to restore tests
                 # Cycle 2: no test weakening, re-check passes
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (pre)
                 MagicMock(success=True, stdout=" src/foo.py | 2 +-\n"),  # git diff (has changes)
                 MagicMock(success=True, stdout=""),  # git diff --cached
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (post, same)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 MagicMock(success=True, stdout="All passed", stderr=""),  # re-check passes
             ]
             mock_invoke.return_value = LLMResult(
@@ -6648,6 +6657,7 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=""),  # git diff (no unstaged)
                 MagicMock(success=True, stdout=""),  # git diff --cached (no staged)
                 MagicMock(success=True, stdout="def456\n"),  # rev-parse HEAD (post, DIFFERENT)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
                 # _check_test_weakening: committed diff shows test file
                 MagicMock(success=True, stdout="tests/test_bar.py\nsrc/bar.py\n"),
                 MagicMock(success=True),  # git reset --hard pre_hash
@@ -6683,11 +6693,35 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout=""),  # git diff (no unstaged)
                 MagicMock(success=True, stdout=" file.py | 1 +\n"),  # git diff --cached (staged)
                 MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (same as pre)
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
             ]
             changes = await step._detect_fix_changes(ctx, "abc123")
 
         assert changes["has_staged"] is True
         assert changes["has_unstaged"] is False
+        assert changes["has_new_commits"] is False
+        assert changes["has_untracked"] is False
+        assert changes["any"] is True
+
+    async def test_detect_fix_changes_untracked_only(self) -> None:
+        """_detect_fix_changes returns any=True when only untracked files exist."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+
+        with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff (no unstaged)
+                MagicMock(success=True, stdout=""),  # git diff --cached (no staged)
+                MagicMock(success=True, stdout="abc123\n"),  # rev-parse HEAD (same as pre)
+                MagicMock(success=True, stdout="?? new_file.py\n"),  # git status --porcelain (untracked)
+            ]
+            changes = await step._detect_fix_changes(ctx, "abc123")
+
+        assert changes["has_untracked"] is True
+        assert changes["has_unstaged"] is False
+        assert changes["has_staged"] is False
         assert changes["has_new_commits"] is False
         assert changes["any"] is True
 
