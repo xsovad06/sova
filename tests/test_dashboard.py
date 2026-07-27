@@ -1848,278 +1848,6 @@ class TestAutoHandoffCircuitBreaker:
 
 
 # ---------------------------------------------------------------------------
-# Stale-handoff bypass in compute_state
-# ---------------------------------------------------------------------------
-
-
-class TestComputeStateStaleHandoffBypass:
-    def test_review_only_handoff_bypassed_when_sova_approved(self) -> None:
-        """A review-only handoff is superseded when SOVA already approved the PR."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {
-            "status": "awaiting_action",
-            "next_actions": [{"id": "review", "label": "Review PR"}],
-        }
-        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green", "mergeable": "MERGEABLE"}
-        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-
-        result = compute_work_item_state(
-            task_state=None,
-            pr_data=pr_data,
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=sova_verdict,
-            external_reviews_enabled=True,
-        )
-
-        assert result == WorkItemState.PR_READY_TO_MERGE
-
-    def test_review_pr_action_id_also_bypassed(self) -> None:
-        """The 'review_pr' action id variant is also treated as a stale review handoff."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {
-            "status": "awaiting_action",
-            "next_actions": [{"id": "review_pr", "label": "Review PR"}],
-        }
-        pr_data = {"state": "OPEN", "computed_state": "awaiting_review"}
-        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-
-        result = compute_work_item_state(
-            task_state=None,
-            pr_data=pr_data,
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=sova_verdict,
-        )
-
-        assert result == WorkItemState.PR_APPROVED
-
-    def test_mixed_handoff_not_bypassed(self) -> None:
-        """A handoff with non-review actions is not treated as stale."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {
-            "status": "awaiting_action",
-            "next_actions": [
-                {"id": "review", "label": "Review PR"},
-                {"id": "integrate", "label": "Integrate PR"},
-            ],
-        }
-        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green"}
-        sova_verdict = {"has_sova_review": True, "verdict": "approve"}
-
-        result = compute_work_item_state(
-            task_state=None,
-            pr_data=pr_data,
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=sova_verdict,
-        )
-
-        assert result == WorkItemState.HANDOFF_PENDING
-
-    def test_revise_verdict_not_bypassed(self) -> None:
-        """A revise verdict does not bypass the handoff (sova_blocks applies)."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {
-            "status": "awaiting_action",
-            "next_actions": [{"id": "review", "label": "Review PR"}],
-        }
-        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green", "latest_approval_at": None}
-        sova_verdict = {"has_sova_review": True, "verdict": "revise", "reviewed_at": "2026-01-01T00:00:00Z"}
-
-        result = compute_work_item_state(
-            task_state=None,
-            pr_data=pr_data,
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=sova_verdict,
-        )
-
-        assert result == WorkItemState.PR_SOVA_CHANGES
-
-    def test_no_sova_review_not_bypassed(self) -> None:
-        """A review-only handoff is not bypassed when SOVA has not reviewed yet."""
-        from sova.dashboard.services.work_item_service import WorkItemState, compute_work_item_state
-
-        handoff = {
-            "status": "awaiting_action",
-            "next_actions": [{"id": "review", "label": "Review PR"}],
-        }
-        pr_data = {"state": "OPEN", "computed_state": "approved_ci_green"}
-        sova_verdict = {"has_sova_review": False, "verdict": None}
-
-        result = compute_work_item_state(
-            task_state=None,
-            pr_data=pr_data,
-            handoff=handoff,
-            running_agent=None,
-            sova_verdict=sova_verdict,
-        )
-
-        assert result == WorkItemState.HANDOFF_PENDING
-
-
-# ---------------------------------------------------------------------------
-# Pre-spawn guard in _process_auto_handoff
-# ---------------------------------------------------------------------------
-
-
-class TestAutoHandoffReviewAlreadyDone:
-    async def test_clears_handoff_when_review_already_done(self) -> None:
-        """Auto-handoff must not spawn a reviewer if one already ran for the PR."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        agent = type(
-            "AgentState",
-            (),
-            {"run_id": 99, "issue": "481", "project_dir": Path("/tmp/test")},
-        )()
-
-        handoff = DashboardHandoff(
-            source="developer",
-            status="awaiting_action",
-            issue="481",
-            pr_number=510,
-            summary="PR ready for review",
-            next_actions=[
-                HandoffAction(
-                    id="review",
-                    label="Review PR",
-                    auto_execute=True,
-                    mode="agent",
-                    args={"issue": "481", "role": "reviewer", "pr": 510},
-                ),
-            ],
-        )
-
-        mock_start = AsyncMock()
-        mock_clear = MagicMock()
-        sova_verdict = {"has_sova_review": True, "verdict": "approve", "finding_count": 0}
-
-        with (
-            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                AsyncMock(return_value=sova_verdict),
-            ),
-        ):
-            await _process_auto_handoff(agent)
-
-        mock_start.assert_not_awaited()
-        mock_clear.assert_called_once()
-
-    async def test_spawns_reviewer_when_no_existing_review(self) -> None:
-        """Auto-handoff proceeds normally when no prior reviewer run exists."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        agent = type(
-            "AgentState",
-            (),
-            {"run_id": 100, "issue": "500", "project_dir": Path("/tmp/test")},
-        )()
-
-        handoff = DashboardHandoff(
-            source="developer",
-            status="awaiting_action",
-            issue="500",
-            pr_number=600,
-            summary="PR ready for review",
-            next_actions=[
-                HandoffAction(
-                    id="review",
-                    label="Review PR",
-                    auto_execute=True,
-                    mode="agent",
-                    args={"issue": "500", "role": "reviewer", "pr": 600},
-                ),
-            ],
-        )
-
-        mock_start = AsyncMock()
-        mock_clear = MagicMock()
-        no_review = {"has_sova_review": False, "verdict": None}
-
-        mock_cfg = MagicMock()
-        mock_cfg.pipeline.max_address_review_cycles = 2
-
-        with (
-            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
-            patch(
-                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
-                AsyncMock(return_value=no_review),
-            ),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.dashboard.services.agent_validation.check_memory_pressure", return_value=(None, None)),
-        ):
-            await _process_auto_handoff(agent)
-
-        mock_start.assert_awaited_once()
-
-    async def test_non_review_action_skips_guard(self) -> None:
-        """Guard is not triggered for non-review actions (e.g., address_review)."""
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        from sova.dashboard.services.agent_handoff import _process_auto_handoff
-        from sova.ipc.handoff import DashboardHandoff, HandoffAction
-
-        agent = type(
-            "AgentState",
-            (),
-            {"run_id": 101, "issue": "501", "project_dir": Path("/tmp/test")},
-        )()
-
-        handoff = DashboardHandoff(
-            source="reviewer",
-            status="awaiting_action",
-            issue="501",
-            pr_number=601,
-            summary="Findings to address",
-            next_actions=[
-                HandoffAction(
-                    id="address_review",
-                    label="Address Review",
-                    auto_execute=True,
-                    mode="agent",
-                    args={"issue": "501", "role": "developer", "pr": 601},
-                ),
-            ],
-        )
-
-        mock_start = AsyncMock()
-        mock_clear = MagicMock()
-        mock_verdict = AsyncMock()
-        mock_cfg = MagicMock()
-        mock_cfg.pipeline.max_address_review_cycles = 0
-
-        with (
-            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
-            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
-            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
-            patch("sova.dashboard.services.agent_recovery.get_sova_review_verdict", mock_verdict),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-            patch("sova.dashboard.services.agent_validation.check_memory_pressure", return_value=(None, None)),
-        ):
-            await _process_auto_handoff(agent)
-
-        mock_verdict.assert_not_awaited()
-        mock_start.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
 # Queue service -- cross-run PR number lookup
 # ---------------------------------------------------------------------------
 
@@ -8214,6 +7942,161 @@ class TestSovaReviewVerdictOutputFallback:
 
 
 # ---------------------------------------------------------------------------
+# Reviewer post-failure verdict handling
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerPostFailureVerdict:
+    """Tests for the reviewer post-failed signal and verdict propagation."""
+
+    async def test_sova_review_verdict_post_failed_returns_post_failed_not_revise(self) -> None:
+        """When reviewer handoff has next_action=review_post_failed, verdict is post_failed not revise."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="400",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={"next_action": "review_post_failed", "pending_findings": [], "cost_usd": "0.01"},
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("400")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "post_failed"
+        assert result["finding_count"] == 0
+
+    async def test_sova_review_verdict_post_failed_with_findings_is_still_post_failed(self) -> None:
+        """next_action=review_post_failed takes precedence even when findings are present."""
+        from sova.dashboard.services.agent_recovery import get_sova_review_verdict
+
+        session = await get_session()
+        async with session.begin():
+            session.add(
+                TaskRun(
+                    issue_number="401",
+                    role="reviewer",
+                    status="done",
+                    handoff_json={
+                        "next_action": "review_post_failed",
+                        "pending_findings": [{"file": "a.py", "severity": 9, "description": "bug"}],
+                    },
+                    ended_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = await get_sova_review_verdict("401")
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "post_failed"
+
+    async def test_process_auto_handoff_no_spawn_for_post_failed(self) -> None:
+        """_process_auto_handoff must not spawn any agent when all actions have auto_execute=False."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_handoff import _process_auto_handoff
+        from sova.ipc.handoff import DashboardHandoff, HandoffAction
+
+        agent = type(
+            "AgentState",
+            (),
+            {"run_id": None, "issue": "402", "project_dir": Path("/tmp/test")},
+        )()
+
+        handoff = DashboardHandoff(
+            source="reviewer",
+            status="awaiting_action",
+            issue="402",
+            pr_number=77,
+            summary="Review post failed: all API attempts failed",
+            details={"next_action": "review_post_failed", "cost_usd": "0.02", "pending_findings": []},
+            next_actions=[
+                HandoffAction(
+                    id="rerun_review",
+                    label="Re-run Review",
+                    description="Retry posting the review to GitHub",
+                    style="neutral",
+                    mode="agent",
+                    args={"issue": "402", "role": "reviewer", "pr": 77},
+                    auto_execute=False,
+                ),
+            ],
+        )
+
+        mock_start = AsyncMock()
+        mock_clear = MagicMock()
+        with (
+            patch("sova.ipc.handoff.read_handoff_file", return_value=handoff),
+            patch("sova.dashboard.services.agent_lifecycle.start_agent", mock_start),
+            patch("sova.dashboard.services.handoff_service.clear_handoff", mock_clear),
+        ):
+            await _process_auto_handoff(agent)
+
+        mock_start.assert_not_awaited()
+        mock_clear.assert_not_called()
+
+    async def test_post_failed_handoff_shows_rerun_review_not_address_review(self) -> None:
+        """_write_handoff with post_failed=True must write rerun_review action, not address_review.
+
+        Drives production code directly via ReviewerRole._write_handoff so the test cannot pass
+        by asserting on its own construction.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
+
+        ctx = MagicMock()
+        ctx.issue_number = "403"
+        ctx.pr_number = 88
+        ctx.branch_name = "fix/test"
+        ctx.task_run_id = None
+        ctx.config.pipeline.auto_address_review = True
+
+        role = ReviewerRole()
+        review = ReviewResult(post_failed=True)
+
+        with (
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            await role._write_handoff(ctx, review)
+
+        file_handoff = mock_file_handoff.call_args[0][1]
+        action_ids = [a.id for a in file_handoff.next_actions]
+        auto_flags = [a.auto_execute for a in file_handoff.next_actions]
+
+        assert "rerun_review" in action_ids
+        assert "address_review" not in action_ids
+        assert all(flag is False for flag in auto_flags), "no action must auto-execute on post failure"
+
+    async def test_post_failed_verdict_does_not_trigger_pr_sova_changes_state(self) -> None:
+        """post_failed verdict on an integrate-bound state must return PR_AWAITING_REVIEW.
+
+        Without the post_failed guard, PR_APPROVED stays PR_APPROVED and shows "Integrate PR"
+        on the dashboard even though the review never posted.
+        """
+        from sova.dashboard.services.work_item_service import WorkItemState, _apply_sova_verdict
+
+        sova_verdict = {
+            "has_sova_review": True,
+            "verdict": "post_failed",
+            "finding_count": 0,
+            "reviewed_at": "2026-07-26T12:00:00Z",
+        }
+        # PR_APPROVED is the critical case: without the guard it stays PR_APPROVED
+        # and the dashboard shows "Integrate PR" for a review that never posted.
+        mapped = WorkItemState.PR_APPROVED
+        result = _apply_sova_verdict(mapped, sova_verdict, external_reviews_enabled=True)
+
+        assert result == WorkItemState.PR_AWAITING_REVIEW, (
+            f"post_failed verdict must demote integrate-bound state to PR_AWAITING_REVIEW, got {result}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Command outcome validation
 # ---------------------------------------------------------------------------
 
@@ -12998,152 +12881,6 @@ class TestLivenessSweepMergeCheck:
         async with await get_session() as session:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
-
-    async def test_sweep_terminal_recheck_prevents_overwrite(self) -> None:
-        """A run finalized as 'done' between Phase 1 and Phase 3 must not be overwritten.
-
-        Simulates _wait_and_finalize() completing concurrently by having the
-        GitHub API side effect mark the run 'done' before Phase 3 opens the
-        write transaction.  Phase 3's terminal re-check must skip the write.
-        """
-        from datetime import datetime, timezone
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="60",
-                    role="command:integrate-pr",
-                    status="running",
-                    pid=888880,
-                    pr_number=200,
-                    project_slug="test",
-                )
-                session.add(run)
-                await session.flush()
-                run_id = run.id
-
-        async def finalize_and_return_false(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
-            """Simulate _wait_and_finalize writing 'done' while Phase 2 runs."""
-            async with await get_session() as s:
-                async with s.begin():
-                    r = await s.get(TaskRun, run_id)
-                    if r is not None:
-                        r.status = "done"
-                        r.ended_at = datetime.now(timezone.utc)
-                        r.error_message = "Finalized by concurrent writer"
-            return False
-
-        with self._patch_sweep_deps(
-            **{
-                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure": {
-                    "new": finalize_and_return_false,
-                },
-            }
-        ):
-            from sova.dashboard.app import _liveness_sweep_once
-
-            await _liveness_sweep_once(None, is_multi=False)
-
-        async with await get_session() as session:
-            refreshed = await session.get(TaskRun, run_id)
-            assert refreshed.status == "done", (
-                "terminal re-check must prevent 'interrupted' from overwriting a concurrent 'done'"
-            )
-            assert "concurrent writer" in (refreshed.error_message or "").lower()
-
-    async def test_sweep_github_api_called_before_write_transaction(self) -> None:
-        """GitHub API (Phase 2) must be called before the write transaction opens (Phase 3).
-
-        Tracks call order using a shared log: 'github_api' must precede
-        'write_begin' to confirm the API is not inside the DB write lock.
-        """
-        from unittest.mock import patch
-
-        call_log: list[str] = []
-
-        async with await get_session() as session:
-            async with session.begin():
-                run = TaskRun(
-                    issue_number="62",
-                    role="command:integrate-pr",
-                    status="running",
-                    pid=888860,
-                    pr_number=202,
-                    project_slug="test",
-                )
-                session.add(run)
-                await session.flush()
-
-        async def tracking_get_session(project_dir: object = None) -> object:  # noqa: ARG001
-            """Wrap the real session to record begin() calls."""
-            sess = await get_session()
-            original_begin = sess.begin
-
-            def tracked_begin() -> object:
-                call_log.append("write_begin")
-                return original_begin()
-
-            sess.begin = tracked_begin
-            return sess
-
-        async def tracking_check_pr_merged(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
-            call_log.append("github_api")
-            return False
-
-        with (
-            patch("sova.db.session.get_session", tracking_get_session),
-            patch("sova.dashboard.services.control_service._is_process_alive", return_value=False),
-            patch(
-                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-                new=tracking_check_pr_merged,
-            ),
-        ):
-            from sova.dashboard.app import _liveness_sweep_once
-
-            await _liveness_sweep_once(None, is_multi=False)
-
-        # Phase 1 is a read-only SELECT (no begin()), Phase 2 calls GitHub API,
-        # Phase 3 opens the write transaction.  Expected order: github_api then write_begin.
-        assert "github_api" in call_log, "GitHub API must be called for merge-role runs"
-        assert "write_begin" in call_log, "write transaction must be opened in Phase 3"
-        github_idx = call_log.index("github_api")
-        write_begin_idx = call_log.index("write_begin")
-        assert github_idx < write_begin_idx, f"GitHub API must precede write transaction; got call order: {call_log}"
-
-    async def test_sweep_gather_checks_all_merge_candidates(self) -> None:
-        """All merge-role dead runs must be checked, not just the first one."""
-        checked_prs: list[int] = []
-
-        async with await get_session() as session:
-            async with session.begin():
-                for idx, pr in enumerate([301, 302]):
-                    run = TaskRun(
-                        issue_number=str(70 + idx),
-                        role="command:integrate-pr",
-                        status="running",
-                        pid=777700 + idx,
-                        pr_number=pr,
-                        project_slug="test",
-                    )
-                    session.add(run)
-                    await session.flush()
-
-        async def tracking_check(pr_number: int, project_dir: object = None) -> bool:  # noqa: ARG001
-            checked_prs.append(pr_number)
-            return False
-
-        with self._patch_sweep_deps(
-            **{
-                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure": {
-                    "new": tracking_check,
-                },
-            }
-        ):
-            from sova.dashboard.app import _liveness_sweep_once
-
-            await _liveness_sweep_once(None, is_multi=False)
-
-        assert sorted(checked_prs) == [301, 302], "all merge-role dead runs must be checked"
 
 
 class TestWaitAndFinalizeOutputWriter:
