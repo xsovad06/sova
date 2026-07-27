@@ -4791,12 +4791,49 @@ class TestRebaseWithConflictResolution:
         with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout="No local changes to save"),  # stash (nothing to stash)
                 MagicMock(success=True, stdout=""),  # rebase (clean)
             ]
             result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
 
         assert result.success
         assert cost == Decimal("0")
+
+    async def test_clean_rebase_stashes_and_restores_dirty_worktree(self) -> None:
+        """Unstaged changes are stashed before rebasing and restored after."""
+        from sova.git.operations import rebase_with_conflict_resolution
+
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout="Saved working directory"),  # stash (changes stashed)
+                MagicMock(success=True, stdout=""),  # rebase (clean)
+                MagicMock(success=True),  # stash pop
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert result.success
+        assert cost == Decimal("0")
+        assert mock_run.call_args_list[1][0][:3] == ("git", "stash", "--include-untracked")
+        assert mock_run.call_args_list[3][0][:3] == ("git", "stash", "pop")
+
+    async def test_unstaged_changes_no_conflict_surfaces_real_error(self) -> None:
+        """When rebase fails for a non-conflict reason, the real error is reported."""
+        from sova.git.operations import rebase_with_conflict_resolution
+
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout="No local changes to save"),  # stash
+                MagicMock(success=False, stderr="fatal: cannot rebase: index mismatch"),  # rebase fails
+                MagicMock(success=True, stdout=""),  # conflicted files (none)
+                MagicMock(success=True),  # rebase --abort
+            ]
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/tmp"))
+
+        assert not result.success
+        assert "Rebase failed" in result.error
+        assert "index mismatch" in result.error
 
     async def test_conflict_resolved_by_llm(self) -> None:
         from sova.git.operations import rebase_with_conflict_resolution
@@ -4808,9 +4845,10 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout="No local changes to save"),  # stash
                 MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
-                MagicMock(success=True, stdout="file.py\n"),  # conflicted files
-                MagicMock(success=True, stdout=""),  # no remaining conflicts
+                MagicMock(success=True, stdout="file.py\n"),  # conflicted files (initial check)
+                MagicMock(success=True, stdout=""),  # no remaining conflicts (after LLM)
                 MagicMock(success=True),  # rebase --continue
             ]
             mock_llm.return_value = LLMResult(text="resolved", model="sonnet", cost_usd=Decimal("0.02"))
@@ -4830,8 +4868,9 @@ class TestRebaseWithConflictResolution:
         ):
             mock_run.side_effect = [
                 MagicMock(success=True),  # fetch
+                MagicMock(success=True, stdout="No local changes to save"),  # stash
                 MagicMock(success=False, stderr="CONFLICT"),  # rebase fails
-                MagicMock(success=True, stdout="file.py\n"),  # conflicted files
+                MagicMock(success=True, stdout="file.py\n"),  # conflicted files (initial check)
                 MagicMock(success=True),  # rebase --abort
             ]
             mock_llm.side_effect = RuntimeError("LLM failed")
