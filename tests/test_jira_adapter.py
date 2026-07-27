@@ -393,14 +393,47 @@ class TestListTasksPagination:
     @respx.mock
     async def test_paginate_caps_at_max_issues(self) -> None:
         adapter = _adapter()
-        full_page = [_issue_json(key=f"TEST-{i}") for i in range(50)]
+        page_count = 40
+        responses = []
+        for page_idx in range(page_count):
+            offset = page_idx * 50
+            page = [_issue_json(key=f"TEST-{offset + i}") for i in range(50)]
+            token = f"token-page{page_idx + 1}" if page_idx < page_count - 1 else "final"
+            responses.append(Response(200, json={"issues": page, "nextPageToken": token}))
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
+        route.side_effect = responses
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        assert route.call_count == page_count
+        assert len(tasks) == 2000
+        all_keys = [t.id for t in tasks]
+        assert len(all_keys) == len(set(all_keys))
+        for call in route.calls:
+            body = json.loads(call.request.content)
+            assert "startAt" not in body
+
+    @respx.mock
+    async def test_paginate_stops_on_repeated_cursor(self) -> None:
+        adapter = _adapter()
+        page = [_issue_json(key=f"TEST-{i}") for i in range(50)]
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
-            return_value=Response(200, json={"issues": full_page, "nextPageToken": "next"}),
+            return_value=Response(200, json={"issues": page, "nextPageToken": "stuck-token"}),
         )
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
-        # 2000 / 50 = 40 pages max
-        assert route.call_count == 40
-        assert len(tasks) == 2000
+        assert route.call_count == 2
+        assert len(tasks) == 100
+
+    @respx.mock
+    async def test_paginate_stops_on_empty_page(self) -> None:
+        adapter = _adapter()
+        page1 = [_issue_json(key=f"TEST-{i}") for i in range(50)]
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
+        route.side_effect = [
+            Response(200, json={"issues": page1, "nextPageToken": "token-page2"}),
+            Response(200, json={"issues": [], "nextPageToken": "token-page3"}),
+        ]
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        assert route.call_count == 2
+        assert len(tasks) == 50
 
     @respx.mock
     async def test_paginate_returns_empty_on_mid_pagination_failure(self) -> None:

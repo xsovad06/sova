@@ -178,6 +178,7 @@ class JiraAdapter(TaskAdapter):
         all_tasks: list[Task] = []
         page_size = 50
         next_page_token: str | None = None
+        seen_tokens: set[str] = set()
         while len(all_tasks) < self._MAX_PAGINATED_ISSUES:
             body: dict = {
                 "jql": jql,
@@ -198,11 +199,21 @@ class JiraAdapter(TaskAdapter):
 
             data = response.json()
             issues = data.get("issues", [])
+            if not issues:
+                break
             all_tasks.extend(self._parse_issue(issue) for issue in issues)
 
             next_page_token = data.get("nextPageToken")
             if not next_page_token:
                 break
+            if next_page_token in seen_tokens:
+                log.warning(
+                    "list_tasks.repeated_cursor",
+                    token=next_page_token,
+                    issues_so_far=len(all_tasks),
+                )
+                break
+            seen_tokens.add(next_page_token)
 
         return all_tasks
 
