@@ -8197,10 +8197,17 @@ class TestCommandOutcomeValidation:
         agent.pr_number = 102
         agent.pre_run_sha = None
         agent.project_dir = None
-        with patch(
-            "sova.dashboard.services.agent_db._check_pr_branch_pushed",
-            new_callable=AsyncMock,
-            return_value=True,
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["some output"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
             result = await _validate_command_outcome(run_id, agent)
         assert result is None
@@ -8224,10 +8231,17 @@ class TestCommandOutcomeValidation:
         agent.pr_number = 103
         agent.pre_run_sha = None
         agent.project_dir = None
-        with patch(
-            "sova.dashboard.services.agent_db._check_pr_branch_pushed",
-            new_callable=AsyncMock,
-            return_value=False,
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["some output"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
         ):
             result = await _validate_command_outcome(run_id, agent)
         assert result is not None
@@ -8288,8 +8302,8 @@ class TestCommandOutcomeValidation:
         result = await _validate_command_outcome(run_id, agent)
         assert result is None
 
-    async def test_no_output_lines_passes_validation(self) -> None:
-        """When no output lines exist (e.g., stream parsing failed), skip validation."""
+    async def test_no_output_lines_fails_validation(self) -> None:
+        """When no output lines exist, fail-closed: agent never ran meaningfully."""
         from unittest.mock import MagicMock
 
         from sova.dashboard.services.agent_db import _validate_command_outcome
@@ -8308,7 +8322,8 @@ class TestCommandOutcomeValidation:
         agent.pre_run_sha = None
         agent.project_dir = None
         result = await _validate_command_outcome(run_id, agent)
-        assert result is None
+        assert result is not None
+        assert "no output" in result
 
 
 class TestReviewPrVerdictPersistence:
@@ -9485,7 +9500,40 @@ class TestCheckPrPushedViaSha:
 
 
 class TestValidateAddressPrWithSha:
-    """Tests that _validate_address_pr uses SHA comparison as primary check."""
+    """Tests that _validate_address_pr uses fail-closed tiered validation."""
+
+    async def test_pr_number_none_returns_error(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = None
+        agent.project_dir = tmp_path
+
+        result = await _validate_address_pr(1, agent)
+        assert result is not None
+        assert "no associated PR number" in result
+
+    async def test_no_output_returns_error(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.project_dir = tmp_path
+
+        with patch(
+            "sova.dashboard.services.agent_db._fetch_output_lines",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is not None
+        assert "no output" in result
 
     async def test_sha_check_short_circuits_on_push_detected(self, tmp_path: Path) -> None:
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -9499,6 +9547,11 @@ class TestValidateAddressPrWithSha:
         agent.project_dir = tmp_path
 
         with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["some output"],
+            ),
             patch(
                 "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
                 new_callable=AsyncMock,
@@ -9527,6 +9580,11 @@ class TestValidateAddressPrWithSha:
 
         with (
             patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["some output"],
+            ),
+            patch(
                 "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
                 new_callable=AsyncMock,
                 return_value=None,
@@ -9539,6 +9597,137 @@ class TestValidateAddressPrWithSha:
         ):
             result = await _validate_address_pr(1, agent)
         assert result is None
+
+    async def test_all_tiers_inconclusive_returns_error(self, tmp_path: Path) -> None:
+        """Fail-closed: when SHA and branch checks return None and text scan has <2 matches."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["addressed review comments", "fixed the bug"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is not None
+        assert "without pushing" in result
+
+    async def test_text_scan_single_keyword_not_enough(self, tmp_path: Path) -> None:
+        """One keyword match is not sufficient (reduces false positives)."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["ran git push origin branch"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is not None
+        assert "without pushing" in result
+
+    async def test_text_scan_two_keywords_passes(self, tmp_path: Path) -> None:
+        """Two distinct keyword matches is sufficient evidence."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["git push --force-with-lease origin branch", "pushed to remote"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is None
+
+    async def test_branch_check_false_returns_error(self, tmp_path: Path) -> None:
+        """Branch check returning False (unpushed commits exist) fails immediately."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_address_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.pre_run_sha = "aaa111"
+        agent.project_dir = tmp_path
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_db._fetch_output_lines",
+                new_callable=AsyncMock,
+                return_value=["some output"],
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_pushed_via_sha",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_db._check_pr_branch_pushed",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+        ):
+            result = await _validate_address_pr(1, agent)
+        assert result is not None
+        assert "without pushing" in result
 
 
 class TestPipelineBypassDiagnosticLogging:

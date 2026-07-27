@@ -316,33 +316,40 @@ async def _check_pr_pushed_via_sha(agent: AgentState) -> bool | None:
 async def _validate_address_pr(run_id: int, agent: AgentState) -> str | None:
     """Check that address-pr actually committed and pushed changes.
 
-    Uses git ref comparison (local HEAD vs remote tracking branch) as the
-    primary check. Falls back to output text scanning when the git check
-    is inconclusive (e.g., worktree already cleaned up).
+    Fail-closed: requires at least one tier to positively confirm the push.
+    Tiers checked in order (short-circuits on first positive):
+      0. Output lines exist (agent produced meaningful output)
+      1. PR headRefOid changed (SHA comparison)
+      2. Branch has no unpushed commits (git fetch + rev-list)
+      3. Output text contains push keywords (requires 2+ distinct matches)
     """
     if agent.pr_number is None:
-        return None
+        return "address-pr run has no associated PR number"
 
+    # Tier 0: output must exist (agent actually ran)
+    lines = await _fetch_output_lines(run_id, agent.project_dir)
+    if lines is None:
+        return "address-pr produced no output (agent never ran meaningfully)"
+
+    # Tier 1: SHA comparison (most reliable)
     sha_pushed = await _check_pr_pushed_via_sha(agent)
     if sha_pushed is True:
         return None
 
+    # Tier 2: branch ref check
     pushed = await _check_pr_branch_pushed(agent)
     if pushed is True:
         return None
     if pushed is False:
         return "address-pr completed without pushing changes"
 
-    lines = await _fetch_output_lines(run_id, agent.project_dir)
-    if lines is None:
+    # Tier 3: text scan (require 2+ distinct keyword matches to reduce false positives)
+    lowered = [line.lower() for line in lines]
+    matched_keywords = {kw for kw in _PUSH_KEYWORDS if any(kw in line for line in lowered)}
+    if len(matched_keywords) >= 2:
         return None
 
-    _PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
-    has_push_evidence = any(any(kw in line.lower() for kw in _PUSH_KEYWORDS) for line in lines)
-
-    if not has_push_evidence:
-        return "address-pr completed without pushing changes"
-    return None
+    return "address-pr completed without pushing changes"
 
 
 async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
@@ -376,6 +383,8 @@ async def _check_pr_branch_pushed(agent: AgentState) -> bool | None:
         log.debug("check_pr_branch_pushed.failed", pr=agent.pr_number, exc_info=True)
     return None
 
+
+_PUSH_KEYWORDS = ("git push", "force-with-lease", "force-push", "pushed to", "pushed commit")
 
 _SOVA_REVIEW_MARKER_RE = re.compile(r"<!--\s*sova-review:\s*(approve|revise|block)\s*-->", re.IGNORECASE)
 
