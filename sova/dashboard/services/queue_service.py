@@ -136,9 +136,11 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
     if cfg.task_source.type == "github" and not cfg.github_repo:
         return []
 
+    from sova.adapters.base import TaskFilters
+
     try:
         adapter = create_adapter(cfg)
-        tasks = await adapter.list_tasks()
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
     except Exception as e:
         log.warning("Failed to fetch tasks for queue: %s", e)
         return []

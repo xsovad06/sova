@@ -9,6 +9,54 @@
   </label>
 </div>
 
+<!-- Filter bar -->
+<div id="filter-bar" class="hidden sticky top-0 z-30 bg-surface/95 backdrop-blur-sm border border-gray-700/50 rounded-lg px-4 py-3 mb-4">
+  <div class="flex items-center gap-3 flex-wrap">
+    <input type="text" id="filter-search" placeholder="Search issues..."
+      oninput="applyFilters()"
+      class="bg-surface border border-gray-700/50 rounded px-3 py-1.5 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50 w-56">
+
+    <div id="filter-state-wrapper" class="relative">
+      <button onclick="toggleDropdown('filter-state-dropdown')"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
+        State <span id="filter-state-count" class="text-accent"></span>
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="filter-state-dropdown" class="hidden absolute top-full left-0 mt-1 bg-surface-card border border-gray-700/50 rounded-lg shadow-xl py-1 min-w-[160px] z-40 max-h-64 overflow-y-auto"></div>
+    </div>
+
+    <div id="filter-milestone-wrapper" class="relative">
+      <button onclick="toggleDropdown('filter-milestone-dropdown')"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
+        Milestone <span id="filter-milestone-count" class="text-accent"></span>
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="filter-milestone-dropdown" class="hidden absolute top-full left-0 mt-1 bg-surface-card border border-gray-700/50 rounded-lg shadow-xl py-1 min-w-[160px] z-40 max-h-64 overflow-y-auto"></div>
+    </div>
+
+    <div id="filter-label-wrapper" class="relative">
+      <button onclick="toggleDropdown('filter-label-dropdown')"
+        class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
+        Label <span id="filter-label-count" class="text-accent"></span>
+        <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+      </button>
+      <div id="filter-label-dropdown" class="hidden absolute top-full left-0 mt-1 bg-surface-card border border-gray-700/50 rounded-lg shadow-xl py-1 min-w-[200px] z-40">
+        <div class="px-2 py-1 border-b border-gray-700/30">
+          <input type="text" id="label-dropdown-search" placeholder="Filter labels..."
+            oninput="filterLabelDropdown()"
+            class="w-full bg-surface border border-gray-700/50 rounded px-2 py-1 text-xs text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50">
+        </div>
+        <div id="label-dropdown-items" class="max-h-48 overflow-y-auto"></div>
+      </div>
+    </div>
+
+    <button id="filter-clear-btn" onclick="clearAllFilters()" style="display:none"
+      class="px-3 py-1.5 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
+      Clear filters
+    </button>
+  </div>
+</div>
+
 <div id="queue-content">
   <p class="text-gray-500 text-sm">Loading...</p>
 </div>
@@ -114,6 +162,7 @@ var validStates = {
 
 var selectedItems = {};
 var queueData = [];
+var activeFilters = { search: '', states: [], milestones: [], labels: [] };
 
 function _onGlobalBatchCleared() {
   deselectAll();
@@ -252,20 +301,20 @@ function toggleSelection(issueId, state) {
 function toggleSelectAll() {
   var allBox = document.getElementById('select-all');
   if (allBox.checked) {
-    queueData.forEach(function(item) {
+    getFilteredItems().forEach(function(item) {
       selectedItems[item.issue] = { state: item.state };
     });
   } else {
     selectedItems = {};
   }
-  updateSelectionUI();
+  renderFilteredQueue();
 }
 
 function deselectAll() {
   selectedItems = {};
   var allBox = document.getElementById('select-all');
   if (allBox) allBox.checked = false;
-  updateSelectionUI();
+  renderFilteredQueue();
 }
 
 function updateSelectionUI() {
@@ -288,9 +337,15 @@ function updateSelectionUI() {
   });
 
   var allBox = document.getElementById('select-all');
-  if (allBox && queueData.length > 0) {
-    allBox.checked = count === queueData.length;
-    allBox.indeterminate = count > 0 && count < queueData.length;
+  var filtered = getFilteredItems();
+  if (allBox) {
+    if (filtered.length === 0) {
+      allBox.checked = false;
+      allBox.indeterminate = false;
+    } else {
+      allBox.checked = count === filtered.length;
+      allBox.indeterminate = count > 0 && count < filtered.length;
+    }
   }
 
   if (count === 0) {
@@ -327,12 +382,13 @@ async function loadQueue() {
   try {
     var data = await fetchAPI(apiUrl('/queue'));
     queueData = data.queue;
-    var container = document.getElementById('queue-content');
     var selectAllWrapper = document.getElementById('select-all-wrapper');
+    var filterBar = document.getElementById('filter-bar');
 
     if (data.queue.length === 0) {
       selectAllWrapper.style.display = 'none';
-      container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
+      filterBar.classList.add('hidden');
+      document.getElementById('queue-content').innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
         '<p class="text-gray-500">No actionable issues in queue</p>' +
         '<p class="text-xs text-gray-600 mt-1">Issues appear here when they have agent-managed labels</p>' +
       '</div>';
@@ -340,62 +396,9 @@ async function loadQueue() {
     }
 
     selectAllWrapper.style.display = 'flex';
-
-    var groups = {};
-    data.queue.forEach(function(item) {
-      var g = item.state;
-      if (!groups[g]) groups[g] = [];
-      groups[g].push(item);
-    });
-
-    var html = '';
-    stateGroupOrder.forEach(function(state) {
-      var items = groups[state];
-      if (!items || items.length === 0) return;
-
-      var isDimmed = state === 'needs_spec';
-      var groupClasses = isDimmed ? ' opacity-60' : '';
-
-      html += '<div class="mt-6 first:mt-0">' +
-        '<div class="flex items-center gap-3 mb-3">' +
-          '<h3 class="text-sm font-medium text-gray-400 whitespace-nowrap">' + stateGroupLabels[state] + '</h3>' +
-          '<span class="text-xs text-gray-600">(' + items.length + ')</span>' +
-          '<div class="flex-1 border-t border-gray-700/30"></div>' +
-        '</div>' +
-        '<div class="space-y-2' + groupClasses + '">';
-
-      var phaseGroups = {};
-      var phaseOrder = [];
-      items.forEach(function(item) {
-        var po = item.phase_order || 99;
-        if (!phaseGroups[po]) {
-          phaseGroups[po] = [];
-          phaseOrder.push(po);
-        }
-        phaseGroups[po].push(item);
-      });
-      phaseOrder.sort(function(a, b) { return a - b; });
-
-      var hasMultiplePhases = phaseOrder.length > 1 || (phaseOrder.length === 1 && phaseOrder[0] !== 99);
-      phaseOrder.forEach(function(po) {
-        var phaseItems = phaseGroups[po];
-        if (hasMultiplePhases) {
-          var phaseLabel = po < 99 ? 'Phase ' + po : 'No phase';
-          html += '<div class="ml-2 mt-3 first:mt-0 mb-1">' +
-            '<span class="text-xs font-medium text-gray-500">' + escapeHtml(phaseLabel) + '</span>' +
-            '<span class="text-xs text-gray-600 ml-1">(' + phaseItems.length + ')</span>' +
-          '</div>';
-        }
-        phaseItems.forEach(function(item) {
-          html += renderQueueCard(item);
-        });
-      });
-
-      html += '</div></div>';
-    });
-
-    container.innerHTML = html;
-    updateSelectionUI();
+    filterBar.classList.remove('hidden');
+    populateFilterDropdowns();
+    renderFilteredQueue();
   } catch (e) {
     console.error('Failed to load queue:', e);
   }
@@ -469,6 +472,258 @@ async function executeBulkAction(action) {
     showToast('Failed to start batch: ' + e.message, 'error');
   }
 }
+
+initFiltersFromUrl();
+
+function initFiltersFromUrl() {
+  var params = new URLSearchParams(window.location.search);
+  var q = params.get('q');
+  if (q) {
+    activeFilters.search = q;
+    var input = document.getElementById('filter-search');
+    if (input) input.value = q;
+  }
+}
+
+function persistSearchToUrl() {
+  var url = new URL(window.location);
+  if (activeFilters.search) {
+    url.searchParams.set('q', activeFilters.search);
+  } else {
+    url.searchParams.delete('q');
+  }
+  history.replaceState(null, '', url);
+}
+
+function hasActiveFilters() {
+  return activeFilters.search ||
+    activeFilters.states.length > 0 ||
+    activeFilters.milestones.length > 0 ||
+    activeFilters.labels.length > 0;
+}
+
+function applyFilters() {
+  var input = document.getElementById('filter-search');
+  activeFilters.search = (input ? input.value : '').trim().toLowerCase();
+  persistSearchToUrl();
+  selectedItems = {};
+  updateSelectionUI();
+  renderFilteredQueue();
+  updateFilterCounts();
+}
+
+function getFilteredItems() {
+  if (!hasActiveFilters()) return queueData;
+
+  var search = activeFilters.search;
+  return queueData.filter(function(item) {
+    if (search) {
+      var haystack = (item.title + ' ' + item.issue + ' ' + (item.jira_key || '')).toLowerCase();
+      if (haystack.indexOf(search) === -1) return false;
+    }
+    if (activeFilters.states.length > 0) {
+      if (activeFilters.states.indexOf(item.state) === -1) return false;
+    }
+    if (activeFilters.milestones.length > 0) {
+      if (activeFilters.milestones.indexOf(item.priority_label) === -1) return false;
+    }
+    if (activeFilters.labels.length > 0) {
+      var itemLabels = item.labels || [];
+      var hasMatchingLabel = activeFilters.labels.some(function(fl) {
+        return itemLabels.indexOf(fl) !== -1;
+      });
+      if (!hasMatchingLabel) return false;
+    }
+    return true;
+  });
+}
+
+function renderFilteredQueue() {
+  var container = document.getElementById('queue-content');
+  var filtered = getFilteredItems();
+  var clearBtn = document.getElementById('filter-clear-btn');
+  if (clearBtn) clearBtn.style.display = hasActiveFilters() ? 'block' : 'none';
+
+  if (queueData.length > 0 && filtered.length === 0) {
+    container.innerHTML = '<div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">' +
+      '<p class="text-gray-500">No issues match filters</p>' +
+      '<p class="text-xs text-gray-600 mt-1">Try adjusting your search or filter criteria</p>' +
+    '</div>';
+    return;
+  }
+
+  var groups = {};
+  filtered.forEach(function(item) {
+    var g = item.state;
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(item);
+  });
+
+  var html = '';
+  stateGroupOrder.forEach(function(state) {
+    var items = groups[state];
+    if (!items || items.length === 0) return;
+
+    var isDimmed = state === 'needs_spec';
+    var groupClasses = isDimmed ? ' opacity-60' : '';
+
+    html += '<div class="mt-6 first:mt-0">' +
+      '<div class="flex items-center gap-3 mb-3">' +
+        '<h3 class="text-sm font-medium text-gray-400 whitespace-nowrap">' + stateGroupLabels[state] + '</h3>' +
+        '<span class="text-xs text-gray-600">(' + items.length + ')</span>' +
+        '<div class="flex-1 border-t border-gray-700/30"></div>' +
+      '</div>' +
+      '<div class="space-y-2' + groupClasses + '">';
+
+    var phaseGroups = {};
+    var phaseOrder = [];
+    items.forEach(function(item) {
+      var po = item.phase_order || 99;
+      if (!phaseGroups[po]) {
+        phaseGroups[po] = [];
+        phaseOrder.push(po);
+      }
+      phaseGroups[po].push(item);
+    });
+    phaseOrder.sort(function(a, b) { return a - b; });
+
+    var hasMultiplePhases = phaseOrder.length > 1 || (phaseOrder.length === 1 && phaseOrder[0] !== 99);
+    phaseOrder.forEach(function(po) {
+      var phaseItems = phaseGroups[po];
+      if (hasMultiplePhases) {
+        var phaseLabel = po < 99 ? 'Phase ' + po : 'No phase';
+        html += '<div class="ml-2 mt-3 first:mt-0 mb-1">' +
+          '<span class="text-xs font-medium text-gray-500">' + escapeHtml(phaseLabel) + '</span>' +
+          '<span class="text-xs text-gray-600 ml-1">(' + phaseItems.length + ')</span>' +
+        '</div>';
+      }
+      phaseItems.forEach(function(item) {
+        html += renderQueueCard(item);
+      });
+    });
+
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
+  updateSelectionUI();
+}
+
+function populateFilterDropdowns() {
+  var statesInData = {};
+  var milestonesInData = {};
+  var labelsInData = {};
+
+  queueData.forEach(function(item) {
+    statesInData[item.state] = true;
+    if (item.priority_label && item.priority_label !== '--') {
+      milestonesInData[item.priority_label] = true;
+    }
+    (item.labels || []).forEach(function(l) {
+      if (l.indexOf('agent:') !== 0 && l.indexOf('priority:') !== 0 && l.indexOf('role:') !== 0) {
+        labelsInData[l] = true;
+      }
+    });
+  });
+
+  var stateDropdown = document.getElementById('filter-state-dropdown');
+  stateDropdown.innerHTML = stateGroupOrder
+    .filter(function(s) { return statesInData[s]; })
+    .map(function(s) {
+      var checked = activeFilters.states.indexOf(s) !== -1 ? ' checked' : '';
+      return '<label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700/30 cursor-pointer text-sm text-gray-300">' +
+        '<input type="checkbox" value="' + s + '" onchange="onFilterCheckbox(\x27states\x27, this)"' + checked +
+        ' class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">' +
+        escapeHtml(stateLabels[s] || s) + '</label>';
+    }).join('');
+
+  var milestoneDropdown = document.getElementById('filter-milestone-dropdown');
+  var milestoneKeys = Object.keys(milestonesInData).sort();
+  milestoneDropdown.innerHTML = milestoneKeys.map(function(m) {
+    var checked = activeFilters.milestones.indexOf(m) !== -1 ? ' checked' : '';
+    return '<label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700/30 cursor-pointer text-sm text-gray-300">' +
+      '<input type="checkbox" value="' + escapeHtml(m) + '" onchange="onFilterCheckbox(\x27milestones\x27, this)"' + checked +
+      ' class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">' +
+      escapeHtml(m) + '</label>';
+  }).join('');
+
+  var labelKeys = Object.keys(labelsInData).sort();
+  var labelItemsContainer = document.getElementById('label-dropdown-items');
+  labelItemsContainer.innerHTML = labelKeys.map(function(l) {
+    var checked = activeFilters.labels.indexOf(l) !== -1 ? ' checked' : '';
+    return '<label class="filter-label-option flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700/30 cursor-pointer text-sm text-gray-300" data-label="' + escapeHtml(l.toLowerCase()) + '">' +
+      '<input type="checkbox" value="' + escapeHtml(l) + '" onchange="onFilterCheckbox(\x27labels\x27, this)"' + checked +
+      ' class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50">' +
+      escapeHtml(l) + '</label>';
+  }).join('');
+}
+
+function onFilterCheckbox(filterKey, checkbox) {
+  var val = checkbox.value;
+  var arr = activeFilters[filterKey];
+  if (checkbox.checked) {
+    if (arr.indexOf(val) === -1) arr.push(val);
+  } else {
+    var idx = arr.indexOf(val);
+    if (idx !== -1) arr.splice(idx, 1);
+  }
+  selectedItems = {};
+  updateSelectionUI();
+  renderFilteredQueue();
+  updateFilterCounts();
+}
+
+function updateFilterCounts() {
+  var stateCount = document.getElementById('filter-state-count');
+  var milestoneCount = document.getElementById('filter-milestone-count');
+  var labelCount = document.getElementById('filter-label-count');
+  stateCount.textContent = activeFilters.states.length > 0 ? '(' + activeFilters.states.length + ')' : '';
+  milestoneCount.textContent = activeFilters.milestones.length > 0 ? '(' + activeFilters.milestones.length + ')' : '';
+  labelCount.textContent = activeFilters.labels.length > 0 ? '(' + activeFilters.labels.length + ')' : '';
+}
+
+function toggleDropdown(id) {
+  var dropdown = document.getElementById(id);
+  var wasHidden = dropdown.classList.contains('hidden');
+  closeAllDropdowns();
+  if (wasHidden) dropdown.classList.remove('hidden');
+}
+
+function closeAllDropdowns() {
+  ['filter-state-dropdown', 'filter-milestone-dropdown', 'filter-label-dropdown'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
+}
+
+function filterLabelDropdown() {
+  var search = (document.getElementById('label-dropdown-search').value || '').toLowerCase();
+  var items = document.querySelectorAll('.filter-label-option');
+  items.forEach(function(el) {
+    el.style.display = el.getAttribute('data-label').indexOf(search) !== -1 ? '' : 'none';
+  });
+}
+
+function clearAllFilters() {
+  activeFilters = { search: '', states: [], milestones: [], labels: [] };
+  var input = document.getElementById('filter-search');
+  if (input) input.value = '';
+  persistSearchToUrl();
+  selectedItems = {};
+  populateFilterDropdowns();
+  updateFilterCounts();
+  updateSelectionUI();
+  renderFilteredQueue();
+}
+
+document.addEventListener('click', function(e) {
+  var wrappers = ['filter-state-wrapper', 'filter-milestone-wrapper', 'filter-label-wrapper'];
+  var insideDropdown = wrappers.some(function(id) {
+    var el = document.getElementById(id);
+    return el && el.contains(e.target);
+  });
+  if (!insideDropdown) closeAllDropdowns();
+});
 
 visibilityAwarePoll(loadQueue, 15000);
 </script>

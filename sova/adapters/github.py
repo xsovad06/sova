@@ -76,9 +76,14 @@ class GitHubAdapter(TaskAdapter):
             filters.state,
             "--json",
             "number,title,body,state,labels,assignees,milestone,url,createdAt",
-            "--limit",
-            str(filters.limit),
         ]
+
+        if filters.paginate:
+            args.append("--limit")
+            args.append("5000")
+        else:
+            args.append("--limit")
+            args.append(str(filters.limit))
 
         if filters.milestone:
             args.extend(["--milestone", filters.milestone])
