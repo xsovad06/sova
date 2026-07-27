@@ -165,7 +165,7 @@ def dashboard(
 
         if project:
             os.environ["SOVA_DASHBOARD_PROJECT"] = str(project.resolve())
-        reload_dir = str(Path(__file__).resolve().parent.parent / "dashboard")
+        reload_dir = str(Path(__file__).resolve().parent.parent)
         console.print(f"[dim]Watching {reload_dir} for changes[/dim]")
         uvicorn.run(
             "sova.dashboard.app:create_app",

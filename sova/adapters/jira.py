@@ -176,29 +176,44 @@ class JiraAdapter(TaskAdapter):
 
     async def _list_tasks_paginated(self, jql: str) -> list[Task]:
         all_tasks: list[Task] = []
-        start_at = 0
         page_size = 50
-        while start_at < self._MAX_PAGINATED_ISSUES:
-            response = await self._http.post(
-                "/search/jql",
-                json={
-                    "jql": jql,
-                    "maxResults": page_size,
-                    "startAt": start_at,
-                    "fields": self._SEARCH_FIELDS,
-                },
-            )
+        next_page_token: str | None = None
+        seen_tokens: set[str] = set()
+        while len(all_tasks) < self._MAX_PAGINATED_ISSUES:
+            body: dict = {
+                "jql": jql,
+                "maxResults": page_size,
+                "fields": self._SEARCH_FIELDS,
+            }
+            if next_page_token:
+                body["nextPageToken"] = next_page_token
+
+            response = await self._http.post("/search/jql", json=body)
             if response.status_code != 200:
-                log.warning("list_tasks.paginated_failed", status=response.status_code, page=start_at)
+                log.warning(
+                    "list_tasks.paginated_failed",
+                    status=response.status_code,
+                    page_token=next_page_token,
+                )
                 return []
 
             data = response.json()
             issues = data.get("issues", [])
+            if not issues:
+                break
             all_tasks.extend(self._parse_issue(issue) for issue in issues)
 
-            if len(issues) < page_size:
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
                 break
-            start_at += page_size
+            if next_page_token in seen_tokens:
+                log.warning(
+                    "list_tasks.repeated_cursor",
+                    token=next_page_token,
+                    issues_so_far=len(all_tasks),
+                )
+                break
+            seen_tokens.add(next_page_token)
 
         return all_tasks
 
