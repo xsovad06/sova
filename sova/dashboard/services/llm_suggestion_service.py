@@ -4,7 +4,9 @@ Calls the Anthropic Messages API to suggest a next action for a PR, then compare
 it against the deterministic model's choice. Results are cached server-side for
 5 minutes per (pr_number, deterministic_state, pr_computed_state) triple.
 
-Only suggestions that DISAGREE with the deterministic model are surfaced to users.
+All results (agreements and disagreements) are cached and returned to the UI.
+The UI shows a comparison widget when the LLM disagrees, and a standalone
+"State is wrong" button on all PR-stage cards for user feedback.
 """
 
 from __future__ import annotations
@@ -21,6 +23,11 @@ log = get_logger(component="dashboard.llm_suggestion")
 
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _MODEL = "claude-haiku-4-5-20251001"
+# Process-lifetime flag: logs once when ANTHROPIC_API_KEY is missing.
+# Known limitation: if the key is added or removed at runtime (e.g., via
+# config reload), this flag won't re-trigger. Acceptable because the key
+# is typically set at process start and doesn't change.
+_warned_no_key = False
 _CACHE_TTL = 300  # 5 minutes
 
 _cache: dict[str, tuple[float, dict]] = {}
@@ -96,12 +103,13 @@ async def get_llm_suggestion(
 
     Result shape when non-None:
         {action_id, action_label, reasoning, disagrees}
-
-    The caller should only surface the widget when disagrees=True.
     """
+    global _warned_no_key  # noqa: PLW0603
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        log.debug("llm_suggestion.no_api_key")
+        if not _warned_no_key:
+            log.warning("llm_suggestion.no_api_key: ANTHROPIC_API_KEY not set, LLM suggestions disabled")
+            _warned_no_key = True
         return None
 
     cache_key = _make_cache_key(pr_number, deterministic_state, pr_computed_state)

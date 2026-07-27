@@ -228,8 +228,9 @@ var _workItems = [];
 
 // LLM suggestion experiment: keyed by issueKey (issue_number or "pr:N")
 // Value: {action_id, action_label, reasoning, for_state, done, pr_number, issue_number,
-//         deterministic_action_id, llm_reasoning} | null (null = LLM agrees or unavailable)
+//         deterministic_action_id, disagrees} | null (null = unavailable/error)
 var _llmSuggestions = {};
+var _flaggedWrong = new Map();  // issueKey -> state that was flagged
 var _llmSuggestionFetching = new Set();
 
 var _PR_STAGE_STATES = new Set([
@@ -692,31 +693,63 @@ function renderTaskCards() {
 
 // --- LLM Suggestion Experiment ---
 
+function _sanitizeIssueKey(issueKey) {
+  // Collisions are impossible: issueKey is either a numeric issue_number
+  // (e.g., "42") or "pr:<number>" (e.g., "pr:123"). Neither format
+  // contains characters that would collide after sanitization.
+  return issueKey.replace(/[^a-zA-Z0-9-]/g, '-');
+}
+
+function _findItemByKey(issueKey) {
+  return _workItems.find(function(i) {
+    return (i.issue_number || ('pr:' + i.pr_number)) === issueKey;
+  });
+}
+
 function _renderLlmSuggestionWidget(item, issueKey) {
+  if (!_PR_STAGE_STATES.has(item.state)) return '';
+  if (!item.pr_number || !item.primary_action) return '';
+  var safeKey = _sanitizeIssueKey(issueKey);
+  var flagged = _flaggedWrong.get(issueKey) === item.state;
+  var parts = [];
+
   var sugg = _llmSuggestions[issueKey];
-  if (!sugg || sugg.done) return '';
-  if (sugg.for_state !== item.state) return '';
-  var detLabel = (item.primary_action && item.primary_action.label) || 'current';
-  var safeKey = issueKey.replace(/[^a-zA-Z0-9-]/g, '-');
-  return '<div class="px-4 pb-2.5 pl-12">' +
-    '<div class="flex items-start gap-2 pt-1.5 border-t border-gray-700/20">' +
-      '<span class="text-xs text-accent-yellow font-medium whitespace-nowrap mt-0.5">LLM:</span>' +
-      '<div class="flex-1 min-w-0">' +
-        '<span class="text-xs text-gray-300 font-medium">' + escapeHtml(sugg.action_label) + '</span>' +
-        (sugg.reasoning
-          ? '<p class="text-xs text-gray-500 italic mt-0.5 line-clamp-2">' + escapeHtml(sugg.reasoning) + '</p>'
-          : '') +
-        '<div class="flex gap-2 mt-1.5" id="llm-feedback-' + safeKey + '">' +
-          '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'deterministic\')" ' +
-            'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
-            'Keep: ' + escapeHtml(detLabel) + '</button>' +
-          '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'llm\')" ' +
-            'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
-            'LLM is right</button>' +
+  if (sugg && !sugg.done && sugg.disagrees && sugg.for_state === item.state) {
+    var detLabel = (item.primary_action && item.primary_action.label) || 'current';
+    parts.push(
+      '<div class="flex items-start gap-2 pt-1.5 border-t border-gray-700/20">' +
+        '<span class="text-xs text-accent-yellow font-medium whitespace-nowrap mt-0.5">LLM:</span>' +
+        '<div class="flex-1 min-w-0">' +
+          '<span class="text-xs text-gray-300 font-medium">' + escapeHtml(sugg.action_label) + '</span>' +
+          (sugg.reasoning
+            ? '<p class="text-xs text-gray-500 italic mt-0.5 line-clamp-2">' + escapeHtml(sugg.reasoning) + '</p>'
+            : '') +
+          '<div class="flex gap-2 mt-1.5" id="llm-feedback-' + safeKey + '">' +
+            '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'deterministic\')" ' +
+              'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+              'Keep: ' + escapeHtml(detLabel) + '</button>' +
+            '<button onclick="submitLlmFeedback(event,\'' + escapeJsStr(issueKey) + '\',\'llm\')" ' +
+              'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-400 hover:text-gray-200 transition-colors">' +
+              'LLM is right</button>' +
+          '</div>' +
         '</div>' +
-      '</div>' +
-    '</div>' +
-  '</div>';
+      '</div>'
+    );
+  }
+
+  if (!flagged) {
+    var borderCls = parts.length ? '' : 'pt-1.5 border-t border-gray-700/20';
+    parts.push(
+      '<div class="flex items-center gap-2 ' + borderCls + '" id="flag-wrong-' + safeKey + '">' +
+        '<button onclick="submitFlagWrong(event,\'' + escapeJsStr(issueKey) + '\')" ' +
+          'class="text-xs px-2 py-0.5 rounded bg-surface-hover text-gray-500 hover:text-accent-yellow transition-colors">' +
+          'State is wrong</button>' +
+      '</div>'
+    );
+  }
+
+  if (!parts.length) return '';
+  return '<div class="px-4 pb-2.5 pl-12">' + parts.join('') + '</div>';
 }
 
 async function fetchLlmSuggestions() {
@@ -763,21 +796,18 @@ async function fetchLlmSuggestions() {
       });
       if (resp.ok && resp.status !== 204) {
         var data = await resp.json();
-        if (data.disagrees) {
-          _llmSuggestions[key] = {
-            action_id: data.action_id,
-            action_label: data.action_label,
-            reasoning: data.reasoning,
-            for_state: item.state,
-            done: false,
-            pr_number: item.pr_number,
-            issue_number: item.issue_number || null,
-            deterministic_action_id: item.primary_action.id
-          };
-          anyNew = true;
-        } else {
-          _llmSuggestions[key] = null;
-        }
+        _llmSuggestions[key] = {
+          action_id: data.action_id,
+          action_label: data.action_label,
+          reasoning: data.reasoning,
+          for_state: item.state,
+          done: false,
+          pr_number: item.pr_number,
+          issue_number: item.issue_number || null,
+          deterministic_action_id: item.primary_action.id,
+          disagrees: data.disagrees
+        };
+        if (data.disagrees) anyNew = true;
       } else {
         _llmSuggestions[key] = null;
       }
@@ -797,7 +827,7 @@ async function submitLlmFeedback(event, issueKey, choice) {
   var sugg = _llmSuggestions[issueKey];
   if (!sugg) return;
   sugg.done = true;
-  var safeKey = issueKey.replace(/[^a-zA-Z0-9-]/g, '-');
+  var safeKey = _sanitizeIssueKey(issueKey);
   var feedbackDiv = document.getElementById('llm-feedback-' + safeKey);
   if (feedbackDiv) {
     feedbackDiv.innerHTML = '<span class="text-xs text-gray-500 italic">Recorded. Thanks!</span>';
@@ -817,6 +847,43 @@ async function submitLlmFeedback(event, issueKey, choice) {
       })
     });
   } catch (e) { /* feedback failure is non-fatal */ }
+}
+
+async function submitFlagWrong(event, issueKey) {
+  event.stopPropagation();
+  var item = _findItemByKey(issueKey);
+  if (!item) return;
+  if (!item.primary_action) return;
+  if (_flaggedWrong.get(issueKey) === item.state) return;
+  _flaggedWrong.set(issueKey, item.state);
+  var safeKey = _sanitizeIssueKey(issueKey);
+  var flagDiv = document.getElementById('flag-wrong-' + safeKey);
+  if (flagDiv) {
+    flagDiv.innerHTML = '<span class="text-xs text-gray-500 italic">Flagged. Thanks!</span>';
+  }
+
+  var sugg = _llmSuggestions[issueKey];
+  try {
+    await fetch(apiUrl('/prs/feedback'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        pr_number: item.pr_number,
+        issue_number: item.issue_number || null,
+        deterministic_state: item.state,
+        deterministic_action_id: item.primary_action.id,
+        llm_action_id: (sugg && sugg.action_id) || '',
+        llm_reasoning: (sugg && sugg.reasoning) || '',
+        user_choice: 'wrong'
+      })
+    });
+  } catch (e) {
+    console.warn('submitFlagWrong: failed to record feedback', e);
+    _flaggedWrong.delete(issueKey);
+    if (flagDiv) {
+      flagDiv.innerHTML = '<span class="text-xs text-red-400 italic">Failed to record. Try again.</span>';
+    }
+  }
 }
 
 // --- End LLM Suggestion Experiment ---

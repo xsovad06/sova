@@ -128,7 +128,7 @@ async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
     """
     from sova.dashboard.services.llm_suggestion_service import _PR_ACTION_LABELS
 
-    valid_choices = {"deterministic", "llm"} | set(_PR_ACTION_LABELS.keys())
+    valid_choices = {"deterministic", "llm", "wrong"} | set(_PR_ACTION_LABELS.keys())
     if body.user_choice not in valid_choices:
         raise HTTPException(
             status_code=400,
