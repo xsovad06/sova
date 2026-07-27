@@ -77,6 +77,7 @@ class ReviewResult:
     findings: list[ReviewFinding] = field(default_factory=list)
     summary: str = ""
     total_cost: Decimal = Decimal("0")
+    post_failed: bool = False
 
     @property
     def actionable(self) -> list[ReviewFinding]:
@@ -490,10 +491,16 @@ class ReviewerRole(AgentRole):
         # Append review rationale to spec (non-fatal provenance threading)
         self._append_review_rationale(ctx, review)
 
-        # Post review with inline comments on specific lines
-        await self._post_review(ctx, review, diff)
+        # Post review with inline comments on specific lines.
+        # Always capture the return value: False means all API attempts failed and
+        # no review was posted. _write_handoff() uses this to signal post_failed
+        # so the auto-handoff system does not spawn a spurious address-review cycle.
+        post_succeeded = await self._post_review(ctx, review, diff)
+        if not post_succeeded:
+            review.post_failed = True
 
-        # Write handoff
+        # Write handoff (always, even when posting failed so the handoff can surface
+        # a Re-run Review action instead of silently defaulting to address-review).
         await self._write_handoff(ctx, review)
 
         # Extract learnings from this review
@@ -634,8 +641,15 @@ class ReviewerRole(AgentRole):
         except (OSError, SQLAlchemyError):
             log.warning("reviewer.clear_step_failed", exc_info=True)
 
-    async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> None:
-        """Post review findings as inline PR review comments, with fallback."""
+    async def _post_review(self, ctx: ExecutionContext, review: ReviewResult, diff: str) -> bool:
+        """Post review findings as inline PR review comments, with fallback.
+
+        Returns True if the review was posted successfully via any method,
+        False if all posting attempts failed. Never raises: callers must check
+        the return value and set ``review.post_failed`` accordingly so the
+        handoff can signal the failure without triggering spurious address-review
+        pipeline cycles.
+        """
         diff_lines = parse_diff_lines(diff)
         inline_comments, body_only = _build_review_comments(review.findings, diff_lines)
 
@@ -649,7 +663,7 @@ class ReviewerRole(AgentRole):
                 comments=inline_comments,
             )
             log.info("reviewer.posted_review", inline=len(inline_comments), body_only=len(body_only))
-            return
+            return True
         except Exception:
             if inline_comments:
                 log.warning("reviewer.inline_review_failed", exc_info=True)
@@ -661,13 +675,25 @@ class ReviewerRole(AgentRole):
                         comments=[],
                     )
                     log.info("reviewer.posted_review_body_only", finding_count=len(review.findings))
-                    return
+                    return True
                 except Exception:
                     log.warning("reviewer.body_only_review_failed", exc_info=True)
             else:
                 log.warning("reviewer.review_api_failed", exc_info=True)
+
         fallback = _format_findings_comment(review.findings, review.summary)
-        await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
+        try:
+            await ctx.adapter.post_pr_comment(ctx.pr_number, fallback)
+            log.info("reviewer.posted_comment_fallback", finding_count=len(review.findings))
+            return True
+        except Exception:
+            log.warning(
+                "reviewer.all_posting_attempts_failed",
+                pr=ctx.pr_number,
+                issue=ctx.issue_number,
+                exc_info=True,
+            )
+            return False
 
     async def _run_review(
         self,
@@ -822,9 +848,15 @@ class ReviewerRole(AgentRole):
             log.warning("reviewer.review_rationale_failed", exc_info=True)
 
     async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
-        """Write both DB-backed and file-based handoffs."""
+        """Write both DB-backed and file-based handoffs.
+
+        When ``review.post_failed`` is True (all posting attempts failed), the
+        handoff uses ``next_action="review_post_failed"`` and surfaces a manual
+        Re-run Review action with ``auto_execute=False``. This prevents
+        ``_process_auto_handoff()`` from spawning a spurious address-review cycle
+        and prevents ``get_sova_review_verdict()`` from defaulting to "revise".
+        """
         actionable = review.actionable
-        next_action = "address_review" if actionable else "approve"
 
         findings_data = [
             {
@@ -838,67 +870,114 @@ class ReviewerRole(AgentRole):
             for f in actionable
         ]
 
-        agent_handoff = AgentHandoff(
-            role="reviewer",
-            phase="review",
-            summary=review.summary,
-            key_decisions=[],
-            next_action=next_action,
-            pending_findings=findings_data,
-            pr_number=ctx.pr_number,
-            branch_name=ctx.branch_name,
-        )
+        if review.post_failed:
+            next_action = "review_post_failed"
+            post_failed_summary = (
+                "Review completed but could not be posted to GitHub. Re-run the reviewer to retry posting."
+            )
+            agent_handoff = AgentHandoff(
+                role="reviewer",
+                phase="review",
+                summary=post_failed_summary,
+                key_decisions=[],
+                next_action=next_action,
+                pending_findings=findings_data,
+                pr_number=ctx.pr_number,
+                branch_name=ctx.branch_name,
+            )
+            rerun_action = HandoffAction(
+                id="rerun_review",
+                label="Re-run Review",
+                description="Retry posting the review to GitHub",
+                style="neutral",
+                mode="agent",
+                command="",
+                args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "reviewer"},
+                auto_execute=False,
+            )
+            dashboard_handoff = DashboardHandoff(
+                source="reviewer",
+                status="awaiting_action",
+                issue=ctx.issue_number,
+                pr_number=ctx.pr_number,
+                branch=ctx.branch_name,
+                summary=post_failed_summary,
+                details={
+                    "next_action": next_action,
+                    "cost_usd": str(review.total_cost),
+                    "pending_findings": findings_data,
+                },
+                next_actions=[rerun_action],
+            )
+            log.warning(
+                "reviewer.post_failed_handoff_written",
+                pr=ctx.pr_number,
+                issue=ctx.issue_number,
+                finding_count=len(actionable),
+            )
+        else:
+            next_action = "address_review" if actionable else "approve"
+            agent_handoff = AgentHandoff(
+                role="reviewer",
+                phase="review",
+                summary=review.summary,
+                key_decisions=[],
+                next_action=next_action,
+                pending_findings=findings_data,
+                pr_number=ctx.pr_number,
+                branch_name=ctx.branch_name,
+            )
+
+            # Dashboard handoff
+            actions: list[HandoffAction] = []
+
+            if actionable:
+                auto = ctx.config.pipeline.auto_address_review
+                actions.append(
+                    HandoffAction(
+                        id="address_review",
+                        label="Address Review",
+                        description=f"Fix {len(actionable)} actionable findings",
+                        style="approve",
+                        mode="agent",
+                        command="",
+                        args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
+                        auto_execute=auto,
+                    ),
+                )
+            else:
+                actions.append(
+                    HandoffAction(
+                        id="integrate",
+                        label="Integrate PR",
+                        description="No actionable findings: rebase, merge, cleanup, and learn",
+                        style="approve",
+                        mode="claude-command",
+                        command=f"/integrate-pr {ctx.pr_number}",
+                        args={"issue": ctx.issue_number, "pr": ctx.pr_number},
+                    ),
+                )
+
+            dashboard_handoff = DashboardHandoff(
+                source="reviewer",
+                status="awaiting_action",
+                issue=ctx.issue_number,
+                pr_number=ctx.pr_number,
+                branch=ctx.branch_name,
+                summary=f"{len(review.findings)} findings (all to be addressed)",
+                details={
+                    "next_action": next_action,
+                    "cost_usd": str(review.total_cost),
+                    "pending_findings": findings_data,
+                },
+                next_actions=actions,
+            )
 
         if ctx.task_run_id:
             try:
                 await write_handoff(ctx.task_run_id, agent_handoff)
             except Exception:
                 log.warning("reviewer.handoff_db_failed", exc_info=True)
-
-        # Dashboard handoff
-        actions: list[HandoffAction] = []
-
-        if actionable:
-            auto = ctx.config.pipeline.auto_address_review
-            actions.append(
-                HandoffAction(
-                    id="address_review",
-                    label="Address Review",
-                    description=f"Fix {len(actionable)} actionable findings",
-                    style="approve",
-                    mode="agent",
-                    command="",
-                    args={"issue": ctx.issue_number, "pr": ctx.pr_number, "role": "developer"},
-                    auto_execute=auto,
-                ),
-            )
-        else:
-            actions.append(
-                HandoffAction(
-                    id="integrate",
-                    label="Integrate PR",
-                    description="No actionable findings -- rebase, merge, cleanup, and learn",
-                    style="approve",
-                    mode="claude-command",
-                    command=f"/integrate-pr {ctx.pr_number}",
-                    args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                ),
-            )
-
-        dashboard_handoff = DashboardHandoff(
-            source="reviewer",
-            status="awaiting_action",
-            issue=ctx.issue_number,
-            pr_number=ctx.pr_number,
-            branch=ctx.branch_name,
-            summary=f"{len(review.findings)} findings (all to be addressed)",
-            details={
-                "next_action": next_action,
-                "cost_usd": str(review.total_cost),
-                "pending_findings": findings_data,
-            },
-            next_actions=actions,
-        )
 
         try:
             write_handoff_file(ctx.project_dir, dashboard_handoff)

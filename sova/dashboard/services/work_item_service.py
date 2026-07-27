@@ -122,7 +122,6 @@ _STATE_COLORS: dict[WorkItemState, str] = {
 }
 
 _SPEC_ACTION_IDS = frozenset({"approve-spec", "revise-spec", "skip-spec", "reject-spec"})
-_REVIEW_ACTION_IDS = frozenset({"review", "review_pr"})
 _AWAITING_APPROVAL = TaskStatus.AWAITING_APPROVAL
 
 _ROLE_LABELS: dict[str, str] = {
@@ -255,9 +254,6 @@ def compute_work_item_state(
         so "Review" is shown directly (no inline comments to address on bot-free projects).
       - SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT):
         upgrade PR_AWAITING_REVIEW to PR_APPROVED so "Integrate PR" is shown instead of "Review".
-      - Handoff has only review actions and SOVA already approved: bypass the handoff and use PR
-        state directly (stale handoff from a timing race where the reviewer ran before the developer
-        wrote its "please review" handoff).
     """
     if running_agent is not None:
         return WorkItemState.AGENT_RUNNING
@@ -276,16 +272,7 @@ def compute_work_item_state(
             action_ids = {a.get("id") or a.get("action") or a.get("command") or "" for a in next_actions}
             if action_ids & _SPEC_ACTION_IDS:
                 return WorkItemState.SPEC_REVIEW
-            # Review-only handoffs are superseded when SOVA already approved:
-            # fall through to PR state so "Integrate PR" is shown. This handles
-            # the race where a reviewer ran before the developer wrote its handoff.
-            if not (
-                action_ids
-                and action_ids.issubset(_REVIEW_ACTION_IDS)
-                and sova_verdict
-                and sova_verdict.get("has_sova_review")
-            ):
-                return WorkItemState.HANDOFF_PENDING
+            return WorkItemState.HANDOFF_PENDING
         if sova_blocks and pr_data is None:
             return WorkItemState.PR_SOVA_CHANGES
 
@@ -353,14 +340,16 @@ def _apply_sova_verdict(
 ) -> WorkItemState:
     """Adjust a GitHub-derived PR state using the SOVA reviewer verdict.
 
-    Four adjustments:
+    Five adjustments:
       1. No SOVA review + integrate-bound state + external_reviews_enabled: PR_SOVA_PENDING so users
          trigger SOVA review before integrating.
       2. No SOVA review + integrate-bound state + not external_reviews_enabled: return PR_AWAITING_REVIEW
          so "Review" is shown directly (no bot inline comments to address on reviewer-free projects).
-      3. SOVA verdict is revise/block: downgrade overrideable states to PR_SOVA_CHANGES (developer agent),
+      3. SOVA review post_failed + integrate-bound state: return PR_AWAITING_REVIEW so the card shows
+         "Review" rather than "Integrate PR" for a review that never posted successfully.
+      4. SOVA verdict is revise/block: downgrade overrideable states to PR_SOVA_CHANGES (developer agent),
          unless a human approved on GitHub after the SOVA review (stale verdict -- return mapped).
-      4. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
+      5. SOVA approved but GitHub has no formal approval (owner self-reviews post as COMMENT,
          not APPROVED; GitHub forbids self-approval): upgrade PR_AWAITING_REVIEW to
          PR_APPROVED so "Integrate PR" is shown instead of "Review".
     """
@@ -372,6 +361,12 @@ def _apply_sova_verdict(
 
     if not has_review and mapped in _INTEGRATE_STATES:
         return WorkItemState.PR_SOVA_PENDING if external_reviews_enabled else WorkItemState.PR_AWAITING_REVIEW
+
+    if has_review and verdict == "post_failed" and mapped in _INTEGRATE_STATES:
+        # The reviewer ran but could not post findings to GitHub. Treat integrate-bound
+        # states the same as "no completed review" so the card shows "Review" instead
+        # of "Integrate PR" until the user re-runs the reviewer.
+        return WorkItemState.PR_AWAITING_REVIEW
 
     if has_review and verdict in ("revise", "block") and mapped in _VERDICT_OVERRIDEABLE:
         if _is_verdict_stale(sova_verdict, latest_approval_at):

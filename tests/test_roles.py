@@ -3898,6 +3898,55 @@ class TestReviewerExceptionPaths:
             # Should not raise
             await role._write_handoff(ctx, review)
 
+    async def test_execute_total_posting_failure_writes_post_failed_handoff(self) -> None:
+        """When all posting attempts fail, execute() succeeds and handoff signals review_post_failed.
+
+        Verifies the full chain: _post_review() returns False -> review.post_failed=True ->
+        _write_handoff() uses next_action='review_post_failed' with auto_execute=False on all actions.
+        """
+        import json
+        from decimal import Decimal
+        from unittest.mock import AsyncMock, patch
+
+        from sova.llm.models import LLMResult
+        from sova.roles.reviewer import ReviewerRole
+
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.post_pr_review = AsyncMock(side_effect=RuntimeError("review API down"))
+        adapter.post_pr_comment = AsyncMock(side_effect=RuntimeError("comment API down"))
+
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=55)
+        ctx.task_run_id = 10
+        role = ReviewerRole()
+
+        llm_resp = json.dumps({"findings": [], "summary": "Looks OK"})
+        llm_result = LLMResult(text=llm_resp, model="sonnet", cost_usd=Decimal("0"))
+
+        with (
+            patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
+            patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
+            patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
+            patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
+            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+        ):
+            result = await role.execute(ctx)
+
+        assert result.success, "execute() must succeed even when posting fails"
+
+        db_handoff = mock_db_handoff.call_args[0][1]
+        assert db_handoff.next_action == "review_post_failed", (
+            f"expected review_post_failed, got {db_handoff.next_action!r}"
+        )
+
+        file_handoff = mock_file_handoff.call_args[0][1]
+        auto_flags = [a.auto_execute for a in file_handoff.next_actions]
+        assert all(flag is False for flag in auto_flags), (
+            "all next_actions must have auto_execute=False on post failure to block auto address-review"
+        )
+        action_ids = [a.id for a in file_handoff.next_actions]
+        assert "rerun_review" in action_ids
+        assert "address_review" not in action_ids
+
 
 # ---------------------------------------------------------------------------
 # CustomRole
