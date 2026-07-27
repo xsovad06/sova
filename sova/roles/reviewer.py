@@ -327,6 +327,19 @@ _SEVERITY_CRITICAL = 7
 _SEVERITY_HIGH = 5
 _SEVERITY_MEDIUM = 3
 
+# Labels written to the issue after review. The sova: prefix avoids collision
+# with user labels. Values match _verdict_label() output, lowercased.
+_VERDICT_TO_LABEL: dict[str, str] = {
+    "APPROVE": "sova:approved",
+    "REVISE": "sova:revise",
+    "BLOCK": "sova:block",
+}
+
+
+def _sova_verdict_label_name(findings: list[ReviewFinding]) -> str:
+    """Return the sova:{verdict} label name for the given findings."""
+    return _VERDICT_TO_LABEL[_verdict_label(findings)]
+
 
 def _severity_label(severity: int) -> str:
     """Map a numeric severity (1-10) to a categorical label."""
@@ -498,6 +511,11 @@ class ReviewerRole(AgentRole):
         post_succeeded = await self._post_review(ctx, review, diff)
         if not post_succeeded:
             review.post_failed = True
+
+        # Write verdict label to the issue (best-effort, non-fatal).
+        # Skipped when post_failed because no verdict was advertised.
+        if not review.post_failed:
+            await self._write_verdict_label(ctx, review)
 
         # Write handoff (always, even when posting failed so the handoff can surface
         # a Re-run Review action instead of silently defaulting to address-review).
@@ -846,6 +864,25 @@ class ReviewerRole(AgentRole):
             append_spec_section(ctx.issue_number, SECTION_REVIEW_RATIONALE, "\n".join(lines), project_dir)
         except Exception:
             log.warning("reviewer.review_rationale_failed", exc_info=True)
+
+    async def _write_verdict_label(self, ctx: ExecutionContext, review: ReviewResult) -> None:
+        """Write a sova:{verdict} label to the issue for cross-machine visibility.
+
+        Removes any existing sova:* verdict labels first (idempotent), then adds
+        the current verdict. Non-fatal: if the label write fails, the DB/marker
+        fallback path in _fetch_sova_verdicts() remains functional.
+        """
+        label = _sova_verdict_label_name(review.findings)
+        issue = ctx.issue_number
+        if not issue:
+            return
+        try:
+            for old_label in set(_VERDICT_TO_LABEL.values()) - {label}:
+                await ctx.adapter.remove_label(issue, old_label)
+            await ctx.adapter.add_label(issue, label)
+            log.info("reviewer.verdict_label_written", issue=issue, label=label)
+        except Exception:
+            log.warning("reviewer.verdict_label_failed", issue=issue, label=label, exc_info=True)
 
     async def _write_handoff(self, ctx: ExecutionContext, review: ReviewResult) -> None:
         """Write both DB-backed and file-based handoffs.
