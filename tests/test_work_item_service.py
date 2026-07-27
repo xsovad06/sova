@@ -14,6 +14,7 @@ from sova.dashboard.services.work_item_service import (
     _build_pr_item,
     _build_task_item,
     _extract_handoff_summary,
+    _extract_sova_verdict_from_labels,
     _find_integrate_action,
     _format_pr_details,
     _format_running_agent,
@@ -34,7 +35,6 @@ def _state(**kwargs: object) -> WorkItemState:
     defaults: dict[str, object] = {
         "task_state": None,
         "pr_data": None,
-        "handoff": None,
         "running_agent": None,
     }
     defaults.update(kwargs)
@@ -42,7 +42,7 @@ def _state(**kwargs: object) -> WorkItemState:
 
 
 class TestComputeWorkItemState:
-    """Priority cascade: running > handoff (unless SOVA blocks) > PR > label."""
+    """Priority cascade: running > PR (SOVA-adjusted) > label."""
 
     # -- Priority 1: Running agent --
 
@@ -51,7 +51,6 @@ class TestComputeWorkItemState:
             _state(
                 task_state="in_review",
                 pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
-                handoff={"status": "awaiting_action", "next_actions": []},
                 running_agent={"run_id": 1, "role": "developer"},
             )
             == WorkItemState.AGENT_RUNNING
@@ -60,85 +59,30 @@ class TestComputeWorkItemState:
     def test_running_agent_alone(self) -> None:
         assert _state(running_agent={"run_id": 1, "role": "triage"}) == WorkItemState.AGENT_RUNNING
 
-    # -- Priority 2: Handoff --
+    # -- Priority 2: PR state (SOVA-adjusted) --
 
-    def test_handoff_awaiting_action(self) -> None:
-        assert (
-            _state(
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
-            )
-            == WorkItemState.HANDOFF_PENDING
-        )
-
-    def test_handoff_spec_review(self) -> None:
-        assert (
-            _state(
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "approve-spec"}]},
-            )
-            == WorkItemState.SPEC_REVIEW
-        )
-
-    def test_handoff_spec_review_command_key(self) -> None:
-        """Spec actions using 'command' key (not 'id') are recognized."""
-        assert (
-            _state(
-                handoff={"status": "awaiting_action", "next_actions": [{"command": "approve-spec"}]},
-            )
-            == WorkItemState.SPEC_REVIEW
-        )
-
-    def test_handoff_completed_ignored(self) -> None:
-        assert (
-            _state(
-                task_state="triaged",
-                handoff={"status": "completed", "next_actions": [{"id": "integrate"}]},
-            )
-            == WorkItemState.TRIAGED
-        )
-
-    def test_handoff_overrides_pr(self) -> None:
+    def test_sova_block_verdict_with_pr(self) -> None:
+        """A blocking SOVA verdict overrides PR state to PR_SOVA_CHANGES."""
         assert (
             _state(
                 pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
-            )
-            == WorkItemState.HANDOFF_PENDING
-        )
-
-    def test_sova_block_verdict_overrides_handoff(self) -> None:
-        """A blocking SOVA verdict takes priority over a stale handoff."""
-        assert (
-            _state(
-                pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
                 sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
             )
             == WorkItemState.PR_SOVA_CHANGES
         )
 
-    def test_sova_block_verdict_no_pr_data(self) -> None:
-        """SOVA blocking verdict returns PR_SOVA_CHANGES even without pr_data."""
-        assert (
-            _state(
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
-                sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
-            )
-            == WorkItemState.PR_SOVA_CHANGES
-        )
-
-    def test_sova_revise_verdict_overrides_handoff(self) -> None:
-        """A revise SOVA verdict also takes priority over a handoff."""
+    def test_sova_revise_verdict_with_pr(self) -> None:
+        """A revise SOVA verdict overrides PR state to PR_SOVA_CHANGES."""
         assert (
             _state(
                 pr_data={"computed_state": "approved_ci_green", "state": "OPEN"},
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
                 sova_verdict={"verdict": "revise", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
             )
             == WorkItemState.PR_SOVA_CHANGES
         )
 
-    def test_stale_sova_verdict_does_not_override_handoff(self) -> None:
-        """If a human approved after the SOVA review, the handoff wins."""
+    def test_stale_sova_verdict_returns_pr_state(self) -> None:
+        """If a human approved after the SOVA review, the PR state wins."""
         assert (
             _state(
                 pr_data={
@@ -146,10 +90,9 @@ class TestComputeWorkItemState:
                     "state": "OPEN",
                     "latest_approval_at": "2026-07-24T12:00:00Z",
                 },
-                handoff={"status": "awaiting_action", "next_actions": [{"id": "integrate"}]},
                 sova_verdict={"verdict": "block", "has_sova_review": True, "reviewed_at": "2026-07-24T10:00:00Z"},
             )
-            == WorkItemState.HANDOFF_PENDING
+            == WorkItemState.PR_READY_TO_MERGE
         )
 
     # -- Priority 3: PR state --
@@ -347,14 +290,6 @@ class TestComputeWorkItemState:
 
     def test_no_inputs_defaults_backlog(self) -> None:
         assert _state() == WorkItemState.BACKLOG
-
-    def test_handoff_action_field_fallback(self) -> None:
-        assert (
-            _state(
-                handoff={"status": "awaiting_action", "next_actions": [{"action": "approve-spec"}]},
-            )
-            == WorkItemState.SPEC_REVIEW
-        )
 
 
 class TestGetActions:
@@ -556,13 +491,13 @@ class TestSortItems:
         _sort_items(items)
         assert items[0]["state"] == "agent_running"
 
-    def test_handoff_before_normal(self) -> None:
+    def test_spec_review_before_normal(self) -> None:
         items = [
             {"state": "researched", "priority": 0},
-            {"state": "handoff_pending", "priority": 99},
+            {"state": "spec_review", "priority": 99},
         ]
         _sort_items(items)
-        assert items[0]["state"] == "handoff_pending"
+        assert items[0]["state"] == "spec_review"
 
     def test_ready_to_merge_before_triaged(self) -> None:
         items = [
@@ -820,7 +755,8 @@ class TestBuildTaskItem:
         assert item["state"] == "agent_running"
         assert item["running_agent"]["role_label"] == "Developing"
 
-    def test_task_with_handoff(self) -> None:
+    def test_task_with_handoff_uses_label_state(self) -> None:
+        """Handoff presence no longer affects computed state; label state applies."""
         task = {"issue": "42", "title": "Fix bug", "state": "in_review", "labels": [], "priority": -1}
         handoff = {
             "status": "awaiting_action",
@@ -828,9 +764,8 @@ class TestBuildTaskItem:
             "next_actions": [{"id": "integrate", "label": "Integrate PR"}],
         }
         item = _build_task_item(task, pr_data=None, running=None, handoff=handoff)
-        assert item["state"] == "handoff_pending"
-        assert item["handoff_actions"] == [{"id": "integrate", "label": "Integrate PR"}]
-        assert item["handoff_summary"] == "Review done"
+        # State derived from task_state (in_review -> pr_awaiting_review), not from handoff
+        assert item["state"] == "pr_awaiting_review"
 
     def test_pr_number_from_last_run(self) -> None:
         task = {
@@ -905,7 +840,8 @@ class TestBuildPrItem:
         assert item["state"] == "pr_ci_failed"
         assert item["primary_action"]["id"] == "address_pr"
 
-    def test_pr_with_handoff_propagates_actions(self) -> None:
+    def test_pr_with_handoff_uses_pr_state(self) -> None:
+        """Handoff presence no longer affects computed state; PR state applies."""
         pr = {"number": 200, "title": "Quick fix", "computed_state": "awaiting_review", "state": "OPEN"}
         handoff = {
             "status": "awaiting_action",
@@ -913,9 +849,8 @@ class TestBuildPrItem:
             "next_actions": [{"id": "integrate", "label": "Integrate PR"}],
         }
         item = _build_pr_item(pr, running=None, handoff=handoff, issue_num=None)
-        assert item["state"] == "handoff_pending"
-        assert item["handoff_actions"] == [{"id": "integrate", "label": "Integrate PR"}]
-        assert item["handoff_summary"] == "Review complete"
+        # State derived from PR computed_state, not from handoff
+        assert item["state"] == "pr_awaiting_review"
 
     def test_merged_pr(self) -> None:
         pr = {"number": 200, "title": "Done", "computed_state": "approved_ci_green", "state": "MERGED"}
@@ -987,7 +922,7 @@ class TestFormatHelpers:
 
     def test_extract_handoff_summary(self) -> None:
         h = {"status": "awaiting_action", "summary": "All good"}
-        assert _extract_handoff_summary(h, WorkItemState.HANDOFF_PENDING) == "All good"
+        assert _extract_handoff_summary(h, WorkItemState.SPEC_REVIEW) == "All good"
 
     def test_extract_handoff_summary_wrong_state(self) -> None:
         h = {"status": "awaiting_action", "summary": "All good"}
@@ -1034,7 +969,7 @@ class TestSovaContextInItems:
         assert item["sova_context"]["has_sova_review"] is False
 
     def test_extract_handoff_summary_none(self) -> None:
-        assert _extract_handoff_summary(None, WorkItemState.HANDOFF_PENDING) == ""
+        assert _extract_handoff_summary(None, WorkItemState.SPEC_REVIEW) == ""
 
 
 class TestGetWorkItems:
@@ -1130,6 +1065,7 @@ class TestGetWorkItems:
 
     @pytest.mark.asyncio()
     async def test_handoff_attached_to_task(self, _mock_sources) -> None:
+        """Handoff no longer affects state but still provides action buttons."""
         mock_fetch, *_ = _mock_sources
         queue = [{"issue": "42", "title": "Bug", "state": "in_review", "labels": [], "priority": -1}]
         handoffs = [
@@ -1139,8 +1075,8 @@ class TestGetWorkItems:
 
         result = await get_work_items()
 
-        assert result["items"][0]["state"] == "handoff_pending"
-        assert result["items"][0]["handoff_actions"] == [{"id": "integrate"}]
+        # State derived from task_state (in_review), not from handoff
+        assert result["items"][0]["state"] == "pr_awaiting_review"
 
     @pytest.mark.asyncio()
     async def test_project_dir_sets_slug(self, _mock_sources) -> None:
@@ -1356,6 +1292,74 @@ class TestGetWorkItemsConfigLoadFailure:
         assert result["items"] == []
 
 
+class TestExtractSovaVerdictFromLabels:
+    """Tests for _extract_sova_verdict_from_labels."""
+
+    def test_approved_label(self) -> None:
+        result = _extract_sova_verdict_from_labels(["agent:in-review", "sova:approved"])
+        assert result is not None
+        assert result["has_sova_review"] is True
+        assert result["verdict"] == "approve"
+        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+
+    def test_revise_label(self) -> None:
+        result = _extract_sova_verdict_from_labels(["sova:revise", "type:feature"])
+        assert result is not None
+        assert result["verdict"] == "revise"
+        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+
+    def test_block_label(self) -> None:
+        result = _extract_sova_verdict_from_labels(["sova:block"])
+        assert result is not None
+        assert result["verdict"] == "block"
+        assert result["reviewed_at"] == "1970-01-01T00:00:00Z"
+
+    def test_no_verdict_label(self) -> None:
+        result = _extract_sova_verdict_from_labels(["agent:in-review", "type:feature"])
+        assert result is None
+
+    def test_empty_labels(self) -> None:
+        result = _extract_sova_verdict_from_labels([])
+        assert result is None
+
+    def test_unknown_sova_label_ignored(self) -> None:
+        result = _extract_sova_verdict_from_labels(["sova:unknown"])
+        assert result is None
+
+    def test_multiple_sova_labels_takes_first(self) -> None:
+        result = _extract_sova_verdict_from_labels(["sova:approved", "sova:revise"])
+        assert result is not None
+        assert result["verdict"] == "approve"
+
+    def test_label_verdict_stale_relative_to_any_human_approval(self) -> None:
+        """Label-derived verdicts use epoch sentinel, so any real human approval wins."""
+        verdict = _extract_sova_verdict_from_labels(["sova:block"])
+        assert verdict is not None
+        # Any real timestamp is newer than the epoch sentinel.
+        assert _is_verdict_stale(verdict, "2026-01-01T00:00:00Z") is True
+
+    def test_label_verdict_not_stale_without_approval(self) -> None:
+        """Without a human approval, the label verdict stands."""
+        verdict = _extract_sova_verdict_from_labels(["sova:revise"])
+        assert verdict is not None
+        assert _is_verdict_stale(verdict, None) is False
+
+    def test_label_verdict_staleness_overrides_state(self) -> None:
+        """A stale label-derived block verdict lets the PR state through."""
+        label_verdict = _extract_sova_verdict_from_labels(["sova:block"])
+        assert (
+            _state(
+                pr_data={
+                    "computed_state": "approved_ci_green",
+                    "state": "OPEN",
+                    "latest_approval_at": "2026-07-24T12:00:00Z",
+                },
+                sova_verdict=label_verdict,
+            )
+            == WorkItemState.PR_READY_TO_MERGE
+        )
+
+
 class TestFetchSovaVerdicts:
     """Direct tests for _fetch_sova_verdicts covering the unlinked PR path."""
 
@@ -1416,6 +1420,110 @@ class TestFetchSovaVerdicts:
 
         assert result == {}
         mock_verdict.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_labels_short_circuit_db_lookup(self) -> None:
+        """When sova:* label is present, DB/GitHub fallback is skipped."""
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        clear_verdict_cache()
+        labels_by_issue = {"42": ["agent:in-review", "sova:approved"]}
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+        ) as mock_verdict:
+            result = await _fetch_sova_verdicts(
+                {"42": {"number": 100}},
+                labels_by_issue=labels_by_issue,
+            )
+
+        assert result["42"]["has_sova_review"] is True
+        assert result["42"]["verdict"] == "approve"
+        mock_verdict.assert_not_called()
+
+    @pytest.mark.asyncio()
+    async def test_labels_absent_falls_through_to_db(self) -> None:
+        """When no sova:* label exists, the DB lookup path runs."""
+        from sova.dashboard.services.work_item_service import _fetch_sova_verdicts
+
+        clear_verdict_cache()
+        labels_by_issue = {"42": ["agent:in-review"]}
+        mock_db_verdict = {"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None}
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+                new_callable=AsyncMock,
+                return_value=mock_db_verdict,
+            ) as mock_call,
+            patch(
+                "sova.dashboard.services.work_item_service._fetch_github_review_fallback",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            result = await _fetch_sova_verdicts(
+                {"42": {"number": 100}},
+                labels_by_issue=labels_by_issue,
+            )
+
+        assert result["42"]["has_sova_review"] is False
+        mock_call.assert_called_once()
+
+    @pytest.mark.asyncio()
+    async def test_labels_cache_overflow_clears(self) -> None:
+        """When the verdict cache exceeds 1000 entries, it is cleared before adding."""
+        from sova.dashboard.services.work_item_service import (
+            _fetch_sova_verdicts,
+            _sova_verdict_cache,
+        )
+
+        clear_verdict_cache()
+        # Seed the cache with >1000 entries to trigger the overflow path.
+        import time
+
+        for i in range(1001):
+            _sova_verdict_cache[i] = (time.monotonic(), {"has_sova_review": False})
+
+        labels_by_issue = {"42": ["sova:revise"]}
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+        ):
+            result = await _fetch_sova_verdicts(
+                {"42": {"number": 9999}},
+                labels_by_issue=labels_by_issue,
+            )
+
+        assert result["42"]["verdict"] == "revise"
+        # Cache was cleared and only the new entry remains.
+        assert len(_sova_verdict_cache) == 1
+        assert 9999 in _sova_verdict_cache
+
+    @pytest.mark.asyncio()
+    async def test_labels_no_pr_number_skips_cache(self) -> None:
+        """When pr_number is None, the label verdict is returned without caching."""
+        from sova.dashboard.services.work_item_service import (
+            _fetch_sova_verdicts,
+            _sova_verdict_cache,
+        )
+
+        clear_verdict_cache()
+        labels_by_issue = {"42": ["sova:approved"]}
+
+        with patch(
+            "sova.dashboard.services.agent_recovery.get_sova_review_verdict",
+            new_callable=AsyncMock,
+        ):
+            result = await _fetch_sova_verdicts(
+                {"42": {"number": None}},
+                labels_by_issue=labels_by_issue,
+            )
+
+        assert result["42"]["verdict"] == "approve"
+        assert len(_sova_verdict_cache) == 0
 
 
 class TestParseSovaReviewFromGithub:
