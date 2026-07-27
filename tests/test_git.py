@@ -285,6 +285,31 @@ class TestRebaseWithConflictResolution:
             assert not result.success
             assert "file.py" in result.error
 
+    async def test_continue_fails_when_no_conflicts_breaks(self) -> None:
+        """When no conflicted files remain but rebase --continue fails, loop breaks and aborts."""
+        from sova.llm.models import LLMResult
+
+        with (
+            patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.rebase.invoke_command", new_callable=AsyncMock) as mock_llm,
+        ):
+            mock_llm.return_value = LLMResult(text="resolved", model="test", cost_usd=Decimal("0.01"))
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout="file.py"),  # commit 1 conflicted
+                _shell_ok(stdout=""),  # resolved after LLM
+                _shell_fail(stderr="could not apply"),  # continue pauses on commit 2
+                _shell_ok(stdout=""),  # no conflicts on commit 2
+                _shell_fail(stderr="unexpected error"),  # continue fails anyway
+                _shell_ok(),  # abort
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"), max_attempts=3)
+
+            assert not result.success
+            assert "could not be completed" in result.error
+
     async def test_llm_failure_aborts_immediately(self) -> None:
         with (
             patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run,
