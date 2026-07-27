@@ -338,9 +338,14 @@ function updateSelectionUI() {
 
   var allBox = document.getElementById('select-all');
   var filtered = getFilteredItems();
-  if (allBox && filtered.length > 0) {
-    allBox.checked = count === filtered.length;
-    allBox.indeterminate = count > 0 && count < filtered.length;
+  if (allBox) {
+    if (filtered.length === 0) {
+      allBox.checked = false;
+      allBox.indeterminate = false;
+    } else {
+      allBox.checked = count === filtered.length;
+      allBox.indeterminate = count > 0 && count < filtered.length;
+    }
   }
 
   if (count === 0) {
