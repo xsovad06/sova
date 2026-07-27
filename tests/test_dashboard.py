@@ -15002,6 +15002,64 @@ class TestPrFeedbackEndpoint:
         resp = await client.post("/api/prs/feedback", json=body)
         assert resp.status_code == 201
 
+    async def test_accepts_wrong_as_user_choice(self, client: AsyncClient) -> None:
+        """'wrong' is valid for the standalone 'State is wrong' button."""
+        body = {
+            "pr_number": 300,
+            "deterministic_state": "pr_approved",
+            "deterministic_action_id": "integrate",
+            "llm_action_id": "",
+            "user_choice": "wrong",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+        assert "id" in resp.json()
+
+    @pytest.mark.parametrize(
+        "llm_action_id",
+        ["", "integrate", "review_pr"],
+        ids=["empty", "valid_integrate", "valid_review"],
+    )
+    async def test_accepts_various_llm_action_ids(self, client: AsyncClient, llm_action_id: str) -> None:
+        body = {
+            "pr_number": 400,
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": llm_action_id,
+            "user_choice": "wrong",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+
+    @pytest.mark.parametrize(
+        "llm_reasoning",
+        ["", "CI is green and PR approved"],
+        ids=["empty", "non_empty"],
+    )
+    async def test_accepts_various_llm_reasoning(self, client: AsyncClient, llm_reasoning: str) -> None:
+        body = {
+            "pr_number": 500,
+            "deterministic_state": "pr_approved",
+            "deterministic_action_id": "integrate",
+            "llm_action_id": "integrate",
+            "llm_reasoning": llm_reasoning,
+            "user_choice": "deterministic",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+
+    async def test_accepts_missing_llm_reasoning(self, client: AsyncClient) -> None:
+        """llm_reasoning defaults to empty string when omitted."""
+        body = {
+            "pr_number": 600,
+            "deterministic_state": "pr_sova_pending",
+            "deterministic_action_id": "review_pr",
+            "llm_action_id": "",
+            "user_choice": "wrong",
+        }
+        resp = await client.post("/api/prs/feedback", json=body)
+        assert resp.status_code == 201
+
 
 class TestAgentPoolConfig:
     def test_read_max_parallel_returns_config_value(self, tmp_path):
