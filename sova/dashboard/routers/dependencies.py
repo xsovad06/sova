@@ -86,6 +86,109 @@ async def _fetch_pr_map() -> dict[int, dict]:
     return result
 
 
+def _parse_issue_int(raw: str | None) -> int | None:
+    """Parse an issue string like '507', '#507', or None to an int."""
+    if not raw:
+        return None
+    try:
+        return int(str(raw).lstrip("#").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+async def _fetch_agent_map() -> dict[int, dict]:
+    """Build {issue_number: agent_info} from running agents.  Fail-open."""
+    from sova.dashboard.services.agent_lifecycle import get_unified_agents
+
+    try:
+        data = await get_unified_agents()
+    except Exception:
+        log.warning("dependency_graph.agent_fetch_failed", exc_info=True)
+        return {}
+
+    result: dict[int, dict] = {}
+    for agent in data.get("agents", []):
+        issue = _parse_issue_int(agent.get("issue"))
+        if issue is None:
+            continue
+        run_id = agent.get("run_id", 0)
+        if issue not in result or run_id > result[issue]["run_id"]:
+            result[issue] = {
+                "run_id": run_id,
+                "role": agent.get("role", ""),
+                "status": agent.get("status", "running"),
+                "elapsed_seconds": agent.get("elapsed_seconds", 0),
+            }
+    return result
+
+
+def _fetch_handoff_map() -> dict[int, dict]:
+    """Build {issue_number: handoff_info} from pending handoffs.  Fail-open."""
+    from sova.dashboard.services.handoff_service import get_all_handoffs
+
+    try:
+        handoffs = get_all_handoffs()
+    except Exception:
+        log.warning("dependency_graph.handoff_fetch_failed", exc_info=True)
+        return {}
+
+    result: dict[int, dict] = {}
+    for h in handoffs:
+        if h.get("status") != "awaiting_action":
+            continue
+        issue = _parse_issue_int(h.get("issue"))
+        if issue is None:
+            continue
+        actions = h.get("next_actions") or []
+        next_action = actions[0].get("label", "") if actions else ""
+        if issue not in result:
+            result[issue] = {"next_action": next_action}
+    return result
+
+
+async def _fetch_last_run_map() -> dict[int, dict]:
+    """Build {issue_number: last_run_info} from most recent terminal TaskRuns.  Fail-open."""
+    try:
+        from sqlalchemy import func, select
+
+        from sova.core.state import TASK_RUN_TERMINAL
+        from sova.dashboard.project_context import get_project_dir
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        project_dir = get_project_dir()
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                subq = (
+                    select(
+                        TaskRun.issue_number,
+                        func.max(TaskRun.id).label("max_id"),
+                    )
+                    .where(
+                        TaskRun.status.in_(TASK_RUN_TERMINAL),
+                        TaskRun.issue_number.isnot(None),
+                        TaskRun.issue_number != "",
+                    )
+                    .group_by(TaskRun.issue_number)
+                    .subquery()
+                )
+                stmt = select(TaskRun.issue_number, TaskRun.id, TaskRun.status).join(
+                    subq,
+                    (TaskRun.issue_number == subq.c.issue_number) & (TaskRun.id == subq.c.max_id),
+                )
+                rows = (await session.execute(stmt)).all()
+
+        result: dict[int, dict] = {}
+        for row in rows:
+            issue = _parse_issue_int(row.issue_number)
+            if issue is not None:
+                result[issue] = {"run_id": row.id, "status": row.status}
+        return result
+    except Exception:
+        log.warning("dependency_graph.last_run_fetch_failed", exc_info=True)
+        return {}
+
+
 @router.get(
     "/graph",
     responses={
@@ -100,11 +203,20 @@ async def get_graph(milestone: str = "") -> dict:
     Dependencies outside the milestone are still fetched individually.
     """
     try:
-        graph, pr_map = await asyncio.gather(
+        graph, pr_map, agent_map, last_run_map = await asyncio.gather(
             _build_graph(milestone),
             _fetch_pr_map(),
+            _fetch_agent_map(),
+            _fetch_last_run_map(),
         )
-        return graph.to_dict(pr_map=pr_map, pr_state_actions=_PR_STATE_ACTIONS)
+        handoff_map = _fetch_handoff_map()
+        return graph.to_dict(
+            pr_map=pr_map,
+            pr_state_actions=_PR_STATE_ACTIONS,
+            agent_map=agent_map,
+            handoff_map=handoff_map,
+            last_run_map=last_run_map,
+        )
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")

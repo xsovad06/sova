@@ -469,6 +469,61 @@ class TestDependencyGraph:
         assert graph.get_task(1) is not None
         assert graph.get_task(99) is None
 
+    def test_to_dict_agent_enrichment(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_PROGRESS), _task(2, state=TaskState.BACKLOG)]
+        agent_map = {1: {"run_id": 42, "role": "developer", "status": "running", "elapsed_seconds": 120}}
+        d = DependencyGraph(tasks).to_dict(agent_map=agent_map)
+        by_id = {n["id"]: n for n in d["nodes"]}
+        assert by_id[1]["agent_running"] is True
+        assert by_id[1]["agent_run_id"] == 42
+        assert by_id[1]["agent_role"] == "developer"
+        assert by_id[1]["agent_elapsed_seconds"] == 120
+        assert "agent_running" not in by_id[2]
+
+    def test_to_dict_handoff_enrichment(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_REVIEW), _task(2, state=TaskState.BACKLOG)]
+        handoff_map = {1: {"next_action": "Address PR"}}
+        d = DependencyGraph(tasks).to_dict(handoff_map=handoff_map)
+        by_id = {n["id"]: n for n in d["nodes"]}
+        assert by_id[1]["handoff_pending"] is True
+        assert by_id[1]["handoff_action"] == "Address PR"
+        assert "handoff_pending" not in by_id[2]
+
+    def test_to_dict_last_run_enrichment(self) -> None:
+        tasks = [_task(1, state=TaskState.BACKLOG), _task(2, state=TaskState.BACKLOG)]
+        last_run_map = {1: {"run_id": 99, "status": "failed"}}
+        d = DependencyGraph(tasks).to_dict(last_run_map=last_run_map)
+        by_id = {n["id"]: n for n in d["nodes"]}
+        assert by_id[1]["last_run_status"] == "failed"
+        assert by_id[1]["last_run_id"] == 99
+        assert "last_run_status" not in by_id[2]
+
+    def test_to_dict_no_enrichment_maps_backward_compatible(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_PROGRESS)]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert "agent_running" not in node
+        assert "handoff_pending" not in node
+        assert "last_run_status" not in node
+
+    def test_to_dict_all_enrichments_combined(self) -> None:
+        tasks = [_task(1, state=TaskState.IN_PROGRESS)]
+        pr_map = {1: {"pr_number": 10, "pr_url": "", "pr_state": "ci_running", "pr_state_label": ""}}
+        agent_map = {1: {"run_id": 5, "role": "developer", "status": "running", "elapsed_seconds": 60}}
+        handoff_map = {1: {"next_action": "Review"}}
+        last_run_map = {1: {"run_id": 3, "status": "done"}}
+        d = DependencyGraph(tasks).to_dict(
+            pr_map=pr_map,
+            agent_map=agent_map,
+            handoff_map=handoff_map,
+            last_run_map=last_run_map,
+        )
+        node = d["nodes"][0]
+        assert node["pr_number"] == 10
+        assert node["agent_running"] is True
+        assert node["agent_elapsed_seconds"] == 60
+        assert node["handoff_pending"] is True
+        assert node["last_run_status"] == "done"
+
 
 # ---------------------------------------------------------------------------
 # build_dependency_graph (async)
@@ -629,6 +684,23 @@ def _mock_graph_context(tasks: list[Task]):
     )
 
 
+def _mock_fetch_context(pr_map=None):
+    """Return context managers that patch all fetch functions for graph API tests."""
+
+    async def _agent_map():
+        return {}
+
+    async def _last_run_map():
+        return {}
+
+    return (
+        patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value=pr_map or {}),
+        patch("sova.dashboard.routers.dependencies._fetch_agent_map", side_effect=_agent_map),
+        patch("sova.dashboard.routers.dependencies._fetch_handoff_map", return_value={}),
+        patch("sova.dashboard.routers.dependencies._fetch_last_run_map", side_effect=_last_run_map),
+    )
+
+
 @pytest.fixture
 async def client(setup_db):
     from sova.dashboard.app import create_app
@@ -755,6 +827,197 @@ class TestFetchPrMap:
         assert result == {}
 
 
+class TestParseIssueInt:
+    def test_plain_number(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int("507") == 507
+
+    def test_hash_prefix(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int("#507") == 507
+
+    def test_none(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int(None) is None
+
+    def test_empty_string(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int("") is None
+
+    def test_malformed(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int("abc") is None
+
+    def test_whitespace(self) -> None:
+        from sova.dashboard.routers.dependencies import _parse_issue_int
+
+        assert _parse_issue_int("  42 ") == 42
+
+
+class TestFetchAgentMap:
+    @pytest.mark.asyncio
+    async def test_builds_agent_map(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_agent_map
+
+        mock_data = {
+            "agents": [
+                {"issue": "10", "run_id": 5, "role": "developer", "status": "running", "elapsed_seconds": 90},
+            ]
+        }
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", return_value=mock_data):
+            result = await _fetch_agent_map()
+        assert result[10]["run_id"] == 5
+        assert result[10]["role"] == "developer"
+        assert result[10]["elapsed_seconds"] == 90
+
+    @pytest.mark.asyncio
+    async def test_multiple_agents_same_issue_keeps_highest_run_id(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_agent_map
+
+        mock_data = {
+            "agents": [
+                {"issue": "10", "run_id": 3, "role": "developer", "status": "running"},
+                {"issue": "10", "run_id": 7, "role": "developer", "status": "running"},
+            ]
+        }
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", return_value=mock_data):
+            result = await _fetch_agent_map()
+        assert result[10]["run_id"] == 7
+
+    @pytest.mark.asyncio
+    async def test_agent_fetch_failure_returns_empty(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_agent_map
+
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", side_effect=Exception("fail")):
+            result = await _fetch_agent_map()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_skips_agents_without_issue(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_agent_map
+
+        mock_data = {"agents": [{"issue": None, "run_id": 1, "role": "dev", "status": "running"}]}
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", return_value=mock_data):
+            result = await _fetch_agent_map()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_handles_hash_prefix(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_agent_map
+
+        mock_data = {"agents": [{"issue": "#42", "run_id": 1, "role": "dev", "status": "running"}]}
+        with patch("sova.dashboard.services.agent_lifecycle.get_unified_agents", return_value=mock_data):
+            result = await _fetch_agent_map()
+        assert 42 in result
+
+
+class TestFetchHandoffMap:
+    def test_builds_handoff_map(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        mock_handoffs = [
+            {
+                "issue": "10",
+                "status": "awaiting_action",
+                "next_actions": [{"label": "Address PR", "role": "address-pr"}],
+            },
+            {
+                "issue": "20",
+                "status": "awaiting_action",
+                "next_actions": [{"label": "Integrate PR", "role": "integrate-pr"}],
+            },
+        ]
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=mock_handoffs):
+            result = _fetch_handoff_map()
+        assert result[10]["next_action"] == "Address PR"
+        assert result[20]["next_action"] == "Integrate PR"
+
+    def test_empty_next_actions(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        mock_handoffs = [{"issue": "10", "status": "awaiting_action", "next_actions": []}]
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=mock_handoffs):
+            result = _fetch_handoff_map()
+        assert result[10]["next_action"] == ""
+
+    def test_handoff_fetch_failure_returns_empty(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", side_effect=Exception("fail")):
+            result = _fetch_handoff_map()
+        assert result == {}
+
+    def test_skips_handoffs_without_issue(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        mock_handoffs = [{"issue": None, "status": "awaiting_action", "next_actions": [{"label": "test"}]}]
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=mock_handoffs):
+            result = _fetch_handoff_map()
+        assert result == {}
+
+    def test_handles_hash_prefix(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        mock_handoffs = [{"issue": "#42", "status": "awaiting_action", "next_actions": [{"label": "Review"}]}]
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=mock_handoffs):
+            result = _fetch_handoff_map()
+        assert 42 in result
+
+    def test_filters_out_non_awaiting_action_status(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_handoff_map
+
+        mock_handoffs = [
+            {"issue": "10", "status": "awaiting_action", "next_actions": [{"label": "Review"}]},
+            {"issue": "20", "status": "completed", "next_actions": [{"label": "Address PR"}]},
+            {"issue": "30", "status": "failed", "next_actions": [{"label": "Retry"}]},
+        ]
+        with patch("sova.dashboard.services.handoff_service.get_all_handoffs", return_value=mock_handoffs):
+            result = _fetch_handoff_map()
+        assert 10 in result
+        assert 20 not in result
+        assert 30 not in result
+
+
+class TestFetchLastRunMap:
+    @pytest.mark.asyncio
+    async def test_last_run_fetch_failure_returns_empty(self) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_last_run_map
+
+        with patch("sova.dashboard.project_context.get_project_dir", side_effect=Exception("no project")):
+            result = await _fetch_last_run_map()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_newest_terminal_run_per_issue(self, setup_db) -> None:
+        from sova.dashboard.routers.dependencies import _fetch_last_run_map
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        project_dir = "/tmp/test-project"
+
+        async with await get_session(project_dir=project_dir) as session:
+            async with session.begin():
+                session.add(TaskRun(id=1, issue_number="42", status="failed", role="developer"))
+                session.add(TaskRun(id=2, issue_number="42", status="done", role="developer"))
+                session.add(TaskRun(id=3, issue_number="42", status="running", role="developer"))
+                session.add(TaskRun(id=4, issue_number="99", status="interrupted", role="researcher"))
+
+        with patch("sova.dashboard.project_context.get_project_dir", return_value=project_dir):
+            result = await _fetch_last_run_map()
+
+        assert 42 in result
+        assert result[42]["run_id"] == 2
+        assert result[42]["status"] == "done"
+        assert 99 in result
+        assert result[99]["run_id"] == 4
+        assert result[99]["status"] == "interrupted"
+
+
 class TestDependencyAPI:
     @pytest.mark.asyncio
     async def test_graph_endpoint(self, client: AsyncClient) -> None:
@@ -763,7 +1026,8 @@ class TestDependencyAPI:
             _task(2, title="Feature", body="## Dependencies\n- #1\n"),
         ]
         p1, p2, p3 = _mock_graph_context(tasks)
-        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value={}):
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with p1, p2, p3, f1, f2, f3, f4:
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 200
         data = resp.json()
@@ -783,7 +1047,8 @@ class TestDependencyAPI:
             }
         }
         p1, p2, p3 = _mock_graph_context(tasks)
-        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value=pr_map):
+        f1, f2, f3, f4 = _mock_fetch_context(pr_map=pr_map)
+        with p1, p2, p3, f1, f2, f3, f4:
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 200
         node = resp.json()["nodes"][0]
@@ -798,7 +1063,8 @@ class TestDependencyAPI:
         """PR fetch failure should not break the graph endpoint (fail-open)."""
         tasks = [_task(1, title="Feature")]
         p1, p2, p3 = _mock_graph_context(tasks)
-        with p1, p2, p3, patch("sova.dashboard.routers.dependencies._fetch_pr_map", return_value={}):
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with p1, p2, p3, f1, f2, f3, f4:
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 200
         node = resp.json()["nodes"][0]
@@ -842,9 +1108,16 @@ class TestDependencyAPI:
 
     @pytest.mark.asyncio
     async def test_graph_endpoint_error(self, client: AsyncClient) -> None:
-        with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
-            side_effect=RuntimeError("boom"),
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with (
+            patch(
+                "sova.dashboard.routers.dependencies._build_graph",
+                side_effect=RuntimeError("boom"),
+            ),
+            f1,
+            f2,
+            f3,
+            f4,
         ):
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 500
@@ -853,9 +1126,16 @@ class TestDependencyAPI:
     async def test_graph_endpoint_config_error(self, client: AsyncClient) -> None:
         from sova.dashboard.routers.dependencies import _ConfigError
 
-        with patch(
-            "sova.dashboard.routers.dependencies._build_graph",
-            side_effect=_ConfigError("bad config"),
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with (
+            patch(
+                "sova.dashboard.routers.dependencies._build_graph",
+                side_effect=_ConfigError("bad config"),
+            ),
+            f1,
+            f2,
+            f3,
+            f4,
         ):
             resp = await client.get("/api/dependencies/graph")
         assert resp.status_code == 503
