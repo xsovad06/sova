@@ -402,7 +402,6 @@ class TestListTasksPagination:
         assert route.call_count == 40
         assert len(tasks) == 2000
 
-
     @respx.mock
     async def test_paginate_returns_empty_on_mid_pagination_failure(self) -> None:
         adapter = _adapter()
