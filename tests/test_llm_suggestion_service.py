@@ -183,7 +183,6 @@ class TestGetLlmSuggestion:
             await get_llm_suggestion(**_kwargs())
         assert mod._warned_no_key is True
 
-
     async def test_expired_cache_entry_is_deleted(self) -> None:
         import time
 
@@ -216,7 +215,6 @@ class TestGetLlmSuggestion:
             ):
                 result = await get_llm_suggestion(**_kwargs())
         assert result is None
-
 
     async def test_state_change_invalidates_cache(self) -> None:
         """When deterministic_state changes, cached result for old state is not reused."""
