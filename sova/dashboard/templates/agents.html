@@ -267,7 +267,7 @@ async function loadWorkItems() {
     });
 
     var attentionCount = _workItems.filter(function(i) {
-      return i.state === 'handoff_pending' || i.state === 'spec_review' ||
+      return i.state === 'spec_review' ||
         i.state === 'pr_ready_to_merge' || i.state === 'pr_changes_requested';
     }).length;
     var badge = document.getElementById('tasks-attention-badge');
@@ -378,7 +378,6 @@ function renderTaskCard(item) {
 
   var handoffActions = item.handoff_actions || [];
   var isSpecReview = item.state === 'spec_review';
-  var isMultiAction = (item.state === 'handoff_pending') && handoffActions.length > 1;
 
   var specPrimaryBtns = '';
   var specMenuActions = [];
@@ -406,10 +405,6 @@ function renderTaskCard(item) {
       escapeHtml(item.running_agent.role_label || 'Running') + '</span>';
   } else if (isSpecReview) {
     actionBtn = specPrimaryBtns;
-  } else if (item.state === 'handoff_pending' && handoffActions.length === 1) {
-    actionBtn = _renderHandoffBtn(handoffActions[0], issueKey);
-  } else if (isMultiAction) {
-    actionBtn = '';
   } else {
     actionBtn = _renderActionBtn(item.primary_action, issueKey);
   }
@@ -435,7 +430,7 @@ function renderTaskCard(item) {
       prLink(item.pr_number) + '</span>';
   }
 
-  var needsAttention = item.state === 'handoff_pending' || item.state === 'spec_review';
+  var needsAttention = item.state === 'spec_review';
   var attentionDot = needsAttention
     ? '<span class="w-2 h-2 rounded-full bg-accent-peach animate-pulse shrink-0"></span>'
     : '';
@@ -571,15 +566,6 @@ function renderTaskCard(item) {
     expandedRow = '<div class="flex items-center gap-3 px-4 pb-2.5 pl-12">' +
       '<span class="text-xs text-gray-500 truncate flex-1">' + escapeHtml(item.handoff_summary) + '</span>' +
     '</div>';
-  } else if (isMultiAction) {
-    var haButtons = handoffActions.map(function(ha) {
-      return _renderHandoffBtn(ha, issueKey);
-    }).join(' ');
-
-    expandedRow = '<div class="flex items-center gap-3 px-4 pb-2.5 pl-12">' +
-      '<span class="text-xs text-gray-500 truncate flex-1">' + escapeHtml(item.handoff_summary || '') + '</span>' +
-      '<div class="flex items-center gap-2 shrink-0">' + haButtons + '</div>' +
-    '</div>';
   }
 
   var llmRow = _renderLlmSuggestionWidget(item, issueKey);
@@ -621,7 +607,6 @@ function renderTaskCards() {
     // Sort tier: running/handoff first, then PR stage, then spec_review, then in_progress, then rest
     var _stateSortTier = function(item) {
       if (item.state === 'agent_running') return 0;
-      if (item.state === 'handoff_pending') return 1;
       if (item.state === 'pr_draft') return 5;
       if (_PR_STAGE_STATES.has(item.state)) return 2;
       if (item.state === 'spec_review') return 3;
