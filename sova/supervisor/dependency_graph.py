@@ -7,13 +7,16 @@ import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
-from sova.adapters.base import Task, TaskAdapter, TaskState
+from sova.adapters.base import DEPENDENCY_SATISFIED, Task, TaskAdapter, TaskState
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
 log = get_logger(component="supervisor.dependency_graph")
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
+
+# Re-export for backward compatibility and local use.
+_DEPENDENCY_SATISFIED = DEPENDENCY_SATISFIED
 
 # States that should be excluded from "ready to work on" -- either already
 # being worked on, already completed, or explicitly rejected/blocked.
@@ -155,7 +158,7 @@ class DependencyGraph:
                     all_satisfied = False
                     break
                 dep_task = self._tasks[dep]
-                if dep_task.state != TaskState.DONE:
+                if dep_task.state not in _DEPENDENCY_SATISFIED:
                     all_satisfied = False
                     break
             if all_satisfied:
@@ -362,19 +365,37 @@ async def build_dependency_graph(
     tasks = await adapter.list_tasks(filters)
 
     # Milestones that have at least one open (non-done) issue
-    active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}
+    active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state not in _DEPENDENCY_SATISFIED}
 
     # Keep open issues + closed issues within active milestones
-    tasks = [t for t in tasks if t.state != TaskState.DONE or (t.milestone and t.milestone in active_milestones)]
+    all_tasks = tasks
+    tasks = [
+        t for t in tasks if t.state not in _DEPENDENCY_SATISFIED or (t.milestone and t.milestone in active_milestones)
+    ]
 
-    # Collect all referenced deps and fetch missing ones
+    # Build task_map and collect deps; then re-add filtered DONE deps.
     all_dep_ids: set[int] = set()
+    needed_dep_ids: set[int] = set()
     task_map: dict[int, Task] = {}
     for task in tasks:
         tid = int(task.id)
         task_map[tid] = task
         deps = parse_dependencies(task.body, exclude_self=tid)
         all_dep_ids |= deps
+        if task.state not in _DEPENDENCY_SATISFIED:
+            needed_dep_ids |= deps
+
+    # Re-add satisfied tasks that were filtered out but are referenced as
+    # dependencies by kept tasks.  Without this, dependents can't see their
+    # done deps and stay blocked.
+    filtered_done = {int(t.id): t for t in all_tasks if int(t.id) not in task_map and t.state in _DEPENDENCY_SATISFIED}
+    for dep_id in needed_dep_ids:
+        if dep_id in filtered_done:
+            task_map[dep_id] = filtered_done[dep_id]
+            # Fold the re-added task's own dependencies into all_dep_ids so the
+            # external-fetch loop below can resolve them (transitive recovery).
+            re_added_deps = parse_dependencies(filtered_done[dep_id].body, exclude_self=dep_id)
+            all_dep_ids |= re_added_deps
 
     missing_ids = all_dep_ids - set(task_map.keys())
     if missing_ids:

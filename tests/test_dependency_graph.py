@@ -90,12 +90,13 @@ class TestParseDependencies:
         body = "## Dependencies\n- #100 (blocker)\n- see issue 200\n- #300\n"
         assert parse_dependencies(body) == {100, 300}
 
-    def test_multiple_sections_logs_warning(self, capsys) -> None:
+    def test_multiple_sections_logs_warning(self) -> None:
         body = "## Dependencies\n- #10\n## Other\ntext\n## Dependencies\n- #20\n"
-        result = parse_dependencies(body)
+        with patch("sova.supervisor.dependency_graph.log") as mock_log:
+            result = parse_dependencies(body)
         assert result == {10}
-        captured = capsys.readouterr()
-        assert "Multiple" in captured.out
+        mock_log.warning.assert_called_once()
+        assert "Multiple" in mock_log.warning.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +503,88 @@ class TestBuildDependencyGraph:
         # Missing dep still shows in validation
         result = graph.validate()
         assert 999 in result.missing_refs
+
+    @pytest.mark.asyncio
+    async def test_done_dependency_preserved_when_filtered_by_milestone(self) -> None:
+        """DONE tasks outside active milestones are kept if referenced as dependencies."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            # Done task in a completed milestone (all tasks done)
+            _task(1, state=TaskState.DONE, milestone="Phase 6"),
+            # Open task in active milestone depends on #1
+            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
+        ]
+
+        graph = await build_dependency_graph(adapter)
+
+        # #1 must be in the graph so #2's dependency is satisfied
+        assert graph.has_task(1)
+        assert graph.get_ready_tasks() == [2]
+
+    @pytest.mark.asyncio
+    async def test_done_dependency_no_milestone_preserved(self) -> None:
+        """DONE tasks with no milestone are kept if referenced as dependencies."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            _task(1, state=TaskState.DONE, milestone=""),
+            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
+        ]
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.has_task(1)
+        assert graph.get_ready_tasks() == [2]
+
+    @pytest.mark.asyncio
+    async def test_done_tasks_not_referenced_still_filtered(self) -> None:
+        """DONE tasks in completed milestones are filtered if not referenced."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            _task(1, state=TaskState.DONE, milestone="Phase 5"),
+            _task(2, state=TaskState.DONE, milestone="Phase 5"),
+            _task(3, state=TaskState.BACKLOG, milestone="Phase 7"),
+        ]
+
+        graph = await build_dependency_graph(adapter)
+
+        assert not graph.has_task(1)
+        assert not graph.has_task(2)
+        assert graph.has_task(3)
+
+    @pytest.mark.asyncio
+    async def test_multiple_done_deps_different_milestones_preserved(self) -> None:
+        """Multiple DONE dependencies from different milestones are all preserved."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            _task(1, state=TaskState.DONE, milestone="Phase 5"),
+            _task(2, state=TaskState.DONE, milestone="Phase 6"),
+            _task(3, body="## Dependencies\n- #1\n- #2\n", state=TaskState.BACKLOG, milestone="Phase 7"),
+        ]
+
+        graph = await build_dependency_graph(adapter)
+
+        assert graph.has_task(1)
+        assert graph.has_task(2)
+        assert graph.get_ready_tasks() == [3]
+
+    @pytest.mark.asyncio
+    async def test_done_dep_in_cycle_participates_in_validation(self) -> None:
+        """Re-added DONE node participates in cycle detection."""
+        adapter = AsyncMock()
+        adapter.list_tasks.return_value = [
+            # Circular: #1 depends on #2, #2 depends on #1
+            _task(1, body="## Dependencies\n- #2\n", state=TaskState.DONE, milestone="Phase 5"),
+            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
+        ]
+
+        graph = await build_dependency_graph(adapter)
+
+        result = graph.validate()
+        assert result.valid is False
+        assert sorted(result.cycle_members) == [1, 2]
+        # DONE node excluded from ready; #2's dep on DONE #1 is satisfied
+        # but get_ready_tasks doesn't gate on cycles, so #2 is still ready
+        assert graph.get_ready_tasks() == [2]
 
     @pytest.mark.asyncio
     async def test_milestone_filter_passed(self) -> None:
