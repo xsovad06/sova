@@ -210,12 +210,14 @@ async def get_graph(milestone: str = "") -> dict:
             _fetch_last_run_map(),
         )
         handoff_map = _fetch_handoff_map()
+        project_dir = get_project_dir()
         return graph.to_dict(
             pr_map=pr_map,
             pr_state_actions=_PR_STATE_ACTIONS,
             agent_map=agent_map,
             handoff_map=handoff_map,
             last_run_map=last_run_map,
+            project_dir=project_dir,
         )
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)

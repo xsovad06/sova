@@ -6,17 +6,15 @@ import asyncio
 import re
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from sova.adapters.base import DEPENDENCY_SATISFIED, Task, TaskAdapter, TaskState
+from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
 log = get_logger(component="supervisor.dependency_graph")
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
-
-# Re-export for backward compatibility and local use.
-_DEPENDENCY_SATISFIED = DEPENDENCY_SATISFIED
 
 # States that should be excluded from "ready to work on" -- either already
 # being worked on, already completed, or explicitly rejected/blocked.
@@ -39,6 +37,26 @@ _STATE_ACTIONS: dict[TaskState, list[dict]] = {
 }
 
 _BODY_EXCERPT_LEN = 100
+
+
+def _get_spec_meta(issue_id: int, project_dir: Path | None = None) -> dict | None:
+    """Return spec metadata for an issue, or None if no spec file exists.
+
+    Reads status, complexity, and open-question count from the spec file at
+    ``.claude/specs/{issue_id}-*.md``.  Lazy-imports spec_service to avoid a
+    hard dependency on the dashboard layer at module load time.
+    """
+    from sova.dashboard.services import spec_service  # lazy import -- dashboard layer
+
+    spec = spec_service.read_spec(str(issue_id), project_dir)
+    if spec is None:
+        return None
+    return {
+        "url": f"/spec/{issue_id}",
+        "status": spec.get("status", "draft"),
+        "complexity": spec.get("complexity", "unknown"),
+        "open_questions": len(spec.get("open_questions", [])),
+    }
 
 
 @dataclass
@@ -158,7 +176,7 @@ class DependencyGraph:
                     all_satisfied = False
                     break
                 dep_task = self._tasks[dep]
-                if dep_task.state not in _DEPENDENCY_SATISFIED:
+                if dep_task.state != TaskState.DONE:
                     all_satisfied = False
                     break
             if all_satisfied:
@@ -249,6 +267,7 @@ class DependencyGraph:
         agent_map: dict[int, dict] | None = None,
         handoff_map: dict[int, dict] | None = None,
         last_run_map: dict[int, dict] | None = None,
+        project_dir: Path | None = None,
     ) -> dict:
         """Serialize the graph for API responses.
 
@@ -259,6 +278,9 @@ class DependencyGraph:
         *agent_map* maps issue IDs to running agent info (run_id, role, status, elapsed_seconds).
         *handoff_map* maps issue IDs to pending handoff info (next_action).
         *last_run_map* maps issue IDs to last terminal run info (run_id, status).
+        *project_dir* is forwarded to ``_get_spec_meta`` so RESEARCHED nodes can
+        be enriched with spec metadata and spec-aware action buttons.  When None,
+        the spec service falls back to the contextvar-based project directory.
 
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
@@ -289,6 +311,30 @@ class DependencyGraph:
                 if pr_state in pr_state_actions:
                     actions = list(pr_state_actions[pr_state])
 
+            # Enrich RESEARCHED nodes with spec metadata and spec-aware actions
+            spec_meta: dict | None = None
+            if task.state == TaskState.RESEARCHED:
+                try:
+                    spec_meta = _get_spec_meta(tid, project_dir)
+                except Exception:
+                    log.warning("dependency_graph.spec_meta_failed", issue=tid, exc_info=True)
+                if spec_meta:
+                    actions = [
+                        {"id": "view-spec", "label": "View Spec", "type": "link", "url": f"/spec/{tid}"},
+                        {
+                            "id": "approve-spec",
+                            "label": "Approve & Develop",
+                            "type": "api",
+                            "url": f"/spec/{tid}/approve",
+                        },
+                        {
+                            "id": "revise-spec",
+                            "label": "Revise Spec",
+                            "type": "api",
+                            "url": f"/spec/{tid}/revise",
+                        },
+                    ]
+
             node: dict = {
                 "id": tid,
                 "title": task.title,
@@ -318,6 +364,8 @@ class DependencyGraph:
             if last_run_info:
                 node["last_run_status"] = last_run_info["status"]
                 node["last_run_id"] = last_run_info["run_id"]
+            if spec_meta:
+                node["spec_meta"] = spec_meta
             nodes.append(node)
 
         validation = self.validate()
@@ -390,37 +438,19 @@ async def build_dependency_graph(
     tasks = await adapter.list_tasks(filters)
 
     # Milestones that have at least one open (non-done) issue
-    active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state not in _DEPENDENCY_SATISFIED}
+    active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}
 
     # Keep open issues + closed issues within active milestones
-    all_tasks = tasks
-    tasks = [
-        t for t in tasks if t.state not in _DEPENDENCY_SATISFIED or (t.milestone and t.milestone in active_milestones)
-    ]
+    tasks = [t for t in tasks if t.state != TaskState.DONE or (t.milestone and t.milestone in active_milestones)]
 
-    # Build task_map and collect deps; then re-add filtered DONE deps.
+    # Collect all referenced deps and fetch missing ones
     all_dep_ids: set[int] = set()
-    needed_dep_ids: set[int] = set()
     task_map: dict[int, Task] = {}
     for task in tasks:
         tid = int(task.id)
         task_map[tid] = task
         deps = parse_dependencies(task.body, exclude_self=tid)
         all_dep_ids |= deps
-        if task.state not in _DEPENDENCY_SATISFIED:
-            needed_dep_ids |= deps
-
-    # Re-add satisfied tasks that were filtered out but are referenced as
-    # dependencies by kept tasks.  Without this, dependents can't see their
-    # done deps and stay blocked.
-    filtered_done = {int(t.id): t for t in all_tasks if int(t.id) not in task_map and t.state in _DEPENDENCY_SATISFIED}
-    for dep_id in needed_dep_ids:
-        if dep_id in filtered_done:
-            task_map[dep_id] = filtered_done[dep_id]
-            # Fold the re-added task's own dependencies into all_dep_ids so the
-            # external-fetch loop below can resolve them (transitive recovery).
-            re_added_deps = parse_dependencies(filtered_done[dep_id].body, exclude_self=dep_id)
-            all_dep_ids |= re_added_deps
 
     missing_ids = all_dep_ids - set(task_map.keys())
     if missing_ids:
