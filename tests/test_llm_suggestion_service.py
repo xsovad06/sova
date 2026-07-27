@@ -17,9 +17,13 @@ from sova.dashboard.services.llm_suggestion_service import (
 
 @pytest.fixture(autouse=True)
 def reset_cache() -> None:
+    import sova.dashboard.services.llm_suggestion_service as _mod
+
     clear_cache()
+    _mod._warned_no_key = False
     yield  # type: ignore[misc]
     clear_cache()
+    _mod._warned_no_key = False
 
 
 def _mock_response(action_id: str, reasoning: str = "test reason") -> MagicMock:
@@ -159,6 +163,90 @@ class TestGetLlmSuggestion:
 
         assert result_a["action_id"] == "integrate"
         assert result_b["action_id"] == "address_pr"
+
+    async def test_warns_once_on_missing_api_key(self) -> None:
+        import sova.dashboard.services.llm_suggestion_service as mod
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch.object(mod.log, "warning") as mock_warn:
+                await get_llm_suggestion(**_kwargs())
+                await get_llm_suggestion(**_kwargs())
+                await get_llm_suggestion(**_kwargs())
+
+        assert mock_warn.call_count == 1
+
+    async def test_warned_flag_prevents_repeated_warnings(self) -> None:
+        import sova.dashboard.services.llm_suggestion_service as mod
+
+        assert mod._warned_no_key is False
+        with patch.dict("os.environ", {}, clear=True):
+            await get_llm_suggestion(**_kwargs())
+        assert mod._warned_no_key is True
+
+
+    async def test_expired_cache_entry_is_deleted(self) -> None:
+        import time
+
+        import sova.dashboard.services.llm_suggestion_service as mod
+
+        mock_resp = _mock_response("integrate")
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client_cls.return_value.__aenter__.return_value = mock_client
+                mock_client.post.return_value = mock_resp
+
+                # First call populates cache
+                await get_llm_suggestion(**_kwargs())
+                assert len(mod._cache) == 1
+
+                # Expire the cache entry
+                key = list(mod._cache.keys())[0]
+                mod._cache[key] = (time.monotonic() - mod._CACHE_TTL - 1, mod._cache[key][1])
+
+                # Second call should delete expired entry and re-fetch
+                await get_llm_suggestion(**_kwargs())
+                assert mock_client.post.call_count == 2
+
+    async def test_returns_none_on_prompt_format_error(self) -> None:
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch(
+                "sova.dashboard.services.llm_suggestion_service._PROMPT",
+                "{missing_key_that_does_not_exist}",
+            ):
+                result = await get_llm_suggestion(**_kwargs())
+        assert result is None
+
+
+    async def test_state_change_invalidates_cache(self) -> None:
+        """When deterministic_state changes, cached result for old state is not reused."""
+        mock_resp_a = _mock_response("review_pr")
+        mock_resp_b = _mock_response("integrate")
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client_cls.return_value.__aenter__.return_value = mock_client
+                mock_client.post.side_effect = [mock_resp_a, mock_resp_b]
+
+                result_a = await get_llm_suggestion(**_kwargs(deterministic_state="pr_sova_pending"))
+                result_b = await get_llm_suggestion(**_kwargs(deterministic_state="pr_approved"))
+
+        assert result_a["action_id"] == "review_pr"
+        assert result_b["action_id"] == "integrate"
+        assert mock_client.post.call_count == 2
+
+    async def test_warned_flag_reset_allows_new_warning(self) -> None:
+        """After resetting _warned_no_key, a new warning is emitted."""
+        import sova.dashboard.services.llm_suggestion_service as mod
+
+        with patch.dict("os.environ", {}, clear=True):
+            with patch.object(mod.log, "warning") as mock_warn:
+                await get_llm_suggestion(**_kwargs())
+                assert mock_warn.call_count == 1
+
+                mod._warned_no_key = False
+                await get_llm_suggestion(**_kwargs())
+                assert mock_warn.call_count == 2
 
 
 class TestMakeCacheKey:

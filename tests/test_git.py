@@ -306,6 +306,37 @@ class TestRebaseWithConflictResolution:
             assert not result.success
             assert "LLM unavailable" in result.error
 
+    async def test_no_conflicted_files_continue_succeeds(self) -> None:
+        """When rebase fails but no files are conflicted, continue should be attempted."""
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout=""),  # _get_conflicted_files returns empty
+                _shell_ok(),  # rebase --continue succeeds
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+
+            assert result.success
+            assert result.conflicts_resolved == 0
+
+    async def test_no_conflicted_files_continue_fails_aborts(self) -> None:
+        """When no conflicted files remain but continue fails, abort and report error."""
+        with patch("sova.git.rebase.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                _shell_ok(),  # fetch
+                _shell_fail(stderr="CONFLICT"),  # rebase fails
+                _shell_ok(stdout=""),  # _get_conflicted_files returns empty
+                _shell_fail(stderr="cannot continue"),  # rebase --continue fails
+                _shell_ok(),  # abort
+            ]
+
+            result, cost = await rebase_with_conflict_resolution("main", cwd=Path("/repo"))
+
+            assert not result.success
+            assert "cannot continue" in result.error
+
 
 # ---------------------------------------------------------------------------
 # Git Operations -- commit and push
