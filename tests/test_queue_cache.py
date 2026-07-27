@@ -119,3 +119,27 @@ async def test_adapter_error_not_cached():
 
     assert result == []
     assert str(Path("/proj")) not in queue_service._queue_cache
+
+
+@pytest.mark.asyncio
+async def test_queue_passes_paginate_true():
+    from sova.adapters.base import TaskFilters
+
+    task = _make_task("1")
+    mock_adapter = AsyncMock()
+    mock_adapter.list_tasks = AsyncMock(return_value=[task])
+    cfg = MagicMock()
+    cfg.task_source.type = "github"
+    cfg.github_repo = "owner/repo"
+
+    with (
+        patch("sova.config.loader.load_config", return_value=cfg),
+        patch("sova.adapters.create_adapter", return_value=mock_adapter),
+        patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
+    ):
+        await queue_service.get_priority_queue(Path("/proj"))
+
+    mock_adapter.list_tasks.assert_called_once()
+    filters_arg = mock_adapter.list_tasks.call_args[0][0]
+    assert isinstance(filters_arg, TaskFilters)
+    assert filters_arg.paginate is True

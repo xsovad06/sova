@@ -115,10 +115,47 @@ class JiraAdapter(TaskAdapter):
         """Remove characters that could break JQL quoting."""
         return re.sub(r'["\\\x00-\x1f]', "", value)
 
+    _SEARCH_FIELDS = [
+        "summary",
+        "description",
+        "status",
+        "labels",
+        "assignee",
+        "fixVersions",
+        "key",
+        "issuetype",
+        "priority",
+        "created",
+        "story_points",
+        "customfield_10028",
+        "sprint",
+        "components",
+        "updated",
+    ]
+
+    _MAX_PAGINATED_ISSUES = 2000
+
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:
         filters = filters or TaskFilters()
+        jql = self._build_jql(filters)
+
+        if filters.paginate:
+            return await self._list_tasks_paginated(jql)
+
+        response = await self._http.post(
+            "/search/jql",
+            json={"jql": jql, "maxResults": 50, "fields": self._SEARCH_FIELDS},
+        )
+        if response.status_code != 200:
+            log.warning("list_tasks.failed", status=response.status_code, body=response.text[:200])
+            return []
+
+        data = response.json()
+        return [self._parse_issue(issue) for issue in data.get("issues", [])]
+
+    def _build_jql(self, filters: TaskFilters) -> str:
         safe_key = self._sanitize_jql_value(self.project_key)
-        jql_parts = [f"project = {safe_key}"]
+        jql_parts = [f'project = "{safe_key}"']
 
         if filters.state == "open":
             jql_parts.append("statusCategory != Done")
@@ -135,37 +172,35 @@ class JiraAdapter(TaskAdapter):
             for label in filters.labels:
                 jql_parts.append(f'labels = "{self._sanitize_jql_value(label)}"')
 
-        jql = " AND ".join(jql_parts)
-        response = await self._http.post(
-            "/search/jql",
-            json={
-                "jql": jql,
-                "maxResults": 50,
-                "fields": [
-                    "summary",
-                    "description",
-                    "status",
-                    "labels",
-                    "assignee",
-                    "fixVersions",
-                    "key",
-                    "issuetype",
-                    "priority",
-                    "created",
-                    "story_points",
-                    "customfield_10028",
-                    "sprint",
-                    "components",
-                    "updated",
-                ],
-            },
-        )
-        if response.status_code != 200:
-            log.warning("list_tasks.failed", status=response.status_code, body=response.text[:200])
-            return []
+        return " AND ".join(jql_parts)
 
-        data = response.json()
-        return [self._parse_issue(issue) for issue in data.get("issues", [])]
+    async def _list_tasks_paginated(self, jql: str) -> list[Task]:
+        all_tasks: list[Task] = []
+        start_at = 0
+        page_size = 50
+        while start_at < self._MAX_PAGINATED_ISSUES:
+            response = await self._http.post(
+                "/search/jql",
+                json={
+                    "jql": jql,
+                    "maxResults": page_size,
+                    "startAt": start_at,
+                    "fields": self._SEARCH_FIELDS,
+                },
+            )
+            if response.status_code != 200:
+                log.warning("list_tasks.paginated_failed", status=response.status_code, page=start_at)
+                return []
+
+            data = response.json()
+            issues = data.get("issues", [])
+            all_tasks.extend(self._parse_issue(issue) for issue in issues)
+
+            if len(issues) < page_size:
+                break
+            start_at += page_size
+
+        return all_tasks
 
     async def get_task(self, task_id: str) -> Task:
         issue_key = self._resolve_key(task_id)

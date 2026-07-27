@@ -262,7 +262,27 @@ class TestGitHubAdapter:
         tasks = await self.adapter.list_tasks()
         assert tasks == []
 
-    # -- get_task --
+    async def test_list_tasks_paginate_uses_high_limit(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="[]")
+
+        await self.adapter.list_tasks(filters=TaskFilters(paginate=True))
+
+        call_args = mock_run.call_args[0]
+        assert "--limit" in call_args
+        limit_idx = call_args.index("--limit")
+        assert call_args[limit_idx + 1] == "5000"
+
+    async def test_list_tasks_default_limit_without_paginate(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = _shell_result(stdout="[]")
+
+        await self.adapter.list_tasks(filters=TaskFilters(limit=100))
+
+        call_args = mock_run.call_args[0]
+        assert "--limit" in call_args
+        limit_idx = call_args.index("--limit")
+        assert call_args[limit_idx + 1] == "100"
+
+        # -- get_task --
 
     async def test_get_task(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(stdout=_gh_issue_view_json())

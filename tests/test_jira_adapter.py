@@ -360,6 +360,73 @@ class TestListTasksFiltering:
         assert "(assignee = currentUser())" in body["jql"]
 
 
+class TestListTasksPagination:
+    @respx.mock
+    async def test_paginate_fetches_multiple_pages(self) -> None:
+        adapter = _adapter()
+        page1 = [_issue_json(key=f"TEST-{i}") for i in range(50)]
+        page2 = [_issue_json(key=f"TEST-{50 + i}") for i in range(10)]
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
+        route.side_effect = [
+            Response(200, json={"issues": page1}),
+            Response(200, json={"issues": page2}),
+        ]
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        assert len(tasks) == 60
+        assert route.call_count == 2
+        body1 = json.loads(route.calls[0].request.content)
+        assert body1["startAt"] == 0
+        body2 = json.loads(route.calls[1].request.content)
+        assert body2["startAt"] == 50
+
+    @respx.mock
+    async def test_paginate_stops_on_partial_page(self) -> None:
+        adapter = _adapter()
+        page = [_issue_json(key=f"TEST-{i}") for i in range(30)]
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=Response(200, json={"issues": page}),
+        )
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        assert len(tasks) == 30
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_paginate_caps_at_max_issues(self) -> None:
+        adapter = _adapter()
+        full_page = [_issue_json(key=f"TEST-{i}") for i in range(50)]
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=Response(200, json={"issues": full_page}),
+        )
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        # 2000 / 50 = 40 pages max
+        assert route.call_count == 40
+        assert len(tasks) == 2000
+
+
+    @respx.mock
+    async def test_paginate_returns_empty_on_mid_pagination_failure(self) -> None:
+        adapter = _adapter()
+        page1 = [_issue_json(key=f"TEST-{i}") for i in range(50)]
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
+        route.side_effect = [
+            Response(200, json={"issues": page1}),
+            Response(500, json={"error": "Internal Server Error"}),
+        ]
+        tasks = await adapter.list_tasks(TaskFilters(paginate=True))
+        assert tasks == []
+        assert route.call_count == 2
+
+    @respx.mock
+    async def test_non_paginate_single_request(self) -> None:
+        adapter = _adapter()
+        route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
+            return_value=Response(200, json={"issues": [_issue_json()]}),
+        )
+        tasks = await adapter.list_tasks(TaskFilters(state="open"))
+        assert len(tasks) == 1
+        assert route.call_count == 1
+
+
 class TestGetTask:
     @respx.mock
     async def test_get_task_success(self) -> None:
