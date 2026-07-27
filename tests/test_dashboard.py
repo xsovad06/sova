@@ -8881,6 +8881,153 @@ class TestPipelineOutcomeValidation:
         assert call_args[0][0] == "validate_pipeline.bypass_diagnostic"
         assert "Run sova run 99" in call_args[1]["prompt_sent"]
 
+    async def test_developer_commit_done_no_push_no_pr(self) -> None:
+        """Commit step ran but push/create_pr did not: pipeline stopped mid-flight."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="450",
+                    role="developer",
+                    status="done",
+                    current_step="commit",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="commit", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "committed code but never pushed" in result
+
+    async def test_developer_commit_done_with_pr_ok(self) -> None:
+        """Commit step ran and pr_number is set: not a mid-flight stop."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="451",
+                    role="developer",
+                    status="done",
+                    current_step="create_pr",
+                    pr_number=99,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="commit", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="push", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="create_pr", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_developer_no_commit_step_no_pr_ok(self) -> None:
+        """Only early steps (before commit) ran: legitimate early stop, not a failure."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="452",
+                    role="developer",
+                    status="done",
+                    current_step="assess",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="assess", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_researcher_commit_check_not_applied(self) -> None:
+        """Researcher role should not trigger the commit-without-push check."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="453",
+                    role="researcher",
+                    status="done",
+                    current_step="research",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="research", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "researcher"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_developer_commit_failed_no_downgrade(self) -> None:
+        """Commit step with non-done status should not trigger the check."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.db.models import StepExecution
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="454",
+                    role="developer",
+                    status="done",
+                    current_step="commit",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="commit", status="failed"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
 
 class TestReadFileHandoff:
     def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
