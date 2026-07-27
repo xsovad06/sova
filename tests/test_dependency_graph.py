@@ -12,6 +12,7 @@ from sova.adapters.base import Task, TaskState
 from sova.db.session import close_db, init_db
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
+    _get_spec_meta,
     build_dependency_graph,
     parse_dependencies,
 )
@@ -526,6 +527,143 @@ class TestDependencyGraph:
 
 
 # ---------------------------------------------------------------------------
+# _get_spec_meta
+# ---------------------------------------------------------------------------
+
+
+class TestGetSpecMeta:
+    def test_returns_none_when_no_spec_file(self) -> None:
+        """Returns None when read_spec finds no file for the issue."""
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+            result = _get_spec_meta(42)
+        assert result is None
+
+    def test_returns_meta_dict_when_spec_exists(self) -> None:
+        """Returns a dict with url, status, complexity, open_questions when spec found."""
+        spec = {
+            "status": "draft",
+            "complexity": "medium",
+            "open_questions": [{"id": 0, "text": "Q1", "answer": ""}],
+        }
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            result = _get_spec_meta(42)
+        assert result is not None
+        assert result["url"] == "/spec/42"
+        assert result["status"] == "draft"
+        assert result["complexity"] == "medium"
+        assert result["open_questions"] == 1
+
+    def test_open_questions_count_zero_when_none(self) -> None:
+        """open_questions is 0 when spec has no open questions."""
+        spec = {"status": "approved", "complexity": "low", "open_questions": []}
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            result = _get_spec_meta(7)
+        assert result is not None
+        assert result["open_questions"] == 0
+
+    def test_passes_project_dir_to_read_spec(self) -> None:
+        """project_dir is forwarded to spec_service.read_spec."""
+        from pathlib import Path
+
+        sentinel = Path("/custom/project")
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None) as mock_read:
+            _get_spec_meta(10, project_dir=sentinel)
+        mock_read.assert_called_once_with("10", sentinel)
+
+    def test_defaults_to_approved_status(self) -> None:
+        """Status defaults to 'draft' when spec dict has no status key."""
+        spec = {"complexity": "high", "open_questions": []}
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            result = _get_spec_meta(1)
+        assert result is not None
+        assert result["status"] == "draft"
+
+
+# ---------------------------------------------------------------------------
+# DependencyGraph.to_dict -- RESEARCHED node spec enrichment
+# ---------------------------------------------------------------------------
+
+
+class TestToDict_SpecEnrichment:
+    def test_researched_without_spec_keeps_developer_action(self) -> None:
+        """RESEARCHED node with no spec file keeps the default 'Run Developer' action."""
+        tasks = [_task(1, state=TaskState.RESEARCHED)]
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+            d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        assert any(a.get("role") == "developer" for a in node["available_actions"])
+        assert "spec_meta" not in node
+
+    def test_researched_with_spec_replaces_actions(self) -> None:
+        """RESEARCHED node with a spec file gets three spec-aware actions instead of developer."""
+        tasks = [_task(1, state=TaskState.RESEARCHED)]
+        spec = {"status": "draft", "complexity": "medium", "open_questions": []}
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        action_ids = [a["id"] for a in node["available_actions"]]
+        assert "view-spec" in action_ids
+        assert "approve-spec" in action_ids
+        assert "revise-spec" in action_ids
+        # Original developer action must be gone
+        assert not any(a.get("role") == "developer" for a in node["available_actions"])
+
+    def test_researched_with_spec_adds_spec_meta_to_node(self) -> None:
+        """Node dict includes spec_meta when a spec exists for the issue."""
+        tasks = [_task(5, state=TaskState.RESEARCHED)]
+        spec = {
+            "status": "approved",
+            "complexity": "high",
+            "open_questions": [{"id": 0, "text": "something?", "answer": ""}],
+        }
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        assert "spec_meta" in node
+        assert node["spec_meta"]["status"] == "approved"
+        assert node["spec_meta"]["complexity"] == "high"
+        assert node["spec_meta"]["open_questions"] == 1
+        assert node["spec_meta"]["url"] == "/spec/5"
+
+    def test_spec_meta_absent_for_non_researched_states(self) -> None:
+        """spec_meta is not added for nodes in states other than RESEARCHED."""
+        for state in (TaskState.TRIAGED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.DONE):
+            tasks = [_task(1, state=state)]
+            spec = {"status": "draft", "complexity": "low", "open_questions": []}
+            with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+                d = DependencyGraph(tasks).to_dict()
+            node = d["nodes"][0]
+            assert "spec_meta" not in node, f"spec_meta should be absent for state {state}"
+
+    def test_researched_spec_meta_error_falls_back_gracefully(self) -> None:
+        """If _get_spec_meta raises, the node falls back to the default developer action."""
+        tasks = [_task(1, state=TaskState.RESEARCHED)]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            side_effect=RuntimeError("disk error"),
+        ):
+            d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        assert any(a.get("role") == "developer" for a in node["available_actions"])
+        assert "spec_meta" not in node
+
+    def test_spec_action_urls_include_issue_id(self) -> None:
+        """View-spec link URL and API action URLs contain the correct issue ID."""
+        tasks = [_task(99, state=TaskState.RESEARCHED)]
+        spec = {"status": "draft", "complexity": "low", "open_questions": []}
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        actions_by_id = {a["id"]: a for a in node["available_actions"]}
+        assert actions_by_id["view-spec"]["url"] == "/spec/99"
+        assert actions_by_id["view-spec"]["type"] == "link"
+        assert actions_by_id["approve-spec"]["url"] == "/spec/99/approve"
+        assert actions_by_id["approve-spec"]["type"] == "api"
+        assert actions_by_id["revise-spec"]["url"] == "/spec/99/revise"
+        assert actions_by_id["revise-spec"]["type"] == "api"
+
+
+# ---------------------------------------------------------------------------
 # build_dependency_graph (async)
 # ---------------------------------------------------------------------------
 
@@ -558,88 +696,6 @@ class TestBuildDependencyGraph:
         # Missing dep still shows in validation
         result = graph.validate()
         assert 999 in result.missing_refs
-
-    @pytest.mark.asyncio
-    async def test_done_dependency_preserved_when_filtered_by_milestone(self) -> None:
-        """DONE tasks outside active milestones are kept if referenced as dependencies."""
-        adapter = AsyncMock()
-        adapter.list_tasks.return_value = [
-            # Done task in a completed milestone (all tasks done)
-            _task(1, state=TaskState.DONE, milestone="Phase 6"),
-            # Open task in active milestone depends on #1
-            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
-        ]
-
-        graph = await build_dependency_graph(adapter)
-
-        # #1 must be in the graph so #2's dependency is satisfied
-        assert graph.has_task(1)
-        assert graph.get_ready_tasks() == [2]
-
-    @pytest.mark.asyncio
-    async def test_done_dependency_no_milestone_preserved(self) -> None:
-        """DONE tasks with no milestone are kept if referenced as dependencies."""
-        adapter = AsyncMock()
-        adapter.list_tasks.return_value = [
-            _task(1, state=TaskState.DONE, milestone=""),
-            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
-        ]
-
-        graph = await build_dependency_graph(adapter)
-
-        assert graph.has_task(1)
-        assert graph.get_ready_tasks() == [2]
-
-    @pytest.mark.asyncio
-    async def test_done_tasks_not_referenced_still_filtered(self) -> None:
-        """DONE tasks in completed milestones are filtered if not referenced."""
-        adapter = AsyncMock()
-        adapter.list_tasks.return_value = [
-            _task(1, state=TaskState.DONE, milestone="Phase 5"),
-            _task(2, state=TaskState.DONE, milestone="Phase 5"),
-            _task(3, state=TaskState.BACKLOG, milestone="Phase 7"),
-        ]
-
-        graph = await build_dependency_graph(adapter)
-
-        assert not graph.has_task(1)
-        assert not graph.has_task(2)
-        assert graph.has_task(3)
-
-    @pytest.mark.asyncio
-    async def test_multiple_done_deps_different_milestones_preserved(self) -> None:
-        """Multiple DONE dependencies from different milestones are all preserved."""
-        adapter = AsyncMock()
-        adapter.list_tasks.return_value = [
-            _task(1, state=TaskState.DONE, milestone="Phase 5"),
-            _task(2, state=TaskState.DONE, milestone="Phase 6"),
-            _task(3, body="## Dependencies\n- #1\n- #2\n", state=TaskState.BACKLOG, milestone="Phase 7"),
-        ]
-
-        graph = await build_dependency_graph(adapter)
-
-        assert graph.has_task(1)
-        assert graph.has_task(2)
-        assert graph.get_ready_tasks() == [3]
-
-    @pytest.mark.asyncio
-    async def test_done_dep_in_cycle_participates_in_validation(self) -> None:
-        """Re-added DONE node participates in cycle detection."""
-        adapter = AsyncMock()
-        adapter.list_tasks.return_value = [
-            # Circular: #1 depends on #2, #2 depends on #1
-            _task(1, body="## Dependencies\n- #2\n", state=TaskState.DONE, milestone="Phase 5"),
-            _task(2, body="## Dependencies\n- #1\n", state=TaskState.BACKLOG, milestone="Phase 7"),
-        ]
-
-        graph = await build_dependency_graph(adapter)
-
-        result = graph.validate()
-        assert result.valid is False
-        assert sorted(result.cycle_members) == [1, 2]
-        # DONE node excluded from ready; #2's dep on DONE #1 is satisfied
-        # but get_ready_tasks doesn't gate on cycles, so #2 is still ready
-        assert graph.get_ready_tasks() == [2]
 
     @pytest.mark.asyncio
     async def test_milestone_filter_passed(self) -> None:

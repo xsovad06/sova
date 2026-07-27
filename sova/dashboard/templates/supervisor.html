@@ -65,6 +65,7 @@
       </div>
       <h4 id="drawer-title" class="text-sm font-medium text-gray-200 mb-1 leading-snug"></h4>
       <p id="drawer-excerpt" class="text-xs text-gray-500 mb-3 leading-relaxed"></p>
+      <div id="drawer-spec-info" class="hidden flex items-center gap-2 flex-wrap mb-3 text-xs"></div>
       <div id="drawer-actions" class="flex items-center gap-2 flex-wrap"></div>
     </div>
     <button onclick="hideDrawer()" class="text-gray-600 hover:text-gray-400 text-xs shrink-0 mt-0.5">close</button>
@@ -863,6 +864,8 @@ function showDrawer(node) {
   }
 
   // Agent/handoff/last-run status badges (priority: agent > handoff > last-run)
+  const existingBadges = document.getElementById('drawer-status-badges');
+  if (existingBadges) existingBadges.remove();
   let statusBadges = '';
   if (node.agent_running) {
     const agentLink = node.agent_run_id != null ? `<a href="${esc(`${prefix}/work/${encodeURIComponent(node.agent_run_id)}`)}" class="hover:underline">` : '';
@@ -889,13 +892,48 @@ function showDrawer(node) {
       `<div class="flex items-center gap-2 flex-wrap mb-2" id="drawer-status-badges">${statusBadges}</div>`);
   }
 
+  const specInfo = document.getElementById('drawer-spec-info');
+  if (node.spec_meta) {
+    specInfo.classList.remove('hidden');
+    const sm = node.spec_meta;
+    const statusColor = sm.status === 'approved' ? 'text-accent-green' :
+                        sm.status === 'rejected'  ? 'text-accent-red'   : 'text-accent-yellow';
+    const qBadge = sm.open_questions > 0
+      ? `<span class="text-gray-600">&middot;</span><span class="text-accent-yellow">${sm.open_questions} open Q${sm.open_questions !== 1 ? 's' : ''}</span>`
+      : '';
+    specInfo.innerHTML =
+      `<span class="text-gray-500">Spec:</span>` +
+      `<span class="${statusColor}">${esc(sm.status)}</span>` +
+      `<span class="text-gray-600">&middot;</span>` +
+      `<span class="text-gray-400">${esc(sm.complexity)}</span>` +
+      qBadge;
+  } else {
+    specInfo.classList.add('hidden');
+    specInfo.innerHTML = '';
+  }
+
   const actions = document.getElementById('drawer-actions');
-  const actionBtns = (node.available_actions || []).map(a =>
-    `<button data-issue="${node.id}" data-role="${esc(a.role)}"
+  const actionBtns = (node.available_actions || []).map(a => {
+    if (a.type === 'link') {
+      return `<a href="${prefix}${esc(a.url)}" target="_blank"
+        class="text-xs px-3 py-1.5 rounded bg-blue-700/30 text-blue-400 hover:bg-blue-700/50 transition-colors">
+        ${esc(a.label)}
+      </a>`;
+    }
+    if (a.type === 'api') {
+      const btnCls = a.id === 'approve-spec'
+        ? 'bg-green-700/40 text-green-400 hover:bg-green-700/60'
+        : 'bg-yellow-700/30 text-yellow-400 hover:bg-yellow-700/50';
+      return `<button data-issue="${node.id}" data-url="${esc(a.url)}" data-label="${esc(a.label)}"
+        class="dep-api-btn text-xs px-3 py-1.5 rounded ${btnCls} transition-colors">
+        ${esc(a.label)}
+      </button>`;
+    }
+    return `<button data-issue="${node.id}" data-role="${esc(a.role)}"
       class="dep-action-btn text-xs px-3 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
       ${esc(a.label)}
-    </button>`
-  ).join('');
+    </button>`;
+  }).join('');
 
   const lifecycleLink = `<a href="${prefix}/lifecycle/${node.id}"
     class="text-xs px-3 py-1.5 rounded bg-gray-700/40 text-gray-400 hover:bg-gray-700/60">
@@ -990,7 +1028,24 @@ async function triggerPoll() {
 // -- Action button delegation (avoids inline onclick with data values in attributes) --
 document.getElementById('action-drawer').addEventListener('click', e => {
   const btn = e.target.closest('.dep-action-btn');
-  if (btn) spawnAgent(btn.dataset.issue, btn.dataset.role);
+  if (btn) { spawnAgent(btn.dataset.issue, btn.dataset.role); return; }
+
+  const apiBtn = e.target.closest('.dep-api-btn');
+  if (apiBtn) {
+    const originalLabel = apiBtn.dataset.label || apiBtn.textContent.trim();
+    apiBtn.disabled = true;
+    apiBtn.textContent = '...';
+    fetch(apiBase + apiBtn.dataset.url, { method: 'POST' })
+      .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || `HTTP ${r.status}`); });
+      })
+      .then(() => { hideDrawer(); setTimeout(loadGraph, 1500); })
+      .catch(err => {
+        showToast(`Failed: ${err.message}`, 'error');
+        apiBtn.disabled = false;
+        apiBtn.textContent = originalLabel;
+      });
+  }
 });
 
 // -- WebSocket for real-time graph invalidation --
