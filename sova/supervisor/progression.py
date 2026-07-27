@@ -15,7 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from sova.adapters.base import TaskAdapter, TaskState
+from sova.adapters.base import DEPENDENCY_SATISFIED, TaskAdapter, TaskState
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.core.state import TASK_RUN_TERMINAL
@@ -537,7 +537,7 @@ class TaskProgressionEngine:
                     gate="dependency",
                     detail=f"Dependency #{dep_id} not found (missing reference)",
                 )
-            if dep_task.state != TaskState.DONE:
+            if dep_task.state not in DEPENDENCY_SATISFIED:
                 return BlockReason(
                     gate="dependency",
                     detail=f"Blocked by #{dep_id} (state: {dep_task.state.value})",

@@ -27,6 +27,12 @@ class TaskState(StrEnum):
     HUMAN_ONLY = "human_only"
 
 
+# States that count as "dependency satisfied" -- a task in one of these states
+# is considered done and unblocks its dependents.  Shared across the dependency
+# graph builder and the progression engine so the semantics stay co-located.
+DEPENDENCY_SATISFIED: frozenset[TaskState] = frozenset({TaskState.DONE})
+
+
 @dataclass
 class Task:
     """A task retrieved from a tracker."""
