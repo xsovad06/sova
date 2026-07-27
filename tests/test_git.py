@@ -882,6 +882,48 @@ class TestGetCIChecks:
             assert not checks[0].is_passed
             assert not checks[0].is_failed
 
+    async def test_queued_state_maps_to_queued(self) -> None:
+        checks_json = json.dumps([{"name": "Konflux Build", "state": "QUEUED", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.QUEUED
+            assert checks[0].conclusion is None
+            assert not checks[0].is_completed
+            assert not checks[0].is_passed
+            assert not checks[0].is_failed
+
+    async def test_in_progress_state_maps_correctly(self) -> None:
+        checks_json = json.dumps([{"name": "CI Build", "state": "IN_PROGRESS", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.IN_PROGRESS
+            assert checks[0].conclusion is None
+            assert not checks[0].is_completed
+            assert not checks[0].is_passed
+            assert not checks[0].is_failed
+
+    async def test_neutral_state_maps_to_completed_neutral(self) -> None:
+        checks_json = json.dumps([{"name": "Konflux / bonfire-tekton", "state": "NEUTRAL", "link": ""}])
+        with patch("sova.git.pr.run", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = _shell_ok(stdout=checks_json)
+
+            checks = await get_ci_checks(42, repo="user/repo")
+
+            assert len(checks) == 1
+            assert checks[0].status == CheckStatus.COMPLETED
+            assert checks[0].conclusion == CheckConclusion.NEUTRAL
+            assert checks[0].is_completed
+            assert not checks[0].is_passed
+            assert not checks[0].is_failed
+
     async def test_unknown_state_logged_and_defaults_to_in_progress(self) -> None:
         checks_json = json.dumps([{"name": "Mystery", "state": "WEIRD_STATE", "link": ""}])
         with (

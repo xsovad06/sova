@@ -402,9 +402,12 @@ _GH_STATE_MAP: dict[str, tuple[CheckStatus, CheckConclusion | None]] = {
     "ERROR": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
     "STARTUP_FAILURE": (CheckStatus.COMPLETED, CheckConclusion.FAILURE),
     "PENDING": (CheckStatus.IN_PROGRESS, None),
+    "QUEUED": (CheckStatus.QUEUED, None),
+    "IN_PROGRESS": (CheckStatus.IN_PROGRESS, None),
     "SKIPPING": (CheckStatus.COMPLETED, CheckConclusion.SKIPPED),
     "SKIPPED": (CheckStatus.COMPLETED, CheckConclusion.SKIPPED),
     "CANCELLED": (CheckStatus.COMPLETED, CheckConclusion.CANCELLED),
+    "NEUTRAL": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
     "EXPECTED": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
     "STALE": (CheckStatus.COMPLETED, CheckConclusion.NEUTRAL),
 }
