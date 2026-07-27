@@ -143,12 +143,14 @@ def _emit_finalize_event(run_id: int, *, status: str, exit_code: int, agent: Age
     )
 
 
-async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> None:
+async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> bool:
     """Update the TaskRun with final status and cost.
 
     Status is only updated if not already terminal (the WorkflowEngine may
     have set it first). Cost is always updated from the stream output since
     it includes Claude Code's own overhead.
+
+    Returns True if the status was actually transitioned (not already terminal).
     """
     try:
         from sova.db.models import CostRecord, TaskRun
@@ -162,7 +164,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
             async with session.begin():
                 task_run = await session.get(TaskRun, run_id)
                 if task_run is None:
-                    return
+                    return False
 
                 if cost > 0:
                     task_run.total_cost_usd = cost
@@ -176,7 +178,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     # get_sova_review_verdict() can always find the real verdict.
                     if not task_run.handoff_json:
                         _apply_file_handoff(task_run, file_handoff, run_id)
-                    return
+                    return False
 
                 task_run.status = status
                 task_run.ended_at = datetime.now(timezone.utc)
@@ -209,8 +211,10 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
 
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
         _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
+        return True
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
+        return False
 
 
 async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str] | None:

@@ -926,14 +926,45 @@ document.getElementById('action-drawer').addEventListener('click', e => {
   if (btn) spawnAgent(btn.dataset.issue, btn.dataset.role);
 });
 
+// -- WebSocket for real-time graph invalidation --
+let _supervisorWs = null;
+let _supervisorWsReconnectDelay = 1000;
+
+function _connectSupervisorWs() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsPath = prefix ? `${prefix}/ws/agents/status` : '/ws/agents/status';
+  _supervisorWs = new WebSocket(proto + '//' + location.host + wsPath);
+
+  _supervisorWs.onopen = () => { _supervisorWsReconnectDelay = 1000; };
+
+  _supervisorWs.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'graph_invalidated') {
+        loadGraph();
+      }
+    } catch (e) { /* ignore parse errors */ }
+  };
+
+  _supervisorWs.onclose = () => {
+    _supervisorWs = null;
+    setTimeout(_connectSupervisorWs, _supervisorWsReconnectDelay);
+    _supervisorWsReconnectDelay = Math.min(_supervisorWsReconnectDelay * 2, 16000);
+  };
+
+  _supervisorWs.onerror = () => { _supervisorWs?.close(); };
+}
+_connectSupervisorWs();
+
 // -- Init --
 loadStatus(); loadQuota(); loadGraph(); loadDecisions();
 
-// Poll every 30s; loadGraph re-renders only when data changes
+// Poll every 30s as fallback; loadGraph re-renders only when data changes
 setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
+  if (_supervisorWs) { _supervisorWs.onclose = null; _supervisorWs.close(); _supervisorWs = null; }
 });
 </script>
 {% endblock %}

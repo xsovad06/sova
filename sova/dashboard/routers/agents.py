@@ -70,12 +70,31 @@ class _ConnectionManager:
         self._producer_tasks.clear()
         self._groups.clear()
 
+    async def broadcast_event(self, event_type: str, project_dir: Path | None) -> None:
+        """Send a one-shot event to all subscribers for a project.
+
+        No-op when no connections exist for the project directory.
+        """
+        if not self._groups.get(project_dir):
+            return
+        await self._broadcast({"type": event_type}, project_dir)
+
     async def _broadcast(self, data: dict, project_dir: Path | None) -> None:
-        for ws in list(self._groups.get(project_dir, [])):
+        sockets = list(self._groups.get(project_dir, []))
+        if not sockets:
+            return
+
+        async def _send(ws: WebSocket) -> WebSocket | None:
             try:
                 await asyncio.wait_for(ws.send_json(data), timeout=2.0)
             except Exception:
-                self.disconnect(ws, project_dir)
+                return ws
+            return None
+
+        results = await asyncio.gather(*(_send(ws) for ws in sockets))
+        for failed_ws in results:
+            if failed_ws is not None:
+                self.disconnect(failed_ws, project_dir)
 
     async def _produce_loop(self, project_dir: Path | None) -> None:
         """Single producer per project: fetch statuses and broadcast."""
