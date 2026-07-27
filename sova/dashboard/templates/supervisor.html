@@ -33,6 +33,8 @@
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#f9e2af"></span> Awaiting</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-gray-500 inline-block"></span> Open</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-red inline-block"></span> Blocked</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
+        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#fab387"></span> Handoff</span>
       </div>
       <div class="flex items-center gap-1">
         <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
@@ -119,6 +121,12 @@ const esc = window.escapeHtml || function(str) {
   const d = document.createElement('div'); d.textContent = str; return d.innerHTML;
 };
 
+function _fmtElapsed(secs) {
+  if (secs < 60) return secs + 's';
+  const m = Math.floor(secs / 60), s = secs % 60;
+  return m + 'm' + (s ? ' ' + s + 's' : '');
+}
+
 // -- Graph state --
 let _graphKey = null;
 let _zoomBehavior = null;
@@ -126,7 +134,7 @@ let _svgSel = null;
 let _fitTransform = null;
 
 function _computeGraphKey(data) {
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.agent_elapsed_seconds||0}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -753,6 +761,34 @@ function renderGraph(data) {
       .attr('fill', '#cdd6f4').attr('font-size', '10.5px').attr('font-weight', '700').attr('font-family', 'monospace')
       .text(`#${n.id}`);
 
+    // Agent running indicator (pulsing dot at top-left)
+    if (n.agent_running) {
+      const pulseG = g.append('g');
+      pulseG.append('circle')
+        .attr('cx', pos.x + 6).attr('cy', pos.y + 6).attr('r', 4)
+        .attr('fill', '#a6e3a1').attr('opacity', 0.3)
+        .append('animate').attr('attributeName', 'r').attr('values', '4;7;4').attr('dur', '1.5s').attr('repeatCount', 'indefinite');
+      pulseG.append('circle')
+        .attr('cx', pos.x + 6).attr('cy', pos.y + 6).attr('r', 3)
+        .attr('fill', '#a6e3a1');
+    }
+
+    // Handoff pending indicator (small badge at bottom-right)
+    if (n.handoff_pending && !n.agent_running) {
+      const hbX = pos.x + NW - 10, hbY = pos.y + NH - 10;
+      g.append('circle')
+        .attr('cx', hbX).attr('cy', hbY).attr('r', 4)
+        .attr('fill', '#fab387');
+    }
+
+    // Failed last run indicator (small red badge at bottom-right, only when no agent and no handoff)
+    if ((n.last_run_status === 'failed' || n.last_run_status === 'interrupted') && !n.agent_running && !n.handoff_pending) {
+      const fbX = pos.x + NW - 10, fbY = pos.y + NH - 10;
+      g.append('circle')
+        .attr('cx', fbX).attr('cy', fbY).attr('r', 4)
+        .attr('fill', '#f38ba8');
+    }
+
     // PR badge (small pill at the top-right corner of the node)
     if (n.pr_number && prc) {
       const badgeX = pos.x + NW - 38, badgeY = pos.y + 4;
@@ -798,6 +834,8 @@ function renderGraph(data) {
 
 // -- Action drawer --
 function showDrawer(node) {
+  const oldBadges = document.getElementById('drawer-status-badges');
+  if (oldBadges) oldBadges.remove();
   const drawer = document.getElementById('action-drawer');
   drawer.classList.remove('hidden');
 
@@ -824,6 +862,33 @@ function showDrawer(node) {
     prBadge.innerHTML = '';
   }
 
+  // Agent/handoff/last-run status badges (priority: agent > handoff > last-run)
+  let statusBadges = '';
+  if (node.agent_running) {
+    const agentLink = node.agent_run_id != null ? `<a href="${esc(`${prefix}/work/${encodeURIComponent(node.agent_run_id)}`)}" class="hover:underline">` : '';
+    const agentLinkEnd = node.agent_run_id != null ? '</a>' : '';
+    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-900/40 text-accent-green border border-green-700/40">
+      <span class="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"></span>
+      ${agentLink}Agent running (${esc(node.agent_role || 'agent')}${node.agent_elapsed_seconds != null ? ', ' + _fmtElapsed(node.agent_elapsed_seconds) : ''})${agentLinkEnd}
+    </span>`;
+  }
+  if (node.handoff_pending && !node.agent_running) {
+    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30">
+      Handoff: ${esc(node.handoff_action || 'pending')}
+    </span>`;
+  }
+  if ((node.last_run_status === 'failed' || node.last_run_status === 'interrupted') && !node.agent_running && !node.handoff_pending) {
+    const runLink = node.last_run_id != null ? `<a href="${esc(`${prefix}/work/${encodeURIComponent(node.last_run_id)}`)}" class="hover:underline">` : '';
+    const runLinkEnd = node.last_run_id != null ? '</a>' : '';
+    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-accent-red border border-red-700/30">
+      ${runLink}Last run ${esc(node.last_run_status)}${runLinkEnd}
+    </span>`;
+  }
+  if (statusBadges) {
+    document.getElementById('drawer-excerpt').insertAdjacentHTML('afterend',
+      `<div class="flex items-center gap-2 flex-wrap mb-2" id="drawer-status-badges">${statusBadges}</div>`);
+  }
+
   const actions = document.getElementById('drawer-actions');
   const actionBtns = (node.available_actions || []).map(a =>
     `<button data-issue="${node.id}" data-role="${esc(a.role)}"
@@ -842,6 +907,8 @@ function showDrawer(node) {
 }
 
 function hideDrawer() {
+  const badges = document.getElementById('drawer-status-badges');
+  if (badges) badges.remove();
   document.getElementById('action-drawer').classList.add('hidden');
 }
 

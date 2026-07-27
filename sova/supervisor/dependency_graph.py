@@ -246,6 +246,9 @@ class DependencyGraph:
         *,
         pr_map: dict[int, dict] | None = None,
         pr_state_actions: dict[str, list[dict]] | None = None,
+        agent_map: dict[int, dict] | None = None,
+        handoff_map: dict[int, dict] | None = None,
+        last_run_map: dict[int, dict] | None = None,
     ) -> dict:
         """Serialize the graph for API responses.
 
@@ -253,11 +256,18 @@ class DependencyGraph:
         pr_state_label).  When provided, nodes are enriched with PR fields and
         IN_REVIEW nodes get PR-state-aware available_actions via *pr_state_actions*.
 
+        *agent_map* maps issue IDs to running agent info (run_id, role, status, elapsed_seconds).
+        *handoff_map* maps issue IDs to pending handoff info (next_action).
+        *last_run_map* maps issue IDs to last terminal run info (run_id, status).
+
         Recomputes validate(), get_ready_tasks(), and get_parallel_groups()
         on every call.  Avoid calling repeatedly on the same graph instance;
         cache the result if multiple reads are needed.
         """
         effective_pr_map = pr_map or {}
+        effective_agent_map = agent_map or {}
+        effective_handoff_map = handoff_map or {}
+        effective_last_run_map = last_run_map or {}
         nodes = []
         for tid, task in sorted(self._tasks.items()):
             body = task.body or ""
@@ -293,6 +303,21 @@ class DependencyGraph:
                 node["pr_url"] = pr_info.get("pr_url", "")
                 node["pr_state"] = pr_info.get("pr_state", "")
                 node["pr_state_label"] = pr_info.get("pr_state_label", "")
+            agent_info = effective_agent_map.get(tid)
+            if agent_info:
+                node["agent_running"] = True
+                node["agent_run_id"] = agent_info["run_id"]
+                node["agent_role"] = agent_info["role"]
+                node["agent_status"] = agent_info["status"]
+                node["agent_elapsed_seconds"] = agent_info.get("elapsed_seconds", 0)
+            handoff_info = effective_handoff_map.get(tid)
+            if handoff_info:
+                node["handoff_pending"] = True
+                node["handoff_action"] = handoff_info.get("next_action", "")
+            last_run_info = effective_last_run_map.get(tid)
+            if last_run_info:
+                node["last_run_status"] = last_run_info["status"]
+                node["last_run_id"] = last_run_info["run_id"]
             nodes.append(node)
 
         validation = self.validate()
