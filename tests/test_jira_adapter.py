@@ -368,19 +368,19 @@ class TestListTasksPagination:
         page2 = [_issue_json(key=f"TEST-{50 + i}") for i in range(10)]
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
         route.side_effect = [
-            Response(200, json={"issues": page1}),
+            Response(200, json={"issues": page1, "nextPageToken": "token-page2"}),
             Response(200, json={"issues": page2}),
         ]
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
         assert len(tasks) == 60
         assert route.call_count == 2
         body1 = json.loads(route.calls[0].request.content)
-        assert body1["startAt"] == 0
+        assert "nextPageToken" not in body1
         body2 = json.loads(route.calls[1].request.content)
-        assert body2["startAt"] == 50
+        assert body2["nextPageToken"] == "token-page2"
 
     @respx.mock
-    async def test_paginate_stops_on_partial_page(self) -> None:
+    async def test_paginate_stops_on_no_token(self) -> None:
         adapter = _adapter()
         page = [_issue_json(key=f"TEST-{i}") for i in range(30)]
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
@@ -395,7 +395,7 @@ class TestListTasksPagination:
         adapter = _adapter()
         full_page = [_issue_json(key=f"TEST-{i}") for i in range(50)]
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
-            return_value=Response(200, json={"issues": full_page}),
+            return_value=Response(200, json={"issues": full_page, "nextPageToken": "next"}),
         )
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
         # 2000 / 50 = 40 pages max
@@ -408,7 +408,7 @@ class TestListTasksPagination:
         page1 = [_issue_json(key=f"TEST-{i}") for i in range(50)]
         route = respx.post("https://test.atlassian.net/rest/api/3/search/jql")
         route.side_effect = [
-            Response(200, json={"issues": page1}),
+            Response(200, json={"issues": page1, "nextPageToken": "page2"}),
             Response(500, json={"error": "Internal Server Error"}),
         ]
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
