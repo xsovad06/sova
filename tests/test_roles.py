@@ -3710,6 +3710,16 @@ class TestReviewerParsing:
         assert _verdict_label([_f(5)]) == "REVISE"
         assert _verdict_label([_f(1)]) == "REVISE"
 
+    def test_sova_verdict_label_name(self) -> None:
+        from sova.roles.reviewer import ReviewFinding, _sova_verdict_label_name
+
+        def _f(severity: int) -> ReviewFinding:
+            return ReviewFinding(file="a.py", severity=severity, category="bug", description="X")
+
+        assert _sova_verdict_label_name([]) == "sova:approved"
+        assert _sova_verdict_label_name([_f(7)]) == "sova:block"
+        assert _sova_verdict_label_name([_f(5)]) == "sova:revise"
+
     def test_format_findings_no_findings(self) -> None:
         from sova.roles.reviewer import _format_findings_comment
 
@@ -3865,6 +3875,52 @@ class TestReviewerExceptionPaths:
         ):
             # Should not raise
             role._append_review_rationale(ctx, review)
+
+    async def test_write_verdict_label_calls_adapter(self) -> None:
+        """_write_verdict_label adds sova:{verdict} label and removes stale ones."""
+        from sova.roles.reviewer import ReviewerRole, ReviewFinding, ReviewResult
+
+        role = ReviewerRole()
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        finding = ReviewFinding(file="a.py", severity=5, category="bug", description="X")
+        review = ReviewResult(findings=[finding], summary="Issues", total_cost=0)
+
+        await role._write_verdict_label(ctx, review)
+
+        # Should remove sova:approved and sova:block, add sova:revise
+        remove_calls = [c.args for c in adapter.remove_label.call_args_list]
+        assert (ctx.issue_number, "sova:approved") in remove_calls
+        assert (ctx.issue_number, "sova:block") in remove_calls
+        adapter.add_label.assert_called_once_with(ctx.issue_number, "sova:revise")
+
+    async def test_write_verdict_label_exception_non_fatal(self) -> None:
+        """_write_verdict_label handles adapter failure gracefully."""
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
+
+        role = ReviewerRole()
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        adapter.add_label = AsyncMock(side_effect=RuntimeError("API down"))
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        review = ReviewResult(findings=[], summary="OK", total_cost=0)
+
+        # Should not raise
+        await role._write_verdict_label(ctx, review)
+
+    async def test_write_verdict_label_skipped_when_no_issue(self) -> None:
+        """_write_verdict_label is a no-op when issue_number is missing."""
+        from sova.roles.reviewer import ReviewerRole, ReviewResult
+
+        role = ReviewerRole()
+        adapter = _mock_adapter(TaskState.IN_REVIEW)
+        ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.issue_number = None
+        review = ReviewResult(findings=[], summary="OK", total_cost=0)
+
+        await role._write_verdict_label(ctx, review)
+
+        adapter.add_label.assert_not_called()
+        adapter.remove_label.assert_not_called()
 
     async def test_write_handoff_db_exception_non_fatal(self) -> None:
         """_write_handoff handles DB write failure gracefully (lines 733-734)."""
