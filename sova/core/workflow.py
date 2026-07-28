@@ -536,6 +536,7 @@ class WorkflowEngine:
                         model="claude",
                         cost_usd=result.cost_usd,
                         duration_ms=elapsed_ms,
+                        model_selection_reason=self._ctx.model_selection_reason,
                     )
                     session.add(cost_record)
 

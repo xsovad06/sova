@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task, TaskAdapter
 from sova.config.models import ProjectConfig
 from sova.core.planning import PlanResult
+from sova.llm.complexity import ComplexityTier
 
 if TYPE_CHECKING:
     from sova.core.output import OutputWriter
@@ -59,6 +60,11 @@ class ExecutionContext:
     files_changed: list[str] = field(default_factory=list)
     commits: list[str] = field(default_factory=list)
     addressed_external_findings: list[dict] = field(default_factory=list)
+
+    # Complexity-based routing (set by AssessStep, used by all LLM-invoking steps)
+    complexity: ComplexityTier | None = None
+    resolved_model: str | None = None
+    model_selection_reason: str | None = None
 
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""

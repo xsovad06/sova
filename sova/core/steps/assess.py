@@ -18,6 +18,8 @@ from sova.adapters.base import TaskState
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git.pr import find_pr_for_issue, get_pr_branch
+from sova.llm.client import resolve_model
+from sova.llm.complexity import assess_complexity
 from sova.utils.logging import get_logger
 
 log = get_logger(component="step.assess")
@@ -33,7 +35,39 @@ class AssessStep(BaseStep):
         ctx.task = task
         state = await ctx.adapter.get_state(ctx.issue_number)
 
-        log.info("step.assess", issue=ctx.issue_number, tracker_state=state)
+        # Assess complexity and resolve model for this task.
+        # file_count_estimate is intentionally omitted: the file count can only be
+        # determined from plan/spec output, which is not available at assess-time.
+        complexity = assess_complexity(
+            title=task.title,
+            description=task.body,
+            labels=task.labels,
+        )
+        ctx.complexity = complexity
+
+        # Resolve model based on complexity and role
+        resolved = resolve_model(
+            role=ctx.role,
+            roles_config=ctx.config.roles,
+            complexity=complexity,
+            llm_config=ctx.config.llm,
+        )
+        if resolved:
+            ctx.resolved_model, ctx.model_selection_reason = resolved
+        else:
+            # Fallback to default model when no complexity-based routing applies
+            ctx.resolved_model = ctx.config.agent.model
+            ctx.model_selection_reason = "default (no complexity override)"
+
+        log.info(
+            "step.assess.model_routing",
+            issue=ctx.issue_number,
+            complexity=complexity.value,
+            model=ctx.resolved_model,
+            reason=ctx.model_selection_reason,
+        )
+
+        log.info("step.assess", issue=ctx.issue_number, tracker_state=state, complexity=complexity.value)
 
         if state not in _READY_STATES:
             return StepResult(
