@@ -152,7 +152,9 @@ class AddressExternalFindingsStep(BaseStep):
         """
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
-        has_changes = (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
+        has_changes = bool(
+            (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
+        )
 
         post_log = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
         post_count = len(post_log.stdout.strip().splitlines()) if post_log.success and post_log.stdout.strip() else 0

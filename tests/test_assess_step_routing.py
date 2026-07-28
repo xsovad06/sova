@@ -232,3 +232,49 @@ class TestAssessStepComplexityRouting:
             # Empty body defaults to MODERATE
             assert execution_context.complexity == ComplexityTier.MODERATE
             assert execution_context.resolved_model == "sonnet"
+
+    @pytest.mark.asyncio
+    async def test_can_skip_reruns_when_routing_state_missing(self, execution_context: ExecutionContext) -> None:
+        """AssessStep re-runs when routing state is missing on resume."""
+        step = AssessStep()
+        execution_context.completed_steps = frozenset({"assess"})
+        execution_context.resolved_model = None
+        execution_context.model_selection_reason = None
+
+        # Should NOT skip when routing state is missing
+        can_skip = await step.can_skip(execution_context)
+        assert not can_skip
+
+    @pytest.mark.asyncio
+    async def test_can_skip_allows_when_routing_state_present(self, execution_context: ExecutionContext) -> None:
+        """AssessStep skips when routing state exists on resume."""
+        step = AssessStep()
+        execution_context.completed_steps = frozenset({"assess"})
+        execution_context.resolved_model = "sonnet"
+        execution_context.model_selection_reason = "complexity:moderate->sonnet"
+
+        # Should skip when routing state is present
+        can_skip = await step.can_skip(execution_context)
+        assert can_skip
+
+    @pytest.mark.asyncio
+    async def test_can_skip_allows_force_even_without_routing_state(self, execution_context: ExecutionContext) -> None:
+        """AssessStep skips with --force even when routing state is missing."""
+        step = AssessStep()
+        execution_context.force = True
+        execution_context.resolved_model = None
+
+        # Should skip when force is set, regardless of routing state
+        can_skip = await step.can_skip(execution_context)
+        assert can_skip
+
+    @pytest.mark.asyncio
+    async def test_can_skip_allows_issueless_without_routing_state(self, execution_context: ExecutionContext) -> None:
+        """AssessStep skips for issueless runs even without routing state."""
+        step = AssessStep()
+        execution_context.issue_number = ""
+        execution_context.resolved_model = None
+
+        # Should skip when no issue, regardless of routing state
+        can_skip = await step.can_skip(execution_context)
+        assert can_skip
