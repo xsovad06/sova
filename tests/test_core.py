@@ -1103,6 +1103,169 @@ class TestDevelopStep:
 
         assert not gate.passed
 
+    async def test_gate_check_fails_with_only_lockfile_commits(self) -> None:
+        """Gate must fail when only lockfile/metadata files were changed (#532)."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout="abc123 chore(deps): update lockfile\n"),  # commits exist
+                MagicMock(success=True, stdout=""),  # git status --porcelain (no untracked)
+                MagicMock(success=True, stdout="Pipfile.lock\n"),  # git diff --name-only base..HEAD
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "no substantive" in gate.reason.lower()
+
+    async def test_gate_check_fails_with_only_metadata_commits(self) -> None:
+        """Gate must fail when only .sova/ or package-lock.json files changed (#532)."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout="abc123 chore: update metadata\n"),  # commits exist
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(
+                    success=True,
+                    stdout="package-lock.json\n.sova/test-baseline.json\nyarn.lock\n",
+                ),  # only metadata
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+
+    async def test_gate_check_passes_with_mixed_lockfile_and_source(self) -> None:
+        """Gate must pass when lockfile changes accompany real source changes."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout="abc123 feat: add feature\n"),  # commits exist
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(
+                    success=True,
+                    stdout="Pipfile.lock\nsrc/feature.py\ntests/test_feature.py\n",
+                ),  # lockfile + source
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_gate_check_passes_with_only_source_commits(self) -> None:
+        """Gate must pass when commits contain only source code changes."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout="abc123 feat: new endpoint\n"),  # commits exist
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(success=True, stdout="src/api/handler.py\ntests/test_handler.py\n"),
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_gate_check_still_passes_with_unstaged_changes(self) -> None:
+        """When there are unstaged source file changes, the gate passes."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" src/main.py | 10 ++++\n"),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(success=True, stdout="src/main.py\n"),  # git diff --name-only HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --name-only
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_gate_check_fails_with_only_unstaged_lockfile(self) -> None:
+        """Gate must fail when only unstaged lockfile changes exist."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" Pipfile.lock | 50 ++++\n"),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(success=True, stdout="Pipfile.lock\n"),  # git diff --name-only HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --name-only
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "no substantive" in gate.reason.lower()
+
+    async def test_gate_check_fails_with_only_untracked_metadata(self) -> None:
+        """Gate must fail when only untracked .sova/ or .claude/ metadata exists."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=""),  # git diff --stat HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout="?? .sova/test-baseline.json\n?? .claude/memory.md\n"),
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "no substantive" in gate.reason.lower()
+
+    async def test_gate_check_passes_with_mixed_unstaged_lockfile_and_source(self) -> None:
+        """Gate must pass when unstaged lockfile changes accompany source changes."""
+        from sova.core.steps.develop import DevelopStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with patch("sova.core.steps.develop.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout=" Pipfile.lock | 50 ++++\nsrc/app.py | 5 ++\n"),
+                MagicMock(success=True, stdout=""),  # git diff --cached --stat
+                MagicMock(success=True, stdout=""),  # git log base..HEAD
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(success=True, stdout="Pipfile.lock\nsrc/app.py\n"),  # --name-only HEAD
+                MagicMock(success=True, stdout=""),  # git diff --cached --name-only
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
 
 class TestCommitStep:
     async def test_commits_uncommitted_changes(self) -> None:
@@ -5173,6 +5336,168 @@ class TestDevelopStepExecute:
         assert not result.success
         assert "Timeout" in result.error
 
+    async def test_execute_fails_when_checks_exhausted(self) -> None:
+        """execute() must return success=False when fix cycles are exhausted (#532)."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (False, "checks still failing after 3 fix cycle(s)")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "checks still failing" in result.summary
+
+    async def test_execute_fails_when_checks_exhausted_budget(self) -> None:
+        """execute() must return success=False when fix cycles hit budget limit."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (False, "checks still failing after 2 fix cycle(s) (budget exceeded)")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "budget exceeded" in result.summary
+
+    async def test_execute_fails_when_no_changes_produced(self) -> None:
+        """execute() must return success=False when fix cycles produce no changes."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (False, "checks still failing after 3 fix cycle(s) (no changes produced)")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "no changes produced" in result.summary
+
+    async def test_execute_succeeds_when_checks_pass(self) -> None:
+        """execute() must return success=True when checks pass."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (True, "checks passed after 1 fix cycle(s)")
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "checks passed" in result.summary
+
+    async def test_execute_succeeds_when_no_check_cmd(self) -> None:
+        """execute() must return success=True when no check command is configured."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (True, "")  # no check cmd configured
+            result = await step.execute(ctx)
+
+        assert result.success
+
+    async def test_execute_fails_when_fix_llm_fails(self) -> None:
+        """execute() must return success=False when the fix LLM call fails."""
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.invoke_command", new_callable=AsyncMock) as mock_invoke,
+            patch.object(step, "_run_inner_check_loop", new_callable=AsyncMock) as mock_loop,
+            patch("sova.core.steps.develop._append_implementation_notes", new_callable=AsyncMock),
+        ):
+            mock_invoke.return_value = LLMResult(
+                text="Developed",
+                model="opus",
+                cost_usd=Decimal("1.50"),
+                input_tokens=5000,
+                output_tokens=3000,
+                session_id="sess-123",
+            )
+            mock_loop.return_value = (False, "check fix LLM failed on cycle 1: API timeout")
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "check fix LLM failed" in result.summary
+        assert result.error is not None
+
     def test_max_retries_is_one(self) -> None:
         from sova.core.steps.develop import DevelopStep
 
@@ -6265,7 +6590,8 @@ class TestDevelopStepInnerCheckLoop:
         ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
         step = DevelopStep()
 
-        summary = await step._run_inner_check_loop(ctx)
+        passed, summary = await step._run_inner_check_loop(ctx)
+        assert passed is True
         assert summary == ""
 
     async def test_check_loop_skipped_when_no_check_cmd(self, tmp_path: Path) -> None:
@@ -6276,8 +6602,9 @@ class TestDevelopStepInnerCheckLoop:
         ctx = _make_ctx(config=cfg, worktree_dir=tmp_path)
         step = DevelopStep()
 
-        summary = await step._run_inner_check_loop(ctx)
+        passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is True
         assert summary == ""
 
     async def test_check_loop_skipped_when_cmd_not_found(self) -> None:
@@ -6290,8 +6617,9 @@ class TestDevelopStepInnerCheckLoop:
         with patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run:
             # command -v probe fails
             mock_run.return_value = MagicMock(success=False, stdout="", stderr="not found")
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is True
         assert summary == ""
 
     async def test_checks_pass_first_try(self) -> None:
@@ -6306,8 +6634,9 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout="", stderr=""),  # command -v probe
                 MagicMock(success=True, stdout="All tests passed", stderr=""),  # check run
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is True
         assert summary == "checks passed"
 
     async def test_fix_cycle_succeeds(self) -> None:
@@ -6341,8 +6670,9 @@ class TestDevelopStepInnerCheckLoop:
                 input_tokens=100,
                 output_tokens=50,
             )
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is True
         assert summary == "checks passed after 1 fix cycle(s)"
         assert ctx.cost_usd == Decimal("0.50")
 
@@ -6385,8 +6715,9 @@ class TestDevelopStepInnerCheckLoop:
                 input_tokens=100,
                 output_tokens=10,
             )
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "no changes produced" in summary
         assert mock_invoke.await_count == 2
 
@@ -6408,8 +6739,9 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True),  # command -v probe
                 MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "budget exceeded" in summary
 
     async def test_llm_failure_returns_error_summary(self) -> None:
@@ -6430,8 +6762,9 @@ class TestDevelopStepInnerCheckLoop:
                 MagicMock(success=True, stdout="abc123\n"),  # git rev-parse HEAD (pre)
             ]
             mock_invoke.side_effect = RuntimeError("LLM timeout")
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "LLM timeout" in summary
 
     async def test_test_weakening_detected_and_reverted(self) -> None:
@@ -6472,8 +6805,9 @@ class TestDevelopStepInnerCheckLoop:
                 set(),  # pre_dirty: no tests dirty before fix
                 {"tests/test_foo.py"},  # post_dirty: LLM modified a test file
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "test weakening detected" in summary
 
     async def test_committed_test_weakening_triggers_hard_reset(self) -> None:
@@ -6518,8 +6852,9 @@ class TestDevelopStepInnerCheckLoop:
                 set(),  # pre_dirty: no tests dirty before fix
                 set(),  # post_dirty: no uncommitted test changes (committed instead)
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "test weakening detected" in summary
         # Verify git reset --hard was called with the pre-fix hash
         reset_call = mock_run.call_args_list[-1]
@@ -6545,7 +6880,7 @@ class TestDevelopStepInnerCheckLoop:
                 output_tokens=3000,
                 session_id="s1",
             )
-            mock_loop.return_value = "checks passed after 1 fix cycle(s)"
+            mock_loop.return_value = (True, "checks passed after 1 fix cycle(s)")
             result = await step.execute(ctx)
 
         assert result.success
@@ -6612,8 +6947,9 @@ class TestDevelopStepInnerCheckLoop:
                 input_tokens=100,
                 output_tokens=50,
             )
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert summary == "checks still failing after 2 fix cycle(s)"
         assert mock_invoke.await_count == 2
 
@@ -6666,8 +7002,9 @@ class TestDevelopStepInnerCheckLoop:
                 set(),  # cycle 2 pre
                 set(),  # cycle 2 post (clean)
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is True
         assert summary == "checks passed after 2 fix cycle(s)"
 
     async def test_committed_test_weakening_detected(self) -> None:
@@ -6712,8 +7049,9 @@ class TestDevelopStepInnerCheckLoop:
                 set(),  # pre: no dirty test files
                 set(),  # post: no uncommitted dirty (committed instead)
             ]
-            summary = await step._run_inner_check_loop(ctx)
+            passed, summary = await step._run_inner_check_loop(ctx)
 
+        assert passed is False
         assert "test weakening detected" in summary
         # Verify git reset --hard was used (not git checkout HEAD --)
         reset_call = mock_run.call_args_list[-1]

@@ -722,10 +722,12 @@ async def test_develop_step_validate_output_has_changes(tmp_path: Path) -> None:
 
     mock_run = AsyncMock(
         side_effect=[
-            MagicMock(success=True, stdout="file.py | 10 ++--"),  # diff
-            MagicMock(success=True, stdout=""),  # staged
+            MagicMock(success=True, stdout="file.py | 10 ++--"),  # diff --stat HEAD
+            MagicMock(success=True, stdout=""),  # diff --cached --stat
             MagicMock(success=True, stdout=""),  # log
             MagicMock(success=True, stdout=""),  # status --porcelain
+            MagicMock(success=True, stdout="file.py\n"),  # diff --name-only HEAD
+            MagicMock(success=True, stdout=""),  # diff --cached --name-only
         ]
     )
     with patch("sova.core.steps.develop.run", mock_run):
@@ -747,6 +749,7 @@ async def test_develop_step_validate_output_has_commits(tmp_path: Path) -> None:
             MagicMock(success=True, stdout=""),  # staged
             MagicMock(success=True, stdout="abc123 feat: something"),  # log
             MagicMock(success=True, stdout=""),  # status --porcelain
+            MagicMock(success=True, stdout="src/main.py\n"),  # diff --name-only (substantive)
         ]
     )
     with patch("sova.core.steps.develop.run", mock_run):

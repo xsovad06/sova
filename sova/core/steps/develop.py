@@ -118,6 +118,14 @@ def _resolve_check_cmd(ctx: ExecutionContext) -> str | None:
 
 _TEST_FILE_RE = re.compile(r"(?:^|/)(?:test_[^/]+\.py|tests\.py|[^/]+_test\.py)$")
 
+_NON_SUBSTANTIVE_RE = re.compile(
+    r"(?:"
+    r"Pipfile\.lock$|package-lock\.json$|yarn\.lock$|pnpm-lock\.yaml$|"
+    r"poetry\.lock$|Gemfile\.lock$|composer\.lock$|Cargo\.lock$|go\.sum$|"
+    r"^\.sova/|^\.claude/"
+    r")"
+)
+
 
 async def _get_dirty_test_files(cwd: Path) -> set[str]:
     """Return test files with uncommitted changes (staged or unstaged) vs HEAD.
@@ -164,7 +172,7 @@ class DevelopStep(BaseStep):
             await _append_implementation_notes(ctx)
 
             cost_before_checks = ctx.cost_usd
-            check_summary = await self._run_inner_check_loop(ctx)
+            checks_passed, check_summary = await self._run_inner_check_loop(ctx)
             inner_loop_cost = ctx.cost_usd - cost_before_checks
 
             summary = f"Development completed ({result.total_tokens} tokens)"
@@ -172,33 +180,35 @@ class DevelopStep(BaseStep):
                 summary += f"; {check_summary}"
 
             return StepResult(
-                success=True,
+                success=checks_passed,
                 summary=summary,
                 cost_usd=result.cost_usd + inner_loop_cost,
+                error=check_summary if not checks_passed else None,
             )
         except RuntimeError as exc:
             return StepResult(success=False, summary="Development failed", error=str(exc))
 
-    async def _run_inner_check_loop(self, ctx: ExecutionContext) -> str:
+    async def _run_inner_check_loop(self, ctx: ExecutionContext) -> tuple[bool, str]:
         """Run the project's check command and fix failures via LLM.
 
-        Returns a short summary string (empty if skipped or passed on first try).
+        Returns a (passed, summary) tuple where passed is True when checks
+        succeed (or are skipped) and summary is a short description string.
         """
         develop_cfg = ctx.config.develop
         max_cycles = develop_cfg.max_fix_cycles
         if max_cycles == 0:
             log.info("step.develop.inner_check_disabled")
-            return ""
+            return True, ""
 
         check_cmd = await self._resolve_and_verify_check_cmd(ctx)
         if check_cmd is None:
-            return ""
+            return True, ""
 
         # Initial check run
         check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
         if check_result.success:
             log.info("step.develop.checks_passed_first_try")
-            return "checks passed"
+            return True, "checks passed"
 
         check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
         log.warning("step.develop.checks_failed", output=check_output[:500])
@@ -206,7 +216,7 @@ class DevelopStep(BaseStep):
         for cycle in range(1, max_cycles + 1):
             if ctx.is_budget_exceeded:
                 log.warning("step.develop.budget_exceeded_in_check_loop", cycle=cycle)
-                return f"checks still failing after {cycle - 1} fix cycle(s) (budget exceeded)"
+                return False, f"checks still failing after {cycle - 1} fix cycle(s) (budget exceeded)"
 
             log.info("step.develop.fix_cycle", cycle=cycle, max=max_cycles)
 
@@ -214,18 +224,18 @@ class DevelopStep(BaseStep):
             if result is not None:
                 if result == "":
                     continue  # no-op or test weakening; skip re-run
-                return result
+                return False, result
 
             # Re-run checks
             check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
             if check_result.success:
                 log.info("step.develop.checks_passed_after_fix", cycles=cycle)
-                return f"checks passed after {cycle} fix cycle(s)"
+                return True, f"checks passed after {cycle} fix cycle(s)"
 
             check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
             log.warning("step.develop.checks_still_failing", cycle=cycle, output=check_output[:500])
 
-        return f"checks still failing after {max_cycles} fix cycle(s)"
+        return False, f"checks still failing after {max_cycles} fix cycle(s)"
 
     async def _resolve_and_verify_check_cmd(self, ctx: ExecutionContext) -> str | None:
         """Resolve the check command and verify it is executable.
@@ -380,7 +390,7 @@ class DevelopStep(BaseStep):
         return newly_modified
 
     async def validate_output(self, ctx: ExecutionContext) -> GateCheckResult:
-        """Gate: development must produce actual code changes."""
+        """Gate: development must produce actual substantive code changes."""
         diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
         staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
         has_changes = bool(
@@ -396,9 +406,44 @@ class DevelopStep(BaseStep):
             status_result.success and any(line.startswith("??") for line in status_result.stdout.splitlines())
         )
 
-        if has_changes or has_commits or has_untracked:
+        if not (has_changes or has_commits or has_untracked):
+            return GateCheckResult(
+                passed=False,
+                reason="Development produced no code changes",
+            )
+
+        # Collect filenames from all change sources for the substantive check.
+        all_files: list[str] = []
+        if has_changes:
+            unstaged_names = await run("git", "diff", "--name-only", "HEAD", cwd=ctx.working_dir)
+            if unstaged_names.success and unstaged_names.stdout.strip():
+                all_files.extend(unstaged_names.stdout.strip().splitlines())
+            staged_names = await run("git", "diff", "--cached", "--name-only", cwd=ctx.working_dir)
+            if staged_names.success and staged_names.stdout.strip():
+                all_files.extend(staged_names.stdout.strip().splitlines())
+        if has_commits:
+            committed_names = await run("git", "diff", "--name-only", f"{ctx.base_branch}..HEAD", cwd=ctx.working_dir)
+            if committed_names.success and committed_names.stdout.strip():
+                all_files.extend(committed_names.stdout.strip().splitlines())
+        if has_untracked:
+            for line in status_result.stdout.splitlines():
+                if line.startswith("??"):
+                    all_files.append(line[3:].strip())
+
+        # Fail-open: if we detected changes (from --stat) but couldn't get filenames, pass.
+        if not all_files:
             return GateCheckResult(passed=True)
-        return GateCheckResult(
-            passed=False,
-            reason="Development produced no code changes",
-        )
+
+        has_substantive = any(not _NON_SUBSTANTIVE_RE.search(f) for f in all_files)
+        if not has_substantive:
+            unique_files = sorted(set(all_files))
+            log.warning(
+                "step.develop.only_non_substantive_changes",
+                files=unique_files[:5],
+            )
+            return GateCheckResult(
+                passed=False,
+                reason=f"Development produced no substantive code changes (only: {', '.join(unique_files[:3])})",
+            )
+
+        return GateCheckResult(passed=True)
