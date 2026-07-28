@@ -137,17 +137,22 @@ var issueTypeStyles = {
 var actionStyles = {
   triage: 'bg-accent-yellow/20 text-accent-yellow',
   research: 'bg-accent-purple/20 text-accent-purple',
+  review_spec: 'bg-accent-purple/20 text-accent-purple',
   develop: 'bg-accent/20 text-accent',
   review: 'bg-accent-green/20 text-accent-green',
   resume: 'bg-accent/20 text-accent',
   harden: 'bg-accent-purple/20 text-accent-purple',
 };
 
+var actionLabels = {
+  review_spec: 'review spec',
+};
+
 var stateGroupOrder = ['in_progress', 'in_review', 'researched', 'triaged', 'backlog', 'needs_spec', 'human_only'];
 var stateGroupLabels = {
   in_progress: 'In Progress',
   in_review: 'In Review',
-  researched: 'Ready to Develop',
+  researched: 'Researched (Spec Review)',
   triaged: 'Triaged',
   backlog: 'Backlog / Triage',
   needs_spec: 'Needs Refinement',
@@ -191,14 +196,38 @@ function renderRunStatusBadge(item) {
   return '';
 }
 
+var _STATE_ROLE_MAP = {
+  backlog: 'triage',
+  triaged: 'researcher',
+  in_progress: 'developer',
+  in_review: 'reviewer',
+  needs_spec: 'triage',
+};
+
 function renderStartButton(item) {
   var isRunning = item.last_run && (item.last_run.status === 'running' || item.last_run.status === 'developing' || item.last_run.status === 'pending');
   if (isRunning) {
     return '<button disabled class="px-3 py-1.5 rounded text-xs bg-gray-700/30 text-gray-600 cursor-not-allowed">Running</button>';
   }
+
+  if (item.state === 'human_only') {
+    return '';
+  }
+
+  // RESEARCHED: show View Spec for draft specs, Start for approved/missing
+  if (item.state === 'researched' && item.spec_status && item.spec_status !== 'approved' && item.spec_status !== 'missing') {
+    var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
+    return '<a href="' + prefix + '/spec/' + escapeHtml(String(item.issue)) + '" ' +
+      'class="px-3 py-1.5 rounded text-xs bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors inline-flex items-center gap-1" ' +
+      'data-tooltip="Review spec before development">' +
+      '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>' +
+      'View Spec</a>';
+  }
+
+  var role = _STATE_ROLE_MAP[item.state] || 'developer';
   var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
-  var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start agent for this issue';
-  return '<button onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', event)" ' +
+  var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start ' + role + ' for this issue';
+  return '<button onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', \'' + role + '\', event)" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
     'data-tooltip="' + tooltip + '">' +
     label + '</button>';
@@ -231,7 +260,27 @@ function stateBadge(state) {
 
 function actionBadge(action) {
   var cls = actionStyles[action] || 'bg-gray-600/30 text-gray-400';
-  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(action) + '</span>';
+  var label = actionLabels[action] || action;
+  return '<span class="px-1.5 py-0.5 rounded text-xs font-medium ' + cls + '">' + escapeHtml(label) + '</span>';
+}
+
+function specStatusBadge(specStatus) {
+  if (!specStatus) return '';
+  var styles = {
+    draft: 'bg-accent-yellow/15 text-accent-yellow',
+    approved: 'bg-accent-green/15 text-accent-green',
+    rejected: 'bg-accent-red/15 text-accent-red',
+    missing: 'bg-gray-600/30 text-gray-500',
+  };
+  var labels = {
+    draft: 'Spec: Draft',
+    approved: 'Spec: Approved',
+    rejected: 'Spec: Rejected',
+    missing: 'No Spec',
+  };
+  var cls = styles[specStatus] || 'bg-gray-600/30 text-gray-500';
+  var label = labels[specStatus] || specStatus;
+  return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
 }
 
 function renderQueueCard(item) {
@@ -252,6 +301,9 @@ function renderQueueCard(item) {
 
   var metaParts = [];
   metaParts.push(stateBadge(item.state));
+  if (item.spec_status) {
+    metaParts.push(specStatusBadge(item.spec_status));
+  }
   if (item.jira_status) {
     metaParts.push('<span class="text-xs text-gray-500">' + escapeHtml(item.jira_status) + '</span>');
   }
@@ -404,23 +456,31 @@ async function loadQueue() {
   }
 }
 
-async function startFromQueue(issue, e) {
+async function startFromQueue(issue, role, e) {
   var btn = e.target;
+  var originalLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Starting...';
   btn.style.opacity = '0.5';
 
   try {
-    await fetch(apiUrl('/queue/start/' + issue), {
+    var resp = await fetch(apiUrl('/queue/start/' + issue), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({}),
+      body: JSON.stringify({ role: role || null }),
     });
+    if (!resp.ok) {
+      showToast(await getErrorDetail(resp, 'Failed to start agent'), 'error');
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+      btn.style.opacity = '1';
+      return;
+    }
     window.location.href = (window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '') + '/agents';
   } catch (e) {
     showToast('Failed to start agent: ' + e.message, 'error');
     btn.disabled = false;
-    btn.textContent = 'Start';
+    btn.textContent = originalLabel;
     btn.style.opacity = '1';
   }
 }
@@ -434,11 +494,26 @@ async function executeBulkAction(action) {
   if (issues.length === 0) return;
 
   if (action === 'run') {
+    // Filter out RESEARCHED issues with unapproved specs
+    var blocked = [];
+    var runnable = issues.filter(function(id) {
+      var item = queueData.find(function(q) { return String(q.issue) === id; });
+      if (item && item.state === 'researched' && item.spec_status && item.spec_status !== 'approved' && item.spec_status !== 'missing') {
+        blocked.push('#' + id);
+        return false;
+      }
+      return true;
+    });
+    if (blocked.length > 0) {
+      showToast('Spec review required for: ' + blocked.join(', '), 'error');
+    }
+    if (runnable.length === 0) return;
+
     try {
       var resp = await fetch(apiUrl('/queue/batch'), {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ issues: issues, action: 'run', options: {} }),
+        body: JSON.stringify({ issues: runnable, action: 'run', options: {} }),
       });
       if (!resp.ok) {
         showToast(await getErrorDetail(resp, 'Failed to start batch run'), 'error');

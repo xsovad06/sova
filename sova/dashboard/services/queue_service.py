@@ -41,11 +41,11 @@ VALID_STATES_FOR_ACTION: dict[str, frozenset[TaskState]] = {
     "run": frozenset({TaskState.RESEARCHED, TaskState.IN_PROGRESS}),
 }
 
-# Recommended action per state
+# Recommended action per state (RESEARCHED resolved dynamically based on spec status)
 _RECOMMENDED_ACTION: dict[TaskState, str] = {
     TaskState.BACKLOG: "triage",
     TaskState.TRIAGED: "research",
-    TaskState.RESEARCHED: "develop",
+    TaskState.RESEARCHED: "review_spec",
     TaskState.IN_PROGRESS: "resume",
     TaskState.IN_REVIEW: "review",
     TaskState.NEEDS_SPEC: "spec",
@@ -187,8 +187,51 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
             }
         )
 
+    await _enrich_spec_status(queue, project_dir)
+
     _queue_cache[cache_key] = (time.monotonic(), queue)
     return queue
+
+
+async def _enrich_spec_status(queue: list[dict], project_dir: Path | None) -> None:
+    """Add spec_status and resolve action for RESEARCHED issues.
+
+    Reads spec files to determine approval state. Updates the action
+    field so RESEARCHED issues with an approved spec show "develop"
+    while those with a draft spec show "review_spec".
+
+    Runs synchronous file I/O via asyncio.to_thread to avoid blocking
+    the event loop.
+    """
+    import asyncio
+
+    def _enrich_sync() -> None:
+        from sova.dashboard.services.spec_service import read_spec
+
+        for item in queue:
+            if item["state"] != "researched":
+                item["spec_status"] = None
+                continue
+
+            try:
+                spec = read_spec(item["issue"], project_dir=project_dir)
+            except Exception:
+                log.warning("Failed to read spec for issue %s", item["issue"], exc_info=True)
+                item["spec_status"] = "missing"
+                item["action"] = "develop"
+                continue
+
+            if spec is None:
+                item["spec_status"] = "missing"
+                item["action"] = "develop"
+            else:
+                item["spec_status"] = spec.get("status", "draft")
+                if item["spec_status"] == "approved":
+                    item["action"] = "develop"
+                else:
+                    item["action"] = "review_spec"
+
+    await asyncio.to_thread(_enrich_sync)
 
 
 async def _get_last_runs_by_issue(project_dir: Path | None) -> dict[str, dict]:
