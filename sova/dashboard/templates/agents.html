@@ -17,12 +17,12 @@
     <h3 class="text-sm font-medium text-gray-300">Tasks</h3>
     <span id="tasks-attention-badge" class="hidden w-5 h-5 rounded-full bg-accent-peach text-surface text-xs font-bold flex items-center justify-center -ml-1" data-tooltip="Items needing your attention"></span>
     <div id="task-assignee-toggle" class="flex rounded-md overflow-hidden border border-gray-600/50 text-xs ml-2">
-      <button type="button" data-task-assignee="mine" onclick="setTaskAssigneeFilter('mine')" class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">Mine</button>
-      <button type="button" data-task-assignee="all" onclick="setTaskAssigneeFilter('all')" class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">All</button>
+      <button type="button" data-task-assignee="mine" aria-pressed="false" onclick="setTaskAssigneeFilter('mine')" class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">Mine</button>
+      <button type="button" data-task-assignee="all" aria-pressed="true" onclick="setTaskAssigneeFilter('all')" class="px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300">All</button>
     </div>
     <label for="task-state-filter" class="sr-only">Filter by state</label>
     <div class="relative">
-      <select id="task-state-filter" onchange="filterTaskCards()"
+      <select id="task-state-filter" onchange="setTaskStateFilter(this.value)"
         class="bg-surface border border-gray-700 rounded pl-2 pr-6 py-1 text-xs text-gray-300 focus:border-accent focus:outline-none appearance-none cursor-pointer">
         <option value="">All states</option>
         <option value="running">Running</option>
@@ -336,13 +336,22 @@ function setTaskAssigneeFilter(value) {
   renderTaskCards();
 }
 
+function setTaskStateFilter(value) {
+  _taskStateFilter = value;
+  localStorage.setItem('sova-task-state-filter', value);
+  _expansionTier = 0;
+  renderTaskCards();
+}
+
 function _updateTaskAssigneeToggleUI() {
   document.querySelectorAll('#task-assignee-toggle button').forEach(function(btn) {
     var val = btn.getAttribute('data-task-assignee');
     if (val === _taskAssigneeFilter) {
       btn.className = 'px-2.5 py-1 transition-colors bg-accent/20 text-accent font-medium';
+      btn.setAttribute('aria-pressed', 'true');
     } else {
       btn.className = 'px-2.5 py-1 transition-colors text-gray-500 hover:text-gray-300';
+      btn.setAttribute('aria-pressed', 'false');
     }
   });
 }
@@ -367,14 +376,8 @@ function _applyTaskFilters(items) {
     });
   }
 
-  var stateSelect = document.getElementById('task-state-filter');
-  var stateFilter = stateSelect ? stateSelect.value : '';
-  if (stateFilter !== _taskStateFilter) {
-    _taskStateFilter = stateFilter;
-    localStorage.setItem('sova-task-state-filter', stateFilter);
-  }
-  if (stateFilter && _STATE_FILTER_GROUPS[stateFilter]) {
-    var allowed = _STATE_FILTER_GROUPS[stateFilter];
+  if (_taskStateFilter && _STATE_FILTER_GROUPS[_taskStateFilter]) {
+    var allowed = _STATE_FILTER_GROUPS[_taskStateFilter];
     filtered = filtered.filter(function(t) {
       return allowed.indexOf(t.state) !== -1;
     });
