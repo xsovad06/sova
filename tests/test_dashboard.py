@@ -4007,6 +4007,12 @@ class TestQueueServiceEnrichment:
 
         assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "spec"
 
+    def test_researched_default_action_is_review_spec(self) -> None:
+        from sova.adapters.base import TaskState
+        from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
+
+        assert _RECOMMENDED_ACTION[TaskState.RESEARCHED] == "review_spec"
+
     def test_jira_priority_order_critical_before_minor(self) -> None:
         from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
 
@@ -4016,6 +4022,135 @@ class TestQueueServiceEnrichment:
         from sova.dashboard.services.queue_service import _JIRA_PRIORITY_ORDER
 
         assert _JIRA_PRIORITY_ORDER["Major"] < _JIRA_PRIORITY_ORDER["Trivial"]
+
+
+class TestEnrichSpecStatus:
+    """Tests for _enrich_spec_status spec-aware action resolution."""
+
+    async def test_non_researched_items_get_null_spec_status(self) -> None:
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [
+            {"state": "backlog", "issue": "1", "action": "triage"},
+            {"state": "triaged", "issue": "2", "action": "research"},
+        ]
+        await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] is None
+        assert queue[1]["spec_status"] is None
+        assert queue[0]["action"] == "triage"
+        assert queue[1]["action"] == "research"
+
+    async def test_researched_missing_spec_gets_develop(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "10", "action": "review_spec"}]
+        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "missing"
+        assert queue[0]["action"] == "develop"
+
+    async def test_researched_approved_spec_gets_develop(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "11", "action": "review_spec"}]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            return_value={"status": "approved"},
+        ):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "approved"
+        assert queue[0]["action"] == "develop"
+
+    async def test_researched_draft_spec_gets_review_spec(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "12", "action": "review_spec"}]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            return_value={"status": "draft"},
+        ):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "draft"
+        assert queue[0]["action"] == "review_spec"
+
+    async def test_researched_rejected_spec_gets_review_spec(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "13", "action": "review_spec"}]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            return_value={"status": "rejected"},
+        ):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "rejected"
+        assert queue[0]["action"] == "review_spec"
+
+    async def test_read_spec_exception_falls_back_to_missing(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "14", "action": "review_spec"}]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            side_effect=OSError("permission denied"),
+        ):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "missing"
+        assert queue[0]["action"] == "develop"
+
+    async def test_spec_without_status_field_defaults_to_draft(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [{"state": "researched", "issue": "15", "action": "review_spec"}]
+        with patch(
+            "sova.dashboard.services.spec_service.read_spec",
+            return_value={"complexity": "medium"},
+        ):
+            await _enrich_spec_status(queue, Path("/tmp"))
+        assert queue[0]["spec_status"] == "draft"
+        assert queue[0]["action"] == "review_spec"
+
+    async def test_mixed_states_enriched_correctly(self) -> None:
+        from unittest.mock import patch
+
+        from sova.dashboard.services.queue_service import _enrich_spec_status
+
+        queue = [
+            {"state": "backlog", "issue": "1", "action": "triage"},
+            {"state": "researched", "issue": "2", "action": "review_spec"},
+            {"state": "researched", "issue": "3", "action": "review_spec"},
+            {"state": "in_progress", "issue": "4", "action": "develop"},
+        ]
+
+        def mock_read_spec(issue_number, project_dir=None):
+            if issue_number == "2":
+                return {"status": "approved"}
+            if issue_number == "3":
+                return {"status": "draft"}
+            return None
+
+        with patch("sova.dashboard.services.spec_service.read_spec", side_effect=mock_read_spec):
+            await _enrich_spec_status(queue, Path("/tmp"))
+
+        assert queue[0]["spec_status"] is None
+        assert queue[0]["action"] == "triage"
+        assert queue[1]["spec_status"] == "approved"
+        assert queue[1]["action"] == "develop"
+        assert queue[2]["spec_status"] == "draft"
+        assert queue[2]["action"] == "review_spec"
+        assert queue[3]["spec_status"] is None
+        assert queue[3]["action"] == "develop"
 
 
 class TestBatchAPI:
