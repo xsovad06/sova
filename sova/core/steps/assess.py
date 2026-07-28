@@ -110,4 +110,7 @@ class AssessStep(BaseStep):
         return GateCheckResult(passed=True)
 
     async def can_skip(self, ctx: ExecutionContext) -> bool:
+        # Re-run assessment if routing state is missing on resume (unless force/no-issue)
+        if ctx.resolved_model is None and not (ctx.force or not ctx.has_issue):
+            return False
         return self.name in ctx.completed_steps or ctx.force or not ctx.has_issue

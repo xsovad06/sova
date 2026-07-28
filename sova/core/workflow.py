@@ -533,7 +533,7 @@ class WorkflowEngine:
                         task_run_id=self._task_run_id,
                         phase=record.step_name,
                         issue=self._ctx.issue_number or self._ctx.run_label or "",
-                        model="claude",
+                        model=self._ctx.resolved_model or "claude",
                         cost_usd=result.cost_usd,
                         duration_ms=elapsed_ms,
                         model_selection_reason=self._ctx.model_selection_reason,
