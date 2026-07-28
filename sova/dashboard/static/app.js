@@ -943,7 +943,7 @@ function _commandToRole(role) {
    ============================================================ */
 
 var PIPELINE_STEPS = [
-  'sync', 'assess', 'create_worktree', 'develop', 'simplify',
+  'sync', 'assess', 'create_worktree', 'capture_baseline', 'develop', 'simplify',
   'self_review', 'commit', 'validate', 'push', 'create_pr',
   'wait_for_external_reviews', 'address_external_findings',
   'monitor_ci', 'extract_memory', 'handoff_to_reviewer'
@@ -951,7 +951,7 @@ var PIPELINE_STEPS = [
 
 var STEP_LABELS = {
   sync: 'Sync', assess: 'Assess', create_worktree: 'Worktree',
-  develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
+  capture_baseline: 'Baseline', develop: 'Develop', simplify: 'Simplify', self_review: 'Review',
   commit: 'Commit', validate: 'Validate', push: 'Push', create_pr: 'PR',
   wait_for_external_reviews: 'Ext Reviews', address_external_findings: 'Address Ext',
   monitor_ci: 'CI', extract_memory: 'Memory', handoff_to_reviewer: 'Handoff',
@@ -995,11 +995,14 @@ function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var steps = PIPELINE_STEPS;
   var labels = STEP_LABELS;
   if (pipelineVariant === 'address_review') {
-    steps = ['rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_user'];
-    labels = {rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_user: 'Handoff'};
+    steps = ['ensure_worktree', 'rebase', 'address_review', 'rearrange_commits', 'validate', 'push', 'monitor_ci', 'resolve_external_reviews', 'extract_memory', 'handoff_to_user'];
+    labels = {ensure_worktree: 'Worktree', rebase: 'Rebase', address_review: 'Address', rearrange_commits: 'Rearrange', validate: 'Validate', push: 'Push', monitor_ci: 'CI', resolve_external_reviews: 'Resolve', extract_memory: 'Memory', handoff_to_user: 'Handoff'};
   } else if (pipelineVariant === 'researcher') {
     steps = ['fetch_task', 'research', 'spec', 'extract_memory'];
     labels = {fetch_task: 'Fetch', research: 'Research', spec: 'Spec', extract_memory: 'Memory'};
+  } else if (pipelineVariant === 'planner') {
+    steps = ['scan_project', 'generate_tasks', 'validate_tasks', 'extract_memory'];
+    labels = {scan_project: 'Scan', generate_tasks: 'Generate', validate_tasks: 'Validate', extract_memory: 'Memory'};
   }
 
   // Build lookup from step execution data
