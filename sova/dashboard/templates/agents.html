@@ -3,7 +3,7 @@
 {% block content %}
 <div class="flex items-center justify-between mb-4">
   <h2 class="text-2xl font-semibold">Agents</h2>
-  <button onclick="startPlanner()" id="run-planner-btn"
+  <button type="button" onclick="startPlanner()" id="run-planner-btn"
     class="px-3 py-1.5 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors"
     data-tooltip="Analyze project and propose new tasks" data-tooltip-pos="left">
     Run Planner
@@ -193,6 +193,30 @@
       </div>
     </div>
     <div id="failed-table"></div>
+  </div>
+</div>
+
+<!-- Pre-launch modal -->
+<div id="launch-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-6 w-full max-w-sm">
+    <h3 class="text-lg font-semibold mb-4">Launch Agent</h3>
+    <div id="launch-modal-loading" class="text-sm text-gray-400 py-4">Loading complexity data...</div>
+    <div id="launch-modal-body" class="hidden space-y-4">
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-gray-400 w-20 shrink-0">Complexity</span>
+        <span id="launch-complexity" class="px-2 py-0.5 rounded-full text-xs bg-gray-600/30 text-gray-300"></span>
+      </div>
+      <div>
+        <label for="launch-model" class="text-xs text-gray-400 block mb-1">Model</label>
+        <select id="launch-model" class="w-full bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-3 py-2">
+        </select>
+        <p id="launch-reason" class="text-xs text-gray-500 mt-1"></p>
+      </div>
+    </div>
+    <div class="flex justify-end gap-2 mt-6">
+      <button type="button" onclick="hideLaunchModal()" class="text-sm px-4 py-2 rounded text-gray-400 hover:text-gray-200 transition-colors">Cancel</button>
+      <button type="button" onclick="confirmLaunch()" id="launch-confirm-btn" class="text-sm px-4 py-2 rounded bg-accent text-white hover:bg-accent/80 transition-colors">Launch</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -1024,17 +1048,18 @@ async function quickStart(issue, force, action) {
   if (!role && action) {
     role = _actionToRole[action] || null;
   }
-  await _doStartAgent(issue, role, force || false);
+  showLaunchModal(issue, role, force || false);
 }
 
 async function quickStartRole(issue, role, prNumber) {
-  await _doStartAgent(issue, role, false, prNumber);
+  showLaunchModal(issue, role, false, prNumber);
 }
 
-async function _doStartAgent(issue, role, force, prNumber) {
+async function _doStartAgent(issue, role, force, prNumber, model) {
   try {
     var payload = { issue: String(issue), role: role, force: force };
     if (prNumber) payload.pr_number = prNumber;
+    if (model) payload.model = model;
     var res = await fetch(apiUrl('/agents/start'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1057,13 +1082,7 @@ async function _doStartAgent(issue, role, force, prNumber) {
 }
 
 async function startPlanner() {
-  var btn = document.getElementById('run-planner-btn');
-  if (btn) btn.disabled = true;
-  try {
-    await _doStartAgent('', 'planner', false);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  showLaunchModal('', 'planner', false);
 }
 
 async function createPlannerIssues(tasks, issue) {
@@ -1663,7 +1682,7 @@ async function startAgent() {
   var issue = document.getElementById('agent-issue-number').value ||
     document.getElementById('agent-issue').value.replace(/^#/, '').split(/\s/)[0].trim();
   if (!issue) return;
-  await _doStartAgent(issue, null, false);
+  showLaunchModal(issue, null, false);
 }
 
 async function stopAgent(runId) {
@@ -1765,7 +1784,7 @@ async function dismissHandoff(issue) {
 }
 
 function rerunAgent(issue, role, prNumber) {
-  _doStartAgent(issue, role === 'auto' ? null : role, false, prNumber || null);
+  showLaunchModal(issue, role === 'auto' ? null : role, false, prNumber || null);
 }
 
 // Delegated click handler for .rerun-btn (avoids inline onclick XSS risks)
@@ -2913,6 +2932,119 @@ function dismissMemoryPressure() {
 }
 
 var _memPressureInterval = setInterval(checkMemoryPressure, 3000);
+
+// -- Pre-launch modal --
+
+var _launchModalState = null; // {issue, role, force, prNumber}
+var _launchModalTrigger = null;
+var _launchRequestId = 0; // monotonic counter to discard stale fetch responses
+
+var _COMPLEXITY_COLORS = {
+  trivial: 'bg-accent-green/20 text-accent-green',
+  simple: 'bg-accent-teal/20 text-accent-teal',
+  moderate: 'bg-accent-yellow/20 text-accent-yellow',
+  complex: 'bg-accent-peach/20 text-accent-peach',
+  epic: 'bg-accent-red/20 text-accent-red',
+};
+var _BADGE_BASE = 'px-2 py-0.5 rounded-full text-xs ';
+var _BADGE_DEFAULT = 'bg-gray-600/30 text-gray-300';
+
+function _setComplexityBadge(el, tier) {
+  el.textContent = tier;
+  el.className = _BADGE_BASE + (_COMPLEXITY_COLORS[tier] || _BADGE_DEFAULT);
+}
+
+function showLaunchModal(issue, role, force, prNumber) {
+  _launchModalState = { issue: issue, role: role, force: force || false, prNumber: prNumber || null };
+  _launchModalTrigger = document.activeElement;
+  var modal = document.getElementById('launch-modal');
+  var loading = document.getElementById('launch-modal-loading');
+  var body = document.getElementById('launch-modal-body');
+
+  loading.classList.remove('hidden');
+  body.classList.add('hidden');
+  modal.classList.remove('hidden');
+  document.addEventListener('keydown', _launchModalKeydown);
+
+  // If no issue number, skip complexity fetch and show defaults
+  if (!issue) {
+    _populateLaunchDefaults();
+    return;
+  }
+
+  var requestId = ++_launchRequestId;
+  fetch(apiUrl('/agents/issue/' + encodeURIComponent(issue) + '/complexity'))
+    .then(function(res) {
+      if (!res.ok) throw new Error('Failed to fetch complexity');
+      return res.json();
+    })
+    .then(function(data) {
+      if (requestId !== _launchRequestId) return; // discard stale response
+      _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
+      // Populate model dropdown from config-aware options
+      var sel = document.getElementById('launch-model');
+      sel.innerHTML = '';
+      var seen = {};
+      if (data.model_options && data.model_options.length) {
+        data.model_options.forEach(function(opt) {
+          if (seen[opt.model]) return;
+          seen[opt.model] = true;
+          var o = document.createElement('option');
+          o.value = opt.model;
+          o.textContent = opt.model;
+          sel.appendChild(o);
+        });
+      } else {
+        ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+          var o = document.createElement('option');
+          o.value = m; o.textContent = m;
+          sel.appendChild(o);
+        });
+      }
+      sel.value = data.suggested_model;
+      document.getElementById('launch-reason').textContent = data.reason;
+      loading.classList.add('hidden');
+      body.classList.remove('hidden');
+    })
+    .catch(function() {
+      if (requestId !== _launchRequestId) return;
+      _populateLaunchDefaults();
+    });
+}
+
+function _populateLaunchDefaults() {
+  _setComplexityBadge(document.getElementById('launch-complexity'), 'unknown');
+  document.getElementById('launch-model').value = 'sonnet';
+  document.getElementById('launch-reason').textContent = 'default (no complexity data)';
+  document.getElementById('launch-modal-loading').classList.add('hidden');
+  document.getElementById('launch-modal-body').classList.remove('hidden');
+}
+
+function hideLaunchModal() {
+  document.getElementById('launch-modal').classList.add('hidden');
+  document.removeEventListener('keydown', _launchModalKeydown);
+  _launchModalState = null;
+  if (_launchModalTrigger) {
+    _launchModalTrigger.focus();
+    _launchModalTrigger = null;
+  }
+}
+
+function _launchModalKeydown(e) {
+  if (e.key === 'Escape') hideLaunchModal();
+}
+
+function confirmLaunch() {
+  if (!_launchModalState) return;
+  var s = _launchModalState;
+  var model = document.getElementById('launch-model').value || null;
+  hideLaunchModal();
+  _doStartAgent(s.issue, s.role, s.force, s.prNumber, model);
+}
+
+document.getElementById('launch-modal').addEventListener('click', function(e) {
+  if (e.target === this) hideLaunchModal();
+});
 
 </script>
 {% endblock %}

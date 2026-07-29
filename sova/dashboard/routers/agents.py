@@ -126,6 +126,7 @@ class StartAgentRequest(BaseModel):
     force: bool = False
     resume_run_id: int | None = None
     pr_number: int | None = None
+    model: str | None = None
 
     @field_validator("issue")
     @classmethod
@@ -143,6 +144,19 @@ class StartAgentRequest(BaseModel):
         value = v.strip().lower()
         if not value:
             raise ValueError("role cannot be empty")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        value = v.strip().lower()
+        if not value:
+            return None
+        _KNOWN_ALIASES = {"haiku", "sonnet", "opus", "fast", "smart", "cheap"}
+        if value not in _KNOWN_ALIASES:
+            raise ValueError(f"unknown model alias {value!r}, expected one of: {', '.join(sorted(_KNOWN_ALIASES))}")
         return value
 
 
@@ -195,6 +209,73 @@ async def create_planner_issues(req: CreateIssuesRequest) -> dict:
     errors = [{"title": r["title"], "error": r["error"]} for r in results if not r["ok"]]
 
     return {"created": created, "errors": errors}
+
+
+@router.get("/agents/issue/{issue_number}/complexity")
+async def get_issue_complexity(issue_number: str) -> dict:
+    """Return complexity tier and suggested model for an issue.
+
+    Checks TaskAssessmentRecord first; falls back to on-the-fly assessment
+    via ``assess_complexity()`` using issue metadata from the adapter.
+    """
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.dashboard.project_context import get_project_dir
+    from sova.db.models import TaskAssessmentRecord
+    from sova.llm.complexity import ComplexityTier, assess_complexity
+    from sova.llm.routing import route_model
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+
+    # 1. Check DB for existing assessment
+    complexity_str: str | None = None
+    async with await get_session(project_dir) as session:
+        row = (
+            await session.execute(
+                select(TaskAssessmentRecord.estimated_complexity)
+                .where(TaskAssessmentRecord.issue_number == issue_number)
+                .order_by(TaskAssessmentRecord.assessed_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row:
+            complexity_str = row
+
+    # 2. Compute on-the-fly if no DB record
+    if complexity_str is None:
+        try:
+            adapter = create_adapter(cfg)
+            task = await adapter.get_task(issue_number)
+            tier = assess_complexity(
+                task.title,
+                task.description or "",
+                labels=list(task.labels or []),
+            )
+            complexity_str = tier.value
+        except Exception:
+            log.debug("complexity.assess_fallback_failed", issue=issue_number, exc_info=True)
+            complexity_str = ComplexityTier.MODERATE.value
+
+    try:
+        tier = ComplexityTier(complexity_str)
+    except ValueError:
+        log.debug("complexity.invalid_db_value", value=complexity_str, issue=issue_number)
+        tier = ComplexityTier.MODERATE
+    model_alias, reason = route_model(tier, llm_config=cfg.llm)
+
+    # Build model options for the dropdown (config-aware via route_model)
+    model_options = []
+    for t in ComplexityTier:
+        alias, _ = route_model(t, llm_config=cfg.llm)
+        model_options.append({"tier": t.value, "model": alias})
+
+    return {
+        "complexity": tier.value,
+        "suggested_model": model_alias,
+        "reason": reason,
+        "model_options": model_options,
+    }
 
 
 @router.get("/agents/work-items")
@@ -322,6 +403,7 @@ async def start_agent(req: StartAgentRequest) -> dict:
         force=req.force,
         resume_run_id=req.resume_run_id,
         pr_number=req.pr_number,
+        model=req.model,
     )
     if isinstance(result, dict) and ("error" in result or result.get("status") == "error"):
         raise HTTPException(status_code=409, detail=result.get("detail") or result.get("error") or "Command failed")
