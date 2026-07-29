@@ -48,6 +48,22 @@ class PRInfo:
     number: int
     url: str
     branch: str = ""
+    author_login: str = ""
+
+    @classmethod
+    def from_gh_json(cls, pr: dict) -> "PRInfo":
+        """Build PRInfo from a gh CLI JSON dict."""
+        number = pr.get("number")
+        if number is None:
+            raise ValueError(f"PR JSON missing required 'number' field: {pr!r}")
+        author = pr.get("author")
+        author_login = author.get("login", "") if isinstance(author, dict) else ""
+        return cls(
+            number=number,
+            url=pr.get("url", ""),
+            branch=pr.get("headRefName", "") or "",
+            author_login=author_login,
+        )
 
 
 @dataclass
@@ -196,7 +212,7 @@ async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str])
         "--search",
         f"#{issue_num} in:body",
         "--json",
-        "number,url,body,headRefName",
+        "number,url,body,headRefName,author",
         "--limit",
         "5",
         env=env,
@@ -221,7 +237,7 @@ async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str
             "--head",
             f"{prefix}{issue_num}",
             "--json",
-            "number,url,body,headRefName",
+            "number,url,body,headRefName,author",
             "--limit",
             "1",
             env=env,
@@ -233,8 +249,7 @@ async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str
         except json.JSONDecodeError:
             return None
         if prs:
-            pr = prs[0]
-            return PRInfo(number=pr["number"], url=pr.get("url", ""), branch=pr.get("headRefName", ""))
+            return PRInfo.from_gh_json(prs[0])
         return None
 
     results = await asyncio.gather(*(_lookup(prefix) for prefix in ("feat/issue-", "fix/issue-", "issue-")))
@@ -254,7 +269,7 @@ def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None:
         body = pr.get("body", "") or ""
         head = pr.get("headRefName", "") or ""
         if link_pattern.search(body) or branch_pattern in head:
-            return PRInfo(number=pr["number"], url=pr.get("url", ""), branch=head)
+            return PRInfo.from_gh_json(pr)
 
     return None
 

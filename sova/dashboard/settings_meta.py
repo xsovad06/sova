@@ -897,13 +897,6 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
-        "supervisor.require_approval",
-        "Require approval",
-        "Show a pending-actions plan and require human approval before the supervisor spawns any agent",
-        "supervisor",
-        "boolean",
-    ),
-    SettingMeta(
         "supervisor.auto_develop",
         "Auto-develop",
         "Automatically spawn developer after research (requires spec approval by default)",
@@ -932,9 +925,23 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.require_approval",
+        "Require approval",
+        "Store actionable decisions for human review instead of executing immediately",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.respect_dependencies",
         "Respect dependencies",
         "Gate agent spawning on dependency graph (block until all deps are DONE)",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.respect_ownership",
+        "Respect ownership",
+        "Skip issues assigned to other users; claim unassigned issues on spawn",
         "supervisor",
         "boolean",
     ),

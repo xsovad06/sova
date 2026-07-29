@@ -277,8 +277,9 @@ class JiraAdapter(TaskAdapter):
 
         await self._trigger_transition(issue_key, new_state)
 
-    async def assign(self, task_id: str, agent_role: str) -> None:
+    async def assign(self, task_id: str, agent_role: str) -> bool:
         await self.add_label(task_id, f"role:{agent_role}")
+        return True
 
     async def add_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)

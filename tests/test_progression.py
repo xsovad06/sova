@@ -541,6 +541,7 @@ class TestEvaluateTask:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.SPAWN_RESEARCHER
@@ -564,6 +565,7 @@ class TestEvaluateTask:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.BLOCKED
@@ -587,6 +589,7 @@ class TestEvaluateTask:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
         ):
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.SPAWN_RESEARCHER
@@ -641,6 +644,7 @@ class TestEvaluateAll:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
@@ -676,6 +680,7 @@ class TestEvaluateAll:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
@@ -718,6 +723,7 @@ class TestEvaluateAll:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
@@ -751,6 +757,7 @@ class TestEvaluateAll:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=quota_block),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
         ):
             decisions = await engine.evaluate_all()
@@ -882,11 +889,10 @@ class TestSupervisorConfig:
     def test_defaults(self) -> None:
         cfg = SupervisorConfig()
         assert cfg.enabled is False
-        assert cfg.auto_research is False
+        assert cfg.auto_research is True
         assert cfg.auto_develop is False
         assert cfg.auto_address_review is False
         assert cfg.auto_integrate is False
-        assert cfg.require_approval is True
         assert cfg.respect_dependencies is True
         assert cfg.poll_interval_seconds == 120
         assert cfg.max_researcher_failures == 3
@@ -951,6 +957,7 @@ class TestConfigIntegration:
             "supervisor.auto_address_review",
             "supervisor.auto_integrate",
             "supervisor.respect_dependencies",
+            "supervisor.respect_ownership",
             "supervisor.poll_interval_seconds",
             "supervisor.max_researcher_failures",
         ]
@@ -1105,6 +1112,7 @@ class TestMemoryPressureGate:
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block),
         ):
             decision = await engine.evaluate_task(1)
@@ -1135,6 +1143,7 @@ class TestMemoryPressureGate:
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
             patch.object(engine, "_check_memory_pressure_gate", return_value=memory_block) as mock_mem_gate,
         ):
@@ -1289,6 +1298,7 @@ class TestEvaluateAllEdgeCases:
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
             patch.object(engine, "_check_memory_pressure_gate", return_value=None),
         ):
@@ -1314,6 +1324,7 @@ class TestEvaluateAllEdgeCases:
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=2),
             patch.object(engine, "_check_memory_pressure_gate", return_value=None),
         ):
@@ -1343,6 +1354,7 @@ class TestEvaluateAllEdgeCases:
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
             patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
             patch.object(engine, "_check_memory_pressure_gate", return_value=None),
         ):
@@ -1497,13 +1509,13 @@ class TestFileOverlapGate:
     @pytest.mark.asyncio
     async def test_gate_disabled_skips(self) -> None:
         """Verify file_overlap_gate=False prevents _check_file_overlap_gate from running."""
-        engine = _make_engine(SupervisorConfig(file_overlap_gate=False))
+        engine = _make_engine(SupervisorConfig(file_overlap_gate=False, respect_ownership=False))
         from sova.supervisor.file_overlap import BranchFileSet
         from sova.supervisor.progression import DependencyGraph
 
         bfs = BranchFileSet("10", 1, None, "feat/issue-10", frozenset(["sova/core/foo.py"]))
         with patch.object(engine, "_check_file_overlap_gate", wraps=engine._check_file_overlap_gate) as mock_gate:
-            blockers = await engine._collect_gate_blockers(
+            blockers, _pr = await engine._collect_gate_blockers(
                 42,
                 ProgressionAction.SPAWN_DEVELOPER,
                 DependencyGraph({}),
@@ -1651,9 +1663,10 @@ class TestAutoRebase:
         """When conflict is the only blocker and auto_rebase is enabled, return SPAWN_REBASE."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
         with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
-            mock_gates.return_value = [
-                BlockReason(gate="conflict", detail="PR for #42 has merge conflicts"),
-            ]
+            mock_gates.return_value = (
+                [BlockReason(gate="conflict", detail="PR for #42 has merge conflicts")],
+                None,
+            )
             decision = await engine._evaluate_single(
                 42,
                 TaskState.IN_REVIEW,
@@ -1667,10 +1680,13 @@ class TestAutoRebase:
         """When conflict + other blockers exist, return BLOCKED even with auto_rebase."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
         with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
-            mock_gates.return_value = [
-                BlockReason(gate="conflict", detail="PR has conflicts"),
-                BlockReason(gate="budget", detail="Budget exceeded"),
-            ]
+            mock_gates.return_value = (
+                [
+                    BlockReason(gate="conflict", detail="PR has conflicts"),
+                    BlockReason(gate="budget", detail="Budget exceeded"),
+                ],
+                None,
+            )
             decision = await engine._evaluate_single(
                 42,
                 TaskState.IN_REVIEW,
@@ -1684,9 +1700,10 @@ class TestAutoRebase:
         """When auto_rebase is disabled, conflict returns BLOCKED normally."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=False))
         with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
-            mock_gates.return_value = [
-                BlockReason(gate="conflict", detail="PR has conflicts"),
-            ]
+            mock_gates.return_value = (
+                [BlockReason(gate="conflict", detail="PR has conflicts")],
+                None,
+            )
             decision = await engine._evaluate_single(
                 42,
                 TaskState.IN_REVIEW,
@@ -1762,3 +1779,348 @@ class TestEvaluateAllRebase:
         # Both should succeed (no slot exhaustion between them)
         assert len(decisions) == 2
         assert all(d.action == ProgressionAction.SPAWN_REBASE for d in decisions)
+
+
+# ---------------------------------------------------------------------------
+# _check_ownership_gate
+# ---------------------------------------------------------------------------
+
+
+class TestOwnershipGate:
+    @pytest.mark.asyncio
+    async def test_respect_ownership_disabled_passes(self) -> None:
+        """When respect_ownership=False, all ownership checks are bypassed."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        engine = _make_engine(SupervisorConfig(respect_ownership=False), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None
+
+    @pytest.mark.asyncio
+    async def test_unassigned_issue_passes(self) -> None:
+        """Unassigned issues pass (will be claimed on spawn)."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(return_value=_task(42, state=TaskState.TRIAGED))
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None
+
+    @pytest.mark.asyncio
+    async def test_issue_assigned_to_self_passes(self) -> None:
+        """Issues assigned to github_user pass."""
+        task = _task(42, state=TaskState.TRIAGED)
+        task.assignees = ["alice"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None
+
+    @pytest.mark.asyncio
+    async def test_issue_assigned_to_other_blocks(self) -> None:
+        """Issues assigned to a different user block."""
+        task = _task(42, state=TaskState.TRIAGED)
+        task.assignees = ["bob"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is not None
+        assert block.gate == "ownership"
+        assert "bob" in block.detail
+
+    @pytest.mark.asyncio
+    async def test_multi_assignee_with_self_passes(self) -> None:
+        """Multi-assignee issues pass if github_user is in the list."""
+        task = _task(42, state=TaskState.TRIAGED)
+        task.assignees = ["alice", "bob", "charlie"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None
+
+    @pytest.mark.asyncio
+    async def test_multi_assignee_without_self_blocks(self) -> None:
+        """Multi-assignee issues block if github_user is not in the list."""
+        task = _task(42, state=TaskState.TRIAGED)
+        task.assignees = ["bob", "charlie"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is not None
+        assert block.gate == "ownership"
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_review_phase_checks_pr_author(self, mock_find_pr: AsyncMock) -> None:
+        """For review/integrate actions, gate on PR author instead of issue assignee."""
+        from sova.git.pr import PRInfo
+
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["bob"]  # Issue assigned to bob
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+
+        mock_find_pr.return_value = PRInfo(number=55, url="https://...", branch="feat/42", author_login="alice")
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        assert block is None  # Passes because PR author matches github_user
+        assert pr_num == 55  # PR number cached for execute_decision
+        mock_find_pr.assert_awaited_once_with("42", repo="owner/repo", github_user="alice")
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_review_phase_pr_author_mismatch_blocks(self, mock_find_pr: AsyncMock) -> None:
+        """Review/integrate actions block if PR author doesn't match github_user."""
+        from sova.git.pr import PRInfo
+
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["alice"]  # Issue assigned to alice
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+
+        # PR was created by bob (teammate takeover)
+        mock_find_pr.return_value = PRInfo(number=55, url="https://...", branch="feat/42", author_login="bob")
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        assert block is not None
+        assert block.gate == "ownership"
+        assert "bob" in block.detail
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_review_phase_no_pr_uses_issue_assignee(self, mock_find_pr: AsyncMock) -> None:
+        """If PR not found during review phase, fall back to issue assignee."""
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["alice"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+
+        mock_find_pr.return_value = None  # No PR found
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        assert block is None  # Falls back to issue assignee (alice)
+
+    @pytest.mark.asyncio
+    async def test_review_phase_no_github_repo_uses_issue_assignee(self) -> None:
+        """If repo is not configured, _check_pr_ownership falls back to issue assignee."""
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["alice"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = ""  # No repo configured
+        mock_adapter.get_task = AsyncMock(return_value=task)
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        assert block is None  # Falls back to issue assignee (alice)
+
+    @pytest.mark.asyncio
+    async def test_precomputed_assignees_skips_api_call(self) -> None:
+        """When task_assignees is passed, get_task() is not called."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock()
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=["alice"])
+        assert block is None
+        mock_adapter.get_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_precomputed_assignees_blocks_other_user(self) -> None:
+        """Precomputed assignees belonging to another user block."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock()
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=["bob"])
+        assert block is not None
+        assert block.gate == "ownership"
+        mock_adapter.get_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_precomputed_empty_assignees_passes(self) -> None:
+        """Precomputed empty assignees list passes (unassigned, will be claimed)."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock()
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER, task_assignees=[])
+        assert block is None
+        mock_adapter.get_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_adapter_get_task_fails_open(self) -> None:
+        """If adapter.get_task() fails, fail-open (log warning and proceed)."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.get_task = AsyncMock(side_effect=Exception("API rate limit"))
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None  # Fail-open
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_find_pr_fails_open(self, mock_find_pr: AsyncMock) -> None:
+        """If find_pr_for_issue() fails during review phase, fall back to issue assignee."""
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["alice"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+        mock_find_pr.side_effect = Exception("Network error")
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE)
+        assert block is None  # Fail-open on exception
+
+    @pytest.mark.asyncio
+    async def test_github_user_not_configured_fails_open(self) -> None:
+        """When github_user is empty, ownership gate fails open."""
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = ""
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, _pr = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_DEVELOPER)
+        assert block is None  # Fail-open on misconfiguration
+
+    @pytest.mark.asyncio
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.config.registry.find_slug_for_path")
+    async def test_execute_decision_claims_on_spawn(self, mock_slug: MagicMock, mock_start: AsyncMock) -> None:
+        """When respect_ownership=True, adapter.assign() is called on spawn (idempotent)."""
+        mock_slug.return_value = "sova"
+        mock_start.return_value = {"run_id": 123}
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.assign = AsyncMock()
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_RESEARCHER,
+            role="researcher",
+        )
+        await engine.execute_decision(decision)
+
+        mock_adapter.assign.assert_awaited_once_with("42", "researcher")
+        mock_start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.config.registry.find_slug_for_path")
+    async def test_execute_decision_skips_assignment_when_disabled(
+        self, mock_slug: MagicMock, mock_start: AsyncMock
+    ) -> None:
+        """When respect_ownership=False, adapter.assign() is not called."""
+        mock_slug.return_value = "sova"
+        mock_start.return_value = {"run_id": 123}
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.assign = AsyncMock()
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=False), mock_adapter)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_RESEARCHER,
+            role="researcher",
+        )
+        await engine.execute_decision(decision)
+
+        mock_adapter.assign.assert_not_awaited()
+        mock_start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.config.registry.find_slug_for_path")
+    async def test_execute_decision_assignment_failure_proceeds(
+        self, mock_slug: MagicMock, mock_start: AsyncMock
+    ) -> None:
+        """When adapter.assign() fails, log warning and proceed (fail-open)."""
+        mock_slug.return_value = "sova"
+        mock_start.return_value = {"run_id": 123}
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.assign = AsyncMock(side_effect=Exception("API rate limit"))
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_RESEARCHER,
+            role="researcher",
+        )
+        result = await engine.execute_decision(decision)
+
+        assert result == {"run_id": 123}
+        mock_start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.config.registry.find_slug_for_path")
+    async def test_execute_decision_assigns_for_developer(self, mock_slug: MagicMock, mock_start: AsyncMock) -> None:
+        """SPAWN_DEVELOPER actions call adapter.assign() when respect_ownership is True."""
+        mock_slug.return_value = "sova"
+        mock_start.return_value = {"run_id": 123}
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.assign = AsyncMock()
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_DEVELOPER,
+            role="developer",
+        )
+        result = await engine.execute_decision(decision)
+
+        assert result == {"run_id": 123}
+        mock_adapter.assign.assert_awaited_once_with("42", "developer")
+
+    @pytest.mark.asyncio
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    @patch("sova.config.registry.find_slug_for_path")
+    async def test_execute_decision_skips_assign_for_integrate(
+        self, mock_slug: MagicMock, mock_start: AsyncMock
+    ) -> None:
+        """SPAWN_INTEGRATE actions skip adapter.assign() (work is already done)."""
+        mock_slug.return_value = "sova"
+        mock_start.return_value = {"run_id": 123}
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.assign = AsyncMock()
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+
+        # Mock _find_pr_for_issue to return a PR number
+        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=10):
+            decision = ProgressionDecision(
+                issue_number=42,
+                action=ProgressionAction.SPAWN_INTEGRATE,
+                role="command:integrate-pr",
+            )
+            result = await engine.execute_decision(decision)
+
+            assert result == {"run_id": 123}
+            # assign() should NOT be called for integrate actions
+            mock_adapter.assign.assert_not_awaited()
