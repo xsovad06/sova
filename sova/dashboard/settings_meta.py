@@ -980,6 +980,13 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
         "number",
     ),
+    SettingMeta(
+        "supervisor.task_queue",
+        "Task queue",
+        "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",
+        "supervisor",
+        "list",
+    ),
     # -- Memory Guard --
     SettingMeta(
         "memory_guard.enabled",

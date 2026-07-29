@@ -155,7 +155,22 @@ class TaskProgressionEngine:
         remaining_slots = cfg.max_parallel_agents - alive_count
         remaining_quota = not bool(global_quota)  # True if quota is available
 
-        tasks = [graph.get_task(nid) for nid in graph.nodes]
+        # When a task queue is configured, evaluate only queued issues (in order),
+        # skipping blocked items without removing them. Read from self._config
+        # (SupervisorConfig) which the daemon creates fresh each poll cycle.
+        task_queue = self._config.task_queue
+        if task_queue:
+            node_set = set(graph.nodes)
+            task_ids: list[int] = []
+            skipped: list[int] = []
+            for qid in task_queue:
+                (task_ids if qid in node_set else skipped).append(qid)
+            if skipped:
+                log.warning("evaluate_all.queue_items_not_in_graph", skipped=skipped)
+        else:
+            task_ids = list(graph.nodes)
+
+        tasks = [graph.get_task(nid) for nid in task_ids]
         decisions: list[ProgressionDecision] = []
         for task in tasks:
             if task is None:
@@ -194,8 +209,7 @@ class TaskProgressionEngine:
             decisions.append(decision)
 
             # Decrement capacity for actionable decisions
-            non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
-            if decision.action not in non_actionable and decision.action != ProgressionAction.SPAWN_REBASE:
+            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action != ProgressionAction.SPAWN_REBASE:
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
@@ -355,8 +369,7 @@ class TaskProgressionEngine:
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
         """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED)."""
-        _non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
-        actionable = [d for d in decisions if d.action not in _non_actionable]
+        actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
         results: list[dict] = []
         for decision in actionable:
             result = await self.execute_decision(decision)
