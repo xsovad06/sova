@@ -177,6 +177,40 @@ class TestSupervisorRouter:
         finally:
             set_daemon_registry({})
 
+    async def test_stop_supervisor_no_project_returns_503(self, app) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=None):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/stop")
+        assert resp.status_code == 503
+
+    async def test_stop_supervisor_no_daemon_returns_404(self, app) -> None:
+        project_dir = Path.cwd().resolve()
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/stop")
+        assert resp.status_code == 404
+
+    async def test_stop_supervisor_success(self, app) -> None:
+        from sova.dashboard.routers.supervisor import set_daemon_registry
+
+        mock_daemon = MagicMock()
+        mock_daemon.running = True
+        mock_daemon.stop = AsyncMock()
+        project_dir = Path.cwd().resolve()
+        set_daemon_registry({str(project_dir): mock_daemon})
+
+        try:
+            with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.post("/api/supervisor/stop")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["stopped"] is True
+            assert data["running"] is False
+            mock_daemon.stop.assert_awaited_once()
+        finally:
+            set_daemon_registry({})
+
     async def test_get_counts_empty(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/supervisor/counts")
@@ -301,3 +335,304 @@ class TestSupervisorRouter:
                 resp = await client.get("/api/supervisor/counts")
                 assert resp.status_code == 200
                 assert "counts" in resp.json()
+
+
+class TestSupervisorPlan:
+    """Tests for the supervisor approval plan endpoints and service."""
+
+    @pytest.fixture
+    def app(self):
+        from sova.dashboard.app import create_app
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=Path.cwd())
+
+    @pytest.fixture(autouse=True)
+    def clear_plan(self):
+        """Reset the in-memory plan before and after each test."""
+        from sova.dashboard.services.supervisor_service import set_pending_plan
+
+        set_pending_plan([])
+        yield
+        set_pending_plan([])
+
+    async def test_get_plan_empty(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/supervisor/plan")
+        assert resp.status_code == 200
+        assert resp.json()["pending"] == []
+
+    async def test_get_plan_with_decisions(self, app) -> None:
+        from sova.dashboard.services.supervisor_service import set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(
+                issue_number=42,
+                action=ProgressionAction.SPAWN_RESEARCHER,
+                role="researcher",
+                reason="Dependencies met",
+            ),
+            ProgressionDecision(
+                issue_number=43,
+                action=ProgressionAction.SPAWN_DEVELOPER,
+                role="developer",
+                reason="Spec approved",
+            ),
+        ]
+        set_pending_plan(decisions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/supervisor/plan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["pending"]) == 2
+        assert data["pending"][0]["issue_number"] == 42
+        assert data["pending"][0]["action"] == "spawn_researcher"
+        assert data["pending"][0]["role"] == "researcher"
+        assert data["pending"][1]["issue_number"] == 43
+
+    async def test_approve_empty_plan_returns_zero(self, app) -> None:
+        """approve_plan returns early with approved=0 when plan is empty."""
+        from sova.dashboard.services.supervisor_service import set_pending_plan
+
+        set_pending_plan([])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/plan/approve", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["approved"] == 0
+        assert data["results"] == []
+
+    async def test_approve_all_executes_decisions(self, app) -> None:
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+        ]
+        set_pending_plan(decisions)
+
+        _mock_exec = patch(
+            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            new_callable=AsyncMock,
+            return_value=[{"run_id": 1}],
+        )
+        with _mock_exec:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/approve", json={})
+        assert resp.status_code == 200
+        # Plan should be cleared after approval
+        assert get_pending_plan() == []
+
+    async def test_approve_selected_issues(self, app) -> None:
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+        set_pending_plan(decisions)
+
+        _mock_exec = patch(
+            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            new_callable=AsyncMock,
+            return_value=[],
+        )
+        with _mock_exec:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/approve", json={"issue_numbers": [42]})
+        assert resp.status_code == 200
+        # Issue 43 should remain in the plan (not approved)
+        remaining = get_pending_plan()
+        assert len(remaining) == 1
+        assert remaining[0].issue_number == 43
+
+    async def test_approve_partial_failure_returns_errors(self, app) -> None:
+        """approve_plan returns 200 with partial error info when some decisions fail."""
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+        set_pending_plan(decisions)
+
+        _mock_exec = patch(
+            "sova.dashboard.routers.supervisor._execute_plan_decisions",
+            new_callable=AsyncMock,
+            return_value=[{"run_id": 1}, {"error": "spawn failed", "issue_number": 43}],
+        )
+        with _mock_exec:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/approve", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["approved"] == 2
+        assert len(data["errors"]) == 1
+        assert data["errors"][0]["issue_number"] == 43
+        # Plan cleared regardless of partial failure
+        assert get_pending_plan() == []
+
+    async def test_skip_removes_from_plan(self, app) -> None:
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER),
+        ]
+        set_pending_plan(decisions)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/plan/skip/42")
+        assert resp.status_code == 200
+        remaining = get_pending_plan()
+        assert len(remaining) == 1
+        assert remaining[0].issue_number == 43
+
+    async def test_skip_nonexistent_issue_returns_404(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/plan/skip/999")
+        assert resp.status_code == 404
+
+
+class TestSupervisorDaemonRequireApproval:
+    """Tests for require_approval config in the daemon poll loop."""
+
+    @pytest.fixture
+    async def session_factory(self):
+        from sova.db.session import get_session_factory
+
+        return await get_session_factory(Path.cwd())
+
+    async def test_require_approval_stores_plan_without_executing(self, session_factory) -> None:
+        from sova.config.models import ProjectConfig, SupervisorConfig
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.daemon import SupervisorDaemon
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        set_pending_plan([])
+        cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=True))
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
+            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.evaluate_all",
+                new_callable=AsyncMock,
+                return_value=decisions,
+            ),
+        ):
+            result = await daemon.poll_once()
+
+        # Decisions stored in plan, not executed
+        plan = get_pending_plan()
+        assert len(plan) == 1
+        assert plan[0].issue_number == 42
+        assert result["progression"]["pending"] == 1
+        assert result["progression"]["executed"] == 0
+        set_pending_plan([])
+
+    async def test_require_approval_false_executes_directly(self, session_factory) -> None:
+        from sova.config.models import ProjectConfig, SupervisorConfig
+        from sova.supervisor.daemon import SupervisorDaemon
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=False))
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
+        execute_results = [{"run_id": 1}]
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
+            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.evaluate_all",
+                new_callable=AsyncMock,
+                return_value=decisions,
+            ),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.execute_decisions",
+                new_callable=AsyncMock,
+                return_value=execute_results,
+            ),
+        ):
+            result = await daemon.poll_once()
+
+        assert result["progression"]["executed"] == execute_results
+        assert result["progression"].get("pending", 0) == 0
+
+
+class TestExecutePlanDecisions:
+    """Direct tests of _execute_plan_decisions to cover lines not reached via mocked approve_plan tests."""
+
+    async def test_execute_plan_decisions_success(self) -> None:
+        from sova.dashboard.routers.supervisor import _execute_plan_decisions
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+        ]
+
+        async def _fake_execute_decision(decision):
+            return {"run_id": 1, "issue_number": decision.issue_number}
+
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=Path("/tmp/test")),
+            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.execute_decision",
+                new_callable=AsyncMock,
+                side_effect=_fake_execute_decision,
+            ),
+        ):
+            results = await _execute_plan_decisions(decisions)
+
+        assert len(results) == 1
+        assert results[0]["run_id"] == 1
+
+    async def test_execute_plan_decisions_catches_per_decision_exception(self) -> None:
+        from sova.dashboard.routers.supervisor import _execute_plan_decisions
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+            ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+
+        async def _fake_execute_decision(decision):
+            if decision.issue_number == 43:
+                raise RuntimeError("agent slot full")
+            return {"run_id": 1}
+
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=Path("/tmp/test")),
+            patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("sova.supervisor.progression.TaskProgressionEngine.__init__", return_value=None),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.execute_decision",
+                new_callable=AsyncMock,
+                side_effect=_fake_execute_decision,
+            ),
+        ):
+            results = await _execute_plan_decisions(decisions)
+
+        assert len(results) == 2
+        assert results[0] == {"run_id": 1}
+        assert results[1] == {"error": "agent slot full", "issue_number": 43}
