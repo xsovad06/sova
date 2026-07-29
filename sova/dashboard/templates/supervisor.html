@@ -92,6 +92,29 @@
   <div id="pending-plan-items" class="space-y-1.5"></div>
 </div>
 
+<!-- Task Queue -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 p-4 mb-4">
+  <div class="flex items-center justify-between mb-3">
+    <div>
+      <h3 class="text-sm font-medium text-gray-300 inline">Task Queue</h3>
+      <span class="text-xs text-gray-500 ml-2">Ordered evaluation priority. Drag to reorder. Empty = evaluate all.</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <form id="queue-add-form" class="flex items-center gap-1" onsubmit="addToQueue(event)">
+        <label for="queue-add-input" class="sr-only">Issue number to add to queue</label>
+        <input type="number" id="queue-add-input" min="1" placeholder="#"
+               aria-label="Issue number to add to queue"
+               class="w-16 text-xs bg-surface border border-gray-700/50 rounded px-2 py-1 text-gray-300 placeholder-gray-600">
+        <button type="submit" class="text-xs px-2 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Add</button>
+      </form>
+      <button type="button" onclick="clearQueue()"
+              class="text-xs px-2 py-1 rounded bg-gray-700/40 text-gray-400 hover:text-gray-200 transition-colors">Clear</button>
+    </div>
+  </div>
+  <div id="queue-empty" class="hidden text-xs text-gray-500 text-center py-3">Queue is empty: supervisor evaluates all issues</div>
+  <ol id="queue-list" class="space-y-1"></ol>
+</div>
+
 <!-- Compact row: Rate Limits + Daemon Status -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
@@ -1233,11 +1256,171 @@ function _connectSupervisorWs() {
 }
 _connectSupervisorWs();
 
+// -- Task Queue --
+let _queueData = [];
+
+async function loadQueue() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const newQueue = data.queue || [];
+    if (JSON.stringify(_queueData) === JSON.stringify(newQueue)) return;
+    _queueData = newQueue;
+    renderQueue();
+  } catch (e) { console.error('loadQueue failed:', e); }
+}
+
+function renderQueue() {
+  const list = document.getElementById('queue-list');
+  const empty = document.getElementById('queue-empty');
+  if (!_queueData.length) {
+    list.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  list.innerHTML = _queueData.map((num, i) => `
+    <li draggable="true" data-queue-idx="${i}" data-issue="${num}"
+        class="flex items-center justify-between gap-2 text-xs py-1.5 px-2 rounded bg-surface/60 border border-gray-700/40 cursor-grab active:cursor-grabbing select-none"
+        ondragstart="queueDragStart(event)" ondragover="queueDragOver(event)" ondragleave="queueDragLeave(event)" ondrop="queueDrop(event)" ondragend="queueDragEnd(event)">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-gray-600 w-4 text-right shrink-0">${i + 1}.</span>
+        <span class="font-mono text-accent shrink-0">#${num}</span>
+      </div>
+      <div class="flex items-center gap-0.5 shrink-0">
+        <button type="button" onclick="moveQueueItem(${i}, -1)" ${i === 0 ? 'disabled' : ''}
+                class="text-gray-600 hover:text-gray-300 disabled:opacity-30 disabled:cursor-default transition-colors px-0.5" aria-label="Move issue #${num} up">&uarr;</button>
+        <button type="button" onclick="moveQueueItem(${i}, 1)" ${i === _queueData.length - 1 ? 'disabled' : ''}
+                class="text-gray-600 hover:text-gray-300 disabled:opacity-30 disabled:cursor-default transition-colors px-0.5" aria-label="Move issue #${num} down">&darr;</button>
+        <button type="button" onclick="removeFromQueue(${num})"
+                class="text-gray-600 hover:text-gray-300 transition-colors px-1" aria-label="Remove issue #${num} from queue">&times;</button>
+      </div>
+    </li>
+  `).join('');
+}
+
+let _dragIdx = null;
+
+function queueDragStart(e) {
+  _dragIdx = parseInt(e.currentTarget.dataset.queueIdx, 10);
+  e.currentTarget.style.opacity = '0.4';
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function queueDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.style.borderTopColor = '#89b4fa';
+}
+
+function queueDragLeave(e) {
+  e.currentTarget.style.borderTopColor = '';
+}
+
+function queueDrop(e) {
+  e.preventDefault();
+  const targetIdx = parseInt(e.currentTarget.dataset.queueIdx, 10);
+  e.currentTarget.style.borderTopColor = '';
+  if (_dragIdx == null || _dragIdx === targetIdx) return;
+  const reordered = [..._queueData];
+  const item = reordered.splice(_dragIdx, 1)[0];
+  reordered.splice(targetIdx, 0, item);
+  saveQueue(reordered);
+}
+
+function queueDragEnd(e) {
+  e.currentTarget.style.opacity = '';
+  document.querySelectorAll('#queue-list li').forEach(li => { li.style.borderTopColor = ''; });
+  _dragIdx = null;
+}
+
+function moveQueueItem(idx, direction) {
+  const newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= _queueData.length) return;
+  const reordered = [..._queueData];
+  const item = reordered.splice(idx, 1)[0];
+  reordered.splice(newIdx, 0, item);
+  saveQueue(reordered);
+}
+
+async function saveQueue(queue) {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_numbers: queue }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      _queueData = data.queue;
+      renderQueue();
+    } else {
+      showToast('Failed to save queue order', 'error');
+      renderQueue();
+    }
+  } catch (e) {
+    console.error('saveQueue failed:', e);
+    showToast('Failed to save queue order', 'error');
+    renderQueue();
+  }
+}
+
+async function addToQueue(e) {
+  e.preventDefault();
+  const input = document.getElementById('queue-add-input');
+  const num = parseInt(input.value, 10);
+  if (!num || num < 1) return;
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_number: num }),
+    });
+    if (res.status === 409) {
+      showToast(`Issue #${num} is already in the queue`, 'error');
+      return;
+    }
+    if (!res.ok) {
+      showToast(`Failed to add issue #${num}: ${res.status}`, 'error');
+      return;
+    }
+    const data = await res.json();
+    _queueData = data.queue;
+    renderQueue();
+    input.value = '';
+  } catch (e) {
+    console.error('addToQueue failed:', e);
+    showToast('Failed to add issue to queue', 'error');
+  }
+}
+
+async function removeFromQueue(num) {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue/${num}`, { method: 'DELETE' });
+    if (res.ok) {
+      const data = await res.json();
+      _queueData = data.queue;
+      renderQueue();
+    }
+  } catch (e) { console.error('removeFromQueue failed:', e); }
+}
+
+async function clearQueue() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue`, { method: 'DELETE' });
+    if (res.ok) {
+      _queueData = [];
+      renderQueue();
+    }
+  } catch (e) { console.error('clearQueue failed:', e); }
+}
+
 // -- Init --
-loadStatus(); loadQuota(); loadGraph(); loadDecisions(); loadPlan();
+loadStatus(); loadQuota(); loadGraph(); loadDecisions(); loadPlan(); loadQueue();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes
-setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); loadPlan(); }, 30000);
+setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
