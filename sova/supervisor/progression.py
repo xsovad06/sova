@@ -58,17 +58,6 @@ class ProgressionAction(StrEnum):
     CHECKPOINT_NEEDED = "checkpoint_needed"
 
 
-# Actions that do not result in spawning an agent or triggering work.
-# Used to filter the actionable subset in evaluate_all, execute_decisions, and the daemon.
-NON_ACTIONABLE_ACTIONS: frozenset[ProgressionAction] = frozenset(
-    {
-        ProgressionAction.WAIT,
-        ProgressionAction.BLOCKED,
-        ProgressionAction.CHECKPOINT_NEEDED,
-    }
-)
-
-
 @dataclass(frozen=True, slots=True)
 class BlockReason:
     gate: str
@@ -82,6 +71,7 @@ class ProgressionDecision:
     role: str | None = None
     reason: str = ""
     blocked_by: tuple[BlockReason, ...] = field(default_factory=tuple)
+    pr_number: int | None = None
 
 
 # Map ProgressionAction to the role string used by start_agent()
@@ -90,6 +80,9 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_DEVELOPER: "developer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
 }
+
+# Actions that should trigger issue assignment on spawn (development work, not post-work).
+_ASSIGN_ACTIONS = frozenset({ProgressionAction.SPAWN_RESEARCHER, ProgressionAction.SPAWN_DEVELOPER})
 
 
 class TaskProgressionEngine:
@@ -187,11 +180,13 @@ class TaskProgressionEngine:
                 precomputed_file_sets=precomputed_file_sets,
                 task_labels=task.labels,
                 task_body=task.body,
+                task_assignees=task.assignees,
             )
             decisions.append(decision)
 
             # Decrement capacity for actionable decisions
-            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action != ProgressionAction.SPAWN_REBASE:
+            non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
+            if decision.action not in non_actionable and decision.action != ProgressionAction.SPAWN_REBASE:
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
@@ -249,10 +244,12 @@ class TaskProgressionEngine:
         precomputed_file_sets: list[BranchFileSet] | None = None
         task_labels: list[str] = []
         task_body: str = ""
+        task_assignees: list[str] = []
         task = graph.get_task(issue_number)
         if task is not None:
             task_labels = task.labels
             task_body = task.body
+            task_assignees = task.assignees
 
         if self._config.file_overlap_gate and task is not None:
             try:
@@ -272,6 +269,7 @@ class TaskProgressionEngine:
             precomputed_file_sets=precomputed_file_sets,
             task_labels=task_labels,
             task_body=task_body,
+            task_assignees=task_assignees,
         )
 
     async def execute_decision(self, decision: ProgressionDecision) -> dict:
@@ -307,12 +305,36 @@ class TaskProgressionEngine:
                 return {"error": f"Project path is not registered: {self._project_dir}"}
             kwargs["slug"] = slug
 
-        # For integrate-pr, we need the PR number
+        # For integrate-pr, we need the PR number (reuse from ownership gate if available)
         if decision.action == ProgressionAction.SPAWN_INTEGRATE:
-            pr_number = await self._find_pr_for_issue(decision.issue_number)
+            pr_number = decision.pr_number or await self._find_pr_for_issue(decision.issue_number)
             if pr_number is None:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
             kwargs["pr_number"] = pr_number
+
+        # Claim unassigned issues before spawning (distributed ownership).
+        # The ownership gate already verified this issue is either unassigned or assigned
+        # to us, so we attempt the assign unconditionally (idempotent on GitHub).
+        # Only assign for development actions (researcher, developer), not for post-work
+        # actions (integrate) where the work is already complete.
+        if self._config.respect_ownership and decision.action in _ASSIGN_ACTIONS and role:
+            try:
+                claimed = await self._adapter.assign(str(decision.issue_number), role)
+                if claimed:
+                    log.info(
+                        "ownership.claimed",
+                        issue=decision.issue_number,
+                        user=self._adapter.github_user,
+                        role=role,
+                    )
+                else:
+                    log.warning(
+                        "ownership.claim_failed",
+                        issue=decision.issue_number,
+                        user=self._adapter.github_user,
+                    )
+            except Exception:
+                log.warning("ownership.claim_failed", issue=decision.issue_number, exc_info=True)
 
         log.info(
             "progression.execute",
@@ -324,7 +346,8 @@ class TaskProgressionEngine:
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
         """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED)."""
-        actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
+        _non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
+        actionable = [d for d in decisions if d.action not in _non_actionable]
         results: list[dict] = []
         for decision in actionable:
             result = await self.execute_decision(decision)
@@ -346,6 +369,7 @@ class TaskProgressionEngine:
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
         task_body: str = "",
+        task_assignees: list[str] | None = None,
     ) -> ProgressionDecision:
         """Evaluate a single task against all gates."""
         candidate = self._determine_transition(state)
@@ -364,7 +388,7 @@ class TaskProgressionEngine:
                 reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
-        blockers = await self._collect_gate_blockers(
+        blockers, discovered_pr = await self._collect_gate_blockers(
             issue_number,
             candidate,
             graph,
@@ -375,6 +399,7 @@ class TaskProgressionEngine:
             precomputed_file_sets=precomputed_file_sets,
             task_labels=task_labels,
             task_body=task_body,
+            task_assignees=task_assignees,
         )
 
         if blockers:
@@ -400,6 +425,7 @@ class TaskProgressionEngine:
             action=candidate,
             role=_ACTION_TO_ROLE.get(candidate),
             reason=f"Ready to {candidate.value}",
+            pr_number=discovered_pr,
         )
 
     async def _collect_gate_blockers(
@@ -415,8 +441,9 @@ class TaskProgressionEngine:
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
         task_body: str = "",
-    ) -> list[BlockReason]:
-        """Run all gate checks and return active blockers."""
+        task_assignees: list[str] | None = None,
+    ) -> tuple[list[BlockReason], int | None]:
+        """Run all gate checks and return (active_blockers, discovered_pr_number)."""
         blockers: list[BlockReason] = []
 
         # Dependency gate is sync (reads in-memory graph only)
@@ -425,15 +452,18 @@ class TaskProgressionEngine:
             if dep_block:
                 blockers.append(dep_block)
 
-        # Run async per-task gates concurrently
-        gates = [
+        # Run async per-task gates concurrently (ownership gate returns a tuple)
+        running_result, budget_result, ownership_result = await asyncio.gather(
             self._check_already_running(issue_number),
             self._check_budget_gate(issue_number),
-        ]
+            self._check_ownership_gate(issue_number, candidate, task_assignees=task_assignees),
+        )
+        ownership_block, discovered_pr = ownership_result
+
+        simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
-            gates.append(self._check_repeated_failures_gate(issue_number))
-        gate_results = await asyncio.gather(*gates)
-        blockers.extend(r for r in gate_results if r is not None)
+            simple_results.append(await self._check_repeated_failures_gate(issue_number))
+        blockers.extend(r for r in simple_results if r is not None)
 
         # Merge conflict gate (only blocks integrate actions)
         if precomputed_conflicts is not None and candidate == ProgressionAction.SPAWN_INTEGRATE:
@@ -461,7 +491,7 @@ class TaskProgressionEngine:
         )
         blockers.extend(global_blocks)
 
-        return blockers
+        return blockers, discovered_pr
 
     async def _resolve_global_gates(
         self,
@@ -785,13 +815,93 @@ class TaskProgressionEngine:
             log.debug("file_overlap_gate.check_failed", issue=issue_number, exc_info=True)
             return None
 
+    async def _check_ownership_gate(
+        self,
+        issue: int,
+        candidate: ProgressionAction,
+        *,
+        task_assignees: list[str] | None = None,
+    ) -> tuple[BlockReason | None, int | None]:
+        """Check if issue/PR is owned by the configured github_user.
+
+        For development actions (SPAWN_DEVELOPER, SPAWN_RESEARCHER), checks issue assignee.
+        For review actions (SPAWN_INTEGRATE), checks PR author instead (handles teammate takeover).
+        Fail-open on API errors (log warning and proceed).
+
+        ``task_assignees`` avoids a redundant API call when the caller already has the task data.
+
+        Returns (block_reason, discovered_pr_number). The PR number is populated when
+        the gate checks a PR (SPAWN_INTEGRATE) and can be reused by execute_decision
+        to avoid a duplicate API call.
+        """
+        if not self._config.respect_ownership:
+            return None, None
+
+        if not self._adapter.github_user:
+            log.warning("ownership_gate.github_user_not_configured", issue=issue)
+            return None, None
+
+        try:
+            # For review/integrate phases, check PR author (PR ownership is authoritative post-development)
+            if candidate == ProgressionAction.SPAWN_INTEGRATE:
+                pr_result, pr_number = await self._check_pr_ownership(issue)
+                if pr_result is not _NOT_COMPUTED:
+                    return pr_result, pr_number
+
+            # Development phase or fallback: check issue assignee
+            block = await self._check_issue_ownership(issue, task_assignees)
+            return block, None
+
+        except Exception:
+            log.warning("ownership_gate.check_failed", issue=issue, exc_info=True)
+            return None, None  # Fail-open
+
+    async def _check_pr_ownership(self, issue: int) -> tuple[BlockReason | None | object, int | None]:
+        """Check PR author ownership.
+
+        Returns (gate_result, pr_number) where gate_result is:
+        BlockReason if blocked, None if authorized,
+        _NOT_COMPUTED if should fall through.
+        """
+        if not self._adapter.repo:
+            return _NOT_COMPUTED, None
+
+        pr = await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
+        if not pr or not pr.author_login:
+            return _NOT_COMPUTED, pr.number if pr else None
+
+        # PR found with author: this is decisive
+        if pr.author_login != self._adapter.github_user:
+            return BlockReason(
+                gate="ownership",
+                detail=f"PR #{pr.number} is owned by {pr.author_login} (not {self._adapter.github_user})",
+            ), pr.number
+        return None, pr.number  # Authorized
+
+    async def _check_issue_ownership(self, issue: int, task_assignees: list[str] | None) -> BlockReason | None:
+        """Check issue assignee ownership. Returns None if unassigned or assigned to self."""
+        assignees = task_assignees if task_assignees is not None else []
+        if task_assignees is None:
+            # Fallback: fetch from API (single-task evaluation without precomputed data)
+            task = await self._adapter.get_task(str(issue))
+            assignees = task.assignees
+
+        if not assignees or self._adapter.github_user in assignees:
+            return None
+
+        # Assigned to someone else
+        assignee_str = ", ".join(assignees)
+        return BlockReason(
+            gate="ownership",
+            detail=f"Issue #{issue} is assigned to {assignee_str} (not {self._adapter.github_user})",
+        )
+
     async def _find_pr_for_issue(self, issue: int) -> int | None:
         """Find an open PR linked to this issue."""
         try:
-            cfg = load_config(self._project_dir)
-            if not cfg.github_repo:
+            if not self._adapter.repo:
                 return None
-            pr = await find_pr_for_issue(str(issue), repo=cfg.github_repo, github_user=cfg.github_user)
+            pr = await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
             return pr.number if pr else None
         except Exception:
             log.debug("find_pr.failed", issue=issue, exc_info=True)
