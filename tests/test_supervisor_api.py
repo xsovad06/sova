@@ -636,3 +636,315 @@ class TestExecutePlanDecisions:
         assert len(results) == 2
         assert results[0] == {"run_id": 1}
         assert results[1] == {"error": "agent slot full", "issue_number": 43}
+
+
+class TestTaskQueueRouter:
+    """Tests for the task queue CRUD endpoints."""
+
+    @pytest.fixture
+    def app(self, tmp_path):
+        from sova.dashboard.app import create_app
+
+        # Write a minimal sova.toml so queue writes have a file to update
+        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=tmp_path)
+
+    @pytest.fixture
+    def project_dir(self, tmp_path):
+        return tmp_path
+
+    async def test_get_queue_empty(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/queue")
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == []
+
+    async def test_add_to_queue(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 201
+        assert resp.json()["queue"] == [42]
+
+    async def test_add_duplicate_returns_409(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 409
+
+    async def test_set_queue_with_reorder(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 10})
+                await client.post("/api/supervisor/queue", json={"issue_number": 20})
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10]})
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == [20, 10]
+
+    async def test_set_queue_deduplicates(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [5, 5, 10, 5]})
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == [5, 10]
+
+    async def test_remove_from_queue(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
+                await client.post("/api/supervisor/queue", json={"issue_number": 43})
+                resp = await client.delete("/api/supervisor/queue/42")
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == [43]
+
+    async def test_remove_nonexistent_returns_404(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/supervisor/queue/999")
+        assert resp.status_code == 404
+
+    async def test_clear_queue(self, app, project_dir) -> None:
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
+                resp = await client.delete("/api/supervisor/queue")
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == []
+
+    async def test_queue_persists_to_toml(self, app, project_dir) -> None:
+        """Verify queue changes are written to sova.toml."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
+
+        import tomllib
+
+        with open(project_dir / "sova.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["supervisor"]["task_queue"] == [42]
+
+
+class TestTaskQueueValidation:
+    """Tests for task_queue field validation in SupervisorConfig and QueueAddRequest."""
+
+    def test_task_queue_rejects_zero(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        with pytest.raises(ValueError, match="positive integers"):
+            SupervisorConfig(task_queue=[0])
+
+    def test_task_queue_rejects_negative(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        with pytest.raises(ValueError, match="positive integers"):
+            SupervisorConfig(task_queue=[-1])
+
+    def test_task_queue_accepts_positive(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        cfg = SupervisorConfig(task_queue=[1, 42, 100])
+        assert cfg.task_queue == [1, 42, 100]
+
+    def test_task_queue_accepts_empty(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        cfg = SupervisorConfig(task_queue=[])
+        assert cfg.task_queue == []
+
+    def test_queue_add_request_rejects_zero(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueAddRequest
+
+        with pytest.raises(ValueError):
+            QueueAddRequest(issue_number=0)
+
+    def test_queue_add_request_rejects_negative(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueAddRequest
+
+        with pytest.raises(ValueError):
+            QueueAddRequest(issue_number=-5)
+
+    def test_queue_add_request_accepts_positive(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueAddRequest
+
+        req = QueueAddRequest(issue_number=42)
+        assert req.issue_number == 42
+
+    def test_queue_set_request_rejects_negative(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueSetRequest
+
+        with pytest.raises(ValueError, match="positive integers"):
+            QueueSetRequest(issue_numbers=[1, -2, 3])
+
+    def test_queue_set_request_rejects_zero(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueSetRequest
+
+        with pytest.raises(ValueError, match="positive integers"):
+            QueueSetRequest(issue_numbers=[0])
+
+    def test_queue_set_request_accepts_positive(self) -> None:
+        from sova.dashboard.routers.supervisor import QueueSetRequest
+
+        req = QueueSetRequest(issue_numbers=[1, 42, 100])
+        assert req.issue_numbers == [1, 42, 100]
+
+    async def test_add_zero_issue_returns_422(self, tmp_path) -> None:
+        """POST /queue with issue_number=0 returns 422 validation error."""
+        from sova.dashboard.app import create_app
+
+        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                app = create_app(project_dir=tmp_path)
+
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 0})
+        assert resp.status_code == 422
+
+
+class TestTaskQueueErrorPaths:
+    """Tests for queue error paths: malformed TOML, write failures, negative numbers."""
+
+    @pytest.fixture
+    def app(self, tmp_path):
+        from sova.dashboard.app import create_app
+
+        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=tmp_path)
+
+    @pytest.fixture
+    def project_dir(self, tmp_path):
+        return tmp_path
+
+    async def test_malformed_toml_returns_503_on_save(self, app, project_dir) -> None:
+        """_save_task_queue with corrupt TOML returns 503.
+
+        We patch load_config to succeed (returning an empty queue) so the endpoint
+        reaches _save_task_queue, which then hits the corrupt file.
+        """
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = []
+        (project_dir / "sova.toml").write_text("{{{{not valid toml")
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 503
+
+    async def test_negative_issue_number_rejected(self, app, project_dir) -> None:
+        """POST /queue with negative issue_number returns 422."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": -5})
+        assert resp.status_code == 422
+
+    async def test_set_queue_negative_rejected(self, app, project_dir) -> None:
+        """PUT /queue with negative issue_numbers returns 422."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, -2, 3]})
+        assert resp.status_code == 422
+
+    async def test_set_queue_zero_rejected(self, app, project_dir) -> None:
+        """PUT /queue with zero issue_numbers returns 422."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [0]})
+        assert resp.status_code == 422
+
+    async def test_write_failure_returns_503(self, app, project_dir) -> None:
+        """Writing queue returns 503 when file I/O fails."""
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [42]})
+        assert resp.status_code == 503
+
+    def test_save_task_queue_atomic_write_cleanup(self, tmp_path) -> None:
+        """Verify temp file is cleaned up on write failure."""
+        from sova.dashboard.routers.supervisor import _save_task_queue
+
+        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+        tmp_file = tmp_path / "sova.toml.tmp"
+
+        with patch.object(Path, "replace", side_effect=OSError("disk error")):
+            with pytest.raises(Exception):
+                _save_task_queue(tmp_path, [42])
+        # Temp file should be cleaned up
+        assert not tmp_file.exists()
+
+
+class TestSaveTaskQueueEdgeCases:
+    """Tests for _save_task_queue edge cases."""
+
+    def test_save_creates_toml_when_missing(self, tmp_path) -> None:
+        from sova.dashboard.routers.supervisor import _save_task_queue
+
+        _save_task_queue(tmp_path, [42, 43])
+        import tomllib
+
+        with open(tmp_path / "sova.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["supervisor"]["task_queue"] == [42, 43]
+
+    def test_save_preserves_existing_config(self, tmp_path) -> None:
+        from sova.dashboard.routers.supervisor import _save_task_queue
+
+        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+        _save_task_queue(tmp_path, [10])
+        import tomllib
+
+        with open(tmp_path / "sova.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["project"]["github_repo"] == "test/repo"
+        assert data["supervisor"]["task_queue"] == [10]
+
+    def test_save_with_none_project_dir(self, tmp_path, monkeypatch) -> None:
+        from sova.dashboard.routers.supervisor import _save_task_queue
+
+        monkeypatch.chdir(tmp_path)
+        _save_task_queue(None, [1])
+        import tomllib
+
+        with open(tmp_path / "sova.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["supervisor"]["task_queue"] == [1]
+
+
+class TestAutoResearchDefault:
+    """Verify auto_research defaults to False per architecture.md."""
+
+    def test_auto_research_defaults_to_false(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        cfg = SupervisorConfig()
+        assert cfg.auto_research is False
+
+
+class TestDeduplicate:
+    def test_preserves_first_occurrence(self) -> None:
+        from sova.dashboard.routers.supervisor import _deduplicate
+
+        assert _deduplicate([3, 1, 2, 1, 3]) == [3, 1, 2]
+
+    def test_empty_list(self) -> None:
+        from sova.dashboard.routers.supervisor import _deduplicate
+
+        assert _deduplicate([]) == []
+
+    def test_no_duplicates(self) -> None:
+        from sova.dashboard.routers.supervisor import _deduplicate
+
+        assert _deduplicate([1, 2, 3]) == [1, 2, 3]
