@@ -518,6 +518,7 @@ class SupervisorConfig(BaseSettings):
     auto_address_review: bool = False
     auto_integrate: bool = False
     auto_rebase: bool = False
+    require_approval: bool = True
     respect_dependencies: bool = True
     respect_ownership: bool = True
     file_overlap_gate: bool = True

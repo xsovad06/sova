@@ -925,6 +925,13 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.require_approval",
+        "Require approval",
+        "Store actionable decisions for human review instead of executing immediately",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.respect_dependencies",
         "Respect dependencies",
         "Gate agent spawning on dependency graph (block until all deps are DONE)",

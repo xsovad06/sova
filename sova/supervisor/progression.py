@@ -84,6 +84,15 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
 # Actions that should trigger issue assignment on spawn (development work, not post-work).
 _ASSIGN_ACTIONS = frozenset({ProgressionAction.SPAWN_RESEARCHER, ProgressionAction.SPAWN_DEVELOPER})
 
+# Actions that do not trigger agent spawning (used by daemon to filter before approval/execution).
+NON_ACTIONABLE_ACTIONS = frozenset(
+    {
+        ProgressionAction.WAIT,
+        ProgressionAction.BLOCKED,
+        ProgressionAction.CHECKPOINT_NEEDED,
+    }
+)
+
 
 class TaskProgressionEngine:
     """Evaluate active tasks and produce deterministic progression decisions."""
