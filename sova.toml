@@ -15,8 +15,15 @@ type = "github"
 github_project_number = 2
 
 [agent]
-model = "opus"
+model = "sonnet"
 max_budget = 10.00
+
+[roles]
+researcher_model = "sonnet"
+triage_model = "haiku"
+
+[llm]
+routing = {triage = "haiku", extraction = "haiku", pr_body = "haiku"}
 
 [review]
 enabled = true
