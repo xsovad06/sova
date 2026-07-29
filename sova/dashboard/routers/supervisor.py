@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
     from sova.supervisor.progression import ProgressionDecision
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from sova.dashboard.project_context import get_project_dir
 from sova.utils.logging import get_logger
@@ -21,11 +22,27 @@ class ApproveRequest(BaseModel):
     issue_numbers: list[int] | None = None
 
 
+class QueueSetRequest(BaseModel):
+    issue_numbers: list[int]
+
+    @field_validator("issue_numbers")
+    @classmethod
+    def _all_positive(cls, v: list[int]) -> list[int]:
+        if any(n < 1 for n in v):
+            raise ValueError("All issue_numbers must be positive integers")
+        return v
+
+
+class QueueAddRequest(BaseModel):
+    issue_number: int = Field(gt=0)
+
+
 router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 
 _daemon_registry: dict = {}
 _background_tasks: set[asyncio.Task] = set()
 _start_lock = asyncio.Lock()
+_queue_lock = asyncio.Lock()
 
 
 def _get_daemon() -> Any | None:
@@ -248,3 +265,107 @@ async def skip_plan_item(issue_number: int) -> dict:
     if not removed:
         raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the pending plan")
     return {"skipped": issue_number}
+
+
+# -- Task Queue CRUD --
+
+
+def _deduplicate(items: list[int]) -> list[int]:
+    """Deduplicate preserving first occurrence order."""
+    return list(dict.fromkeys(items))
+
+
+def _save_task_queue(project_dir: Path | None, queue: list[int]) -> None:
+    """Persist task_queue to sova.toml using tomlkit for round-trip preservation.
+
+    Uses atomic write (temp file + rename) and catches I/O errors to return
+    a meaningful HTTP error instead of a bare 500.
+    """
+    import tomlkit
+
+    if project_dir is None:
+        project_dir = Path.cwd()
+    toml_path = project_dir / "sova.toml"
+    try:
+        doc = tomlkit.parse(toml_path.read_text()) if toml_path.exists() else tomlkit.document()
+    except FileNotFoundError:
+        doc = tomlkit.document()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to read config: {exc}") from exc
+
+    if "supervisor" not in doc:
+        doc["supervisor"] = tomlkit.table()
+    doc["supervisor"]["task_queue"] = queue
+
+    try:
+        tmp = toml_path.with_suffix(".toml.tmp")
+        tmp.write_text(tomlkit.dumps(doc))
+        tmp.replace(toml_path)
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail=f"Failed to persist queue: {exc}") from exc
+
+
+@router.get("/queue")
+async def get_queue() -> dict:
+    """Return the current task queue."""
+    from sova.config.loader import load_config
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    return {"queue": cfg.supervisor.task_queue}
+
+
+@router.put("/queue")
+async def set_queue(body: QueueSetRequest) -> dict:
+    """Replace the entire task queue (supports reordering)."""
+    async with _queue_lock:
+        project_dir = get_project_dir()
+        queue = _deduplicate(body.issue_numbers)
+        _save_task_queue(project_dir, queue)
+        return {"queue": queue}
+
+
+@router.post("/queue", status_code=201, responses={409: {"description": "Issue already in queue"}})
+async def add_to_queue(body: QueueAddRequest) -> dict:
+    """Add a single issue to the end of the queue."""
+    from sova.config.loader import load_config
+
+    async with _queue_lock:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+        queue = list(cfg.supervisor.task_queue)
+
+        if body.issue_number in queue:
+            raise HTTPException(status_code=409, detail=f"Issue #{body.issue_number} is already in the queue")
+
+        queue.append(body.issue_number)
+        _save_task_queue(project_dir, queue)
+        return {"queue": queue}
+
+
+@router.delete("/queue/{issue_number}", responses={404: {"description": "Issue not in queue"}})
+async def remove_from_queue(issue_number: int) -> dict:
+    """Remove a single issue from the queue."""
+    from sova.config.loader import load_config
+
+    async with _queue_lock:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+        queue = list(cfg.supervisor.task_queue)
+
+        if issue_number not in queue:
+            raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the queue")
+
+        queue.remove(issue_number)
+        _save_task_queue(project_dir, queue)
+        return {"queue": queue}
+
+
+@router.delete("/queue")
+async def clear_queue() -> dict:
+    """Clear the entire task queue."""
+    async with _queue_lock:
+        project_dir = get_project_dir()
+        _save_task_queue(project_dir, [])
+        return {"queue": []}
