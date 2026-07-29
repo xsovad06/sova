@@ -10470,6 +10470,37 @@ class TestStepProgress:
         assert result["step_index"] == 0
         assert result["total_steps"] == 1
 
+    def test_capture_baseline_step_in_developer_pipeline(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("capture_baseline")
+        assert result["pipeline_variant"] == "developer"
+        assert result["step_index"] == 3
+        assert result["total_steps"] == 16
+
+    def test_ensure_worktree_step_in_address_review_pipeline(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress("ensure_worktree")
+        assert result["pipeline_variant"] == "address_review"
+        assert result["step_index"] == 0
+        assert result["total_steps"] == 10
+
+    def test_planner_role_returns_planner_variant(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        result = get_step_progress(None, role="planner")
+        assert result["pipeline_variant"] == "planner"
+        assert result["total_steps"] == 4
+
+    def test_planner_step_detected_by_step_name(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import get_step_progress
+
+        for step, expected_idx in (("scan_project", 0), ("generate_tasks", 1), ("validate_tasks", 2)):
+            result = get_step_progress(step)
+            assert result["pipeline_variant"] == "planner", f"step={step} should be planner"
+            assert result["step_index"] == expected_idx
+
 
 # ---------------------------------------------------------------------------
 # Output service -- OutputWriter and read_lines
