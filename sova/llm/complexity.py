@@ -121,7 +121,10 @@ def _score_labels(labels: list[str]) -> ComplexityTier | None:
     """Return the highest-complexity label match, or None."""
     best: ComplexityTier | None = None
     for label in labels:
-        normalized = label.strip().lower().replace(":", "")
+        # Extract value portion of compound labels (e.g. "type:bug" -> "bug")
+        # so SOVA's namespace:value taxonomy matches the flat _LABEL_NORMALIZED keys.
+        value = label.split(":")[-1] if ":" in label else label
+        normalized = value.strip().lower()
         tier = _LABEL_NORMALIZED.get(normalized)
         if tier is not None and (best is None or _tier_index(tier) > _tier_index(best)):
             best = tier

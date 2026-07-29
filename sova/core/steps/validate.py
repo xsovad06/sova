@@ -93,7 +93,7 @@ class ValidateStep(BaseStep):
             try:
                 llm_result = await invoke(
                     prompt,
-                    model=ctx.config.agent.model,
+                    model=ctx.resolved_model or ctx.config.agent.model,
                     cwd=ctx.working_dir,
                     max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 )

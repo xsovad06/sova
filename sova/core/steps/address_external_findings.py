@@ -145,6 +145,23 @@ class AddressExternalFindingsStep(BaseStep):
             cost_usd=cost,
         )
 
+    async def _detect_changes(self, ctx: ExecutionContext, prev_count: int) -> tuple[bool, bool]:
+        """Detect if LLM produced changes and new commits.
+
+        Returns (has_changes, new_commits) tuple.
+        """
+        diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        has_changes = bool(
+            (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
+        )
+
+        post_log = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
+        post_count = len(post_log.stdout.strip().splitlines()) if post_log.success and post_log.stdout.strip() else 0
+        new_commits = post_count > prev_count
+
+        return has_changes, new_commits
+
     async def _apply_fixes(self, ctx: ExecutionContext, prompt: str) -> Decimal:
         """Invoke the LLM to fix external findings, commit, and push."""
         from sova.git import operations as git_ops
@@ -153,7 +170,7 @@ class AddressExternalFindingsStep(BaseStep):
         try:
             result = await invoke(
                 prompt,
-                model=ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )
@@ -162,14 +179,11 @@ class AddressExternalFindingsStep(BaseStep):
             log.warning("step.address_external_findings.llm_failed", exc_info=True)
             return Decimal("0")
 
-        diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
-        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
         log_result = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-
-        has_changes = (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
-
         prev_commits = log_result.stdout.strip() if log_result.success else ""
         prev_count = len(prev_commits.splitlines()) if prev_commits else 0
+
+        has_changes, new_commits = await self._detect_changes(ctx, prev_count)
 
         if has_changes:
             try:
@@ -179,10 +193,6 @@ class AddressExternalFindingsStep(BaseStep):
                 )
             except RuntimeError:
                 log.warning("step.address_external_findings.commit_failed", exc_info=True)
-
-        post_log = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
-        post_count = len(post_log.stdout.strip().splitlines()) if post_log.success and post_log.stdout.strip() else 0
-        new_commits = post_count > prev_count
 
         if has_changes or new_commits:
             try:

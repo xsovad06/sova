@@ -518,6 +518,74 @@ class TestAddressExternalFindingsStep:
         result = await AddressExternalFindingsStep().execute(ctx)
         assert not result.success
 
+    async def test_detect_changes_finds_uncommitted_changes(self) -> None:
+        """_detect_changes detects unstaged and staged changes."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            # Simulate unstaged changes
+            mock_run.side_effect = [
+                _shell_result(stdout="1 file changed"),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="abc123"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is True
+            assert new_commits is False
+
+    async def test_detect_changes_finds_new_commits(self) -> None:
+        """_detect_changes detects new commits ahead of base."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            # Simulate new commits (count increased from 1 to 2)
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout=""),  # git diff --cached --stat
+                _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline (2 commits)
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is False
+            assert new_commits is True
+
+    async def test_detect_changes_finds_both(self) -> None:
+        """_detect_changes detects both uncommitted changes and new commits."""
+        from sova.core.steps.address_external_findings import AddressExternalFindingsStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = AddressExternalFindingsStep()
+
+        with patch(
+            "sova.core.steps.address_external_findings.run",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            mock_run.side_effect = [
+                _shell_result(stdout=""),  # git diff --stat HEAD
+                _shell_result(stdout="1 file changed"),  # git diff --cached --stat
+                _shell_result(stdout="abc123\ndef456"),  # git log base..HEAD --oneline
+            ]
+
+            has_changes, new_commits = await step._detect_changes(ctx, 1)
+
+            assert has_changes is True
+            assert new_commits is True
+
 
 class TestFetchSonarCloudCoverageIssues:
     async def test_returns_none_when_no_project_key(self) -> None:

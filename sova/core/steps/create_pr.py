@@ -343,8 +343,9 @@ class CreatePRStep(BaseStep):
             )
         )
 
+        model = ctx.resolved_model or ctx.config.agent.model
         try:
-            result = await invoke(prompt, model="sonnet", cwd=ctx.working_dir, timeout=120)
+            result = await invoke(prompt, model=model, cwd=ctx.working_dir, timeout=120)
         except RuntimeError:
             log.warning("step.create_pr.body_generation_failed", fallback="structured")
             return self._build_fallback_body(ctx, task_title, commit_log, diff_stat)

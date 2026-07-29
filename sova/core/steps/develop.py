@@ -93,7 +93,7 @@ Commits:
 
 Return ONLY the section content (no heading, no markdown fences). Keep it under 10 bullet points."""
 
-        llm_result = await invoke(prompt, model="haiku", cwd=ctx.working_dir, timeout=60)
+        llm_result = await invoke(prompt, model=ctx.resolved_model or "haiku", cwd=ctx.working_dir, timeout=60)
         ctx.add_cost(llm_result.cost_usd)
 
         append_spec_section(ctx.issue_number, SECTION_IMPLEMENTATION_NOTES, llm_result.text.strip(), ctx.project_dir)
@@ -161,7 +161,7 @@ class DevelopStep(BaseStep):
             result = await invoke_command(
                 "/develop",
                 args=args,
-                model=ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,
@@ -327,7 +327,7 @@ class DevelopStep(BaseStep):
         try:
             llm_result = await invoke(
                 prompt,
-                model=ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.agent.model,
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
             )
