@@ -8913,6 +8913,50 @@ class TestReviewPrVerdictPersistence:
             assert run.handoff_json is not None
             assert run.handoff_json["next_action"] == "address_review"
 
+    async def test_validate_review_pr_fails_when_no_pr_number(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = None
+        agent.project_dir = None
+
+        result = await _validate_review_pr(1, agent)
+        assert result == "review-pr run has no associated PR number"
+
+    async def test_validate_review_pr_fails_when_no_output(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 300
+        agent.project_dir = None
+
+        with patch("sova.dashboard.services.agent_db._fetch_output_lines", return_value=None):
+            result = await _validate_review_pr(1, agent)  # run_id is arbitrary; mock bypasses DB
+        assert result == "review-pr has no recorded output"
+
+    async def test_validate_review_pr_fails_when_no_post_evidence(self) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_db import _validate_review_pr
+        from sova.dashboard.services.agent_pool import AgentState
+
+        agent = MagicMock(spec=AgentState)
+        agent.pr_number = 42
+        agent.project_dir = None
+
+        with patch(
+            "sova.dashboard.services.agent_db._fetch_output_lines",
+            return_value=["some unrelated output", "no evidence here"],
+        ):
+            result = await _validate_review_pr(1, agent)
+        assert result == "review-pr completed without posting a review on GitHub"
+
 
 class TestDowngradeToFailed:
     """_downgrade_to_failed changes done runs to failed with a reason."""

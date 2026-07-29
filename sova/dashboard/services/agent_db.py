@@ -441,11 +441,11 @@ async def _persist_review_verdict(run_id: int, verdict: str, project_dir: Path |
 async def _validate_review_pr(run_id: int, agent: AgentState) -> str | None:
     """Check that review-pr posted a review, then persist the verdict as handoff_json."""
     if agent.pr_number is None:
-        return None
+        return "review-pr run has no associated PR number"
 
     lines = await _fetch_output_lines(run_id, agent.project_dir)
     if lines is None:
-        return None
+        return "review-pr has no recorded output"
 
     has_post_evidence = any(
         "review posted" in line.lower()
