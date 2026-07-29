@@ -119,7 +119,7 @@ class TaskAdapter(ABC):
         """Move a task to a new lifecycle state on the tracker."""
 
     @abstractmethod
-    async def assign(self, task_id: str, agent_role: str) -> None:
+    async def assign(self, task_id: str, agent_role: str) -> bool:
         """Assign the task to an agent role."""
 
     @abstractmethod

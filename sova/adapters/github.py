@@ -134,10 +134,31 @@ class GitHubAdapter(TaskAdapter):
 
         await self._move_on_board(task_id, new_state)
 
-    async def assign(self, task_id: str, agent_role: str) -> None:
-        # GitHub assignees are users, not roles. We use the configured
-        # github_user from ProjectConfig. For now, add the role as a label.
+    async def assign(self, task_id: str, agent_role: str) -> bool:
+        # GitHub assignees are users, not roles. Assign the configured
+        # github_user and add the role as a label.
+        if not self.github_user:
+            log.warning("assign.no_user_configured", issue=task_id)
+            return False
+        result = await self._gh(
+            "issue",
+            "edit",
+            task_id,
+            "--repo",
+            self.repo,
+            "--add-assignee",
+            self.github_user,
+        )
+        if not result.success:
+            log.warning(
+                "assign.failed",
+                issue=task_id,
+                user=self.github_user,
+                stderr=result.stderr[:200],
+            )
+            return False
         await self._add_label(task_id, f"role:{agent_role}")
+        return True
 
     async def add_label(self, task_id: str, label: str) -> None:
         await self._add_label(task_id, label)

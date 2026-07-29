@@ -341,9 +341,11 @@ class TestGitHubAdapter:
 
     async def test_assign(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result()
+        self.adapter.github_user = "testuser"
 
-        await self.adapter.assign("42", "developer")
+        result = await self.adapter.assign("42", "developer")
 
+        assert result is True
         call_args = mock_run.call_args[0]
         assert "issue" in call_args
         assert "edit" in call_args
