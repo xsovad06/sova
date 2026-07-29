@@ -513,13 +513,13 @@ class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
     enabled: bool = False
-    auto_research: bool = False
+    auto_research: bool = True
     auto_develop: bool = False
     auto_address_review: bool = False
     auto_integrate: bool = False
     auto_rebase: bool = False
-    require_approval: bool = True
     respect_dependencies: bool = True
+    respect_ownership: bool = True
     file_overlap_gate: bool = True
     file_overlap_threshold: float = Field(0.0, ge=0.0, le=1.0)
     poll_interval_seconds: int = Field(120, gt=0)
