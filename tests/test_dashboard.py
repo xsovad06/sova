@@ -15367,3 +15367,109 @@ class TestSettingsMaxParallelSync:
         mock_service.update_config.assert_called_once()
         _, kwargs = mock_service.update_config.call_args
         assert kwargs["value"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Complexity endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestComplexityEndpoint:
+    """Tests for GET /api/agents/issue/{issue}/complexity."""
+
+    async def test_complexity_from_db_assessment(self, client: AsyncClient, session: AsyncSession) -> None:
+        from sova.db.models import TaskAssessmentRecord
+
+        record = TaskAssessmentRecord(
+            issue_number="99",
+            suitability="suitable",
+            confidence=Decimal("0.8"),
+            reasoning="test",
+            estimated_complexity="complex",
+        )
+        session.add(record)
+        await session.commit()
+
+        resp = await client.get("/api/agents/issue/99/complexity")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["complexity"] == "complex"
+        assert data["suggested_model"] == "opus"
+        assert "model_options" in data
+        assert len(data["model_options"]) == 5
+
+    async def test_complexity_fallback_to_adapter(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_task = MagicMock()
+        mock_task.title = "Refactor the authentication module"
+        mock_task.description = "Large refactor across multiple files"
+        mock_task.labels = ["complex"]
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_task = AsyncMock(return_value=mock_task)
+
+        with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+            resp = await client.get("/api/agents/issue/100/complexity")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["complexity"] == "complex"
+        assert data["suggested_model"] == "opus"
+
+    async def test_complexity_fallback_to_moderate_on_error(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_task = AsyncMock(side_effect=RuntimeError("API error"))
+
+        with patch("sova.adapters.create_adapter", return_value=mock_adapter):
+            resp = await client.get("/api/agents/issue/101/complexity")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["complexity"] == "moderate"
+        assert data["suggested_model"] == "sonnet"
+
+
+# ---------------------------------------------------------------------------
+# Start agent model parameter
+# ---------------------------------------------------------------------------
+
+
+class TestStartAgentModelParam:
+    """Tests for model parameter in POST /api/agents/start."""
+
+    async def test_start_agent_passes_model(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.control_service.start_agent",
+            new_callable=AsyncMock,
+            return_value={"run_id": 1, "status": "started"},
+        ) as mock_start:
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "42", "role": "developer", "model": "haiku"},
+            )
+            assert resp.status_code == 200
+            mock_start.assert_called_once()
+            _, kwargs = mock_start.call_args
+            assert kwargs["model"] == "haiku"
+
+    async def test_start_agent_model_defaults_to_none(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with patch(
+            "sova.dashboard.services.control_service.start_agent",
+            new_callable=AsyncMock,
+            return_value={"run_id": 1, "status": "started"},
+        ) as mock_start:
+            resp = await client.post(
+                "/api/agents/start",
+                json={"issue": "42"},
+            )
+            assert resp.status_code == 200
+            mock_start.assert_called_once()
+            _, kwargs = mock_start.call_args
+            assert kwargs["model"] is None

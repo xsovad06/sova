@@ -504,6 +504,7 @@ async def start_agent(
     slug: str | None = None,
     resume_run_id: int | None = None,
     pr_number: int | None = None,
+    model: str | None = None,
     _skip_handoff_clear: bool = False,
 ) -> dict:
     """Start an agent process for the given issue."""
@@ -609,7 +610,14 @@ async def start_agent(
         output_dir = project_dir / ".claude" / "agent-output"
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            process = await get_runtime().spawn(prompt, cwd, env=gh_env, output_dir=output_dir, run_label=str(run_id))
+            process = await get_runtime().spawn(
+                prompt,
+                cwd,
+                env=gh_env,
+                model=model,
+                output_dir=output_dir,
+                run_label=str(run_id),
+            )
         except Exception:
             log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
