@@ -12,6 +12,7 @@ from sova.adapters.base import Task, TaskState
 from sova.db.session import close_db, init_db
 from sova.supervisor.dependency_graph import (
     DependencyGraph,
+    _extract_priority,
     _get_spec_meta,
     build_dependency_graph,
     parse_dependencies,
@@ -1235,3 +1236,86 @@ class TestDependencyAPI:
         ):
             resp = await client.get("/api/dependencies/chain/1")
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# Priority extraction
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPriority:
+    def test_no_labels_returns_empty(self) -> None:
+        assert _extract_priority([]) == ""
+
+    def test_critical(self) -> None:
+        assert _extract_priority(["priority: critical"]) == "critical"
+
+    def test_high(self) -> None:
+        assert _extract_priority(["priority: high"]) == "high"
+
+    def test_medium(self) -> None:
+        assert _extract_priority(["priority: medium"]) == "medium"
+
+    def test_low(self) -> None:
+        assert _extract_priority(["priority: low"]) == "low"
+
+    def test_unrelated_labels_ignored(self) -> None:
+        assert _extract_priority(["area: dashboard", "type: feature"]) == ""
+
+    def test_priority_among_other_labels(self) -> None:
+        assert _extract_priority(["area: dashboard", "priority: high", "type: feature"]) == "high"
+
+    def test_case_insensitive(self) -> None:
+        assert _extract_priority(["Priority: High"]) == "high"
+
+    def test_unknown_priority_value_ignored(self) -> None:
+        assert _extract_priority(["priority: urgent"]) == ""
+
+
+class TestNodePriorityField:
+    def _task_with_labels(
+        self,
+        issue_id: int,
+        labels: list[str],
+        state: TaskState = TaskState.BACKLOG,
+    ) -> Task:
+        return Task(
+            id=str(issue_id),
+            title=f"Issue #{issue_id}",
+            body="",
+            state=state,
+            labels=labels,
+        )
+
+    def test_no_labels_node_has_empty_priority(self) -> None:
+        task = _task(1)
+        graph = DependencyGraph([task])
+        data = graph.to_dict()
+        assert data["nodes"][0]["priority"] == ""
+
+    def test_critical_label_sets_priority(self) -> None:
+        task = self._task_with_labels(1, ["priority: critical"])
+        graph = DependencyGraph([task])
+        assert graph.to_dict()["nodes"][0]["priority"] == "critical"
+
+    def test_high_label_sets_priority(self) -> None:
+        task = self._task_with_labels(2, ["priority: high"])
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "high"
+
+    def test_medium_label_sets_priority(self) -> None:
+        task = self._task_with_labels(3, ["priority: medium"])
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "medium"
+
+    def test_low_label_sets_priority(self) -> None:
+        task = self._task_with_labels(4, ["priority: low"])
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "low"
+
+    def test_priority_field_present_when_unlabelled(self) -> None:
+        task = self._task_with_labels(5, ["area: dashboard"])
+        node = DependencyGraph([task]).to_dict()["nodes"][0]
+        assert "priority" in node
+        assert node["priority"] == ""
+
+    def test_mixed_labels_extracts_correct_priority(self) -> None:
+        task = self._task_with_labels(6, ["area: dashboard", "priority: low", "type: feature"])
+        assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "low"

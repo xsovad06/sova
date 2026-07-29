@@ -1,16 +1,25 @@
-"""Supervisor API router: status, manual poll trigger, decision log queries."""
+"""Supervisor API router: status, manual poll trigger, decision log queries, and approval plan."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+if TYPE_CHECKING:
+    from sova.supervisor.progression import ProgressionDecision
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from sova.dashboard.project_context import get_project_dir
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.supervisor")
+
+
+class ApproveRequest(BaseModel):
+    issue_numbers: list[int] | None = None
+
 
 router = APIRouter(prefix="/supervisor", tags=["supervisor"])
 
@@ -147,3 +156,95 @@ async def get_counts() -> dict:
         project_slug = None
     counts = await get_decision_counts(project_dir, project_slug=project_slug)
     return {"counts": counts}
+
+
+@router.get("/plan")
+async def get_plan() -> dict:
+    """Return the current pending approval plan.
+
+    When ``supervisor.require_approval`` is True, the daemon stores actionable
+    decisions here instead of executing them immediately.  The frontend polls
+    this endpoint to render the "Pending Actions" panel.
+    """
+    from sova.dashboard.services.supervisor_service import get_pending_plan
+
+    plan = get_pending_plan()
+    return {
+        "pending": [
+            {
+                "issue_number": d.issue_number,
+                "action": d.action.value,
+                "role": d.role,
+                "reason": d.reason,
+            }
+            for d in plan
+        ]
+    }
+
+
+async def _execute_plan_decisions(decisions: list[ProgressionDecision]) -> list[dict]:
+    """Execute a list of ProgressionDecision objects via the engine.
+
+    Isolated into its own function so tests can patch it without touching
+    the entire engine lifecycle.
+    """
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+    from sova.db.session import get_session_factory
+    from sova.supervisor.progression import TaskProgressionEngine
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    adapter = create_adapter(cfg)
+    session_factory = await get_session_factory(project_dir)
+    engine = TaskProgressionEngine(
+        config=cfg.supervisor,
+        adapter=adapter,
+        project_dir=project_dir,
+        session_factory=session_factory,
+    )
+    results: list[dict] = []
+    for decision in decisions:
+        try:
+            result = await engine.execute_decision(decision)
+            results.append(result)
+        except Exception as exc:
+            log.warning("plan.execute_decision_failed", issue_number=decision.issue_number, exc_info=True)
+            results.append({"error": str(exc), "issue_number": decision.issue_number})
+    return results
+
+
+@router.post("/plan/approve")
+async def approve_plan(body: ApproveRequest) -> dict:
+    """Execute approved decisions from the pending plan.
+
+    When ``issue_numbers`` is provided, only those issues are approved and
+    executed; the rest remain in the plan.  When omitted or empty, all pending
+    decisions are approved and the plan is cleared.
+    """
+    from sova.dashboard.services.supervisor_service import get_pending_plan, remove_plan_items, set_pending_plan
+
+    plan = get_pending_plan()
+    if not plan:
+        return {"approved": 0, "results": []}
+
+    if body.issue_numbers:
+        to_execute = remove_plan_items(set(body.issue_numbers))
+    else:
+        to_execute = plan
+        set_pending_plan([])
+
+    results = await _execute_plan_decisions(to_execute)
+    errors = [r for r in results if "error" in r]
+    return {"approved": len(to_execute), "results": results, "errors": errors}
+
+
+@router.post("/plan/skip/{issue_number}", responses={404: {"description": "Issue not in pending plan"}})
+async def skip_plan_item(issue_number: int) -> dict:
+    """Remove a single issue from the pending plan without executing it."""
+    from sova.dashboard.services.supervisor_service import remove_plan_items
+
+    removed = remove_plan_items({issue_number})
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the pending plan")
+    return {"skipped": issue_number}

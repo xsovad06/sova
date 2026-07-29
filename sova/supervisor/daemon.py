@@ -111,9 +111,15 @@ class SupervisorDaemon:
         return results
 
     async def _poll_progression(self, adapter) -> dict:
-        """Run the task progression engine and log decisions."""
+        """Run the task progression engine and log decisions.
+
+        When ``require_approval`` is True the actionable decisions are stored in
+        the pending plan (visible on the supervisor dashboard) and execution is
+        deferred until the user approves them via the UI.  When False the
+        existing auto-execute behaviour is preserved.
+        """
         try:
-            from sova.supervisor.progression import TaskProgressionEngine
+            from sova.supervisor.progression import NON_ACTIONABLE_ACTIONS, TaskProgressionEngine
 
             engine = TaskProgressionEngine(
                 config=self._config.supervisor,
@@ -140,10 +146,19 @@ class SupervisorDaemon:
             if records:
                 await self._log_decisions_batch(records)
 
-            # Execute spawn decisions
-            executed = await engine.execute_decisions(decisions)
+            actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
-            return {"decisions": len(decisions), "executed": executed}
+            if self._config.supervisor.require_approval:
+                # Store actionable decisions for human review; do not execute yet.
+                from sova.dashboard.services.supervisor_service import set_pending_plan
+
+                set_pending_plan(actionable)
+                log.info("poll.progression_pending_approval", count=len(actionable))
+                return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}
+
+            # Auto-execute mode: spawn agents immediately.
+            executed = await engine.execute_decisions(decisions)
+            return {"decisions": len(decisions), "executed": executed, "pending": 0}
         except Exception as exc:
             await self._log_decision(
                 component="progression",

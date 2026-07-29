@@ -58,6 +58,17 @@ class ProgressionAction(StrEnum):
     CHECKPOINT_NEEDED = "checkpoint_needed"
 
 
+# Actions that do not result in spawning an agent or triggering work.
+# Used to filter the actionable subset in evaluate_all, execute_decisions, and the daemon.
+NON_ACTIONABLE_ACTIONS: frozenset[ProgressionAction] = frozenset(
+    {
+        ProgressionAction.WAIT,
+        ProgressionAction.BLOCKED,
+        ProgressionAction.CHECKPOINT_NEEDED,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class BlockReason:
     gate: str
@@ -180,8 +191,7 @@ class TaskProgressionEngine:
             decisions.append(decision)
 
             # Decrement capacity for actionable decisions
-            non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
-            if decision.action not in non_actionable and decision.action != ProgressionAction.SPAWN_REBASE:
+            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action != ProgressionAction.SPAWN_REBASE:
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
@@ -314,8 +324,7 @@ class TaskProgressionEngine:
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
         """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED)."""
-        _non_actionable = {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}
-        actionable = [d for d in decisions if d.action not in _non_actionable]
+        actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
         results: list[dict] = []
         for decision in actionable:
             result = await self.execute_decision(decision)

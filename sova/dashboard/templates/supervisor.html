@@ -35,6 +35,11 @@
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-red inline-block"></span> Blocked</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green inline-block animate-pulse"></span> Agent</span>
         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full inline-block" style="background:#fab387"></span> Handoff</span>
+        <span class="text-gray-700 mx-0.5">|</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#f38ba8"></span> Critical</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#fab387"></span> High</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#f9e2af"></span> Med</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#6c7086"></span> Low</span>
       </div>
       <div class="flex items-center gap-1">
         <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
@@ -70,6 +75,21 @@
     </div>
     <button onclick="hideDrawer()" class="text-gray-600 hover:text-gray-400 text-xs shrink-0 mt-0.5">close</button>
   </div>
+</div>
+
+<!-- Pending Actions panel (only visible when require_approval=true and decisions exist) -->
+<div id="pending-plan" class="hidden bg-surface-card rounded-lg border border-yellow-600/40 p-4 mb-4">
+  <div class="flex items-center justify-between mb-3">
+    <div>
+      <h3 class="text-sm font-medium text-gray-300 inline">Pending Actions</h3>
+      <span class="text-xs text-gray-500 ml-2">Supervisor wants to run these. Review, then approve or skip each one.</span>
+    </div>
+    <button id="approve-all-btn" type="button" onclick="approvePlan()"
+            class="text-xs px-3 py-1 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors">
+      Approve All
+    </button>
+  </div>
+  <div id="pending-plan-items" class="space-y-1.5"></div>
 </div>
 
 <!-- Compact row: Rate Limits + Daemon Status -->
@@ -133,9 +153,12 @@ let _graphKey = null;
 let _zoomBehavior = null;
 let _svgSel = null;
 let _fitTransform = null;
+let _savedTransform = null;  // user's current pan/zoom, preserved across re-renders
 
 function _computeGraphKey(data) {
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.agent_elapsed_seconds||0}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}`).sort().join(',');
+  // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
+  // and would cause a full re-render (and position reset) on every poll cycle.
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -159,6 +182,16 @@ function prStateColor(prState) {
   if (s === 'draft')             return '#6c7086';
   return null;
 }
+
+function priorityColor(priority) {
+  if (priority === 'critical') return '#f38ba8';
+  if (priority === 'high')     return '#fab387';
+  if (priority === 'medium')   return '#f9e2af';
+  if (priority === 'low')      return '#6c7086';
+  return null;
+}
+
+const _PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
 function zoomOut() { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 0.74); }
@@ -348,6 +381,9 @@ async function loadGraph() {
     if (newKey === _graphKey) return;
     _graphKey = newKey;
 
+    // Capture current user position before re-render so it can be restored after.
+    if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
+
     errorEl.classList.add('hidden');
     renderGraph(data);
   } catch (e) {
@@ -387,10 +423,14 @@ function renderGraph(data) {
     if (!msMap.has(m)) msMap.set(m, []);
     msMap.get(m).push(n);
   });
-  // Sort within each group by (global tier, id)
+  // Sort within each group by (global tier, priority, id) so high-priority items appear first.
   msMap.forEach(nodes => nodes.sort((a, b) => {
-    const d = (tierMap[a.id] ?? 0) - (tierMap[b.id] ?? 0);
-    return d !== 0 ? d : a.id - b.id;
+    const td = (tierMap[a.id] ?? 0) - (tierMap[b.id] ?? 0);
+    if (td !== 0) return td;
+    const pa = _PRIORITY_ORDER[a.priority || ''] ?? 99;
+    const pb = _PRIORITY_ORDER[b.priority || ''] ?? 99;
+    const pd = pa - pb;
+    return pd !== 0 ? pd : a.id - b.id;
   }));
 
   // Sort groups: by min tier, then alpha, "(Independent)" last
@@ -755,6 +795,14 @@ function renderGraph(data) {
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
       .attr('fill', color + '18').attr('stroke', borderColor).attr('stroke-width', prc ? 1.5 : 1);
 
+    // Priority left-border stripe (3px, clipped to node corner radius)
+    const prioColor = priorityColor(n.priority);
+    if (prioColor) {
+      g.append('rect')
+        .attr('x', pos.x).attr('y', pos.y).attr('width', 3).attr('height', NH).attr('rx', 2)
+        .attr('fill', prioColor).attr('opacity', 0.9);
+    }
+
     g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
 
     g.append('text')
@@ -830,7 +878,8 @@ function renderGraph(data) {
   const tx = (cw - contentW * scale) / 2;
   const ty = Math.max((ch - contentH * scale) / 2, MARGIN * scale);
   _fitTransform = d3.zoomIdentity.translate(tx, ty).scale(scale);
-  svg.call(zoom.transform, _fitTransform);
+  // Restore the user's prior pan/zoom if they had one; only fit-to-view on first load.
+  svg.call(zoom.transform, _savedTransform || _fitTransform);
 }
 
 // -- Action drawer --
@@ -1005,6 +1054,110 @@ async function loadDecisions() {
   }
 }
 
+// -- Pending Actions plan --
+async function loadPlan() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/plan`);
+    if (!res.ok) { _hidePlan(); return; }
+    const data = await res.json();
+    const items = data.pending || [];
+    const panel = document.getElementById('pending-plan');
+    const itemsEl = document.getElementById('pending-plan-items');
+    if (!items.length) { _hidePlan(); return; }
+    panel.classList.remove('hidden');
+    itemsEl.innerHTML = items.map(item => `
+      <div class="flex items-center justify-between gap-3 text-xs py-1.5 px-2 rounded bg-surface/60 border border-gray-700/40">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="font-mono text-accent shrink-0">#${item.issue_number}</span>
+          <span class="text-gray-400 capitalize shrink-0">${esc((item.action || '').replace(/_/g, ' '))}</span>
+          ${item.role ? `<span class="text-gray-600 shrink-0">(${esc(item.role)})</span>` : ''}
+          <span class="text-gray-600 truncate">${esc(item.reason || '')}</span>
+        </div>
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button type="button" data-approve-issue="${item.issue_number}"
+                  class="plan-approve-btn px-2 py-0.5 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors">Run</button>
+          <button type="button" data-skip-issue="${item.issue_number}"
+                  title="Removes this item until the next supervisor poll cycle. To defer permanently, change the issue state or adjust supervisor gates."
+                  class="plan-skip-btn px-2 py-0.5 rounded bg-gray-700/60 text-gray-400 hover:text-gray-200 transition-colors">Skip</button>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('loadPlan failed:', e);
+  }
+}
+
+function _hidePlan() {
+  document.getElementById('pending-plan').classList.add('hidden');
+}
+
+async function approvePlan() {
+  const btn = document.getElementById('approve-all-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Approving...'; }
+  try {
+    const res = await fetch(`${apiBase}/supervisor/plan/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => res.statusText);
+      console.error('approvePlan failed:', detail);
+      if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
+      showToast(`Approval failed: ${detail}`, 'error');
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (data.errors && data.errors.length) {
+      const msg = data.errors.map(e => `#${e.issue_number}: ${e.error}`).join(', ');
+      showToast(`Partial failure: ${msg}`, 'error');
+    }
+  } catch (e) {
+    console.error('approvePlan failed:', e);
+    if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
+    return;
+  }
+  await loadPlan();
+  if (btn) { btn.disabled = false; btn.textContent = 'Approve All'; }
+}
+
+document.getElementById('pending-plan').addEventListener('click', async e => {
+  const approveBtn = e.target.closest('.plan-approve-btn');
+  if (approveBtn) {
+    const issue = parseInt(approveBtn.dataset.approveIssue, 10);
+    approveBtn.disabled = true;
+    approveBtn.textContent = '...';
+    try {
+      const res = await fetch(`${apiBase}/supervisor/plan/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issue_numbers: [issue] }),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => res.statusText);
+        console.error('approveItem failed:', detail);
+        showToast(`Approval failed: ${detail}`, 'error');
+      }
+    } catch (e) { console.error('approveItem failed:', e); }
+    await loadPlan();
+    return;
+  }
+  const skipBtn = e.target.closest('.plan-skip-btn');
+  if (skipBtn) {
+    const issue = parseInt(skipBtn.dataset.skipIssue, 10);
+    skipBtn.disabled = true;
+    try {
+      const res = await fetch(`${apiBase}/supervisor/plan/skip/${issue}`, { method: 'POST' });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => res.statusText);
+        console.error('skipItem failed:', detail);
+        showToast(`Skip failed: ${detail}`, 'error');
+      }
+    } catch (e) { console.error('skipItem failed:', e); }
+    await loadPlan();
+  }
+});
+
 // -- Manual poll --
 async function triggerPoll() {
   const btn = document.getElementById('poll-btn');
@@ -1016,6 +1169,7 @@ async function triggerPoll() {
       loadDecisions(); loadQuota();
       _graphKey = null; // force graph refresh after manual poll
       loadGraph();
+      loadPlan();
       btn.disabled = false;
       btn.textContent = 'Poll Now';
     }, 2000);
@@ -1064,6 +1218,7 @@ function _connectSupervisorWs() {
       const msg = JSON.parse(event.data);
       if (msg.type === 'graph_invalidated') {
         loadGraph();
+        loadPlan();
       }
     } catch (e) { /* ignore parse errors */ }
   };
@@ -1079,10 +1234,10 @@ function _connectSupervisorWs() {
 _connectSupervisorWs();
 
 // -- Init --
-loadStatus(); loadQuota(); loadGraph(); loadDecisions();
+loadStatus(); loadQuota(); loadGraph(); loadDecisions(); loadPlan();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes
-setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); }, 30000);
+setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); loadPlan(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }

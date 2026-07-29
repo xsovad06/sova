@@ -253,12 +253,18 @@ class TestSupervisorDaemon:
 
     async def test_poll_progression_with_decisions(
         self,
-        daemon: SupervisorDaemon,
         session_factory: async_sessionmaker,
     ) -> None:
-        """_poll_progression should log and execute when decisions are returned."""
+        """_poll_progression executes immediately when require_approval=False."""
 
+        from sova.config.models import ProjectConfig, SupervisorConfig
         from sova.supervisor.progression import BlockReason, ProgressionAction, ProgressionDecision
+
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=1, require_approval=False),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
 
         mock_decision = ProgressionDecision(
             issue_number=42,

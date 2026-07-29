@@ -16,6 +16,25 @@ log = get_logger(component="supervisor.dependency_graph")
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
 
+_VALID_PRIORITIES: frozenset[str] = frozenset({"critical", "high", "medium", "low"})
+
+
+def _extract_priority(labels: list[str]) -> str:
+    """Return the priority level from a list of labels, or '' if none found.
+
+    Recognises labels of the form 'priority: <level>' (case-insensitive).
+    Only the four canonical levels (critical/high/medium/low) are returned;
+    unknown values are ignored so stale or mis-spelled labels don't surface.
+    """
+    for label in labels:
+        lower = label.lower().strip()
+        if lower.startswith("priority:"):
+            value = lower[len("priority:") :].strip()
+            if value in _VALID_PRIORITIES:
+                return value
+    return ""
+
+
 # States that should be excluded from "ready to work on" -- either already
 # being worked on, already completed, or explicitly rejected/blocked.
 _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
@@ -343,6 +362,7 @@ class DependencyGraph:
                 "dependencies": sorted(self._deps.get(tid, set())),
                 "body_excerpt": excerpt,
                 "available_actions": actions,
+                "priority": _extract_priority(task.labels),
             }
             if pr_info:
                 node["pr_number"] = pr_info.get("pr_number")

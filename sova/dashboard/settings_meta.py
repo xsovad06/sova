@@ -897,6 +897,13 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.require_approval",
+        "Require approval",
+        "Show a pending-actions plan and require human approval before the supervisor spawns any agent",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.auto_develop",
         "Auto-develop",
         "Automatically spawn developer after research (requires spec approval by default)",

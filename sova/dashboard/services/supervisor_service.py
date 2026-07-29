@@ -1,8 +1,9 @@
-"""Supervisor dashboard service: queries decision logs for the activity stream."""
+"""Supervisor dashboard service: queries decision logs and manages the approval plan."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
@@ -10,7 +11,36 @@ from sova.db.models import SupervisorDecision
 from sova.db.session import get_session
 from sova.utils.logging import get_logger
 
+if TYPE_CHECKING:
+    from sova.supervisor.progression import ProgressionDecision
+
 log = get_logger(component="dashboard.service.supervisor")
+
+# In-memory plan store. Ephemeral: cleared on server restart. The daemon
+# rebuilds the plan on the next poll cycle so nothing is permanently lost.
+_pending_plan: list["ProgressionDecision"] = []
+
+
+def get_pending_plan() -> list["ProgressionDecision"]:
+    """Return the current pending approval plan (may be empty)."""
+    return list(_pending_plan)
+
+
+def set_pending_plan(decisions: list["ProgressionDecision"]) -> None:
+    """Replace the pending plan with a new set of decisions."""
+    global _pending_plan
+    _pending_plan = list(decisions)
+
+
+def remove_plan_items(issue_numbers: set[int]) -> list["ProgressionDecision"]:
+    """Remove and return decisions for the given issue numbers from the plan.
+
+    Decisions not in *issue_numbers* remain in the plan.
+    """
+    global _pending_plan
+    removed = [d for d in _pending_plan if d.issue_number in issue_numbers]
+    _pending_plan = [d for d in _pending_plan if d.issue_number not in issue_numbers]
+    return removed
 
 
 async def get_recent_decisions(

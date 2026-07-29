@@ -882,10 +882,11 @@ class TestSupervisorConfig:
     def test_defaults(self) -> None:
         cfg = SupervisorConfig()
         assert cfg.enabled is False
-        assert cfg.auto_research is True
+        assert cfg.auto_research is False
         assert cfg.auto_develop is False
         assert cfg.auto_address_review is False
         assert cfg.auto_integrate is False
+        assert cfg.require_approval is True
         assert cfg.respect_dependencies is True
         assert cfg.poll_interval_seconds == 120
         assert cfg.max_researcher_failures == 3
