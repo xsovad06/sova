@@ -496,6 +496,18 @@ async def _recover_last_pr_number(issue: str, project_dir: "Path") -> int | None
         return None
 
 
+def _resolve_config_model(project_dir: Path) -> str | None:
+    """Return the agent model alias from sova.toml, or None if unset."""
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        return cfg.agent.model or None
+    except Exception:
+        log.debug("resolve_config_model.failed", exc_info=True)
+        return None
+
+
 async def start_agent(
     issue: str,
     *,
@@ -605,6 +617,9 @@ async def start_agent(
             "yourself. Execute it exactly as written and let it complete:\n\n"
             f"```bash\n{cmd}\n```"
         )
+
+        if not model:
+            model = _resolve_config_model(project_dir)
 
         gh_env = await _resolve_project_gh_env(project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
@@ -765,6 +780,8 @@ async def start_command(
         except Exception:
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
+        model = _resolve_config_model(project_dir)
+
         gh_env = await _resolve_project_gh_env(project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
 
@@ -776,7 +793,7 @@ async def start_command(
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             process = await get_runtime().spawn(
-                prompt, cwd, env=gh_env, output_dir=output_dir, run_label=str(pre_run_id)
+                prompt, cwd, env=gh_env, model=model, output_dir=output_dir, run_label=str(pre_run_id)
             )
         except Exception as exc:
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)
