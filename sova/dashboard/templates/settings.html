@@ -312,6 +312,22 @@ function editConfig(key) {
   }
   input.value = currentVal;
   input.className = 'sova-input text-xs py-1';
+
+  // Add datalist for model field with suggested values
+  if (key === 'agent.model') {
+    var datalistId = 'datalist-agent-model';
+    input.setAttribute('list', datalistId);
+    var datalist = document.createElement('datalist');
+    datalist.id = datalistId;
+    var modelOptions = ['opus', 'sonnet', 'haiku', 'fast', 'smart', 'cheap'];
+    modelOptions.forEach(function(opt) {
+      var option = document.createElement('option');
+      option.value = opt;
+      datalist.appendChild(option);
+    });
+    span.appendChild(datalist);
+  }
+
   var saving = false;
   input.onkeydown = function(e) {
     if (e.key === 'Enter') { saving = true; saveConfig(key, input.value, span, input); }
