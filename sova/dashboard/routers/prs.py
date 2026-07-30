@@ -163,3 +163,55 @@ async def submit_pr_action_feedback(body: PRFeedbackRequest) -> dict:
         choice=body.user_choice,
     )
     return {"id": record.id}
+
+
+# -- PR Metrics endpoints --
+
+
+@router.get("/metrics/summary")
+async def get_pr_metrics_summary(days: int = Query(90, ge=7, le=365)) -> dict:
+    """Aggregate PR lifecycle metrics over the given time window."""
+    from sova.dashboard.services import pr_metrics_service
+
+    return await pr_metrics_service.get_summary(days=days)
+
+
+@router.get("/metrics/trends")
+async def get_pr_metrics_trends(days: int = Query(90, ge=7, le=365)) -> dict:
+    """Monthly trend data for PR throughput and cycle time."""
+    from sova.dashboard.services import pr_metrics_service
+
+    trends = await pr_metrics_service.get_trends(days=days)
+    return {"monthly": trends}
+
+
+@router.get("/metrics/by-author")
+async def get_pr_metrics_by_author(days: int = Query(90, ge=7, le=365)) -> dict:
+    """Per-contributor PR metrics breakdown."""
+    from sova.dashboard.services import pr_metrics_service
+
+    authors = await pr_metrics_service.get_author_stats(days=days)
+    return {"authors": authors}
+
+
+@router.post("/metrics/backfill")
+async def trigger_pr_backfill(days: int = Query(90, ge=7, le=365)) -> dict:
+    """Backfill PR lifecycle events from GitHub history."""
+    from sova.dashboard.services import pr_metrics_service
+
+    project_dir = get_project_dir() or Path.cwd()
+    try:
+        cfg = load_config(project_dir)
+    except Exception as exc:
+        log.warning("prs.backfill.config_error", project_dir=str(project_dir), exc_info=True)
+        raise HTTPException(status_code=400, detail="Failed to load config") from exc
+
+    if not cfg.github_repo:
+        raise HTTPException(status_code=400, detail="No github_repo configured")
+
+    count = await pr_metrics_service.backfill_pr_events(
+        repo=cfg.github_repo,
+        days=days,
+        github_user=cfg.github_user,
+    )
+    return {"events_created": count, "days": days}
