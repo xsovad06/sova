@@ -1638,7 +1638,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat: add widget\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat: add widget\n"),
+            MagicMock(success=True, stdout=" src/app.py | 10 ++++\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(
             text="## Summary\n- Add widget\n\nCloses #42", model="sonnet", cost_usd=Decimal("0.01")
         )
@@ -1667,7 +1671,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=12, url="https://github.com/x/y/pull/12")
 
@@ -1689,6 +1697,7 @@ class TestCreatePRStep:
         mock_run.side_effect = [
             MagicMock(success=True, stdout="abc123 feat: add widget\n"),
             MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py b/src/app.py\n+widget code\n"),
         ]
         mock_invoke.return_value = LLMResult(
             text=(
@@ -1722,7 +1731,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -1751,7 +1764,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -1805,7 +1822,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.side_effect = RuntimeError(
             'a pull request for branch "feat/issue-48809" into branch "master" '
@@ -1831,7 +1852,11 @@ class TestCreatePRStep:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.side_effect = RuntimeError("permission denied")
 
@@ -1854,7 +1879,11 @@ class TestCreatePRStepJira:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -1887,7 +1916,11 @@ class TestCreatePRStepJira:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -1919,7 +1952,11 @@ class TestCreatePRStepJira:
     async def test_jira_fallback_body_has_ticket_link(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
         from sova.core.steps.create_pr import CreatePRStep
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.side_effect = RuntimeError("LLM unavailable")
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -1953,7 +1990,11 @@ class TestCreatePRStepJira:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(
             text="## Summary\n- stuff\n\nCloses #42", model="sonnet", cost_usd=Decimal("0.01")
         )
@@ -1982,7 +2023,11 @@ class TestCreatePRStepJiraPrompt:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -2016,7 +2061,11 @@ class TestCreatePRStepJiraPrompt:
         from sova.core.steps.create_pr import CreatePRStep
         from sova.llm.models import LLMResult
 
-        mock_run.return_value = MagicMock(success=True, stdout="abc123 feat\n")
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
         mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
         mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
 
@@ -2041,6 +2090,96 @@ class TestCreatePRStepJiraPrompt:
         title_arg = mock_create_pr.call_args.kwargs["title"]
         assert "feat/RHCLOUD" not in title_arg
         assert "security logging" in title_arg.lower() or "security-logging" in title_arg.lower()
+
+
+class TestCreatePRStepDiffContent:
+    """Tests for diff content inclusion in PR body generation."""
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_prompt_includes_actual_diff_content(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """The LLM prompt must include actual diff content, not just --stat."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat: add widget\n"),
+            MagicMock(success=True, stdout=" src/app.py | 10 ++++\n 1 file changed, 10 insertions(+)\n"),
+            MagicMock(
+                success=True,
+                stdout="diff --git a/src/app.py b/src/app.py\n+def widget():\n+    return 'widget'\n",
+            ),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(
+            branch_name="feat/issue-42",
+            task=Task(id="42", title="Add widget", body="We need a widget"),
+        )
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert "diff --git a/src/app.py b/src/app.py" in prompt_arg
+        assert "+def widget():" in prompt_arg
+        assert "Actual diff" in prompt_arg or "diff content" in prompt_arg.lower()
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_large_diff_is_truncated(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """Large diffs should be truncated to avoid exceeding LLM context."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        large_diff = "diff --git a/src/file.py b/src/file.py\n" + ("+" + "x" * 100 + "\n") * 200
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat: add widget\n"),
+            MagicMock(success=True, stdout=" src/file.py | 200 ++++\n"),
+            MagicMock(success=True, stdout=large_diff),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Add widget"))
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        prompt_arg = mock_invoke.call_args[0][0]
+        # Verify truncation: known prefix present, content beyond 8000 absent
+        assert "+xxxx" in prompt_arg  # First 5 chars of diff should be present
+        assert "x" * 8500 not in prompt_arg  # Content beyond 8000 should be excluded
+        assert "truncated" in prompt_arg.lower() or "..." in prompt_arg
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_prompt_truncates_issue_body(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """Issue body should be truncated in the prompt to avoid over-weighting it."""
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        long_body = "x" * 1000
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(branch_name="feat/issue-42", task=Task(id="42", title="Title", body=long_body))
+        step = CreatePRStep()
+        await step.execute(ctx)
+
+        prompt_arg = mock_invoke.call_args[0][0]
+        assert long_body not in prompt_arg
+        assert len([line for line in prompt_arg.split("\n") if "x" * 500 in line]) == 0
 
 
 class TestHandoffToReviewerStep:
@@ -4775,6 +4914,7 @@ class TestCreatePRStepIssueless:
             mock_run.side_effect = [
                 MagicMock(success=True, stdout="abc123 feat: plan\n"),
                 MagicMock(success=True, stdout=" plan.py | 3 +++\n"),
+                MagicMock(success=True, stdout="diff --git a/plan.py\n+planning\n"),
             ]
             mock_invoke.return_value = LLMResult(
                 text="## Summary\n- Sprint planning", model="sonnet", cost_usd=Decimal("0.01")
