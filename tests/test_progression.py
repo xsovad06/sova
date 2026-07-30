@@ -889,7 +889,7 @@ class TestSupervisorConfig:
     def test_defaults(self) -> None:
         cfg = SupervisorConfig()
         assert cfg.enabled is False
-        assert cfg.auto_research is True
+        assert cfg.auto_research is False
         assert cfg.auto_develop is False
         assert cfg.auto_address_review is False
         assert cfg.auto_integrate is False
@@ -1367,6 +1367,123 @@ class TestEvaluateAllEdgeCases:
         assert len(developers) == 1
         assert len(blocked) == 1
         assert any(b.gate == "quota" for b in blocked[0].blocked_by)
+
+
+# ---------------------------------------------------------------------------
+# evaluate_all: task queue filtering
+# ---------------------------------------------------------------------------
+
+
+def _bypass_all_gates(engine: TaskProgressionEngine):
+    """Context manager that patches all gate checks to pass on a TaskProgressionEngine."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    for gate, is_async, rv in [
+        ("_check_already_running", True, None),
+        ("_check_dependency_gate", False, None),
+        ("_check_quota_gate", True, None),
+        ("_check_slot_gate", True, None),
+        ("_check_budget_gate", True, None),
+        ("_check_ownership_gate", True, (None, None)),
+        ("_get_alive_count", True, 0),
+        ("_check_memory_pressure_gate", False, None),
+    ]:
+        kwargs: dict = {"return_value": rv}
+        if is_async:
+            kwargs["new_callable"] = AsyncMock
+        stack.enter_context(patch.object(engine, gate, **kwargs))
+    return stack
+
+
+class TestEvaluateAllTaskQueue:
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_task_queue_filters_to_queued_issues(self, mock_cfg: MagicMock) -> None:
+        """When task_queue is set, only queued issues are evaluated."""
+        mock_cfg.return_value.max_parallel_agents = 5
+        mock_cfg.return_value.supervisor.task_queue = [1, 3]
+        tasks = [
+            _task(1, state=TaskState.TRIAGED),
+            _task(2, state=TaskState.TRIAGED),
+            _task(3, state=TaskState.BACKLOG),
+        ]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True, task_queue=[1, 3]),
+            adapter=adapter,
+        )
+        with _bypass_all_gates(engine):
+            decisions = await engine.evaluate_all()
+
+        # Only issues 1 and 3 should be evaluated (issue 2 is not in the queue)
+        issue_numbers = {d.issue_number for d in decisions}
+        assert issue_numbers == {1, 3}
+        assert len(decisions) == 2
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_task_queue_preserves_order(self, mock_cfg: MagicMock) -> None:
+        """Queue order is preserved in evaluation."""
+        mock_cfg.return_value.max_parallel_agents = 5
+        mock_cfg.return_value.supervisor.task_queue = [3, 1]
+        tasks = [
+            _task(1, state=TaskState.TRIAGED),
+            _task(3, state=TaskState.TRIAGED),
+        ]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True, task_queue=[3, 1]),
+            adapter=adapter,
+        )
+        with _bypass_all_gates(engine):
+            decisions = await engine.evaluate_all()
+
+        assert decisions[0].issue_number == 3
+        assert decisions[1].issue_number == 1
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_task_queue_skips_unknown_issues(self, mock_cfg: MagicMock) -> None:
+        """Queue items not in the graph are silently skipped."""
+        mock_cfg.return_value.max_parallel_agents = 5
+        mock_cfg.return_value.supervisor.task_queue = [1, 999]
+        tasks = [_task(1, state=TaskState.TRIAGED)]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True, task_queue=[1, 999]),
+            adapter=adapter,
+        )
+        with _bypass_all_gates(engine):
+            decisions = await engine.evaluate_all()
+
+        # Only issue 1 exists in the graph, 999 is silently skipped
+        assert len(decisions) == 1
+        assert decisions[0].issue_number == 1
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_empty_queue_evaluates_all(self, mock_cfg: MagicMock) -> None:
+        """Empty queue means evaluate all issues (default behavior)."""
+        mock_cfg.return_value.max_parallel_agents = 5
+        mock_cfg.return_value.supervisor.task_queue = []
+        tasks = [
+            _task(1, state=TaskState.TRIAGED),
+            _task(2, state=TaskState.BACKLOG),
+        ]
+        adapter = AsyncMock()
+        adapter.list_tasks = AsyncMock(return_value=tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True, task_queue=[]),
+            adapter=adapter,
+        )
+        with _bypass_all_gates(engine):
+            decisions = await engine.evaluate_all()
+
+        assert len(decisions) == 2
 
 
 # ---------------------------------------------------------------------------

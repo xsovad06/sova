@@ -513,7 +513,7 @@ class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
     enabled: bool = False
-    auto_research: bool = True
+    auto_research: bool = False
     auto_develop: bool = False
     auto_address_review: bool = False
     auto_integrate: bool = False
@@ -526,6 +526,18 @@ class SupervisorConfig(BaseSettings):
     poll_interval_seconds: int = Field(120, gt=0)
     log_retention_days: int = Field(30, gt=0)
     max_researcher_failures: int = Field(3, ge=0)
+    task_queue: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})
+
+    @field_validator("task_queue", mode="before")
+    @classmethod
+    def _validate_task_queue_items(cls, v: list[int]) -> list[int]:
+        if not isinstance(v, list):
+            return v
+        for item in v:
+            if not isinstance(item, int) or item <= 0:
+                msg = f"task_queue items must be positive integers, got {item!r}"
+                raise ValueError(msg)
+        return v
 
     model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
 
