@@ -22,9 +22,10 @@ if TYPE_CHECKING:
 
 log = get_logger(component="step.create_pr")
 
-_PLACEHOLDER = "(none)"
+_UNAVAILABLE = "(unavailable)"
 
 _ISSUE_BODY_EXCERPT_LIMIT = 500
+_DIFF_CONTENT_LIMIT = 8000
 
 _CONVENTIONAL_RE = re.compile(
     r"^(feat|fix|refactor|test|docs|chore|ci)"
@@ -48,13 +49,18 @@ What should a reviewer focus on? Any trade-offs or shortcuts?
 
 ## Test plan
 How were these changes verified?
+
+IMPORTANT: Describe ONLY what the actual diff contains. The issue body shows \
+what was requested; the diff shows what was actually implemented. If there is \
+a gap between what was requested and what was implemented, note it explicitly. \
+Never describe changes that are not present in the diff.
 """
 
 _PR_BODY_ISSUE_SECTION_GITHUB = """
 Closes #{issue_number}
 
 ---
-Issue #{issue_number}: {issue_title}
+What was requested (Issue #{issue_number}: {issue_title}):
 
 {issue_body}
 
@@ -66,7 +72,7 @@ _PR_BODY_ISSUE_SECTION_JIRA = """
 Do NOT use "Closes #N", "Fixes #N", or "Resolves #N" syntax.
 
 ---
-{jira_key}: {issue_title}
+What was requested ({jira_key}: {issue_title}):
 
 {issue_body}
 
@@ -79,11 +85,16 @@ Task: {issue_title}
 """
 
 _PR_BODY_CONTEXT = """\
+What was actually implemented:
+
 Commits on this branch:
 {commit_log}
 
-Files changed:
+Files changed (summary):
 {diff_stat}
+
+Actual diff (patches):
+{diff_content}
 """
 
 
@@ -291,31 +302,32 @@ class CreatePRStep(BaseStep):
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
-        log_result, diff_result = await asyncio.gather(
-            run(
-                "git",
-                "log",
-                f"{ctx.base_branch}..HEAD",
-                "--format=%h %s%n%b",
-                "--no-merges",
-                cwd=ctx.working_dir,
-            ),
-            run(
-                "git",
-                "diff",
-                f"{ctx.base_branch}..HEAD",
-                "--stat",
-                cwd=ctx.working_dir,
-            ),
+        diff_range = f"{ctx.base_branch}..HEAD"
+        log_result, diff_stat_result, diff_content_result = await asyncio.gather(
+            run("git", "log", diff_range, "--format=%h %s%n%b", "--no-merges", cwd=ctx.working_dir),
+            run("git", "diff", diff_range, "--stat", cwd=ctx.working_dir),
+            run("git", "diff", diff_range, cwd=ctx.working_dir),
         )
 
         issue_body = ctx.task.body if ctx.task else ""
-        commit_log = log_result.stdout.strip() if log_result.success else "(unavailable)"
-        diff_stat = diff_result.stdout.strip() if diff_result.success else "(unavailable)"
+        commit_log = log_result.stdout.strip() if log_result.success else _UNAVAILABLE
+        diff_stat = diff_stat_result.stdout.strip() if diff_stat_result.success else _UNAVAILABLE
+
+        full_diff = diff_content_result.stdout.strip() if diff_content_result.success else _UNAVAILABLE
+
+        # Handle empty diff explicitly
+        if diff_content_result.success and not full_diff:
+            diff_content = "(no changes detected)"
+        elif len(full_diff) > _DIFF_CONTENT_LIMIT:
+            truncated = full_diff[:_DIFF_CONTENT_LIMIT]
+            diff_content = truncated + f"\n\n... (diff truncated, showing first {_DIFF_CONTENT_LIMIT} chars)"
+        else:
+            diff_content = full_diff
 
         ts = ctx.config.task_source
 
         if ctx.has_issue:
+            truncated_body = truncate(issue_body or "(no description)", max_length=_ISSUE_BODY_EXCERPT_LIMIT)
             if ts.is_jira:
                 jira_key = ts.jira_issue_key(ctx.issue_number)
                 jira_link = _jira_ticket_link(ts, ctx.issue_number)
@@ -323,13 +335,13 @@ class CreatePRStep(BaseStep):
                     jira_link=jira_link,
                     jira_key=jira_key,
                     issue_title=task_title,
-                    issue_body=issue_body or "(no description)",
+                    issue_body=truncated_body,
                 )
             else:
                 middle = _PR_BODY_ISSUE_SECTION_GITHUB.format(
                     issue_number=ctx.issue_number,
                     issue_title=task_title,
-                    issue_body=issue_body or "(no description)",
+                    issue_body=truncated_body,
                 )
         else:
             middle = _PR_BODY_NO_ISSUE_SECTION.format(issue_title=task_title)
@@ -340,6 +352,7 @@ class CreatePRStep(BaseStep):
             + _PR_BODY_CONTEXT.format(
                 commit_log=commit_log,
                 diff_stat=diff_stat,
+                diff_content=diff_content,
             )
         )
 
@@ -393,13 +406,13 @@ class CreatePRStep(BaseStep):
                 "## Commits",
                 "",
                 "```",
-                commit_log or _PLACEHOLDER,
+                commit_log or _UNAVAILABLE,
                 "```",
                 "",
                 "## Files changed",
                 "",
                 "```",
-                diff_stat or _PLACEHOLDER,
+                diff_stat or _UNAVAILABLE,
                 "```",
             ]
         )
