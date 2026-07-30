@@ -906,7 +906,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.auto_address_review",
         "Auto-address review",
-        "Reserved for future use (intra-pipeline address-review chaining is handled by the handoff system)",
+        "Automatically spawn address-review agent when SOVA review verdict is revise or block",
         "supervisor",
         "boolean",
     ),

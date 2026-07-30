@@ -19,7 +19,8 @@ from sova.adapters.base import TaskAdapter, TaskState
 from sova.config.loader import load_config
 from sova.config.models import ProjectConfig, SupervisorConfig
 from sova.core.state import TASK_RUN_TERMINAL
-from sova.dashboard.services.agent_recovery import _is_process_alive
+from sova.dashboard.services.agent_handoff import _count_address_review_runs
+from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_review_verdict
 from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
 from sova.git.pr import find_pr_for_issue
@@ -52,6 +53,7 @@ class ProgressionAction(StrEnum):
     SPAWN_RESEARCHER = "spawn_researcher"
     SPAWN_DEVELOPER = "spawn_developer"
     SPAWN_INTEGRATE = "spawn_integrate"
+    SPAWN_ADDRESS_REVIEW = "spawn_address_review"
     WAIT = "wait"
     BLOCKED = "blocked"
     SPAWN_REBASE = "spawn_rebase"
@@ -79,6 +81,7 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_RESEARCHER: "researcher",
     ProgressionAction.SPAWN_DEVELOPER: "developer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
+    ProgressionAction.SPAWN_ADDRESS_REVIEW: "developer",
 }
 
 # Actions that should trigger issue assignment on spawn (development work, not post-work).
@@ -328,8 +331,8 @@ class TaskProgressionEngine:
                 return {"error": f"Project path is not registered: {self._project_dir}"}
             kwargs["slug"] = slug
 
-        # For integrate-pr, we need the PR number (reuse from ownership gate if available)
-        if decision.action == ProgressionAction.SPAWN_INTEGRATE:
+        # Actions that operate on an existing PR need the PR number
+        if decision.action in (ProgressionAction.SPAWN_INTEGRATE, ProgressionAction.SPAWN_ADDRESS_REVIEW):
             pr_number = decision.pr_number or await self._find_pr_for_issue(decision.issue_number)
             if pr_number is None:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
@@ -410,6 +413,25 @@ class TaskProgressionEngine:
                 reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
+        # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
+        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW when
+        # either auto flag is enabled; we refine it here based on the actual PR verdict.
+        refined_pr: int | None = None
+        if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
+            candidate, refined_pr = await self._refine_in_review_action(issue_number)
+            if candidate == ProgressionAction.WAIT:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.WAIT,
+                    reason="No PR found for IN_REVIEW issue",
+                )
+            if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.CHECKPOINT_NEEDED,
+                    reason=f"Automation disabled for state '{state.value}': requires human approval",
+                )
+
         blockers, discovered_pr = await self._collect_gate_blockers(
             issue_number,
             candidate,
@@ -422,6 +444,7 @@ class TaskProgressionEngine:
             task_labels=task_labels,
             task_body=task_body,
             task_assignees=task_assignees,
+            refined_pr=refined_pr,
         )
 
         if blockers:
@@ -442,12 +465,13 @@ class TaskProgressionEngine:
                 blocked_by=tuple(blockers),
             )
 
+        final_pr = refined_pr or discovered_pr
         return ProgressionDecision(
             issue_number=issue_number,
             action=candidate,
             role=_ACTION_TO_ROLE.get(candidate),
             reason=f"Ready to {candidate.value}",
-            pr_number=discovered_pr,
+            pr_number=final_pr,
         )
 
     async def _collect_gate_blockers(
@@ -464,6 +488,7 @@ class TaskProgressionEngine:
         task_labels: list[str] | None = None,
         task_body: str = "",
         task_assignees: list[str] | None = None,
+        refined_pr: int | None = None,
     ) -> tuple[list[BlockReason], int | None]:
         """Run all gate checks and return (active_blockers, discovered_pr_number)."""
         blockers: list[BlockReason] = []
@@ -485,6 +510,10 @@ class TaskProgressionEngine:
         simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
             simple_results.append(await self._check_repeated_failures_gate(issue_number))
+        if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
+            cb_pr = refined_pr or discovered_pr
+            cb_block = await self._check_address_review_circuit_breaker_gate(issue_number, pr_number=cb_pr)
+            simple_results.append(cb_block)
         blockers.extend(r for r in simple_results if r is not None)
 
         # Merge conflict gate (only blocks integrate actions)
@@ -570,15 +599,13 @@ class TaskProgressionEngine:
                 ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
             )
         if state == TaskState.IN_REVIEW:
-            # auto_address_review is reserved for future supervisor-level address-review control.
-            # Intra-pipeline chaining (develop -> review -> address) is handled by the handoff
-            # system, not the progression engine. The supervisor only handles the inter-role
-            # transition: IN_REVIEW -> integrate (once the PR is approved by a human).
-            return (
-                ProgressionAction.SPAWN_INTEGRATE
-                if self._config.auto_integrate
-                else ProgressionAction.CHECKPOINT_NEEDED
-            )
+            # IN_REVIEW has two possible actions: address-review (if SOVA verdict is revise/block)
+            # or integrate (if PR is approved). The actual action is refined in _refine_in_review_action
+            # which checks the SOVA verdict (requires I/O). Return SPAWN_INTEGRATE as a placeholder
+            # if either auto flag is enabled; CHECKPOINT_NEEDED if both are disabled.
+            if self._config.auto_integrate or self._config.auto_address_review:
+                return ProgressionAction.SPAWN_INTEGRATE
+            return ProgressionAction.CHECKPOINT_NEEDED
         # BACKLOG: triage is manual per spec
         # NEEDS_SPEC: human approves spec externally
         # IN_PROGRESS: handled by existing role chaining
@@ -928,3 +955,58 @@ class TaskProgressionEngine:
         except Exception:
             log.debug("find_pr.failed", issue=issue, exc_info=True)
             return None
+
+    async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, int | None]:
+        """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
+
+        Returns (action, pr_number). Checks the SOVA review verdict to decide
+        between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
+        (verdict is approve or no review exists).
+        """
+        pr_number = await self._find_pr_for_issue(issue)
+        if pr_number is None:
+            return ProgressionAction.WAIT, None
+
+        try:
+            verdict_data = await get_sova_review_verdict(str(issue), pr_number=pr_number, project_dir=self._project_dir)
+        except Exception:
+            log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
+            if self._config.auto_integrate:
+                return ProgressionAction.SPAWN_INTEGRATE, pr_number
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+
+        verdict = verdict_data.get("verdict")
+        has_review = verdict_data.get("has_sova_review", False)
+
+        if has_review and verdict in ("revise", "block"):
+            if self._config.auto_address_review:
+                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+
+        if self._config.auto_integrate:
+            return ProgressionAction.SPAWN_INTEGRATE, pr_number
+        return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+
+    async def _check_address_review_circuit_breaker_gate(
+        self, issue: int, *, pr_number: int | None
+    ) -> BlockReason | None:
+        """Block SPAWN_ADDRESS_REVIEW when the address-review cycle limit is reached."""
+        if pr_number is None:
+            return None
+
+        try:
+            cfg = load_config(self._project_dir)
+            max_cycles = cfg.pipeline.max_address_review_cycles
+            if max_cycles <= 0:
+                return None
+
+            count = await _count_address_review_runs(str(issue), pr_number, self._project_dir)
+            if count >= max_cycles:
+                return BlockReason(
+                    gate="circuit_breaker",
+                    detail=f"Address-review circuit breaker: {count}/{max_cycles} cycles completed for PR #{pr_number}",
+                )
+        except Exception:
+            log.debug("circuit_breaker_gate.check_failed", issue=issue, exc_info=True)
+
+        return None

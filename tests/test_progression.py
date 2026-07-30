@@ -64,6 +64,7 @@ class TestDataclasses:
         assert ProgressionAction.SPAWN_RESEARCHER == "spawn_researcher"
         assert ProgressionAction.SPAWN_DEVELOPER == "spawn_developer"
         assert ProgressionAction.SPAWN_INTEGRATE == "spawn_integrate"
+        assert ProgressionAction.SPAWN_ADDRESS_REVIEW == "spawn_address_review"
         assert ProgressionAction.WAIT == "wait"
         assert ProgressionAction.BLOCKED == "blocked"
         assert ProgressionAction.CHECKPOINT_NEEDED == "checkpoint_needed"
@@ -133,8 +134,16 @@ class TestDetermineTransition:
         assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
 
     def test_in_review_auto_integrate_disabled(self) -> None:
-        engine = _make_engine(SupervisorConfig(auto_integrate=False))
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=False))
         assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.CHECKPOINT_NEEDED
+
+    def test_in_review_auto_address_review_only_returns_candidate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
+        assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
+
+    def test_in_review_both_auto_flags_returns_candidate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
+        assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
 
     def test_backlog_returns_none(self) -> None:
         engine = _make_engine()
@@ -1779,7 +1788,15 @@ class TestAutoRebase:
     async def test_conflict_only_blocker_with_auto_rebase_returns_spawn_rebase(self) -> None:
         """When conflict is the only blocker and auto_rebase is enabled, return SPAWN_REBASE."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
-        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+        ):
             mock_gates.return_value = (
                 [BlockReason(gate="conflict", detail="PR for #42 has merge conflicts")],
                 None,
@@ -1796,7 +1813,15 @@ class TestAutoRebase:
     async def test_conflict_with_other_blockers_returns_blocked(self) -> None:
         """When conflict + other blockers exist, return BLOCKED even with auto_rebase."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=True))
-        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+        ):
             mock_gates.return_value = (
                 [
                     BlockReason(gate="conflict", detail="PR has conflicts"),
@@ -1816,7 +1841,15 @@ class TestAutoRebase:
     async def test_conflict_without_auto_rebase_returns_blocked(self) -> None:
         """When auto_rebase is disabled, conflict returns BLOCKED normally."""
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_rebase=False))
-        with patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates:
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
+            patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
+        ):
             mock_gates.return_value = (
                 [BlockReason(gate="conflict", detail="PR has conflicts")],
                 None,
@@ -2241,3 +2274,397 @@ class TestOwnershipGate:
             assert result == {"run_id": 123}
             # assign() should NOT be called for integrate actions
             mock_adapter.assign.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_ADDRESS_REVIEW: _refine_in_review_action
+# ---------------------------------------------------------------------------
+
+
+class TestRefineInReviewAction:
+    @pytest.mark.asyncio
+    async def test_verdict_revise_with_auto_enabled_spawns_address_review(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_address_review=True, auto_integrate=False))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+                "reviewed_at": "2026-01-01",
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_verdict_block_with_auto_enabled_spawns_address_review(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_address_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=10)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": True, "verdict": "block", "finding_count": 1, "reviewed_at": "2026-01-01"},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
+        assert pr == 10
+
+    @pytest.mark.asyncio
+    async def test_verdict_revise_with_auto_disabled_returns_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_address_review=False, auto_integrate=False))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "revise",
+                "finding_count": 3,
+                "reviewed_at": "2026-01-01",
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_verdict_approve_with_auto_integrate_spawns_integrate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "approve",
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_no_sova_review_with_auto_integrate_spawns_integrate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_no_sova_review_auto_integrate_disabled_returns_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_no_pr_found_returns_wait(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_address_review=True, auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=None)
+        action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.WAIT
+        assert pr is None
+
+    @pytest.mark.asyncio
+    async def test_verdict_post_failed_with_auto_integrate_spawns_integrate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={
+                "has_sova_review": True,
+                "verdict": "post_failed",
+                "finding_count": 0,
+                "reviewed_at": "2026-01-01",
+            },
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_verdict_check_failure_falls_back_to_integrate(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB error"),
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert pr == 55
+
+    @pytest.mark.asyncio
+    async def test_verdict_check_failure_with_no_auto_integrate_returns_checkpoint(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB error"),
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr == 55
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_ADDRESS_REVIEW: circuit breaker gate
+# ---------------------------------------------------------------------------
+
+
+class TestAddressReviewCircuitBreakerGate:
+    @pytest.mark.asyncio
+    async def test_blocks_when_max_cycles_reached(self) -> None:
+        engine = _make_engine()
+        with patch(
+            "sova.supervisor.progression._count_address_review_runs",
+            new_callable=AsyncMock,
+            return_value=2,
+        ):
+            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+        assert result is not None
+        assert result.gate == "circuit_breaker"
+        assert "2" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_passes_when_under_limit(self) -> None:
+        engine = _make_engine()
+        with patch(
+            "sova.supervisor.progression._count_address_review_runs",
+            new_callable=AsyncMock,
+            return_value=1,
+        ):
+            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_passes_when_unlimited(self) -> None:
+        from sova.config.models import PipelineConfig
+
+        engine = _make_engine()
+        with (
+            patch("sova.supervisor.progression.load_config") as mock_cfg,
+        ):
+            mock_cfg.return_value = MagicMock(pipeline=PipelineConfig(max_address_review_cycles=0))
+            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_passes_when_no_pr_number(self) -> None:
+        engine = _make_engine()
+        result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=None)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fails_open_on_error(self) -> None:
+        engine = _make_engine()
+        with patch(
+            "sova.supervisor.progression.load_config",
+            side_effect=Exception("config error"),
+        ):
+            result = await engine._check_address_review_circuit_breaker_gate(42, pr_number=55)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_ADDRESS_REVIEW: execute_decision
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteDecisionAddressReview:
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_spawn_address_review_passes_pr_number(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        mock_start.return_value = {"run_id": 99}
+        engine = _make_engine()
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
+            role="developer",
+            reason="Ready",
+            pr_number=55,
+        )
+        result = await engine.execute_decision(decision)
+        mock_start.assert_called_once_with(issue="42", role="developer", pr_number=55, slug="test-project")
+        assert result["run_id"] == 99
+
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_spawn_address_review_discovers_pr(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        mock_start.return_value = {"run_id": 100}
+        engine = _make_engine()
+        engine._find_pr_for_issue = AsyncMock(return_value=77)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
+            role="developer",
+            reason="Ready",
+        )
+        result = await engine.execute_decision(decision)
+        mock_start.assert_called_once_with(issue="42", role="developer", pr_number=77, slug="test-project")
+        assert result["run_id"] == 100
+
+    @pytest.mark.asyncio
+    async def test_spawn_address_review_no_pr_errors(self) -> None:
+        engine = _make_engine()
+        engine._find_pr_for_issue = AsyncMock(return_value=None)
+        decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
+            role="developer",
+            reason="Ready",
+        )
+        result = await engine.execute_decision(decision)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_spawn_address_review_does_not_assign(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        mock_start.return_value = {"run_id": 101}
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=55):
+            decision = ProgressionDecision(
+                issue_number=42,
+                action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
+                role="developer",
+            )
+            result = await engine.execute_decision(decision)
+        assert result["run_id"] == 101
+        mock_adapter.assign.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_ADDRESS_REVIEW: integration with evaluate_task
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateTaskAddressReview:
+    @pytest.mark.asyncio
+    async def test_in_review_with_revise_verdict_spawns_address_review(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
+        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.IN_REVIEW)])
+        engine = _make_engine(
+            config=SupervisorConfig(auto_address_review=True),
+            adapter=adapter,
+        )
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, 55),
+            ),
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch.object(
+                engine,
+                "_check_address_review_circuit_breaker_gate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            decision = await engine.evaluate_task(42)
+        assert decision.action == ProgressionAction.SPAWN_ADDRESS_REVIEW
+        assert decision.role == "developer"
+        assert decision.pr_number == 55
+
+    @pytest.mark.asyncio
+    async def test_in_review_with_revise_verdict_blocked_by_circuit_breaker(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
+        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.IN_REVIEW)])
+        engine = _make_engine(
+            config=SupervisorConfig(auto_address_review=True),
+            adapter=adapter,
+        )
+        circuit_block = BlockReason(gate="circuit_breaker", detail="max cycles reached")
+        with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, 55),
+            ),
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+            patch.object(
+                engine,
+                "_check_address_review_circuit_breaker_gate",
+                new_callable=AsyncMock,
+                return_value=circuit_block,
+            ),
+        ):
+            decision = await engine.evaluate_task(42)
+        assert decision.action == ProgressionAction.BLOCKED
+        assert any(b.gate == "circuit_breaker" for b in decision.blocked_by)
+
+    @pytest.mark.asyncio
+    async def test_in_review_refine_returns_wait_produces_wait(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
+        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.IN_REVIEW)])
+        engine = _make_engine(
+            config=SupervisorConfig(auto_address_review=True),
+            adapter=adapter,
+        )
+        with patch.object(
+            engine,
+            "_refine_in_review_action",
+            new_callable=AsyncMock,
+            return_value=(ProgressionAction.WAIT, None),
+        ):
+            decision = await engine.evaluate_task(42)
+        assert decision.action == ProgressionAction.WAIT
+
+
+# ---------------------------------------------------------------------------
+# SPAWN_ADDRESS_REVIEW: ownership gate uses issue assignee (not PR author)
+# ---------------------------------------------------------------------------
+
+
+class TestOwnershipGateAddressReview:
+    @pytest.mark.asyncio
+    async def test_address_review_checks_issue_assignee_not_pr_author(self) -> None:
+        """SPAWN_ADDRESS_REVIEW should check issue assignee, not PR author."""
+        task = _task(42, state=TaskState.IN_REVIEW)
+        task.assignees = ["alice"]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+        mock_adapter.get_task = AsyncMock(return_value=task)
+
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_ADDRESS_REVIEW)
+        assert block is None
+        assert pr_num is None  # No PR lookup for development-style actions

@@ -97,6 +97,12 @@ class TestConflictGateIntegration:
             adapter=adapter,
         )
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
@@ -173,6 +179,12 @@ class TestConflictGateIntegration:
         adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.IN_REVIEW)])
         engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
@@ -200,6 +212,12 @@ class TestConflictGateIntegration:
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
@@ -228,6 +246,12 @@ class TestConflictGateIntegration:
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
@@ -252,6 +276,12 @@ class TestConflictGateIntegration:
         adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
         engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
@@ -276,6 +306,12 @@ class TestConflictGateIntegration:
         adapter.get_state = AsyncMock(return_value=TaskState.IN_REVIEW)
         engine = _make_engine(config=SupervisorConfig(auto_integrate=True), adapter=adapter)
         with (
+            patch.object(
+                engine,
+                "_refine_in_review_action",
+                new_callable=AsyncMock,
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+            ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
             patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
