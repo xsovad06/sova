@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -24,6 +25,17 @@ _BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
 
 _PR_CACHE_TTL = 25  # seconds
 _pr_cache: dict[str, tuple[float, list[dict]]] = {}
+
+_last_known_states: dict[int, str] = {}
+_bg_tasks: set[asyncio.Task[None]] = set()
+
+_COMPUTED_TO_EVENT: dict[str, str] = {
+    "approved": "approved",
+    "approved_ci_green": "approved",
+    "ci_failed": "ci_failed",
+    "changes_requested": "reviewed",
+    "review_addressed": "reviewed",
+}
 
 
 class ComputedPRState(StrEnum):
@@ -448,4 +460,60 @@ async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"
 
     _pr_cache[cache_key] = (now, result)
     log.info("pr_service.refreshed", repo=repo, count=len(result))
+
+    task = asyncio.ensure_future(_record_state_transitions(result, repo=repo))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
     return result
+
+
+async def _record_state_transitions(prs: list[dict], *, repo: str) -> None:
+    """Detect state changes and write PREvent rows (fire-and-forget)."""
+    from sova.dashboard.project_context import get_project_dir
+    from sova.db.models import PREvent
+    from sova.db.session import get_session
+
+    events_to_write: list[dict] = []
+    for pr in prs:
+        pr_num = pr["number"]
+        state = pr["computed_state"]
+        prev = _last_known_states.get(pr_num)
+        _last_known_states[pr_num] = state
+
+        if prev is None:
+            continue
+        if state == prev:
+            continue
+
+        event_type = _COMPUTED_TO_EVENT.get(state)
+        if not event_type:
+            continue
+
+        events_to_write.append(
+            {
+                "pr_number": pr_num,
+                "repo": repo,
+                "event_type": event_type,
+                "timestamp": (
+                    datetime.fromisoformat(pr["updated_at"]) if pr.get("updated_at") else datetime.now(timezone.utc)
+                ),
+                "actor": pr.get("author", ""),
+                "metadata_json": {"computed_state": state, "prev_state": prev},
+            }
+        )
+
+    if not events_to_write:
+        return
+
+    try:
+        project_dir = get_project_dir() or Path.cwd()
+        for ev in events_to_write:
+            try:
+                async with await get_session(project_dir) as session:
+                    session.add(PREvent(**ev))
+                    await session.commit()
+            except Exception:
+                log.debug("pr_service.event_write_conflict", pr=ev.get("pr_number"), exc_info=True)
+    except Exception:
+        log.debug("pr_service.event_record_failed", exc_info=True)

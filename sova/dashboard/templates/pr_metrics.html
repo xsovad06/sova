@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}PR Metrics - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">PR Metrics</h2>
+  <div class="flex items-center gap-3">
+    <label for="days-select" class="sr-only">Metrics time window</label>
+    <select id="days-select" aria-label="Metrics time window" class="bg-surface-card border border-gray-700/50 rounded px-2 py-1 text-sm text-gray-300">
+      <option value="30">30 days</option>
+      <option value="90" selected>90 days</option>
+      <option value="180">180 days</option>
+      <option value="365">1 year</option>
+    </select>
+    <button type="button" onclick="runBackfill()" id="backfill-btn"
+            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
+      Backfill
+    </button>
+    <button type="button" onclick="loadAll()"
+            class="px-3 py-1 text-xs rounded bg-surface-card border border-gray-700/50 text-gray-400 hover:text-white hover:border-gray-500 transition-colors">
+      Refresh
+    </button>
+  </div>
+</div>
+
+<div id="backfill-status" class="hidden mb-4 px-4 py-3 rounded text-sm" role="status" aria-live="polite"></div>
+
+<!-- Empty state -->
+<div id="empty-state" class="hidden mb-6">
+  <div class="bg-surface-card rounded-lg border border-gray-700/50 p-8 text-center">
+    <p class="text-gray-400 mb-3">No PR event data found. Backfill from GitHub to populate metrics.</p>
+    <button type="button" onclick="runBackfill()"
+            class="px-4 py-2 text-sm rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+      Backfill PR History
+    </button>
+  </div>
+</div>
+
+<!-- Summary cards -->
+<div id="summary-section">
+  <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Cycle Time</p>
+      <p class="text-2xl font-bold text-accent-green" id="metric-cycle-time">--</p>
+      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
+    </div>
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Wait to Review</p>
+      <p class="text-2xl font-bold text-accent-yellow" id="metric-wait-review">--</p>
+      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
+    </div>
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Wait to Merge</p>
+      <p class="text-2xl font-bold text-accent-yellow" id="metric-wait-merge">--</p>
+      <p class="text-xs text-gray-600 mt-0.5">median hours</p>
+    </div>
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Throughput</p>
+      <p class="text-2xl font-bold" id="metric-throughput">--</p>
+      <p class="text-xs text-gray-600 mt-0.5">PRs/week</p>
+    </div>
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Reviewers/PR</p>
+      <p class="text-2xl font-bold" id="metric-reviewers">--</p>
+      <p class="text-xs text-gray-600 mt-0.5">average</p>
+    </div>
+    <div class="bg-surface-card rounded-lg p-4 border border-gray-700/50">
+      <p class="text-xs text-gray-500 uppercase">Line Churn</p>
+      <p class="text-2xl font-bold text-accent-green" id="metric-churn">--</p>
+      <p class="text-xs text-gray-600 mt-0.5" id="metric-churn-detail"></p>
+    </div>
+  </div>
+</div>
+
+<!-- Trend chart -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Monthly Trends</h3>
+  </div>
+  <div class="p-4" id="trend-chart">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+
+<!-- Per-author breakdown -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">By Contributor</h3>
+  </div>
+  <div class="p-4 overflow-x-auto" id="author-table">
+    <p class="text-gray-500 text-sm">Loading...</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _selectedDays = 90;
+var _loadGeneration = 0;
+
+function getSelectedDays() {
+  return parseInt(document.getElementById('days-select').value, 10) || 90;
+}
+
+document.getElementById('days-select').addEventListener('change', function() {
+  _selectedDays = getSelectedDays();
+  loadAll();
+});
+
+function fmtVal(v, suffix) {
+  if (v === null || v === undefined) return '--';
+  return v + (suffix || '');
+}
+
+async function loadSummary(gen, days) {
+  try {
+    var data = await fetchAPI(apiUrl('/prs/metrics/summary?days=' + days));
+    if (gen !== _loadGeneration) return;
+
+    var totalEvents = (data.total_prs_merged || 0) + (data.total_prs_closed || 0);
+    if (totalEvents === 0) {
+      document.getElementById('empty-state').classList.remove('hidden');
+      document.getElementById('summary-section').classList.add('hidden');
+      return;
+    }
+    document.getElementById('empty-state').classList.add('hidden');
+    document.getElementById('summary-section').classList.remove('hidden');
+
+    document.getElementById('metric-cycle-time').textContent = fmtVal(data.cycle_time_median_hours, 'h');
+    document.getElementById('metric-wait-review').textContent = fmtVal(data.wait_to_review_median_hours, 'h');
+    document.getElementById('metric-wait-merge').textContent = fmtVal(data.wait_to_merge_median_hours, 'h');
+    document.getElementById('metric-throughput').textContent = fmtVal(data.throughput_per_week);
+    document.getElementById('metric-reviewers').textContent = fmtVal(data.reviewers_per_pr);
+
+    var adds = data.total_additions || 0;
+    var dels = data.total_deletions || 0;
+    document.getElementById('metric-churn').textContent = (adds + dels).toLocaleString();
+    document.getElementById('metric-churn-detail').textContent = '+' + adds.toLocaleString() + ' / -' + dels.toLocaleString();
+  } catch (err) {
+    if (gen !== _loadGeneration) return;
+    document.getElementById('metric-cycle-time').textContent = 'Error';
+    document.getElementById('metric-cycle-time').classList.remove('text-accent-green');
+    document.getElementById('metric-cycle-time').classList.add('text-red-400');
+    console.error('Failed to load PR metrics summary:', err);
+  }
+}
+
+async function loadTrends(gen, days) {
+  try {
+    var data = await fetchAPI(apiUrl('/prs/metrics/trends?days=' + days));
+    if (gen !== _loadGeneration) return;
+    var monthly = data.monthly || [];
+    var container = document.getElementById('trend-chart');
+
+    if (monthly.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-sm">No trend data</p>';
+      return;
+    }
+
+    var maxCount = Math.max(...monthly.map(function(m) { return m.merged_count; }), 1);
+    var barHtml = monthly.map(function(m) {
+      var pct = (m.merged_count / maxCount) * 100;
+      var ctLabel = m.avg_cycle_time_hours !== null ? m.avg_cycle_time_hours + 'h avg' : '';
+      return '<div class="flex flex-col items-center flex-1 group">' +
+        '<div class="flex-1 flex flex-col items-center justify-end w-full">' +
+          '<span class="text-xs text-gray-500 opacity-0 group-hover:opacity-100 transition-opacity mb-1">' +
+            m.merged_count + ' PRs' + (ctLabel ? ', ' + ctLabel : '') +
+          '</span>' +
+          '<div class="w-full bg-accent/70 rounded-t transition-all" style="height: ' + Math.max(pct, 4) + '%"></div>' +
+        '</div>' +
+        '<span class="text-xs text-gray-600 mt-1">' + m.month + '</span>' +
+      '</div>';
+    }).join('');
+
+    container.innerHTML = '<div class="flex gap-1 h-40">' + barHtml + '</div>';
+  } catch (err) {
+    if (gen !== _loadGeneration) return;
+    document.getElementById('trend-chart').innerHTML = '<p class="text-red-400 text-sm">Failed to load trends</p>';
+    console.error('Failed to load PR trends:', err);
+  }
+}
+
+async function loadAuthors(gen, days) {
+  try {
+    var data = await fetchAPI(apiUrl('/prs/metrics/by-author?days=' + days));
+    if (gen !== _loadGeneration) return;
+    var authors = data.authors || [];
+    var container = document.getElementById('author-table');
+
+    if (authors.length === 0) {
+      container.innerHTML = '<p class="text-gray-500 text-sm">No contributor data</p>';
+      return;
+    }
+
+    container.innerHTML = '<table class="w-full text-sm">' +
+      '<thead><tr class="text-gray-500 text-xs uppercase">' +
+        '<th class="text-left pb-2">Contributor</th>' +
+        '<th class="text-right pb-2">PRs Merged</th>' +
+        '<th class="text-right pb-2">Avg Cycle Time</th>' +
+        '<th class="text-right pb-2">Additions</th>' +
+        '<th class="text-right pb-2">Deletions</th>' +
+      '</tr></thead>' +
+      '<tbody>' + authors.map(function(a) {
+        return '<tr class="border-t border-gray-700/30">' +
+          '<td class="py-1.5 text-accent">' + escapeHtml(a.login) + '</td>' +
+          '<td class="py-1.5 text-right text-gray-300">' + a.prs_merged + '</td>' +
+          '<td class="py-1.5 text-right text-gray-400">' + fmtVal(a.avg_cycle_time_hours, 'h') + '</td>' +
+          '<td class="py-1.5 text-right text-accent-green">+' + (a.additions || 0).toLocaleString() + '</td>' +
+          '<td class="py-1.5 text-right text-accent-red">-' + (a.deletions || 0).toLocaleString() + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table>';
+  } catch (err) {
+    if (gen !== _loadGeneration) return;
+    document.getElementById('author-table').innerHTML = '<p class="text-red-400 text-sm">Failed to load contributor data</p>';
+    console.error('Failed to load author stats:', err);
+  }
+}
+
+async function runBackfill() {
+  var btn = document.getElementById('backfill-btn');
+  var status = document.getElementById('backfill-status');
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  status.className = 'mb-4 px-4 py-3 rounded text-sm bg-accent/10 border border-accent/30 text-accent';
+  status.textContent = 'Backfilling PR events from GitHub...';
+  status.classList.remove('hidden');
+
+  try {
+    var result = await fetchAPI(apiUrl('/prs/metrics/backfill?days=' + _selectedDays), {method: 'POST'});
+    status.className = 'mb-4 px-4 py-3 rounded text-sm bg-accent-green/10 border border-accent-green/30 text-accent-green';
+    status.textContent = 'Backfill complete: ' + result.events_created + ' events created.';
+    await loadAll();
+  } catch (err) {
+    status.className = 'mb-4 px-4 py-3 rounded text-sm bg-accent-red/10 border border-accent-red/30 text-accent-red';
+    status.textContent = 'Backfill failed: ' + (err.message || 'Unknown error');
+    console.error('Backfill failed:', err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Backfill';
+    setTimeout(function() { status.classList.add('hidden'); }, 8000);
+  }
+}
+
+async function loadAll() {
+  var gen = ++_loadGeneration;
+  var days = _selectedDays;
+  await Promise.all([loadSummary(gen, days), loadTrends(gen, days), loadAuthors(gen, days)]);
+}
+
+loadAll();
+</script>
+{% endblock %}

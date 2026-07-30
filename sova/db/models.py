@@ -557,3 +557,26 @@ class SupervisorDecision(Base):
         Index("ix_supervisor_decisions_created", "created_at"),
         Index("ix_supervisor_decisions_event_type", "event_type"),
     )
+
+
+class PREvent(Base):
+    """Append-only log of PR lifecycle events for metrics computation."""
+
+    __tablename__ = "pr_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    repo: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    metadata_json: Mapped[dict | None] = mapped_column(JSON)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("pr_number", "repo", "event_type", "timestamp", name="uq_pr_events_dedup"),
+        Index("ix_pr_events_pr_repo", "pr_number", "repo"),
+        Index("ix_pr_events_timestamp", "timestamp"),
+        Index("ix_pr_events_project", "project_slug"),
+    )
