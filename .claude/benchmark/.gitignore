@@ -1,0 +1,2 @@
+# Benchmark JSONL logs contain local timing data, not for version control
+*.jsonl
