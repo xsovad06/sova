@@ -116,16 +116,6 @@ var stateLabels = {
   human_only: 'Human Only',
 };
 
-var stateColors = {
-  backlog: 'bg-gray-600/30 text-gray-400',
-  triaged: 'bg-accent-yellow/20 text-accent-yellow',
-  researched: 'bg-accent-purple/20 text-accent-purple',
-  in_progress: 'bg-accent/20 text-accent',
-  in_review: 'bg-accent-green/20 text-accent-green',
-  needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
-  human_only: 'bg-gray-600/30 text-gray-500',
-};
-
 var issueTypeStyles = {
   Bug: 'bg-accent-red/20 text-accent-red',
   Story: 'bg-accent/20 text-accent',
@@ -254,7 +244,7 @@ function issueTypeBadge(type) {
 
 function stateBadge(state) {
   var label = stateLabels[state] || state;
-  var cls = stateColors[state] || 'bg-gray-600/30 text-gray-400';
+  var cls = issueStateColor(state);
   return '<span class="px-1.5 py-0.5 rounded text-xs ' + cls + '">' + escapeHtml(label) + '</span>';
 }
 

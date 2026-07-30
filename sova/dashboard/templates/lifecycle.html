@@ -51,16 +51,6 @@ var _lifecycleData = null;
 
 var _lastUpdated = null;
 
-function phaseStatusStyle(status) {
-  switch (status) {
-    case 'completed': return { bg: 'bg-accent-green', text: 'text-accent-green', ring: 'ring-accent-green/30' };
-    case 'active':    return { bg: 'bg-accent', text: 'text-accent', ring: 'ring-accent/30' };
-    case 'failed':    return { bg: 'bg-accent-red', text: 'text-accent-red', ring: 'ring-accent-red/30' };
-    case 'skipped':   return { bg: 'bg-gray-600', text: 'text-gray-500', ring: 'ring-gray-600/30' };
-    default:          return { bg: 'bg-gray-700', text: 'text-gray-500', ring: 'ring-gray-700/30' };
-  }
-}
-
 function getPhaseStatus(data, phase) {
   if (!data || !data.phases) return 'pending';
   var records = data.phases.filter(function(p) { return p.phase === phase; });
@@ -84,7 +74,7 @@ function renderPhaseRail(data) {
     var phase = PHASES[i];
     var status = getPhaseStatus(data, phase);
     var isCurrent = data.current_phase === phase;
-    var style = phaseStatusStyle(isCurrent && status === 'pending' ? 'active' : status);
+    var style = phaseStatusColors(isCurrent && status === 'pending' ? 'active' : status);
 
     // Connector
     if (i > 0) {
@@ -116,7 +106,7 @@ function renderPhaseRail(data) {
 
   // Terminal state indicator
   if (data.current_phase === 'done' || data.current_phase === 'abandoned') {
-    var termStyle = data.current_phase === 'done' ? phaseStatusStyle('completed') : phaseStatusStyle('failed');
+    var termStyle = data.current_phase === 'done' ? phaseStatusColors('completed') : phaseStatusColors('failed');
     html += '<div class="flex-1 h-0.5 ' + (data.current_phase === 'done' ? 'bg-accent-green/40' : 'bg-gray-700') + ' min-w-[20px] max-w-[60px]"></div>';
     html += '<div class="flex flex-col items-center gap-1.5">';
     html += '<div class="w-8 h-8 rounded-full flex items-center justify-center ' + termStyle.bg + '/20 border-2 border-current ' + termStyle.text + '">';
@@ -147,7 +137,7 @@ function renderPhaseDetail(data, phase) {
   var record = getPhaseRecord(data, phase);
   var status = getPhaseStatus(data, phase);
   var isCurrent = data.current_phase === phase;
-  var style = phaseStatusStyle(status);
+  var style = phaseStatusColors(status);
 
   titleEl.innerHTML = PHASE_LABELS[phase] + ' <span class="text-sm font-normal ml-2 ' + style.text + '">(' + status + ')</span>';
 
@@ -224,7 +214,7 @@ function renderPhaseHistory(data) {
 
   for (var i = data.phases.length - 1; i >= 0; i--) {
     var p = data.phases[i];
-    var style = phaseStatusStyle(p.status);
+    var style = phaseStatusColors(p.status);
 
     html += '<div class="flex items-center gap-3 p-3 rounded bg-surface-card border border-gray-700/50">';
     html += '<span class="w-2 h-2 rounded-full ' + style.bg + ' shrink-0"></span>';

@@ -26,25 +26,11 @@
 <script>
 var specsData = [];
 
-var statusConfig = {
-  draft:    { label: 'Draft',    badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
-  approved: { label: 'Approved', badge: 'bg-accent-green/20 text-accent-green',   border: 'border-accent-green/30' },
-  rejected: { label: 'Rejected', badge: 'bg-accent-red/20 text-accent-red',       border: 'border-accent-red/30' },
-};
-
-var complexityConfig = {
-  trivial:  'bg-gray-600/30 text-gray-400',
-  simple:   'bg-accent-green/20 text-accent-green',
-  moderate: 'bg-accent-yellow/20 text-accent-yellow',
-  complex:  'bg-accent-red/20 text-accent-red',
-  unknown:  'bg-gray-600/30 text-gray-500',
-};
-
 var statusGroupOrder = ['draft', 'approved', 'rejected'];
 
 function renderSpecCard(spec) {
-  var cfg = statusConfig[spec.status] || statusConfig.draft;
-  var cplx = complexityConfig[spec.complexity] || complexityConfig.unknown;
+  var cfg = specStatusConfig(spec.status);
+  var cplx = specComplexityColor(spec.complexity);
   var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
 
   var questionsHtml = '';
@@ -90,7 +76,7 @@ function renderSpecs(specs) {
     var items = groups[status];
     if (!items || items.length === 0) return;
 
-    var cfg = statusConfig[status] || statusConfig.draft;
+    var cfg = specStatusConfig(status);
     var isCollapsed = status !== 'draft';
     var collapseId = 'group-' + status;
 

@@ -583,7 +583,7 @@ function renderTaskCard(item) {
 
   var prBadge = '';
   if (item.pr_details) {
-    var prStateClass = _prStateColors[item.pr_details.computed_state] || 'bg-gray-600/30 text-gray-400';
+    var prStateClass = prStateBadgeColor(item.pr_details.computed_state);
     var prUrl = item.pr_details.url || '';
     var isLink = prUrl.startsWith('https://');
     var openTag = isLink
@@ -2024,17 +2024,6 @@ function renderPrSummary() {
   }
 }
 
-var _prStateColors = {
-  draft: 'bg-gray-600/30 text-gray-400',
-  ci_running: 'bg-accent-yellow/20 text-accent-yellow',
-  ci_failed: 'bg-accent-red/20 text-accent-red',
-  changes_requested: 'bg-accent-peach/20 text-accent-peach',
-  approved_ci_green: 'bg-accent-green/30 text-accent-green',
-  approved: 'bg-accent-green/20 text-accent-green',
-  review_addressed: 'bg-accent-lavender/20 text-accent-lavender',
-  awaiting_review: 'bg-accent/20 text-accent',
-};
-
 var _NEEDS_ATTENTION_CI_AGE = 3 * 86400;
 
 var _PR_GROUPS = [
@@ -2234,7 +2223,7 @@ function renderJiraInitial(name) {
 }
 
 function renderPrRow(pr) {
-  var stateClass = _prStateColors[pr.computed_state] || 'bg-gray-600/30 text-gray-400';
+  var stateClass = prStateBadgeColor(pr.computed_state);
 
   var issueRef = pr.linked_issue
     ? '<span class="text-xs text-gray-500">#' + escapeHtml(String(pr.linked_issue)) + '</span>'

@@ -970,6 +970,69 @@ var STEP_STATUS_COLORS = {
   skipped:     { bg: 'var(--ctp-surface1)', text: 'text-gray-500' }
 };
 
+var ISSUE_STATE_COLORS = {
+  backlog:    'bg-gray-600/30 text-gray-400',
+  triaged:    'bg-accent-yellow/20 text-accent-yellow',
+  researched: 'bg-accent-purple/20 text-accent-purple',
+  in_progress: 'bg-accent/20 text-accent',
+  in_review:  'bg-accent-green/20 text-accent-green',
+  needs_spec: 'bg-accent-yellow/20 text-accent-yellow',
+  human_only: 'bg-gray-600/30 text-gray-500',
+};
+
+function issueStateColor(state) {
+  return Object.prototype.hasOwnProperty.call(ISSUE_STATE_COLORS, state) ? ISSUE_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+}
+
+var PR_STATE_COLORS = {
+  draft:             'bg-gray-600/30 text-gray-400',
+  ci_running:        'bg-accent-yellow/20 text-accent-yellow',
+  ci_failed:         'bg-accent-red/20 text-accent-red',
+  changes_requested: 'bg-accent-peach/20 text-accent-peach',
+  approved_ci_green: 'bg-accent-green/30 text-accent-green',
+  approved:          'bg-accent-green/20 text-accent-green',
+  review_addressed:  'bg-accent-lavender/20 text-accent-lavender',
+  awaiting_review:   'bg-accent/20 text-accent',
+};
+
+function prStateBadgeColor(state) {
+  return Object.prototype.hasOwnProperty.call(PR_STATE_COLORS, state) ? PR_STATE_COLORS[state] : 'bg-gray-600/30 text-gray-400';
+}
+
+var PHASE_STATUS_COLORS = {
+  completed: { bg: 'bg-accent-green', text: 'text-accent-green', ring: 'ring-accent-green/30' },
+  active:    { bg: 'bg-accent',       text: 'text-accent',       ring: 'ring-accent/30' },
+  failed:    { bg: 'bg-accent-red',   text: 'text-accent-red',   ring: 'ring-accent-red/30' },
+  skipped:   { bg: 'bg-gray-600',     text: 'text-gray-500',     ring: 'ring-gray-600/30' },
+  'default': { bg: 'bg-gray-700',     text: 'text-gray-500',     ring: 'ring-gray-700/30' },
+};
+
+function phaseStatusColors(status) {
+  return Object.prototype.hasOwnProperty.call(PHASE_STATUS_COLORS, status) ? PHASE_STATUS_COLORS[status] : PHASE_STATUS_COLORS['default'];
+}
+
+var SPEC_STATUS_CONFIG = {
+  draft:    { label: 'Draft',    badge: 'bg-accent-yellow/20 text-accent-yellow', border: 'border-accent-yellow/30' },
+  approved: { label: 'Approved', badge: 'bg-accent-green/20 text-accent-green',   border: 'border-accent-green/30' },
+  rejected: { label: 'Rejected', badge: 'bg-accent-red/20 text-accent-red',       border: 'border-accent-red/30' },
+};
+
+function specStatusConfig(status) {
+  return Object.prototype.hasOwnProperty.call(SPEC_STATUS_CONFIG, status) ? SPEC_STATUS_CONFIG[status] : SPEC_STATUS_CONFIG.draft;
+}
+
+var SPEC_COMPLEXITY_COLORS = {
+  trivial:  'bg-gray-600/30 text-gray-400',
+  simple:   'bg-accent-green/20 text-accent-green',
+  moderate: 'bg-accent-yellow/20 text-accent-yellow',
+  complex:  'bg-accent-red/20 text-accent-red',
+  unknown:  'bg-gray-600/30 text-gray-500',
+};
+
+function specComplexityColor(complexity) {
+  return Object.prototype.hasOwnProperty.call(SPEC_COMPLEXITY_COLORS, complexity) ? SPEC_COMPLEXITY_COLORS[complexity] : SPEC_COMPLEXITY_COLORS.unknown;
+}
+
 function renderStepPipeline(currentStep, role, compact, pipelineVariant, opts) {
   var colors = roleColor(role);
   var interactive = opts && opts.interactive;
