@@ -1027,6 +1027,27 @@ class TestSpecService:
         assert "Q: Should we use X or Y? A: Use X" in text
         assert "Q: What about Z? A: Z is fine" in text
 
+    def test_write_answers_round_trip(self, tmp_path: Path) -> None:
+        """Answers written by write_answers are recovered by _extract_open_questions."""
+        from sova.dashboard.services.spec_service import _extract_open_questions, write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        spec.write_text(
+            "# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Should we use X or Y?\n- What about Z?\n"
+        )
+
+        write_answers("42", {"0": "Use X", "1": "Z is fine"}, project_dir=tmp_path)
+
+        text = spec.read_text()
+        questions = _extract_open_questions(text)
+        assert len(questions) == 2
+        assert questions[0]["text"] == "Should we use X or Y?"
+        assert questions[0]["answer"] == "Use X"
+        assert questions[1]["text"] == "What about Z?"
+        assert questions[1]["answer"] == "Z is fine"
+
     def test_write_answers_no_spec_file(self, tmp_path: Path) -> None:
         from sova.dashboard.services.spec_service import write_answers
 
@@ -1065,6 +1086,66 @@ class TestSpecService:
         questions = _extract_open_questions(text)
         assert len(questions) == 1
         assert questions[0]["text"] == "Real question?"
+        assert questions[0]["answer"] == ""
+
+    def test_extract_open_questions_parses_qa_format(self) -> None:
+        """Answered questions (Q: ... A: ...) are split into text + answer fields."""
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: Should we use X or Y? A: Use X\n- Q: What about Z? A: Z is fine\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 2
+        assert questions[0]["text"] == "Should we use X or Y?"
+        assert questions[0]["answer"] == "Use X"
+        assert questions[1]["text"] == "What about Z?"
+        assert questions[1]["answer"] == "Z is fine"
+
+    def test_extract_open_questions_qa_format_with_complex_answer(self) -> None:
+        """Non-greedy split on first ' A: ' preserves complex answers with parentheses."""
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: Which approach? A: Option 1 (sounddevice + POST to /transcribe)\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "Which approach?"
+        assert questions[0]["answer"] == "Option 1 (sounddevice + POST to /transcribe)"
+
+    def test_extract_open_questions_answer_with_a_substring(self) -> None:
+        """Answers containing ' A: ' are correctly parsed (non-greedy regex)."""
+        from sova.dashboard.services.spec_service import _extract_open_questions
+
+        text = "## Open Questions\n\n- Q: Which approach? A: Option 1 A: use POST\n"
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "Which approach?"
+        assert questions[0]["answer"] == "Option 1 A: use POST"
+
+    def test_write_answers_reanswer_no_corruption(self, tmp_path: Path) -> None:
+        """Re-answering an already-answered question does not corrupt the file."""
+        from sova.dashboard.services.spec_service import _extract_open_questions, write_answers
+
+        specs_dir = tmp_path / ".claude" / "specs"
+        specs_dir.mkdir(parents=True)
+        spec = specs_dir / "42-test.md"
+        # Start with an already-answered question
+        spec.write_text("# Spec\n\n**Status**: draft\n\n## Open Questions\n\n- Q: Use X or Y? A: Old answer\n")
+
+        # Re-answer it
+        write_answers("42", {"0": "New answer"}, project_dir=tmp_path)
+
+        text = spec.read_text()
+        # Should have exactly one Q/A entry with the new answer
+        assert "Q: Use X or Y? A: New answer" in text
+        assert "Old answer" not in text
+        # Verify no corruption (no duplicate Q: or A: prefixes)
+        assert "Q: Q:" not in text
+        assert "A: New answer A:" not in text
+
+        # Verify round-trip parsing still works
+        questions = _extract_open_questions(text)
+        assert len(questions) == 1
+        assert questions[0]["text"] == "Use X or Y?"
+        assert questions[0]["answer"] == "New answer"
 
 
 # ---------------------------------------------------------------------------
