@@ -131,8 +131,13 @@ Always include this as the **first line** of the review body, before any section
 
 Where `{verdict}` is `approve`, `revise`, or `block` (lowercase), matching your final verdict. This marker lets the SOVA dashboard detect cross-instance reviews when another SOVA user (on a different machine) posts the review.
 
-Mapping from the Verdict section below to marker values: Approve -> `approve`, Request changes -> `revise`, Comment only -> `approve`.
+**Severity gate**: the marker is determined by your highest-scored finding, not your holistic verdict. Check before writing:
 
+- Highest finding **7+** (CRITICAL): marker is `block`
+- Highest finding **3-6** (MEDIUM or HIGH): marker is `revise`
+- All findings scored **1-2** (pure nitpicks), or no findings: Approve -> `approve`, Request changes -> `revise`, Comment only -> `approve`
+
+A MEDIUM or higher finding left as `approve` causes the dashboard to show "Integrate PR" and skip address-review entirely. The severity gate is not overridable by "minor impact" reasoning.
 
 ### PR Summary
 One paragraph: what the PR does, who authored it, how many commits/files.
@@ -173,9 +178,12 @@ These do NOT get scored and do NOT count toward the verdict. Omit if no bot find
 
 ### Verdict
 
-- **Approve** -- no blockers, findings are minor
-- **Request changes** -- issues that must be resolved (list them)
-- **Comment only** -- observations, no blocking opinion
+The marker was already determined by the severity gate above. The Verdict section describes your holistic assessment for the human reader:
+
+- **Approve** -- only pure nitpicks (score 1-2) or no findings
+- **Request changes** -- one or more findings are MEDIUM (3-4), HIGH (5-6), or CRITICAL (7+); list what must be addressed
+- **Block** -- critical bug, security vulnerability, or data loss risk (score 7+)
+- **Comment only** -- observations only, no findings that must be addressed
 
 ### What's Done Well
 Call out 2-3 things the code does well. Reinforce good patterns.
