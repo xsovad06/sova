@@ -103,9 +103,21 @@ def _extract_open_questions(text: str) -> list[dict]:
             continue
         # Strip list markers
         cleaned = re.sub(r"^[-*\d.]+\s*", "", line)
-        if cleaned:
-            questions.append({"id": question_id, "text": cleaned, "answer": ""})
-            question_id += 1
+        if not cleaned:
+            continue
+        # Detect Q: ... A: ... format written by write_answers(); non-greedy first
+        # group ensures we split on the FIRST " A: " occurrence, so answers
+        # containing " A: " are preserved.
+        answer = ""
+        if cleaned.startswith("Q:"):
+            qa_match = re.match(r"^Q:\s*(.+?)\s+A:\s*(.+)$", cleaned)
+            if qa_match:
+                cleaned = qa_match.group(1).strip()
+                answer = qa_match.group(2).strip()
+            else:
+                cleaned = cleaned[2:].strip()
+        questions.append({"id": question_id, "text": cleaned, "answer": answer})
+        question_id += 1
 
     return questions
 
@@ -222,7 +234,13 @@ def write_answers(
     for q in questions:
         answer = answers.get(str(q["id"]), "")
         if answer:
-            # Replace the question line with Q/A format
-            text = text.replace(q["text"], f"Q: {q['text']} A: {answer}")
+            if q["answer"]:
+                # Re-answering: replace the complete Q/A entry to avoid corruption
+                old_entry = f"Q: {q['text']} A: {q['answer']}"
+                new_entry = f"Q: {q['text']} A: {answer}"
+                text = text.replace(old_entry, new_entry)
+            else:
+                # First-time answer: replace just the question text
+                text = text.replace(q["text"], f"Q: {q['text']} A: {answer}")
 
     path.write_text(text)
