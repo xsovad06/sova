@@ -14,6 +14,7 @@ from pathlib import Path
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from sova.adapters.base import TaskAdapter
 from sova.config.models import ProjectConfig
 from sova.db.models import SupervisorDecision
 from sova.utils.logging import get_logger
@@ -104,6 +105,9 @@ class SupervisorDaemon:
         # Phase 2: Progression engine (evaluates against freshly synced quota)
         results["progression"] = await self._poll_progression(adapter)
 
+        # Phase 2.5: Epic auto-close (runs after progression to avoid race with state transitions)
+        results["epic_close"] = await self._poll_epic_close(adapter)
+
         # Phase 3: Health check
         results["health"] = await self._poll_health()
 
@@ -167,6 +171,41 @@ class SupervisorDaemon:
                 detail=str(exc),
             )
             log.warning("poll.progression_error", exc_info=True)
+            return {"error": str(exc)}
+
+    async def _poll_epic_close(self, adapter: TaskAdapter) -> dict:
+        """Auto-close epic issues when all children are DONE."""
+        try:
+            from sova.supervisor.progression import TaskProgressionEngine
+
+            engine = TaskProgressionEngine(
+                config=self._config.supervisor,
+                adapter=adapter,
+                project_dir=self._project_dir,
+                session_factory=self._session_factory,
+            )
+            results = await engine.auto_close_epics()
+
+            # Log each closed epic as a decision
+            for result in results:
+                if result.get("closed"):
+                    await self._log_decision(
+                        component="epic_close",
+                        event_type="auto_close",
+                        issue_number=str(result["issue"]),
+                        action="closed",
+                        detail=f"All children complete: {result.get('title', '')}",
+                    )
+
+            return {"checked": True, "closed": len([r for r in results if r.get("closed")])}
+        except Exception as exc:
+            await self._log_decision(
+                component="epic_close",
+                event_type="health",
+                action="error",
+                detail=str(exc),
+            )
+            log.warning("poll.epic_close_error", exc_info=True)
             return {"error": str(exc)}
 
     async def _poll_quota(self) -> dict:

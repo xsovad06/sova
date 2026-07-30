@@ -35,6 +35,16 @@ def _extract_priority(labels: list[str]) -> str:
     return ""
 
 
+def is_epic(labels: list[str]) -> bool:
+    """Return True if labels include 'type: epic' (case-insensitive).
+
+    Epics are tracking containers that group related work. They should not be
+    assigned to agents (excluded from ready tasks) and render with visual
+    distinction in the dependency graph.
+    """
+    return any(label.lower().strip() == "type: epic" for label in labels)
+
+
 # States that should be excluded from "ready to work on" -- either already
 # being worked on, already completed, or explicitly rejected/blocked.
 _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
@@ -172,11 +182,25 @@ class DependencyGraph:
             missing_refs=sorted(missing),
         )
 
+    def _are_dependencies_satisfied(self, task_id: int, all_ids: set[int]) -> bool:
+        """Check if all dependencies of a task are known and DONE."""
+        deps = self._deps.get(task_id, set())
+        if not deps:
+            return True
+        for dep in deps:
+            if dep not in all_ids:
+                return False
+            dep_task = self._tasks[dep]
+            if dep_task.state != TaskState.DONE:
+                return False
+        return True
+
     def get_ready_tasks(self) -> list[int]:
         """Issues whose dependencies are all DONE (ready to work on).
 
         Missing deps are treated as blocking (fail-closed).
         Issues already in progress, in review, done, or human-only are excluded.
+        Epics (type: epic label) are also excluded as they are tracking containers.
         """
         all_ids = set(self._tasks.keys())
         ready: list[int] = []
@@ -184,21 +208,9 @@ class DependencyGraph:
         for tid, task in sorted(self._tasks.items()):
             if task.state in _EXCLUDED_FROM_READY:
                 continue
-            deps = self._deps.get(tid, set())
-            if not deps:
-                ready.append(tid)
+            if is_epic(task.labels):
                 continue
-            # All deps must be known AND done
-            all_satisfied = True
-            for dep in deps:
-                if dep not in all_ids:
-                    all_satisfied = False
-                    break
-                dep_task = self._tasks[dep]
-                if dep_task.state != TaskState.DONE:
-                    all_satisfied = False
-                    break
-            if all_satisfied:
+            if self._are_dependencies_satisfied(tid, all_ids):
                 ready.append(tid)
 
         return ready
@@ -363,6 +375,7 @@ class DependencyGraph:
                 "body_excerpt": excerpt,
                 "available_actions": actions,
                 "priority": _extract_priority(task.labels),
+                "is_epic": is_epic(task.labels),
             }
             if pr_info:
                 node["pr_number"] = pr_info.get("pr_number")
@@ -460,8 +473,24 @@ async def build_dependency_graph(
     # Milestones that have at least one open (non-done) issue
     active_milestones: set[str] = {t.milestone for t in tasks if t.milestone and t.state != TaskState.DONE}
 
-    # Keep open issues + closed issues within active milestones
-    tasks = [t for t in tasks if t.state != TaskState.DONE or (t.milestone and t.milestone in active_milestones)]
+    # Parse dependencies from ALL tasks before filtering to identify tasks with dependencies
+    tasks_with_deps: set[int] = set()
+    for task in tasks:
+        tid = int(task.id)
+        deps = parse_dependencies(task.body, exclude_self=tid)
+        if deps:
+            tasks_with_deps.add(tid)
+
+    # Keep open issues + closed issues within active milestones + closed issues with dependencies.
+    # The third condition ensures DONE children of epics are preserved even without milestones:
+    # if child #2 lists epic #1 in its Dependencies section, child #2 is in tasks_with_deps.
+    tasks = [
+        t
+        for t in tasks
+        if t.state != TaskState.DONE
+        or (t.milestone and t.milestone in active_milestones)
+        or int(t.id) in tasks_with_deps
+    ]
 
     # Collect all referenced deps and fetch missing ones
     all_dep_ids: set[int] = set()

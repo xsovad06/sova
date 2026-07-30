@@ -379,6 +379,66 @@ class TaskProgressionEngine:
             results.append(result)
         return results
 
+    def _all_children_done(self, children: list[int], graph: DependencyGraph) -> bool:
+        """Check if all child issues are in DONE state."""
+        for child_id in children:
+            child_task = graph.get_task(child_id)
+            if child_task is None or child_task.state != TaskState.DONE:
+                return False
+        return True
+
+    async def _try_close_epic(self, node_id: int, title: str, children: list[int]) -> dict:
+        """Attempt to close an epic and return result dict."""
+        try:
+            await self._adapter.transition_state(str(node_id), TaskState.DONE)
+            log.info(
+                "auto_close_epics.closed",
+                issue=node_id,
+                title=title,
+                children=sorted(children),
+            )
+            return {"issue": node_id, "title": title, "closed": True}
+        except Exception:
+            log.warning("auto_close_epics.transition_failed", issue=node_id, exc_info=True)
+            return {"issue": node_id, "title": title, "closed": False}
+
+    async def auto_close_epics(self) -> list[dict]:
+        """Auto-close epic issues when all child issues are DONE.
+
+        Returns a list of closed epic info dicts: {issue, title, closed}.
+        Fail-open: returns [] on graph build failure.
+
+        Epics are tracking containers (type: epic label) that should be closed
+        when all their children (issues that list the epic in Dependencies) are done.
+        Epics with no children are never auto-closed (manual tracking container).
+        Manually closed epics are not reopened if children become un-done.
+        """
+        from sova.supervisor.dependency_graph import is_epic
+
+        try:
+            graph = await build_dependency_graph(self._adapter)
+        except Exception:
+            log.warning("auto_close_epics.graph_build_failed", exc_info=True)
+            return []
+
+        results: list[dict] = []
+        for node_id in graph.nodes:
+            task = graph.get_task(node_id)
+            if task is None or not is_epic(task.labels):
+                continue
+            if task.state == TaskState.DONE:
+                continue
+
+            children = graph.get_dependents(node_id)
+            if not children:
+                continue
+
+            if self._all_children_done(children, graph):
+                result = await self._try_close_epic(node_id, task.title, children)
+                results.append(result)
+
+        return results
+
     # -- Internal evaluation logic ------------------------------------------------
 
     async def _evaluate_single(

@@ -206,12 +206,20 @@ function prStateColor(prState) {
   return null;
 }
 
+// Priority configuration: colors and SVG arrow paths (8x8 viewport, Jira-style)
+const PRIORITY_CONFIG = {
+  critical: { color: '#f38ba8', arrow: 'M4 0 L7 4 L5 4 L5 6 L3 6 L3 4 L1 4 Z M3 7 L5 7 L5 8 L3 8 Z' }, // up + exclamation
+  high:     { color: '#fab387', arrow: 'M4 0 L7 4 L5 4 L5 8 L3 8 L3 4 L1 4 Z' },                       // up
+  medium:   { color: '#f9e2af', arrow: 'M8 4 L4 1 L4 3 L0 3 L0 5 L4 5 L4 7 Z' },                       // right
+  low:      { color: '#6c7086', arrow: 'M4 8 L1 4 L3 4 L3 0 L5 0 L5 4 L7 4 Z' }                        // down
+};
+
 function priorityColor(priority) {
-  if (priority === 'critical') return '#f38ba8';
-  if (priority === 'high')     return '#fab387';
-  if (priority === 'medium')   return '#f9e2af';
-  if (priority === 'low')      return '#6c7086';
-  return null;
+  return PRIORITY_CONFIG[priority]?.color || null;
+}
+
+function priorityArrowPath(priority) {
+  return PRIORITY_CONFIG[priority]?.arrow || null;
 }
 
 const _PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -814,16 +822,53 @@ function renderGraph(data) {
       .attr('opacity', isDone ? 0.35 : 1)
       .style('cursor', 'pointer');
 
-    g.append('rect').attr('class', 'node-bg')
+    const isEpic = n.is_epic === true;
+    const bgRect = g.append('rect').attr('class', 'node-bg')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
-      .attr('fill', color + '18').attr('stroke', borderColor).attr('stroke-width', prc ? 1.5 : 1);
+      .attr('fill', color + '18').attr('stroke', borderColor).attr('stroke-width', prc ? 1.5 : (isEpic ? 1.5 : 1));
+    if (isEpic) {
+      bgRect.attr('stroke-dasharray', '4,3');
+    }
 
-    // Priority left-border stripe (3px, clipped to node corner radius)
+    // Priority left-border stripe (3px, clipped to node corner radius) + arrow icon
     const prioColor = priorityColor(n.priority);
     if (prioColor) {
       g.append('rect')
         .attr('x', pos.x).attr('y', pos.y).attr('width', 3).attr('height', NH).attr('rx', 2)
         .attr('fill', prioColor).attr('opacity', 0.9);
+
+      // Priority arrow icon at bottom-left (shape + color for accessibility)
+      const ARROW_OFFSET_NORMAL = 5;
+      const ARROW_OFFSET_EPIC = 4 + EPIC_BADGE_WIDTH + 6;  // epicBadgeX + width + margin
+      const ARROW_BOTTOM_MARGIN = 12;
+      const arrowX = isEpic ? pos.x + ARROW_OFFSET_EPIC : pos.x + ARROW_OFFSET_NORMAL;
+      const arrowY = pos.y + NH - ARROW_BOTTOM_MARGIN;
+      const arrowPath = priorityArrowPath(n.priority);
+      if (arrowPath) {
+        const arrow = g.append('path')
+          .attr('d', arrowPath)
+          .attr('transform', `translate(${arrowX}, ${arrowY})`)
+          .attr('fill', prioColor)
+          .attr('opacity', 0.8);
+        arrow.append('title').text(`Priority: ${n.priority}`);
+      }
+    }
+
+    // Epic badge at bottom-left (similar to PR badge)
+    const EPIC_BADGE_WIDTH = 30;
+    if (isEpic) {
+      const EPIC_BADGE_HEIGHT = 14;
+      const EPIC_BADGE_COLOR = '#cba6f7';  // Catppuccin mauve
+      const epicBadgeX = pos.x + 4;
+      const epicBadgeY = pos.y + NH - 18;
+      g.append('rect')
+        .attr('x', epicBadgeX).attr('y', epicBadgeY).attr('width', EPIC_BADGE_WIDTH).attr('height', EPIC_BADGE_HEIGHT).attr('rx', 7)
+        .attr('fill', EPIC_BADGE_COLOR).attr('fill-opacity', 0.3).attr('stroke', EPIC_BADGE_COLOR).attr('stroke-width', 0.5);
+      g.append('text')
+        .attr('x', epicBadgeX + EPIC_BADGE_WIDTH/2).attr('y', epicBadgeY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', EPIC_BADGE_COLOR).attr('font-size', '7.5px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text('EPIC');
     }
 
     g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
