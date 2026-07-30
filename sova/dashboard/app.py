@@ -858,6 +858,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def costs_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "costs.html", {"page": "costs"})
 
+    @app.get("/pr-metrics")
+    async def pr_metrics_page(request: Request) -> Response:
+        return templates.TemplateResponse(request, "pr_metrics.html", {"page": "pr-metrics"})
+
     @app.get("/queue")
     async def queue_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "queue.html", {"page": "queue"})
