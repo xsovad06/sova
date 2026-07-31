@@ -35,7 +35,9 @@ if [ -z "$issue" ]; then
     exit 0
 fi
 
-log_file="${SCRIPT_DIR}/issue-${issue}.jsonl"
+# Allow test override of log directory
+LOG_DIR="${LOG_DIR:-$SCRIPT_DIR}"
+log_file="${LOG_DIR}/issue-${issue}.jsonl"
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # Build JSON (simple printf - notes field is optional)

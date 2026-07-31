@@ -1,67 +1,117 @@
 #!/usr/bin/env bash
 # Simple test for benchmark logger
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOGGER="$PROJECT_ROOT/.claude/benchmark/log.sh"
-LOG_DIR="$PROJECT_ROOT/.claude/benchmark"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Branch name regex pattern (must match log.sh)
+readonly ISSUE_BRANCH_PATTERN='^(feat|fix|refactor|chore|test|docs)/issue-([0-9]+)'
+
+# Use temporary directory for test isolation
+TEST_LOG_DIR=$(mktemp -d)
+export LOG_DIR="$TEST_LOG_DIR"
+
 pass=0
 fail=0
 
+# Cleanup function
+cleanup() {
+    rm -rf "$TEST_LOG_DIR"
+}
+trap cleanup EXIT
+
+# Helper: Run logger with custom log dir
+run_logger() {
+    (cd "$PROJECT_ROOT" && bash "$LOGGER" "$@")
+}
+
 # Test 1: Explicit issue number
-bash "$LOGGER" "test" "42" "notes" >/dev/null 2>&1
-if grep -q '"issue": 42' "$LOG_DIR/issue-42.jsonl" 2>/dev/null; then
+run_logger "test" "42" "notes" >/dev/null 2>&1
+if grep -q '"issue": 42' "$TEST_LOG_DIR/issue-42.jsonl" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Explicit issue number"
-    ((pass++))
+    pass=$((pass + 1))
 else
     echo -e "${RED}✗${NC} Explicit issue number"
-    ((fail++))
+    fail=$((fail + 1))
 fi
-rm -f "$LOG_DIR/issue-42.jsonl"
 
-# Test 2: Auto-detect from current branch (feat/issue-568)
-current_branch=$(git branch --show-current)
-if [[ "$current_branch" =~ ^(feat|fix)/issue-([0-9]+) ]]; then
-    expected_issue="${BASH_REMATCH[2]}"
-    bash "$LOGGER" "test" "" "auto" >/dev/null 2>&1
-    if grep -q "\"issue\": $expected_issue" "$LOG_DIR/issue-$expected_issue.jsonl" 2>/dev/null; then
-        echo -e "${GREEN}✓${NC} Auto-detect from current branch"
-        ((pass++))
+# Test 2: Auto-detect from current branch (deterministic - create temp branch)
+current_branch=$(git -C "$PROJECT_ROOT" branch --show-current)
+test_branch="test/issue-888"
+
+if git -C "$PROJECT_ROOT" checkout -b "$test_branch" >/dev/null 2>&1; then
+    run_logger "test" >/dev/null 2>&1
+    if grep -q '"issue": 888' "$TEST_LOG_DIR/issue-888.jsonl" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Auto-detect from temp branch"
+        pass=$((pass + 1))
     else
-        echo -e "${RED}✗${NC} Auto-detect from current branch"
-        ((fail++))
+        echo -e "${RED}✗${NC} Auto-detect from temp branch"
+        fail=$((fail + 1))
     fi
-    rm -f "$LOG_DIR/issue-$expected_issue.jsonl"
+
+    # Restore original branch and delete test branch
+    git -C "$PROJECT_ROOT" checkout "$current_branch" >/dev/null 2>&1
+    git -C "$PROJECT_ROOT" branch -D "$test_branch" >/dev/null 2>&1
 else
-    echo -e "${GREEN}~${NC} Auto-detect (skipped - not on feat/issue-N branch)"
+    echo -e "${RED}✗${NC} Failed to create temp branch"
+    fail=$((fail + 1))
 fi
 
 # Test 3: Notes field
-bash "$LOGGER" "test" "789" "pr_number=123" >/dev/null 2>&1
-if grep -q '"notes": "pr_number=123"' "$LOG_DIR/issue-789.jsonl" 2>/dev/null; then
+run_logger "test" "789" "pr_number=123" >/dev/null 2>&1
+if grep -q '"notes": "pr_number=123"' "$TEST_LOG_DIR/issue-789.jsonl" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Notes field included"
-    ((pass++))
+    pass=$((pass + 1))
 else
     echo -e "${RED}✗${NC} Notes field included"
-    ((fail++))
+    fail=$((fail + 1))
 fi
-rm -f "$LOG_DIR/issue-789.jsonl"
 
-# Test 4: No notes field
-bash "$LOGGER" "test" "999" >/dev/null 2>&1
-if ! grep -q '"notes":' "$LOG_DIR/issue-999.jsonl" 2>/dev/null; then
-    echo -e "${GREEN}✓${NC} Notes field omitted"
-    ((pass++))
+# Test 4: No notes field (verify file exists before negative assertion)
+run_logger "test" "999" >/dev/null 2>&1
+if [[ -s "$TEST_LOG_DIR/issue-999.jsonl" ]]; then
+    if ! grep -q '"notes":' "$TEST_LOG_DIR/issue-999.jsonl" 2>/dev/null; then
+        echo -e "${GREEN}✓${NC} Notes field omitted"
+        pass=$((pass + 1))
+    else
+        echo -e "${RED}✗${NC} Notes field omitted (found notes when none expected)"
+        fail=$((fail + 1))
+    fi
 else
-    echo -e "${RED}✗${NC} Notes field omitted"
-    ((fail++))
+    echo -e "${RED}✗${NC} Notes field omitted (log file not created)"
+    fail=$((fail + 1))
 fi
-rm -f "$LOG_DIR/issue-999.jsonl"
+
+# Test 5: No issue warning (deterministic - use temp detached HEAD)
+saved_branch=$(git -C "$PROJECT_ROOT" branch --show-current)
+saved_commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
+
+if git -C "$PROJECT_ROOT" checkout --detach >/dev/null 2>&1; then
+    output=$(run_logger "test" 2>&1)
+
+    # Restore original state before checking results
+    if ! git -C "$PROJECT_ROOT" checkout "$saved_branch" >/dev/null 2>&1; then
+        # Fallback: restore to commit if branch checkout fails
+        git -C "$PROJECT_ROOT" checkout "$saved_commit" >/dev/null 2>&1
+    fi
+
+    if [[ "$output" == *"Warning: No issue number provided or detected from branch"* ]] && ! [ -f "$TEST_LOG_DIR/issue-.jsonl" ]; then
+        echo -e "${GREEN}✓${NC} No issue warning on detached HEAD"
+        pass=$((pass + 1))
+    else
+        echo -e "${RED}✗${NC} No issue warning on detached HEAD"
+        fail=$((fail + 1))
+    fi
+else
+    echo -e "${RED}✗${NC} Failed to create detached HEAD"
+    fail=$((fail + 1))
+fi
 
 echo ""
 echo "Passed: $pass, Failed: $fail"
