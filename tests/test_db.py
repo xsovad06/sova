@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from decimal import Decimal
 
 import pytest
@@ -18,6 +19,30 @@ from sova.db.models import (
     TaskRun,
 )
 from sova.db.session import close_db, get_session, init_db
+
+
+def _import_migration(migration_number: str) -> types.ModuleType:
+    """Import a migration module by revision number.
+
+    Args:
+        migration_number: Revision number (e.g., "011", "027")
+
+    Returns:
+        The imported migration module
+    """
+    import importlib.util
+    from pathlib import Path
+
+    versions_dir = Path(__file__).resolve().parent.parent / "sova" / "db" / "migrations" / "versions"
+    migration_files = list(versions_dir.glob(f"{migration_number}_*.py"))
+    if not migration_files:
+        raise FileNotFoundError(f"No migration file found for revision {migration_number}")
+
+    migration_path = migration_files[0]
+    spec = importlib.util.spec_from_file_location(f"migration_{migration_number}", migration_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +169,32 @@ async def test_create_cost_record() -> None:
         assert cost.model == "claude-opus-4"
         assert cost.cost_usd == Decimal("0.35")
         assert cost.model_selection_reason is None
+        assert cost.cache_read_tokens is None
+        assert cost.cache_write_tokens is None
+
+
+async def test_cost_record_cache_token_breakdown() -> None:
+    """CostRecord stores granular cache token breakdown."""
+    async with await get_session() as session:
+        cost = CostRecord(
+            phase="develop",
+            issue="70",
+            model="claude-opus-4-6",
+            input_tokens=8000,
+            output_tokens=3000,
+            cache_tokens=600,
+            cache_read_tokens=100,
+            cache_write_tokens=500,
+            cost_usd=Decimal("1.50"),
+            duration_ms=15000,
+        )
+        session.add(cost)
+        await session.commit()
+        await session.refresh(cost)
+
+        assert cost.cache_tokens == 600
+        assert cost.cache_read_tokens == 100
+        assert cost.cache_write_tokens == 500
 
 
 async def test_cost_record_with_model_selection_reason() -> None:
@@ -163,22 +214,9 @@ async def test_cost_record_with_model_selection_reason() -> None:
         assert cost.model_selection_reason == "role:triage->haiku"
 
 
-def _import_migration_011():
-    """Import migration 011 via spec_from_file_location (module name starts with a digit)."""
-    import importlib.util
-    from pathlib import Path
-
-    versions_dir = Path(__file__).resolve().parent.parent / "sova" / "db" / "migrations" / "versions"
-    migration_path = versions_dir / "011_add_model_selection_reason.py"
-    spec = importlib.util.spec_from_file_location("migration_011", migration_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def test_migration_011_column_exists_helper() -> None:
     """Migration 011 _column_exists correctly detects model_selection_reason column."""
-    mod = _import_migration_011()
+    mod = _import_migration("011")
 
     from unittest.mock import MagicMock, patch
 
@@ -201,7 +239,7 @@ async def test_migration_011_upgrade_skip_when_exists() -> None:
     """Migration 011 upgrade is idempotent -- skips if column already exists."""
     from unittest.mock import patch
 
-    mod = _import_migration_011()
+    mod = _import_migration("011")
 
     with (
         patch.object(mod, "_column_exists", return_value=True) as mock_exists,
@@ -216,7 +254,7 @@ async def test_migration_011_upgrade_adds_column() -> None:
     """Migration 011 upgrade adds column when it doesn't exist."""
     from unittest.mock import patch
 
-    mod = _import_migration_011()
+    mod = _import_migration("011")
 
     with patch.object(mod, "_column_exists", return_value=False), patch.object(mod, "op") as mock_op:
         mod.upgrade()
@@ -227,7 +265,7 @@ async def test_migration_011_downgrade_drops_column() -> None:
     """Migration 011 downgrade drops column when it exists."""
     from unittest.mock import patch
 
-    mod = _import_migration_011()
+    mod = _import_migration("011")
 
     with patch.object(mod, "_column_exists", return_value=True), patch.object(mod, "op") as mock_op:
         mod.downgrade()
@@ -238,11 +276,129 @@ async def test_migration_011_downgrade_skip_when_missing() -> None:
     """Migration 011 downgrade is idempotent -- skips if column doesn't exist."""
     from unittest.mock import patch
 
-    mod = _import_migration_011()
+    mod = _import_migration("011")
 
     with patch.object(mod, "_column_exists", return_value=False), patch.object(mod, "op") as mock_op:
         mod.downgrade()
         mock_op.drop_column.assert_not_called()
+
+
+async def test_migration_028_upgrade_adds_columns() -> None:
+    """Migration 028 upgrade adds cache_read_tokens and cache_write_tokens."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "model"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        assert mock_op.add_column.call_count == 2
+
+
+async def test_migration_028_upgrade_skip_when_exists() -> None:
+    """Migration 028 upgrade is idempotent."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "cache_read_tokens"},
+        {"name": "cache_write_tokens"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        mock_op.add_column.assert_not_called()
+
+
+async def test_migration_028_downgrade_drops_columns() -> None:
+    """Migration 028 downgrade drops both cache token columns."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "cache_read_tokens"},
+        {"name": "cache_write_tokens"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_any_call("cost_records", "cache_write_tokens")
+        mock_op.drop_column.assert_any_call("cost_records", "cache_read_tokens")
+        assert mock_op.drop_column.call_count == 2
+
+
+async def test_migration_028_downgrade_skip_when_missing() -> None:
+    """Migration 028 downgrade is idempotent: skips if columns already absent."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "model"}]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_not_called()
+
+
+async def test_migration_028_upgrade_partial_one_column_exists() -> None:
+    """Migration 028 upgrade adds only the missing column when one already exists."""
+    from unittest.mock import MagicMock, call, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "cache_read_tokens"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.upgrade()
+        assert mock_op.add_column.call_count == 1
+        added_col = mock_op.add_column.call_args
+        assert added_col == call("cost_records", mock_op.add_column.call_args[0][1])
+        assert "cache_write_tokens" in str(added_col)
+
+
+async def test_migration_028_downgrade_partial_one_column_exists() -> None:
+    """Migration 028 downgrade drops only the column that exists."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [
+        {"name": "id"},
+        {"name": "cache_write_tokens"},
+    ]
+
+    with patch.object(mod.sa, "inspect", return_value=mock_inspector), patch.object(mod, "op") as mock_op:
+        mod.downgrade()
+        mock_op.drop_column.assert_called_once_with("cost_records", "cache_write_tokens")
+
+
+async def test_migration_028_column_exists_helper() -> None:
+    """Migration 028 _column_exists detects columns correctly."""
+    from unittest.mock import MagicMock, patch
+
+    mod = _import_migration("028")
+
+    mock_inspector = MagicMock()
+    mock_inspector.get_columns.return_value = [{"name": "id"}, {"name": "cache_read_tokens"}]
+
+    with patch.object(mod, "op") as mock_op, patch.object(mod.sa, "inspect", return_value=mock_inspector):
+        mock_op.get_bind.return_value = MagicMock()
+        assert mod._column_exists("cost_records", "cache_read_tokens") is True
+        assert mod._column_exists("cost_records", "cache_write_tokens") is False
 
 
 async def test_create_memory() -> None:
@@ -601,26 +757,13 @@ async def test_lifecycle_phases_query_benefits_from_composite_index() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _import_migration_012():
-    """Import migration 012 via spec_from_file_location."""
-    import importlib.util
-    from pathlib import Path
-
-    versions_dir = Path(__file__).resolve().parent.parent / "sova" / "db" / "migrations" / "versions"
-    migration_path = versions_dir / "012_add_fk_indexes.py"
-    spec = importlib.util.spec_from_file_location("migration_012", migration_path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def test_migration_012_get_index_names_helper() -> None:
     """Migration 012 _get_index_names correctly collects index names."""
     from unittest.mock import MagicMock, patch
 
     from alembic import op
 
-    mod = _import_migration_012()
+    mod = _import_migration("012")
 
     mock_conn = MagicMock()
     mock_inspector = MagicMock()
@@ -638,7 +781,7 @@ async def test_migration_012_upgrade_idempotent() -> None:
     """Migration 012 upgrade skips existing indexes."""
     from unittest.mock import patch
 
-    mod = _import_migration_012()
+    mod = _import_migration("012")
 
     all_indexes = {
         "ix_task_runs_lifecycle_id",
@@ -661,7 +804,7 @@ async def test_migration_012_upgrade_creates_indexes() -> None:
     """Migration 012 upgrade creates all indexes when none exist."""
     from unittest.mock import patch
 
-    mod = _import_migration_012()
+    mod = _import_migration("012")
 
     with (
         patch.object(mod, "_get_index_names", return_value=set()),
@@ -676,7 +819,7 @@ async def test_migration_012_downgrade_restores_old_index() -> None:
     """Migration 012 downgrade recreates the old single-column index."""
     from unittest.mock import patch
 
-    mod = _import_migration_012()
+    mod = _import_migration("012")
 
     post_upgrade_indexes = {
         "ix_lifecycle_phases_lifecycle_phase",
@@ -919,7 +1062,7 @@ class TestRunMigrationsAtHead:
 
 
 async def test_get_alembic_head_returns_current_head() -> None:
-    """_get_alembic_head must return the actual head revision ('027')."""
+    """_get_alembic_head must return the actual head revision ('028')."""
     import pathlib
 
     from alembic.config import Config
@@ -931,7 +1074,7 @@ async def test_get_alembic_head_returns_current_head() -> None:
 
     alembic_cfg = Config(str(pathlib.Path(session_mod.__file__).parent / "alembic.ini"))
     head = _get_alembic_head(alembic_cfg)
-    assert head == "027"
+    assert head == "028"
 
 
 async def test_get_alembic_head_caches_result() -> None:

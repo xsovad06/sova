@@ -778,6 +778,8 @@ class TestRecordCost:
         assert record.input_tokens == 5000
         assert record.output_tokens == 2000
         assert record.cache_tokens == 600  # read + creation
+        assert record.cache_read_tokens == 100
+        assert record.cache_write_tokens == 500
         assert record.duration_ms == 15000
         assert record.task_run_id == 1
         assert record.phase == "develop"
@@ -825,6 +827,36 @@ class TestRecordCost:
         record = await record_cost(result=result, phase="develop", issue="56")
 
         assert record.model_selection_reason is None
+
+    async def test_record_cost_cache_breakdown_zero_stored_as_zero(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(text="output", model="haiku", cost_usd=Decimal("0.01"))
+
+        record = await record_cost(result=result, phase="triage", issue="57")
+
+        assert record.cache_tokens == 0
+        assert record.cache_read_tokens == 0
+        assert record.cache_write_tokens == 0
+
+    async def test_record_cost_cache_breakdown_partial_data(self) -> None:
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(
+            text="output",
+            model="sonnet",
+            cost_usd=Decimal("0.05"),
+            cache_read_tokens=100,
+            cache_creation_tokens=0,
+        )
+
+        record = await record_cost(result=result, phase="develop", issue="58")
+
+        assert record.cache_tokens == 100
+        assert record.cache_read_tokens == 100
+        assert record.cache_write_tokens == 0
 
 
 # ---------------------------------------------------------------------------
