@@ -21,6 +21,26 @@ event="${1:?Usage: log.sh <event> [issue_number] [notes]}"
 issue="${2:-}"
 notes="${3:-}"
 
+# Validate event name
+valid_events=(
+    'session_start' 'session_end' 'issue_loaded'
+    'spec_start' 'spec_complete'
+    'develop_start' 'develop_complete'
+    'review_start' 'review_complete'
+    'pr_start' 'pr_complete' 'pr_created'
+    'address_pr_start' 'address_pr_complete'
+    'integrate_pr_start' 'integrate_pr_complete'
+    'approve_merge_start' 'approve_merge_complete'
+    'ci_check_start' 'ci_passed' 'ci_failed'
+    'human_idle_start' 'human_idle_end' 'error'
+    'test'  # For testing only
+)
+if [[ ! " ${valid_events[*]} " =~ " ${event} " ]]; then
+    echo "Invalid event: $event" >&2
+    echo "Valid events: ${valid_events[*]}" >&2
+    exit 1
+fi
+
 # Auto-detect issue number from branch name if not provided
 if [ -z "$issue" ]; then
     branch_name=$(git branch --show-current 2>/dev/null || echo "")
@@ -29,24 +49,43 @@ if [ -z "$issue" ]; then
     fi
 fi
 
-# Skip logging if no issue could be determined
+# Warn if no issue could be determined, but continue logging with null
 if [ -z "$issue" ]; then
     echo "Warning: No issue number provided or detected from branch" >&2
-    exit 0
 fi
 
 # Allow test override of log directory
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR}"
-log_file="${LOG_DIR}/issue-${issue}.jsonl"
+if [ -n "$issue" ]; then
+    log_file="${LOG_DIR}/issue-${issue}.jsonl"
+else
+    log_file="${LOG_DIR}/issue-null.jsonl"
+fi
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Build JSON (simple printf - notes field is optional)
-if [ -n "$notes" ]; then
-    printf '{"ts": "%s", "event": "%s", "issue": %s, "notes": "%s"}\n' \
-        "$ts" "$event" "$issue" "$notes" >> "$log_file"
+# Build JSON safely using jq to prevent injection
+if [ -n "$issue" ]; then
+    issue_json="$issue"
 else
-    printf '{"ts": "%s", "event": "%s", "issue": %s}\n' \
-        "$ts" "$event" "$issue" >> "$log_file"
+    issue_json="null"
 fi
 
-echo "Logged: ${event} for issue #${issue} at ${ts}"
+if [ -n "$notes" ]; then
+    json_output=$(jq -n --arg ts "$ts" --arg event "$event" --arg notes "$notes" \
+        "{ts: \$ts, event: \$event, issue: $issue_json, notes: \$notes}")
+else
+    json_output=$(jq -n --arg ts "$ts" --arg event "$event" \
+        "{ts: \$ts, event: \$event, issue: $issue_json}")
+fi
+
+# Write to log file and verify success
+if ! printf '%s\n' "$json_output" >> "$log_file"; then
+    echo "Failed to write log to $log_file" >&2
+    exit 1
+fi
+
+if [ -n "$issue" ]; then
+    echo "Logged: ${event} for issue #${issue} at ${ts}"
+else
+    echo "Logged: ${event} (no issue) at ${ts}"
+fi
