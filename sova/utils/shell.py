@@ -93,3 +93,45 @@ def subprocess_error(cmd: tuple[str, ...], result: ShellResult) -> RuntimeError:
     return RuntimeError(
         f"Command failed: {' '.join(cmd)}\nExit code: {result.returncode}\nstderr: {result.stderr[:500]}"
     )
+
+
+@dataclass
+class GitIdentityResult:
+    """Result of a git identity validation check."""
+
+    name: str
+    email: str
+
+    @property
+    def valid(self) -> bool:
+        return bool(self.name) and bool(self.email)
+
+    @property
+    def missing_fields(self) -> list[str]:
+        fields = []
+        if not self.name:
+            fields.append("user.name")
+        if not self.email:
+            fields.append("user.email")
+        return fields
+
+
+async def check_git_identity(cwd: Path | str | None = None) -> GitIdentityResult:
+    """Check whether git user.name and user.email are configured.
+
+    Uses git's standard resolution order (local overrides global).
+    Treats empty strings as missing.
+    """
+    try:
+        name_result, email_result = await asyncio.gather(
+            run("git", "config", "user.name", cwd=cwd),
+            run("git", "config", "user.email", cwd=cwd),
+        )
+    except OSError as exc:
+        log.warning("check_git_identity.failed", error=str(exc))
+        return GitIdentityResult(name="", email="")
+
+    name = name_result.stdout.strip() if name_result.success else ""
+    email = email_result.stdout.strip() if email_result.success else ""
+
+    return GitIdentityResult(name=name, email=email)
