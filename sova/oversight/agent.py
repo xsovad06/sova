@@ -3,8 +3,8 @@
 Records each wake cycle to the OversightRun DB table. The persona is loaded
 fresh each cycle and available via ``get_system_prompt()`` for LLM context
 injection. Each cycle runs the observation phase (#445) to collect a
-cross-project health snapshot. Subsequent issues (#446, #447) add LLM
-analysis and issue creation hooks.
+cross-project health snapshot, then the analysis phase (#446) sends the
+snapshot to the LLM to produce structured findings.
 """
 
 from __future__ import annotations
@@ -59,6 +59,39 @@ class OversightAgent:
             self._task = None
             log.info("oversight.stopped")
 
+    @staticmethod
+    def _determine_outcome(
+        snapshot: dict | None,
+        analysis_error: str | None,
+    ) -> tuple[OversightRunStatus, str | None]:
+        """Determine the run status and error message from cycle results."""
+        if snapshot is None:
+            return OversightRunStatus.ERROR, "observation_failed"
+        if analysis_error is not None:
+            return OversightRunStatus.ERROR, analysis_error
+        return OversightRunStatus.DONE, None
+
+    async def _record_error_safe(
+        self,
+        run_id: str,
+        cycle: int,
+        duration_ms: int,
+        started_at: datetime,
+        error: str,
+    ) -> None:
+        """Record an error run, swallowing DB failures."""
+        try:
+            await self._record_run(
+                run_id,
+                cycle,
+                OversightRunStatus.ERROR,
+                duration_ms,
+                started_at=started_at,
+                error=error,
+            )
+        except Exception:
+            log.warning("oversight.error_record_failed", exc_info=True)
+
     async def _run_loop(self) -> None:
         """Main loop: execute a wake cycle, then sleep for the configured interval."""
         interval_seconds = self._config.wake_interval_minutes * 60
@@ -72,14 +105,12 @@ class OversightAgent:
                 log.debug("oversight.cycle_start", cycle=cycle, run_id=run_id)
                 self._persona = load_persona(self._config.persona_path)
                 snapshot = await self._observe()
-                # Future hooks (#446, #447) execute here.
-                duration_ms = int((time.monotonic() - t0) * 1000)
+                analysis_error: str | None = None
                 if snapshot is not None:
-                    status = OversightRunStatus.DONE
-                    error: str | None = None
-                else:
-                    status = OversightRunStatus.ERROR
-                    error = "observation_failed"
+                    analysis_error = await self._analyze(snapshot, run_id)
+                # Future hooks (#447) execute here.
+                duration_ms = int((time.monotonic() - t0) * 1000)
+                status, error = self._determine_outcome(snapshot, analysis_error)
                 await self._record_run(
                     run_id,
                     cycle,
@@ -92,33 +123,38 @@ class OversightAgent:
                 log.debug("oversight.cycle_done", cycle=cycle, run_id=run_id, duration_ms=duration_ms)
             except asyncio.CancelledError:
                 duration_ms = int((time.monotonic() - t0) * 1000)
-                try:
-                    await self._record_run(
-                        run_id,
-                        cycle,
-                        OversightRunStatus.ERROR,
-                        duration_ms,
-                        started_at=started_at,
-                        error="cancelled",
-                    )
-                except Exception:
-                    log.warning("oversight.cancelled_record_failed", exc_info=True)
+                await self._record_error_safe(run_id, cycle, duration_ms, started_at, "cancelled")
                 raise
             except Exception as exc:
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 log.warning("oversight.cycle_error", cycle=cycle, run_id=run_id, exc_info=True)
-                try:
-                    await self._record_run(
-                        run_id,
-                        cycle,
-                        OversightRunStatus.ERROR,
-                        duration_ms,
-                        started_at=started_at,
-                        error=str(exc),
-                    )
-                except Exception:
-                    log.warning("oversight.error_record_failed", exc_info=True)
+                await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
             await asyncio.sleep(interval_seconds)
+
+    async def _analyze(self, snapshot: dict, run_id: str) -> str | None:
+        """Run the analysis phase: send snapshot to LLM, persist findings.
+
+        Returns:
+            Error message if analysis failed, None if successful.
+        """
+        from sova.llm.client import get_provider
+        from sova.oversight.analysis import analyze_snapshot
+
+        try:
+            provider = get_provider()
+            _, error = await analyze_snapshot(
+                snapshot,
+                run_id,
+                self._persona,
+                provider,
+                model=self._config.analysis_model,
+                dedup_window_days=self._config.dedup_window_days,
+                analysis_timeout=self._config.analysis_timeout_seconds,
+            )
+            return error
+        except Exception as exc:
+            log.warning("oversight.analyze_failed", run_id=run_id, exc_info=True)
+            return f"analyze_failed: {exc}"
 
     async def _observe(self) -> dict | None:
         """Run the observation phase and return the snapshot as a dict."""
