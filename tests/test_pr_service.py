@@ -211,6 +211,60 @@ class TestExtractLinkedIssue:
         raw = {"closingIssuesReferences": [], "body": "", "title": "fix: handle (500) errors"}
         assert _extract_linked_issue(raw) is None
 
+    def test_title_jira_key_brackets(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "[RHCLOUD-49651] feat: eval() security fix",
+            "headRefName": "feat/some-branch",
+        }
+        assert _extract_linked_issue(raw) == 49651
+
+    def test_title_jira_key_with_short_project(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "[ABC-7] fix something",
+            "headRefName": "main",
+        }
+        assert _extract_linked_issue(raw) == 7
+
+    def test_branch_jira_key(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "some fix",
+            "headRefName": "feat/RHCLOUD-49651-turnpike-eval-security",
+        }
+        assert _extract_linked_issue(raw) == 49651
+
+    def test_branch_jira_key_at_end(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "some fix",
+            "headRefName": "fix/ABC-123",
+        }
+        assert _extract_linked_issue(raw) == 123
+
+    def test_branch_jira_key_does_not_match_lowercase(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "",
+            "title": "some fix",
+            "headRefName": "feat/rhcloud-49651-stuff",
+        }
+        assert _extract_linked_issue(raw) is None
+
+    def test_body_preferred_over_title_jira_key(self) -> None:
+        raw = {
+            "closingIssuesReferences": [],
+            "body": "JIRA: https://redhat.atlassian.net/browse/RHCLOUD-48767",
+            "title": "[RHCLOUD-49651] feat: something",
+            "headRefName": "feat/RHCLOUD-49651-stuff",
+        }
+        assert _extract_linked_issue(raw) == 48767
+
 
 class TestSummarizeCi:
     def test_empty(self) -> None:
