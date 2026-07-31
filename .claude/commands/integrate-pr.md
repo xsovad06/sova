@@ -191,6 +191,11 @@ git pull origin <BASE_BRANCH>
 
 # Delete local branch if it still exists
 git branch -d <HEAD_BRANCH> 2>/dev/null || true
+
+# Delete remote branch if delete_branch = true (fallback -- Phase 5 may have
+# already handled this via --delete-branch, but covers merge-queue path and
+# already-merged PRs where Phase 5 is skipped)
+git push origin --delete <HEAD_BRANCH> 2>/dev/null || true
 ```
 
 Clean up any worktrees associated with this PR or issue:
