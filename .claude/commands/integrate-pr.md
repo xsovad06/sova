@@ -13,6 +13,11 @@ outputs:
 
 Full integration pipeline for a PR. Rebases onto the base branch, waits for CI, merges, cleans up branches/worktrees/stashes, closes the linked issue, captures review learnings, promotes confirmed patterns to project knowledge, and updates agent memory. Replaces the need to run `/after-merge` and `/extract-knowledge` separately. Works for both manual invocation and autonomous agent use.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "integrate_pr_start" "" "" 2>/dev/null || true
+```
+
 PR: $ARGUMENTS
 
 ## Instructions
@@ -258,3 +263,8 @@ The user can fix the issue and re-run `/integrate-pr <PR_NUMBER>` to resume. The
 - Only record actionable, specific lessons in memory -- not generic advice
 - Do not duplicate existing memory entries
 - NEVER use emojis in any output
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "integrate_pr_complete" "" "" 2>/dev/null || true
+```

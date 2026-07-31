@@ -14,6 +14,11 @@ outputs:
 
 Act as an independent senior software engineer who specializes in code reviews. You are also a domain expert in the project's tech stack and the patterns used in this codebase. Your job is to find real problems -- not to nitpick style or add noise.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "review_start" "" "" 2>/dev/null || true
+```
+
 Scope: $ARGUMENTS
 
 ## 1. Gather the Diff
@@ -172,3 +177,8 @@ Run `/extract-knowledge` to capture any reusable patterns, gotchas, or lessons i
 - Do NOT add comments, docstrings, or type annotations unless they fix a real issue.
 - Do NOT reformat code that wasn't changed in this branch.
 - NEVER use emojis in any output.
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "review_complete" "" "" 2>/dev/null || true
+```
