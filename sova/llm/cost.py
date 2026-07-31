@@ -37,6 +37,8 @@ async def record_cost(
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,
         cache_tokens=result.cache_read_tokens + result.cache_creation_tokens,
+        cache_read_tokens=result.cache_read_tokens,
+        cache_write_tokens=result.cache_creation_tokens,
         cost_usd=result.cost_usd,
         duration_ms=result.duration_ms,
         model_selection_reason=model_selection_reason,
