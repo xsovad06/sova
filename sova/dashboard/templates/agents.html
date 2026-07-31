@@ -619,10 +619,17 @@ function renderTaskCard(item) {
   var assigneeHtml = '';
   var assignees = item.assignees || [];
   var prAuthor = (item.pr_details || {}).author || '';
+  var prAssignees = ((item.pr_details || {}).assignees || []);
   if (assignees.length) {
     var isGithub = !item.jira_key;
-    assigneeHtml = '<span class="flex items-center shrink-0">' +
-      (isGithub ? renderAssigneeAvatar(assignees[0]) : renderJiraInitial(assignees[0])) +
+    var avatarHtml;
+    if (isGithub) {
+      avatarHtml = renderAssigneeAvatar(assignees[0]);
+    } else {
+      var ghLogin = prAuthor || (prAssignees.length ? prAssignees[0] : '') || _githubUser;
+      avatarHtml = ghLogin ? renderAssigneeAvatar(ghLogin) : renderJiraInitial(assignees[0]);
+    }
+    assigneeHtml = '<span class="flex items-center shrink-0">' + avatarHtml +
       (assignees.length > 1 ? '<span class="text-[9px] text-gray-500 ml-0.5">+' + (assignees.length - 1) + '</span>' : '') +
       '</span>';
   } else if (prAuthor) {
