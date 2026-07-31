@@ -115,10 +115,10 @@ bash .claude/benchmark/log.sh "pr_start" "" "" 2>/dev/null || true
 10. **Create or update PR**:
     ```bash
     # New PR (--assignee @me ensures creator is always assigned)
-    gh pr create --assignee @me --title "THE_TITLE" --body "$(cat <<'EOF'
+    PR_URL=$(gh pr create --assignee @me --title "THE_TITLE" --body "$(cat <<'EOF'
     [THE BODY]
     EOF
-    )"
+    )")
 
     # Update existing PR
     gh pr edit <PR_NUMBER> --title "THE_TITLE" --body "$(cat <<'EOF'
