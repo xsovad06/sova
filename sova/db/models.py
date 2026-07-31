@@ -462,9 +462,39 @@ class OversightRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    findings: Mapped[list["OversightFinding"]] = relationship(back_populates="run", lazy="raise")
+
     __table_args__ = (
         Index("ix_oversight_runs_status", "status"),
         Index("ix_oversight_runs_started", "started_at"),
+    )
+
+
+class OversightFinding(Base):
+    """Individual finding produced by the oversight analysis step."""
+
+    __tablename__ = "oversight_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), ForeignKey("oversight_runs.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="global")
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="info")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recommendation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False, default=0.5)
+    project_slug: Mapped[str] = mapped_column(String(100), default="")
+    dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    github_issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    run: Mapped["OversightRun"] = relationship(back_populates="findings", lazy="raise")
+
+    __table_args__ = (
+        Index("ix_oversight_findings_run", "run_id"),
+        Index("ix_oversight_findings_title", "title"),
+        Index("ix_oversight_findings_scope", "scope"),
+        Index("ix_oversight_findings_created", "created_at"),
     )
 
 
