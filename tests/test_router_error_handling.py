@@ -293,6 +293,414 @@ class TestSettingsRouterErrors:
         assert resp.status_code == 500
         assert "Failed to update configuration" in resp.json()["detail"]
 
+    async def test_audit_labels_not_github_returns_400(self, client: AsyncClient) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "jira"
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            resp = await client.get("/api/settings/labels/audit")
+        assert resp.status_code == 400
+        assert "GitHub-only" in resp.json()["detail"]
+
+    async def test_audit_labels_no_github_repo_returns_400(self, client: AsyncClient) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = ""
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            resp = await client.get("/api/settings/labels/audit")
+        assert resp.status_code == 400
+        assert "not configured" in resp.json()["detail"]
+
+    async def test_audit_labels_gh_cli_unavailable(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=1, stdout="", stderr="gh: command not found"),
+            ),
+        ):
+            resp = await client.get("/api/settings/labels/audit")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+        assert "not available" in data["error"]
+        assert data["missing"] == []
+
+    async def test_audit_labels_json_parse_error(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="invalid json", stderr=""),
+            ),
+        ):
+            resp = await client.get("/api/settings/labels/audit")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "error" in data
+        assert "parse" in data["error"]
+
+    async def test_audit_labels_success_with_missing(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout='[{"name": "type: feature"}]', stderr=""),
+            ),
+        ):
+            resp = await client.get("/api/settings/labels/audit")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "missing" in data
+        assert len(data["missing"]) > 0
+        assert "total_required" in data
+
+    async def test_create_labels_not_github_returns_400(self, client: AsyncClient) -> None:
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "jira"
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 400
+        assert "GitHub-only" in resp.json()["detail"]
+
+    async def test_create_labels_fetch_error_returns_500(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=1, stdout="", stderr="connection failed"),
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 500
+        assert "Failed to fetch labels" in resp.json()["detail"]
+
+    async def test_create_labels_no_missing_labels(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        # Return all required labels as existing
+        settings_module = __import__("sova.dashboard.routers.settings", fromlist=["_REQUIRED_LABELS"])
+        all_labels = [{"name": label["name"]} for label in settings_module._REQUIRED_LABELS]
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(
+                    returncode=0,
+                    stdout=__import__("json").dumps(all_labels),
+                    stderr="",
+                ),
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 0
+        assert "already exist" in data["message"]
+
+    async def test_create_labels_invalid_color_format(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                return_value=ShellResult(returncode=0, stdout="[]", stderr=""),
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                [{"name": "test:label", "color": "ZZZZZZ", "description": "Test"}],
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 0
+        assert "errors" in data
+        assert any("Invalid color" in err for err in data["errors"])
+
+    async def test_create_labels_permission_denied(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        async def run_mock(*args, **kwargs):
+            if "label" in args and "list" in args:
+                return ShellResult(returncode=0, stdout="[]", stderr="")
+            return ShellResult(returncode=1, stdout="", stderr="HTTP 403: permission denied")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                side_effect=run_mock,
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                [{"name": "test:label", "color": "a2eeef", "description": "Test"}],
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        assert any("Permission denied" in err for err in data["errors"])
+
+    async def test_create_labels_error_truncation(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        # Create more than _MAX_LABEL_ERRORS (10) failing labels
+        failing_labels = [{"name": f"test:label{i}", "color": "a2eeef", "description": f"Test {i}"} for i in range(15)]
+
+        async def run_mock(*args, **kwargs):
+            if "label" in args and "list" in args:
+                return ShellResult(returncode=0, stdout="[]", stderr="")
+            return ShellResult(returncode=1, stdout="", stderr="creation failed")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                side_effect=run_mock,
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                failing_labels,
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        assert len(data["errors"]) == 10
+        assert "errors_truncated" in data
+        assert data["errors_truncated"] == 5
+
+    async def test_create_labels_success_creates_missing(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        test_labels = [
+            {"name": "test:one", "color": "a2eeef", "description": "Test 1"},
+            {"name": "test:two", "color": "d4c5f9", "description": "Test 2"},
+            {"name": "test:three", "color": "0e8a16", "description": "Test 3"},
+        ]
+
+        async def run_mock(*args, **kwargs):
+            if "label" in args and "list" in args:
+                # Return empty list so all labels are missing
+                return ShellResult(returncode=0, stdout="[]", stderr="")
+            # All create commands succeed
+            return ShellResult(returncode=0, stdout="", stderr="")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                side_effect=run_mock,
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                test_labels,
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 3
+        assert "errors" not in data
+
+    async def test_create_labels_partial_success(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        test_labels = [
+            {"name": "test:success", "color": "a2eeef", "description": "Will succeed"},
+            {"name": "test:fail", "color": "d4c5f9", "description": "Will fail"},
+        ]
+
+        async def run_mock(*args, **kwargs):
+            if "label" in args and "list" in args:
+                return ShellResult(returncode=0, stdout="[]", stderr="")
+            # First label succeeds, second fails
+            if "test:success" in args:
+                return ShellResult(returncode=0, stdout="", stderr="")
+            return ShellResult(returncode=1, stdout="", stderr="API error")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                side_effect=run_mock,
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                test_labels,
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["created"] == 1
+        assert "errors" in data
+        assert len(data["errors"]) == 1
+        assert "test:fail" in data["errors"][0]
+
+    async def test_create_labels_message_truncation(self, client: AsyncClient) -> None:
+        from sova.utils.shell import ShellResult
+
+        mock_cfg = MagicMock()
+        mock_cfg.task_source.type = "github"
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+
+        test_labels = [{"name": "test:label", "color": "a2eeef", "description": "Test"}]
+        # Error message longer than _MAX_ERROR_MESSAGE_LENGTH (200)
+        long_error = "x" * 300
+
+        async def run_mock(*args, **kwargs):
+            if "label" in args and "list" in args:
+                return ShellResult(returncode=0, stdout="[]", stderr="")
+            return ShellResult(returncode=1, stdout="", stderr=long_error)
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_cfg),
+            patch(
+                "sova.utils.gh.resolve_gh_env",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "sova.utils.shell.run",
+                new_callable=AsyncMock,
+                side_effect=run_mock,
+            ),
+            patch(
+                "sova.dashboard.routers.settings._REQUIRED_LABELS",
+                test_labels,
+            ),
+        ):
+            resp = await client.post("/api/settings/labels/create")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        # Error message should be truncated to 200 chars
+        assert all(len(err) <= 220 for err in data["errors"])  # 200 + label name prefix
+
 
 class TestHandoffRouterErrors:
     """Tests for handoff.py execute_handoff_action error dict handling."""
