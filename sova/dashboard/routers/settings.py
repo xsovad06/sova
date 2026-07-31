@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from sova.config.models import ProjectConfig
 from sova.dashboard.project_context import get_project_dir
 from sova.dashboard.services import settings_service
 from sova.dashboard.settings_meta import get_grouped_config
@@ -81,7 +82,7 @@ def _extract_validation_detail(exc: Exception) -> str:
     return "Failed to fetch configuration"
 
 
-def _validate_github_config(cfg) -> None:
+def _validate_github_config(cfg: ProjectConfig) -> None:
     """Validate GitHub task source configuration, raising HTTPException if invalid."""
     if cfg.task_source.type != "github":
         raise HTTPException(
@@ -304,7 +305,11 @@ async def _fetch_existing_labels(cfg) -> set[str] | dict:
     from sova.utils.shell import run
 
     env = await resolve_gh_env(cfg.github_user)
-    result = await run("gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", env=env)
+
+    try:
+        result = await run("gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", env=env)
+    except FileNotFoundError:
+        return {"error": "GitHub CLI not available or not authenticated"}
 
     if not result.success:
         error_msg = result.stderr.strip()
@@ -371,6 +376,24 @@ def _build_label_response(results: list[tuple[bool, str | None]]) -> dict:
     return response
 
 
+async def _compute_missing_labels(cfg) -> dict:
+    """Compute missing labels for a given config.
+
+    Returns a dict with either:
+    - {"missing": [...], "total_required": N} on success
+    - {"error": "...", "missing": []} on failure
+    """
+    existing_or_error = await _fetch_existing_labels(cfg)
+
+    if isinstance(existing_or_error, dict):
+        return {**existing_or_error, "missing": []}
+
+    existing_names = existing_or_error
+    missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
+
+    return {"missing": missing, "total_required": len(_REQUIRED_LABELS)}
+
+
 @router.get(
     "/settings/labels/audit",
     responses={
@@ -390,15 +413,7 @@ async def audit_labels() -> dict:
         cfg = load_config(project_dir)
         _validate_github_config(cfg)
 
-        existing_or_error = await _fetch_existing_labels(cfg)
-
-        if isinstance(existing_or_error, dict):
-            return {**existing_or_error, "missing": []}
-
-        existing_names = existing_or_error
-        missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
-
-        return {"missing": missing, "total_required": len(_REQUIRED_LABELS)}
+        return await _compute_missing_labels(cfg)
 
     except HTTPException:
         raise
@@ -427,15 +442,12 @@ async def create_missing_labels() -> dict:
         cfg = load_config(project_dir)
         _validate_github_config(cfg)
 
-        # Fetch existing labels
-        existing_or_error = await _fetch_existing_labels(cfg)
-        if isinstance(existing_or_error, dict):
-            raise HTTPException(status_code=500, detail=existing_or_error["error"])
+        # Compute missing labels
+        result = await _compute_missing_labels(cfg)
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
 
-        # Find missing labels
-        existing_names = existing_or_error
-        missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
-
+        missing = result["missing"]
         if not missing:
             return {"created": 0, "message": "All required labels already exist"}
 
