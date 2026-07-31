@@ -190,3 +190,86 @@ class TestResolveGhEnv:
         mock_run.return_value = ShellResult(returncode=0, stdout="", stderr="")
 
         assert await resolve_gh_env("emptyuser") is None
+
+
+# ---------------------------------------------------------------------------
+# check_git_identity
+# ---------------------------------------------------------------------------
+
+
+class TestCheckGitIdentity:
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_both_configured(self, mock_run: AsyncMock) -> None:
+        from sova.utils.shell import ShellResult, check_git_identity
+
+        mock_run.side_effect = [
+            ShellResult(returncode=0, stdout="Test User\n", stderr=""),
+            ShellResult(returncode=0, stdout="test@example.com\n", stderr=""),
+        ]
+        result = await check_git_identity()
+        assert result.valid
+        assert result.name == "Test User"
+        assert result.email == "test@example.com"
+        assert result.missing_fields == []
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_both_missing(self, mock_run: AsyncMock) -> None:
+        from sova.utils.shell import ShellResult, check_git_identity
+
+        mock_run.side_effect = [
+            ShellResult(returncode=1, stdout="", stderr=""),
+            ShellResult(returncode=1, stdout="", stderr=""),
+        ]
+        result = await check_git_identity()
+        assert not result.valid
+        assert result.missing_fields == ["user.name", "user.email"]
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_empty_string_treated_as_missing(self, mock_run: AsyncMock) -> None:
+        from sova.utils.shell import ShellResult, check_git_identity
+
+        mock_run.side_effect = [
+            ShellResult(returncode=0, stdout="  \n", stderr=""),
+            ShellResult(returncode=0, stdout="test@example.com\n", stderr=""),
+        ]
+        result = await check_git_identity()
+        assert not result.valid
+        assert result.missing_fields == ["user.name"]
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_email_only_missing(self, mock_run: AsyncMock) -> None:
+        from sova.utils.shell import ShellResult, check_git_identity
+
+        mock_run.side_effect = [
+            ShellResult(returncode=0, stdout="Test User\n", stderr=""),
+            ShellResult(returncode=1, stdout="", stderr=""),
+        ]
+        result = await check_git_identity()
+        assert not result.valid
+        assert result.missing_fields == ["user.email"]
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_passes_cwd(self, mock_run: AsyncMock) -> None:
+        from pathlib import Path
+
+        from sova.utils.shell import ShellResult, check_git_identity
+
+        mock_run.return_value = ShellResult(returncode=0, stdout="value\n", stderr="")
+        await check_git_identity(cwd=Path("/some/project"))
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("cwd") == Path("/some/project")
+
+    @pytest.mark.asyncio
+    @patch("sova.utils.shell.run", new_callable=AsyncMock)
+    async def test_oserror_returns_empty_identity(self, mock_run: AsyncMock) -> None:
+        from sova.utils.shell import check_git_identity
+
+        mock_run.side_effect = OSError("No such file or directory")
+        result = await check_git_identity()
+        assert not result.valid
+        assert result.missing_fields == ["user.name", "user.email"]

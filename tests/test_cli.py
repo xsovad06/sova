@@ -499,6 +499,84 @@ class TestProjectCommands:
 
 
 # ---------------------------------------------------------------------------
+# Install git identity warning
+# ---------------------------------------------------------------------------
+
+
+class TestInstallGitIdentityWarning:
+    async def test_install_warns_on_missing_git_identity(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+        from sova.utils.shell import GitIdentityResult
+
+        _scaffold_install_artifacts(tmp_path)
+        missing = GitIdentityResult(name="", email="test@example.com")
+        mock_id = AsyncMock(return_value=missing)
+
+        with (
+            patch("sova.cli.commands.project.check_git_identity", mock_id),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_guides,
+            patch("sova.commands.distribution.install_skills") as mock_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_cmds.return_value = MagicMock(installed=1)
+            mock_guides.return_value = MagicMock(installed=0)
+            mock_sk.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+    async def test_install_swallows_identity_check_exception(self, tmp_path: Path) -> None:
+        """The except Exception block (line 67-68) must not propagate."""
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+        mock_id = AsyncMock(side_effect=RuntimeError("git not found"))
+
+        with (
+            patch("sova.cli.commands.project.check_git_identity", mock_id),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_guides,
+            patch("sova.commands.distribution.install_skills") as mock_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_cmds.return_value = MagicMock(installed=1)
+            mock_guides.return_value = MagicMock(installed=0)
+            mock_sk.return_value = MagicMock(installed=0)
+            # Should not raise despite check_git_identity failure
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+    async def test_install_no_warning_when_identity_configured(self, tmp_path: Path) -> None:
+        from sova.cli.commands.project import _install
+        from sova.utils.shell import GitIdentityResult
+
+        _scaffold_install_artifacts(tmp_path)
+        valid = GitIdentityResult(name="User", email="u@e.com")
+
+        with (
+            patch("sova.cli.commands.project.check_git_identity", AsyncMock(return_value=valid)),
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_guides,
+            patch("sova.commands.distribution.install_skills") as mock_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_cmds.return_value = MagicMock(installed=1)
+            mock_guides.return_value = MagicMock(installed=0)
+            mock_sk.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+
+# ---------------------------------------------------------------------------
 # Doctor install completeness checks
 # ---------------------------------------------------------------------------
 
@@ -963,6 +1041,31 @@ class TestDoctorHelpers:
 
         checks = [("test", False, "warn", False)]
         _render_results(checks)
+
+    async def test_check_git_identity_configured(self) -> None:
+        from sova.cli.commands.doctor import _check_git_identity
+        from sova.utils.shell import GitIdentityResult
+
+        identity = GitIdentityResult(name="Test User", email="test@example.com")
+        with patch("sova.cli.commands.doctor.check_git_identity", new_callable=AsyncMock, return_value=identity):
+            checks = await _check_git_identity(Path("/tmp/test"))
+        assert len(checks) == 1
+        assert checks[0][0] == "git identity"
+        assert checks[0][1] is True
+        assert "Test User" in checks[0][2]
+
+    async def test_check_git_identity_missing(self) -> None:
+        from sova.cli.commands.doctor import _check_git_identity
+        from sova.utils.shell import GitIdentityResult
+
+        identity = GitIdentityResult(name="", email="")
+        with patch("sova.cli.commands.doctor.check_git_identity", new_callable=AsyncMock, return_value=identity):
+            checks = await _check_git_identity(Path("/tmp/test"))
+        assert len(checks) == 1
+        assert checks[0][0] == "git identity"
+        assert checks[0][1] is False
+        assert "user.name" in checks[0][2]
+        assert checks[0][3] is True
 
     async def test_check_agent_runtime_available(self, tmp_path: Path) -> None:
         from sova.cli.commands.doctor import _check_agent_runtime
