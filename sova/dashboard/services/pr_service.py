@@ -110,6 +110,7 @@ def _extract_linked_issue(raw: dict) -> int | None:
     m = _BRANCH_JIRA_KEY_RE.search(branch)
     if m:
         return int(m.group(1))
+    return None
 
 
 def _extract_all_linked_issues(raw: dict) -> list[int]:
