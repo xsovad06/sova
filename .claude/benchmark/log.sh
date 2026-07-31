@@ -2,17 +2,29 @@
 set -euo pipefail
 
 # Benchmark event logger for issue #6 (SOVA vs interactive velocity comparison)
-# Usage: bash .claude/benchmark/log.sh <event> <issue_number> [notes]
+# Usage: bash .claude/benchmark/log.sh <event> [issue_number] [notes]
 # Events: session_start, session_end, issue_loaded, spec_start, spec_complete,
 #         develop_start, develop_complete, review_start, review_complete,
-#         pr_created, ci_check_start, ci_passed, ci_failed,
+#         pr_start, pr_complete, pr_created,
+#         address_pr_start, address_pr_complete,
+#         integrate_pr_start, integrate_pr_complete,
+#         approve_merge_start, approve_merge_complete,
+#         ci_check_start, ci_passed, ci_failed,
 #         human_idle_start, human_idle_end, error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-event="${1:?Usage: log.sh <event> <issue_number> [notes]}"
-issue="${2:?Usage: log.sh <event> <issue_number> [notes]}"
+event="${1:?Usage: log.sh <event> [issue_number] [notes]}"
+issue="${2:-}"
 notes="${3:-}"
+
+# Auto-detect issue number from branch name if not provided
+if [ -z "$issue" ]; then
+    branch_name=$(git branch --show-current 2>/dev/null || echo "")
+    if [[ "$branch_name" =~ ^(feat|fix)/issue-([0-9]+) ]]; then
+        issue="${BASH_REMATCH[2]}"
+    fi
+fi
 
 log_file="${SCRIPT_DIR}/issue-${issue}.jsonl"
 
@@ -26,4 +38,8 @@ else
         "$ts" "$event" "$issue" >> "$log_file"
 fi
 
-echo "Logged: ${event} for issue #${issue} at ${ts}"
+if [ -n "$issue" ]; then
+    echo "Logged: ${event} for issue #${issue} at ${ts}"
+else
+    echo "Logged: ${event} (no issue) at ${ts}"
+fi
