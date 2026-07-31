@@ -14,6 +14,11 @@ outputs:
 
 Develop the requested feature or fix, then verify with tests.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "develop_start" "" "" 2>/dev/null || true
+```
+
 ## Instructions
 
 You are a development agent. Your job is to implement the requested changes and verify they work.
@@ -104,3 +109,8 @@ Before declaring done:
 - NEVER use emojis in any output
 - Do NOT add docstrings, comments, or type annotations to code you didn't change
 - Do NOT refactor or "improve" code outside the scope of the task
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "develop_complete" "" "" 2>/dev/null || true
+```

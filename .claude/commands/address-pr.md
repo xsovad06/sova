@@ -14,6 +14,11 @@ outputs:
 
 Score each review comment, address all of them (fix or acknowledge with justification), and reply on GitHub. Handles both human reviewers and automated review bots (Sourcery, CodeRabbit, etc.).
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "address_pr_start" "" "" 2>/dev/null || true
+```
+
 ## CRITICAL: Complete ALL Steps
 
 This command runs as a headless agent. You MUST execute every step below through to completion. In headless mode, producing a text-only summary without a tool call causes the process to exit immediately, so NEVER output a final summary without having completed steps 8-17 first (squash, rebase, push, reply, resolve, dismiss). If you discover that all findings are already addressed, you MUST still complete steps 9-10 (rebase and push) to resolve any merge conflicts, then skip to step 11 to handle thread resolution before the summary.
@@ -244,3 +249,8 @@ This command runs as a headless agent. You MUST execute every step below through
 
 - **Don't blindly accept bot suggestions** -- evaluate each one against project conventions
 - NEVER use emojis in any output
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "address_pr_complete" "" "" 2>/dev/null || true
+```

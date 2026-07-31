@@ -14,6 +14,11 @@ outputs:
 
 Create a pull request for the current branch using the project's standard PR template.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "pr_start" "" "" 2>/dev/null || true
+```
+
 ## Instructions
 
 1. **Update main branch and rebase**:
@@ -120,6 +125,10 @@ Create a pull request for the current branch using the project's standard PR tem
     [THE BODY]
     EOF
     )"
+
+    # Benchmark logging (PR created)
+    PR_NUM=$(gh pr view --json number --jq '.number' 2>/dev/null || echo "")
+    bash .claude/benchmark/log.sh "pr_created" "" "pr_number=${PR_NUM}" 2>/dev/null || true
     ```
 
 11. **Return the PR URL** to the user.
@@ -189,3 +198,8 @@ These phases run after the PR is created/updated. They enable autonomous operati
 - Do NOT ask for or request reviewers -- the user handles reviews themselves
 - NEVER include AI references in commits or PRs
 - NEVER use emojis in any output
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "pr_complete" "" "" 2>/dev/null || true
+```

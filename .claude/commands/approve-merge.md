@@ -7,6 +7,11 @@ user-invocable: true
 
 Merge a PR and perform post-merge cleanup. This command is the final step in the shipping pipeline -- it runs after the PR has been rebased, CI has passed, and the user has approved the merge from the dashboard.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "approve_merge_start" "" "" 2>/dev/null || true
+```
+
 PR: $ARGUMENTS
 
 ## Instructions
@@ -188,3 +193,8 @@ Output a summary including:
 - Handle merge queue when detected or configured
 - Always write a handoff file, even on completion (with `status: completed`)
 - NEVER use emojis in any output
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "approve_merge_complete" "" "" 2>/dev/null || true
+```
