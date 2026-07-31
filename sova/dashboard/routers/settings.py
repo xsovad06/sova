@@ -17,6 +17,50 @@ from sova.utils.logging import get_logger
 router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
 
+# Maximum number of errors to include in label creation response
+_MAX_LABEL_ERRORS = 10
+
+# Maximum length of individual error messages to prevent unbounded response size
+_MAX_ERROR_MESSAGE_LENGTH = 200
+
+# Concurrency limit for parallel label creation requests
+_LABEL_CREATE_CONCURRENCY = 5
+
+# SOVA required labels with their colors (GitHub format)
+_REQUIRED_LABELS = [
+    # Type labels
+    {"name": "type: feature", "color": "a2eeef", "description": "New feature or request"},
+    {"name": "type: task", "color": "d4c5f9", "description": "General task"},
+    {"name": "type: infra", "color": "0e8a16", "description": "Infrastructure or tooling"},
+    {"name": "type: bug", "color": "d73a4a", "description": "Something isn't working"},
+    {"name": "type: epic", "color": "bfd4f2", "description": "Multi-issue tracking container"},
+    # Priority labels
+    {"name": "priority: critical", "color": "b60205", "description": "Critical priority"},
+    {"name": "priority: high", "color": "d93f0b", "description": "High priority"},
+    {"name": "priority: medium", "color": "fbca04", "description": "Medium priority"},
+    {"name": "priority: low", "color": "0e8a16", "description": "Low priority"},
+    # Area labels
+    {"name": "area: agent", "color": "c5def5", "description": "Agent core and roles"},
+    {"name": "area: dashboard", "color": "c5def5", "description": "Web UI"},
+    {"name": "area: commands", "color": "c5def5", "description": "Claude Code commands"},
+    {"name": "area: personas", "color": "c5def5", "description": "Persona guidance files"},
+    {"name": "area: invariants", "color": "c5def5", "description": "Pre-push checks"},
+    {"name": "area: knowledge", "color": "c5def5", "description": "Knowledge system"},
+    {"name": "area: docs", "color": "c5def5", "description": "Documentation"},
+    # Agent state labels
+    {"name": "agent:triaged", "color": "ededed", "description": "Triaged by agent"},
+    {"name": "agent:researched", "color": "ededed", "description": "Research complete"},
+    {"name": "agent:ready", "color": "ededed", "description": "Ready for development"},
+    {"name": "agent:in-progress", "color": "ededed", "description": "Agent working"},
+    {"name": "agent:in-review", "color": "ededed", "description": "Under review"},
+    {"name": "agent:needs-spec", "color": "ededed", "description": "Needs specification"},
+    {"name": "agent:human-only", "color": "ededed", "description": "Human intervention required"},
+    # SOVA review verdict labels
+    {"name": "sova:approved", "color": "0e8a16", "description": "SOVA review approved"},
+    {"name": "sova:revise", "color": "fbca04", "description": "SOVA review requests changes"},
+    {"name": "sova:block", "color": "d73a4a", "description": "SOVA review blocks merge"},
+]
+
 
 def _extract_validation_detail(exc: Exception) -> str:
     """Extract a user-readable message from a Pydantic ValidationError, or fall back to generic."""
@@ -35,6 +79,21 @@ def _extract_validation_detail(exc: Exception) -> str:
     except ImportError:
         pass
     return "Failed to fetch configuration"
+
+
+def _validate_github_config(cfg) -> None:
+    """Validate GitHub task source configuration, raising HTTPException if invalid."""
+    if cfg.task_source.type != "github":
+        raise HTTPException(
+            status_code=400,
+            detail="Label operations are GitHub-only (Jira labels not yet supported)",
+        )
+
+    if not cfg.github_repo:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub repository not configured",
+        )
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -237,3 +296,163 @@ async def open_persona_in_editor():
             status_code=500,
             detail=f"Failed to open editor. Edit manually: {path}",
         )
+
+
+async def _fetch_existing_labels(cfg) -> set[str] | dict:
+    """Fetch existing label names from GitHub, returning a set of names or error dict."""
+    from sova.utils.gh import resolve_gh_env
+    from sova.utils.shell import run
+
+    env = await resolve_gh_env(cfg.github_user)
+    result = await run("gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", env=env)
+
+    if not result.success:
+        error_msg = result.stderr.strip()
+        if "not found" in error_msg or "not installed" in error_msg:
+            return {"error": "GitHub CLI not available or not authenticated"}
+        return {"error": f"Failed to fetch labels: {error_msg}"}
+
+    import json
+
+    try:
+        existing_labels = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"error": "Failed to parse GitHub CLI output"}
+
+    return {label["name"] for label in existing_labels}
+
+
+async def _create_single_label(label: dict, cfg, env) -> tuple[bool, str | None]:
+    """Create a single label, returning (success, error_msg)."""
+    import re
+
+    from sova.utils.shell import run
+
+    color = label.get("color", "")
+    if not re.match(r"^[0-9a-fA-F]{6}$", color):
+        return (False, f"{label['name']}: Invalid color format (expected 6-char hex)")
+
+    result = await run(
+        "gh",
+        "label",
+        "create",
+        label["name"],
+        "--repo",
+        cfg.github_repo,
+        "--color",
+        color,
+        "--description",
+        label.get("description", ""),
+        env=env,
+    )
+
+    if result.success:
+        return (True, None)
+
+    error_msg = result.stderr.strip()[:_MAX_ERROR_MESSAGE_LENGTH]
+    if "403" in error_msg or "permission" in error_msg.lower():
+        return (False, f"{label['name']}: Permission denied (requires write access)")
+    return (False, f"{label['name']}: {error_msg}")
+
+
+def _build_label_response(results: list[tuple[bool, str | None]]) -> dict:
+    """Build response dict from label creation results."""
+    created = sum(1 for success, _ in results if success)
+    errors = [err for success, err in results if not success and err]
+
+    response = {"created": created}
+    if errors:
+        if len(errors) > _MAX_LABEL_ERRORS:
+            response["errors"] = errors[:_MAX_LABEL_ERRORS]
+            response["errors_truncated"] = len(errors) - _MAX_LABEL_ERRORS
+        else:
+            response["errors"] = errors
+
+    return response
+
+
+@router.get(
+    "/settings/labels/audit",
+    responses={
+        400: {"description": "GitHub adapter not configured"},
+        500: {"description": "Failed to audit labels"},
+    },
+)
+async def audit_labels() -> dict:
+    """Audit repository labels against SOVA's required set.
+
+    Returns missing labels and error information if GitHub CLI is not available.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+        _validate_github_config(cfg)
+
+        existing_or_error = await _fetch_existing_labels(cfg)
+
+        if isinstance(existing_or_error, dict):
+            return {**existing_or_error, "missing": []}
+
+        existing_names = existing_or_error
+        missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
+
+        return {"missing": missing, "total_required": len(_REQUIRED_LABELS)}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("settings.labels.audit.error", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to audit labels: {exc}") from exc
+
+
+@router.post(
+    "/settings/labels/create",
+    responses={
+        400: {"description": "GitHub adapter not configured"},
+        500: {"description": "Failed to create labels"},
+    },
+)
+async def create_missing_labels() -> dict:
+    """Create all missing SOVA labels in the repository.
+
+    Returns the count of labels created and any errors encountered.
+    """
+    from sova.config.loader import load_config
+    from sova.utils.gh import resolve_gh_env
+
+    try:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+        _validate_github_config(cfg)
+
+        # Fetch existing labels
+        existing_or_error = await _fetch_existing_labels(cfg)
+        if isinstance(existing_or_error, dict):
+            raise HTTPException(status_code=500, detail=existing_or_error["error"])
+
+        # Find missing labels
+        existing_names = existing_or_error
+        missing = [label for label in _REQUIRED_LABELS if label["name"] not in existing_names]
+
+        if not missing:
+            return {"created": 0, "message": "All required labels already exist"}
+
+        # Create missing labels in parallel with controlled concurrency
+        env = await resolve_gh_env(cfg.github_user)
+        semaphore = asyncio.Semaphore(_LABEL_CREATE_CONCURRENCY)
+
+        async def create_with_limit(label: dict) -> tuple[bool, str | None]:
+            async with semaphore:
+                return await _create_single_label(label, cfg, env)
+
+        results = await asyncio.gather(*[create_with_limit(label) for label in missing])
+
+        return _build_label_response(results)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("settings.labels.create.error", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create labels: {exc}") from exc
