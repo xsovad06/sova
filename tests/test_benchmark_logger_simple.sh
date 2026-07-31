@@ -92,25 +92,43 @@ fi
 saved_branch=$(git -C "$PROJECT_ROOT" branch --show-current)
 saved_commit=$(git -C "$PROJECT_ROOT" rev-parse HEAD)
 
-if git -C "$PROJECT_ROOT" checkout --detach >/dev/null 2>&1; then
-    output=$(run_logger "test" 2>&1)
+# Guard: skip test if on detached HEAD or if we can't save state
+if [ -z "$saved_branch" ] || [ -z "$saved_commit" ]; then
+    echo -e "${RED}✗${NC} Skipped Test 5 (detached HEAD or unable to save state)"
+    fail=$((fail + 1))
+else
+    # Set up cleanup trap for git state
+    cleanup_git() {
+        if ! git -C "$PROJECT_ROOT" checkout "$saved_branch" >/dev/null 2>&1; then
+            # Fallback: restore to commit if branch checkout fails
+            git -C "$PROJECT_ROOT" checkout "$saved_commit" >/dev/null 2>&1
+        fi
+    }
+    trap cleanup_git EXIT
 
-    # Restore original state before checking results
-    if ! git -C "$PROJECT_ROOT" checkout "$saved_branch" >/dev/null 2>&1; then
-        # Fallback: restore to commit if branch checkout fails
-        git -C "$PROJECT_ROOT" checkout "$saved_commit" >/dev/null 2>&1
-    fi
+    if git -C "$PROJECT_ROOT" checkout --detach >/dev/null 2>&1; then
+        output=$(run_logger "test" 2>&1)
 
-    if [[ "$output" == *"Warning: No issue number provided or detected from branch"* ]] && ! [ -f "$TEST_LOG_DIR/issue-.jsonl" ]; then
-        echo -e "${GREEN}✓${NC} No issue warning on detached HEAD"
-        pass=$((pass + 1))
+        # Restore original state before checking results
+        cleanup_git
+
+        # Verify: warning issued, file created with null issue
+        if [[ "$output" == *"Warning: No issue number provided or detected from branch"* ]] && \
+           [ -f "$TEST_LOG_DIR/issue-null.jsonl" ] && \
+           grep -q '"issue": null' "$TEST_LOG_DIR/issue-null.jsonl"; then
+            echo -e "${GREEN}✓${NC} No issue warning on detached HEAD"
+            pass=$((pass + 1))
+        else
+            echo -e "${RED}✗${NC} No issue warning on detached HEAD"
+            fail=$((fail + 1))
+        fi
     else
-        echo -e "${RED}✗${NC} No issue warning on detached HEAD"
+        echo -e "${RED}✗${NC} Failed to create detached HEAD"
         fail=$((fail + 1))
     fi
-else
-    echo -e "${RED}✗${NC} Failed to create detached HEAD"
-    fail=$((fail + 1))
+
+    # Remove the git cleanup trap (main cleanup trap remains)
+    trap cleanup EXIT
 fi
 
 echo ""
