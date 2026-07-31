@@ -1211,6 +1211,20 @@ _REGISTRY: list[SettingMeta] = [
         "LLM model tier for oversight analysis (placeholder, not yet wired)",
         "oversight",
     ),
+    SettingMeta(
+        "oversight.dedup_window_days",
+        "Dedup window (days)",
+        "Number of days to look back when deduplicating analysis findings (minimum 1)",
+        "oversight",
+        "number",
+    ),
+    SettingMeta(
+        "oversight.analysis_timeout_seconds",
+        "Analysis timeout (sec)",
+        "Timeout in seconds for the LLM analysis call (minimum 10)",
+        "oversight",
+        "number",
+    ),
 ]
 
 _META_BY_KEY: dict[str, SettingMeta] = {m.key: m for m in _REGISTRY}

@@ -551,6 +551,8 @@ class OversightConfig(BaseSettings):
     auto_triage: bool = False
     persona_path: str = ""
     analysis_model: str = "sonnet"
+    dedup_window_days: int = Field(14, ge=1)
+    analysis_timeout_seconds: int = Field(120, ge=10)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_OVERSIGHT_")
 
