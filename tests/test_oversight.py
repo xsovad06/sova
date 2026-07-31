@@ -86,8 +86,12 @@ class TestOversightAgent:
         async def _noop_observe():
             return {"projects": [], "partial": False}
 
+        async def _noop_analyze(snapshot, run_id):
+            return None
+
         with (
             patch.object(agent, "_observe", side_effect=_noop_observe),
+            patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
         ):
 
@@ -154,9 +158,13 @@ class TestOversightAgent:
         async def _noop_observe():
             return {"projects": [], "partial": False}
 
+        async def _noop_analyze(snapshot, run_id):
+            return None
+
         # First cycle runs immediately, then sleep raises CancelledError
         with (
             patch.object(agent, "_observe", side_effect=_noop_observe),
+            patch.object(agent, "_analyze", side_effect=_noop_analyze),
             patch.object(agent, "_record_run", side_effect=_mock_record),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
