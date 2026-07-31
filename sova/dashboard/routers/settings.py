@@ -307,7 +307,9 @@ async def _fetch_existing_labels(cfg) -> set[str] | dict:
     env = await resolve_gh_env(cfg.github_user)
 
     try:
-        result = await run("gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", env=env)
+        result = await run(
+            "gh", "label", "list", "--repo", cfg.github_repo, "--json", "name", "--limit", "500", env=env
+        )
     except FileNotFoundError:
         return {"error": "GitHub CLI not available or not authenticated"}
 
@@ -348,6 +350,7 @@ async def _create_single_label(label: dict, cfg, env) -> tuple[bool, str | None]
         color,
         "--description",
         label.get("description", ""),
+        "--force",
         env=env,
     )
 
