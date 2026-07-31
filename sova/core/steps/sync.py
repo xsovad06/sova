@@ -11,6 +11,7 @@ from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.git import operations as git_ops
 from sova.utils.logging import get_logger
+from sova.utils.shell import check_git_identity
 
 log = get_logger(component="step.sync")
 
@@ -20,6 +21,19 @@ class SyncStep(BaseStep):
     max_retries = 1
 
     async def execute(self, ctx: ExecutionContext) -> StepResult:
+        # Preflight: verify git identity is configured
+        identity = await check_git_identity(cwd=ctx.project_dir)
+        if not identity.valid:
+            missing = ", ".join(identity.missing_fields)
+            return StepResult(
+                success=False,
+                summary="Git identity not configured",
+                error=(
+                    f"Missing git config: {missing}. "
+                    f"Set with: git config user.name 'Your Name' && git config user.email 'you@example.com'"
+                ),
+            )
+
         base = ctx.config.base_branch
         log.info("step.sync", base_branch=base)
         try:
