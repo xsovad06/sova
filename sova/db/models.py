@@ -154,7 +154,12 @@ class CostRecord(Base):
     model: Mapped[str] = mapped_column(String(50), nullable=False)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # cache_tokens: sum of cache_read_tokens + cache_write_tokens (denormalized for backward compatibility).
+    # NULL in granular fields means cache token data not reported (old records or unsupported provider).
+    # Zero cache tokens should be stored as 0, not NULL. Use granular fields for new queries.
     cache_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     cost_usd: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=Decimal("0"))
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     model_selection_reason: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
