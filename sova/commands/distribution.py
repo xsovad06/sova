@@ -51,6 +51,25 @@ class DiffResult:
 
 
 @dataclass
+class DriftEntry:
+    """A single file with local modifications detected by reverse diff."""
+
+    filename: str
+    canonical_content: str
+    local_content: str
+    upstream_also_changed: bool = False
+
+
+@dataclass
+class ReverseDiffResult:
+    """Result of a reverse diff (drift detection) operation."""
+
+    modified: list[DriftEntry] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    unmanaged: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ListEntry:
     """A command in the listing."""
 
@@ -215,6 +234,72 @@ def _diff_files(
     return result
 
 
+def _reverse_diff_files(
+    source_files: list[tuple[str, Path]],
+    target_dir: Path,
+    variables: dict[str, str],
+) -> ReverseDiffResult:
+    """Compare installed files against canonical source to find local modifications.
+
+    The reverse of _diff_files(): finds local changes that could be back-ported
+    to the canonical source rather than upstream changes not yet installed.
+    """
+    manifest = read_manifest(target_dir)
+    result = ReverseDiffResult()
+
+    if manifest is None:
+        return result
+
+    canonical_lookup: dict[str, Path] = dict(source_files)
+
+    for filename, entry in manifest.commands.items():
+        if not entry.managed:
+            continue
+
+        target_path = target_dir / filename
+
+        if not target_path.is_file():
+            result.deleted.append(filename)
+            continue
+
+        local_content = target_path.read_text(encoding="utf-8")
+        local_hash = file_hash(local_content)
+
+        if local_hash == entry.hash:
+            continue
+
+        canonical_path = canonical_lookup.get(filename)
+        if canonical_path is not None and canonical_path.is_file():
+            raw_canonical = canonical_path.read_text(encoding="utf-8")
+            canonical_content = render_command(raw_canonical, variables)
+            canonical_hash = file_hash(canonical_content)
+            upstream_also_changed = canonical_hash != entry.hash
+        else:
+            canonical_content = ""
+            upstream_also_changed = True
+
+        result.modified.append(
+            DriftEntry(
+                filename=filename,
+                canonical_content=canonical_content,
+                local_content=local_content,
+                upstream_also_changed=upstream_also_changed,
+            )
+        )
+
+    if target_dir.is_dir():
+        managed_names = {name for name, e in manifest.commands.items() if e.managed}
+        for path in sorted(target_dir.glob("*.md")):
+            if path.name not in managed_names:
+                result.unmanaged.append(path.name)
+        for path in sorted(target_dir.glob("*/SKILL.md")):
+            rel_key = f"{path.parent.name}/SKILL.md"
+            if rel_key not in managed_names:
+                result.unmanaged.append(rel_key)
+
+    return result
+
+
 def diff_commands(
     canonical_dir: Path,
     target_dir: Path,
@@ -226,6 +311,17 @@ def diff_commands(
     return _diff_files(files, target_dir, build_variables(cfg))
 
 
+def reverse_diff_commands(
+    canonical_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> ReverseDiffResult:
+    """Show local modifications to installed commands that could be back-ported."""
+    commands = discover(canonical_dir)
+    files = [(cmd.path.name, cmd.path) for cmd in commands]
+    return _reverse_diff_files(files, target_dir, build_variables(cfg))
+
+
 def diff_guidelines(
     guidelines_dir: Path,
     target_dir: Path,
@@ -234,6 +330,16 @@ def diff_guidelines(
     """Show what changed between canonical guidelines and installed ones."""
     files = _collect_guidelines(guidelines_dir)
     return _diff_files(files, target_dir, build_variables(cfg))
+
+
+def reverse_diff_guidelines(
+    guidelines_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> ReverseDiffResult:
+    """Show local modifications to installed guidelines that could be back-ported."""
+    files = _collect_guidelines(guidelines_dir)
+    return _reverse_diff_files(files, target_dir, build_variables(cfg))
 
 
 def _collect_guidelines(guidelines_dir: Path) -> list[tuple[str, Path]]:
@@ -326,6 +432,16 @@ def diff_skills(
     """Show what changed between canonical skills and installed ones."""
     files = _collect_skills(skills_dir)
     return _diff_files(files, target_dir, build_variables(cfg))
+
+
+def reverse_diff_skills(
+    skills_dir: Path,
+    target_dir: Path,
+    cfg: ProjectConfig,
+) -> ReverseDiffResult:
+    """Show local modifications to installed skills that could be back-ported."""
+    files = _collect_skills(skills_dir)
+    return _reverse_diff_files(files, target_dir, build_variables(cfg))
 
 
 def list_commands(target_dir: Path) -> ListResult:

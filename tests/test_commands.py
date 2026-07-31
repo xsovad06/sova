@@ -906,3 +906,403 @@ class TestSkillsDistribution:
         cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
         result = install_skills(tmp_path / "nonexistent", skills_target, cfg)
         assert result.installed == 0
+
+
+# ---------------------------------------------------------------------------
+# Reverse diff (drift detection)
+# ---------------------------------------------------------------------------
+
+
+class TestReverseDiff:
+    def test_no_manifest(self, canonical_dir: Path, target_dir: Path) -> None:
+        """reverse_diff_commands() returns empty when no manifest exists."""
+        from sova.commands.distribution import reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        assert result.modified == []
+        assert result.deleted == []
+        assert result.unmanaged == []
+
+    def test_no_local_changes(self, canonical_dir: Path, target_dir: Path) -> None:
+        """reverse_diff_commands() returns empty when nothing was modified."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        assert result.modified == []
+        assert result.deleted == []
+
+    def test_detects_modified(self, canonical_dir: Path, target_dir: Path) -> None:
+        """reverse_diff_commands() detects locally modified managed files."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# My improved standup\n")
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        modified_names = [e.filename for e in result.modified]
+        assert "standup.md" in modified_names
+
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert "My improved standup" in entry.local_content
+        assert "Show standup." in entry.canonical_content
+
+    def test_detects_deleted(self, canonical_dir: Path, target_dir: Path) -> None:
+        """reverse_diff_commands() detects managed files deleted locally."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").unlink()
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        assert "standup.md" in result.deleted
+
+    def test_detects_unmanaged(self, canonical_dir: Path, target_dir: Path) -> None:
+        """reverse_diff_commands() lists files not tracked by manifest."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "my-local.md").write_text("# Local command\n")
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        assert "my-local.md" in result.unmanaged
+
+    def test_upstream_also_changed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """DriftEntry.upstream_also_changed is True when canonical also differs from manifest."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Local changes\n")
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Updated.\nuser-invocable: true\ncategory: management\n---\n\nUpstream.\n"
+        )
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert entry.upstream_also_changed is True
+
+    def test_upstream_not_changed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """DriftEntry.upstream_also_changed is False when only local was modified."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Local only\n")
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert entry.upstream_also_changed is False
+
+    def test_canonical_removed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """When canonical file is removed but local exists, upstream_also_changed is True."""
+        from sova.commands.distribution import install_commands, reverse_diff_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Modified locally\n")
+        (canonical_dir / "standup.md").unlink()
+
+        result = reverse_diff_commands(canonical_dir, target_dir, cfg)
+        entry = next(e for e in result.modified if e.filename == "standup.md")
+        assert entry.upstream_also_changed is True
+        assert entry.canonical_content == ""
+
+    def test_reverse_diff_guidelines(self, tmp_path: Path) -> None:
+        """reverse_diff_guidelines() works for guidelines (same engine)."""
+        from sova.commands.distribution import install_guidelines, reverse_diff_guidelines
+        from sova.config.models import ProjectConfig
+
+        guidelines_dir = tmp_path / "guidelines"
+        guidelines_dir.mkdir()
+        (guidelines_dir / "arch.md").write_text("Architecture: {{ project_name }}\n")
+
+        rules_dir = tmp_path / "rules"
+        rules_dir.mkdir()
+
+        cfg = ProjectConfig(github_repo="org/myapp")
+        install_guidelines(guidelines_dir, rules_dir, cfg)
+
+        (rules_dir / "arch.md").write_text("Architecture: myapp with extra notes\n")
+
+        result = reverse_diff_guidelines(guidelines_dir, rules_dir, cfg)
+        assert len(result.modified) == 1
+        assert result.modified[0].filename == "arch.md"
+
+
+# ---------------------------------------------------------------------------
+# Reverse template rendering
+# ---------------------------------------------------------------------------
+
+
+class TestReverseRender:
+    def test_basic(self) -> None:
+        """reverse_render() replaces known values with template placeholders."""
+        from sova.commands.templates import reverse_render
+
+        content = "Run pytest to lint.\n"
+        variables = {"test_cmd": "pytest"}
+        result = reverse_render(content, variables)
+        assert "{{ test_cmd }}" in result
+        assert "pytest" not in result
+
+    def test_multiple_variables(self) -> None:
+        """reverse_render() handles multiple variables."""
+        from sova.commands.templates import reverse_render
+
+        content = "Run ruff check . then pytest.\n"
+        variables = {"lint_cmd": "ruff check .", "test_cmd": "pytest"}
+        result = reverse_render(content, variables)
+        assert "{{ lint_cmd }}" in result
+        assert "{{ test_cmd }}" in result
+
+    def test_longer_values_first(self) -> None:
+        """reverse_render() replaces longer values first to avoid partial matches."""
+        from sova.commands.templates import reverse_render
+
+        content = "Run ruff check . && pytest to check.\n"
+        variables = {"check_cmd": "ruff check . && pytest", "lint_cmd": "ruff check ."}
+        result = reverse_render(content, variables)
+        assert "{{ check_cmd }}" in result
+
+    def test_empty_variables(self) -> None:
+        """reverse_render() is a no-op with empty dict."""
+        from sova.commands.templates import reverse_render
+
+        content = "Some content.\n"
+        result = reverse_render(content, {})
+        assert result == content
+
+    def test_no_match(self) -> None:
+        """reverse_render() leaves content unchanged when no values match."""
+        from sova.commands.templates import reverse_render
+
+        content = "Nothing to replace here.\n"
+        variables = {"test_cmd": "pytest"}
+        result = reverse_render(content, variables)
+        assert result == content
+
+    def test_overlapping_value_and_placeholder_name(self) -> None:
+        """reverse_render() does not corrupt placeholders when values overlap names."""
+        from sova.commands.templates import reverse_render
+
+        content = "Clone org/repo for the repo"
+        variables = {"github_repo": "org/repo", "project_name": "repo"}
+        result = reverse_render(content, variables)
+        assert result == "Clone {{ github_repo }} for the {{ project_name }}"
+
+
+# ---------------------------------------------------------------------------
+# CLI: drift and backport subcommands
+# ---------------------------------------------------------------------------
+
+
+class TestDriftCLI:
+    def test_drift_help(self) -> None:
+        """sova commands drift --help runs without error."""
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["commands", "drift", "--help"])
+        assert result.exit_code == 0
+        assert "reverse diff" in result.output.lower()
+
+    def _invoke_drift(self, canonical_dir: Path, target_dir: Path, extra_args: list[str] | None = None) -> object:
+        """Helper to invoke drift_cmd with patched canonical dir and config."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.commands import app as commands_app
+        from sova.config.models import ProjectConfig
+
+        runner = CliRunner()
+        project_root = target_dir.parent.parent
+        args = ["drift", "--project", str(project_root)] + (extra_args or [])
+        with (
+            patch("sova.cli.commands.commands.get_canonical_dir", return_value=canonical_dir),
+            patch("sova.cli.commands.commands.load_config", return_value=ProjectConfig()),
+        ):
+            return runner.invoke(commands_app, args)
+
+    def test_drift_no_drift(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift shows clean message when no modifications exist."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        result = self._invoke_drift(canonical_dir, target_dir)
+        assert result.exit_code == 0
+        assert "No local drift" in result.output
+
+    def test_drift_shows_modified(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift shows modified files with diff output."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# My improved standup\nNew content here.\n")
+
+        result = self._invoke_drift(canonical_dir, target_dir)
+        assert result.exit_code == 0
+        assert "standup.md" in result.output
+        assert "Locally modified" in result.output
+
+    def test_drift_no_show_diff(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift --no-show-diff shows only file names."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Changed\n")
+
+        result = self._invoke_drift(canonical_dir, target_dir, ["--no-show-diff"])
+        assert result.exit_code == 0
+        assert "standup.md" in result.output
+
+    def test_drift_shows_unmanaged(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift shows unmanaged files."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "my-local.md").write_text("# Local\n")
+
+        result = self._invoke_drift(canonical_dir, target_dir)
+        assert result.exit_code == 0
+        assert "my-local.md" in result.output
+        assert "Unmanaged" in result.output
+
+    def test_drift_shows_deleted(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift shows deleted managed files."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").unlink()
+
+        result = self._invoke_drift(canonical_dir, target_dir)
+        assert result.exit_code == 0
+        assert "standup.md" in result.output
+        assert "deleted" in result.output.lower()
+
+    def test_drift_upstream_also_changed(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands drift annotates when upstream also changed."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Local\n")
+        (canonical_dir / "standup.md").write_text(
+            "---\nname: standup\ndescription: Changed.\nuser-invocable: true\ncategory: management\n---\n\nNew.\n"
+        )
+
+        result = self._invoke_drift(canonical_dir, target_dir)
+        assert result.exit_code == 0
+        assert "upstream also changed" in result.output
+
+    def test_backport_help(self) -> None:
+        """sova commands backport --help runs without error."""
+        from typer.testing import CliRunner
+
+        from sova.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["commands", "backport", "--help"])
+        assert result.exit_code == 0
+        assert "back-port" in result.output.lower()
+
+    def test_backport_dry_run(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands backport --dry-run shows content without writing."""
+        from unittest.mock import patch
+
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig(test_cmd="pytest", lint_cmd="ruff check .")
+        install_commands(canonical_dir, target_dir, cfg)
+
+        (target_dir / "standup.md").write_text("# Improved standup with pytest\n")
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.commands import app as commands_app
+
+        runner = CliRunner()
+        project_root = target_dir.parent.parent
+        with patch("sova.cli.commands.commands.get_canonical_dir", return_value=canonical_dir):
+            result = runner.invoke(
+                commands_app, ["backport", "standup.md", "--dry-run", "--project", str(project_root)]
+            )
+        assert result.exit_code == 0
+        assert "Would write to" in result.output
+
+    def test_backport_file_not_found(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands backport reports error for missing files."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.commands import app as commands_app
+
+        runner = CliRunner()
+        project_root = target_dir.parent.parent
+        result = runner.invoke(commands_app, ["backport", "nonexistent.md", "--project", str(project_root)])
+        assert result.exit_code == 1
+
+    def test_backport_invalid_kind(self, canonical_dir: Path, target_dir: Path) -> None:
+        """sova commands backport reports error for invalid kind."""
+        from sova.commands.distribution import install_commands
+        from sova.config.models import ProjectConfig
+
+        cfg = ProjectConfig()
+        install_commands(canonical_dir, target_dir, cfg)
+
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.commands import app as commands_app
+
+        runner = CliRunner()
+        project_root = target_dir.parent.parent
+        result = runner.invoke(
+            commands_app, ["backport", "standup.md", "--kind", "invalid", "--project", str(project_root)]
+        )
+        assert result.exit_code == 1

@@ -29,6 +29,55 @@ def render_command(content: str, variables: dict[str, str]) -> str:
     return re.sub(r"\{\{\s*(\w+)\s*\}\}", _replace, content)
 
 
+def reverse_render(content: str, variables: dict[str, str]) -> str:
+    """Reverse template rendering by replacing known values with placeholders.
+
+    Replaces exact variable values in content with their ``{{ var_name }}``
+    placeholders. Processes longer values first to avoid partial replacements.
+
+    Uses a two-pass approach with sentinel markers to prevent placeholder
+    corruption when a shorter variable value is a substring of a previously
+    inserted placeholder name (e.g., ``project_name="repo"`` corrupting
+    ``{{ github_repo }}``).
+    """
+    if not variables:
+        return content
+
+    # Two-pass approach to prevent placeholder corruption when a shorter
+    # variable value is a substring of a longer variable's placeholder name
+    # (e.g., project_name="repo" corrupting "{{ github_repo }}").
+    #
+    # Pass 1: split content on already-inserted sentinels so subsequent
+    # replacements only touch unprotected segments.
+    _SENTINEL_L = "\x00\x01"
+    _SENTINEL_R = "\x00\x02"
+
+    # Start with the full content as a single unprotected segment.
+    segments: list[str] = [content]
+
+    for key, value in sorted(variables.items(), key=lambda kv: len(kv[1]), reverse=True):
+        if not value:
+            continue
+        placeholder = f"{_SENTINEL_L} {key} {_SENTINEL_R}"
+        new_segments: list[str] = []
+        for seg in segments:
+            if _SENTINEL_L in seg:
+                # Already-protected segment: pass through unchanged.
+                new_segments.append(seg)
+            else:
+                # Unprotected segment: replace and interleave with placeholder.
+                parts = seg.split(value)
+                for i, part in enumerate(parts):
+                    new_segments.append(part)
+                    if i < len(parts) - 1:
+                        new_segments.append(placeholder)
+        segments = new_segments
+
+    # Pass 2: join and replace sentinels with actual Jinja2 delimiters.
+    result = "".join(segments)
+    return result.replace(_SENTINEL_L, "{{").replace(_SENTINEL_R, "}}")
+
+
 def build_variables(cfg: ProjectConfig) -> dict[str, str]:
     """Extract template variables from a ProjectConfig.
 
