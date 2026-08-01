@@ -293,6 +293,26 @@ class TestGitHubAdapter:
         assert task.title == "Fix login bug"
         assert "Acceptance Criteria" in task.body
 
+    async def test_get_task_merged_pr_is_done(self, mock_run: AsyncMock) -> None:
+        pr_json = json.dumps(
+            {
+                "number": 251,
+                "title": "feat: some feature",
+                "body": "PR body",
+                "state": "MERGED",
+                "labels": [{"name": "agent:in-review"}],
+                "assignees": [],
+                "milestone": None,
+                "url": "https://github.com/user/repo/pull/251",
+            }
+        )
+        mock_run.return_value = _shell_result(stdout=pr_json)
+
+        task = await self.adapter.get_task("251")
+
+        assert task.id == "251"
+        assert task.state == TaskState.DONE
+
     async def test_get_task_not_found(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(returncode=1, stderr="not found")
 
@@ -544,6 +564,13 @@ class TestGitHubAdapter:
 
     async def test_get_state_closed_is_done(self, mock_run: AsyncMock) -> None:
         issue_json = json.dumps({"state": "CLOSED", "labels": []})
+        mock_run.return_value = _shell_result(stdout=issue_json)
+
+        state = await self.adapter.get_state("42")
+        assert state == TaskState.DONE
+
+    async def test_get_state_merged_is_done(self, mock_run: AsyncMock) -> None:
+        issue_json = json.dumps({"state": "MERGED", "labels": [{"name": "agent:in-review"}]})
         mock_run.return_value = _shell_result(stdout=issue_json)
 
         state = await self.adapter.get_state("42")
