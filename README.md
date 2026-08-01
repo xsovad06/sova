@@ -63,7 +63,7 @@ Each transition is enforced by gate checks. The Developer refuses issues that ha
 - Python 3.12+
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
 - [GitHub CLI](https://cli.github.com/) (`gh`) -- authenticated
-- `git`
+- `git` with configured identity: `git config user.name` and `git config user.email`
 - `terminal-notifier` (macOS, optional) -- `brew install terminal-notifier` for rich desktop notifications with custom icon and sound
 
 ## Installation

@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sova.utils.shell import ShellResult, run
+from sova.utils.shell import ShellResult, check_git_identity, run
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -44,6 +44,7 @@ async def _doctor(project: Path | None) -> None:
     checks.extend(_check_rtk())
 
     project_dir = (project or Path.cwd()).resolve()
+    checks.extend(await _check_git_identity(project_dir))
     checks.append(await _check_git_hooks(project_dir))
     checks.extend(await _check_sova_config(project_dir))
     checks.extend(_check_install_completeness(project_dir))
@@ -70,12 +71,31 @@ async def _check_git() -> list[_Check]:
     return [("git", False, "not found -- install git", True)]
 
 
+async def _check_git_identity(project_dir: Path) -> list[_Check]:
+    """Check git user.name and user.email are configured."""
+    identity = await check_git_identity(cwd=project_dir)
+    checks: list[_Check] = []
+    if identity.valid:
+        checks.append(("git identity", True, f"{identity.name} <{identity.email}>", True))
+    else:
+        missing = ", ".join(identity.missing_fields)
+        checks.append(
+            (
+                "git identity",
+                False,
+                f"missing {missing}. Set with: git config user.name / user.email",
+                True,
+            )
+        )
+    return checks
+
+
 async def _check_gh_cli() -> list[_Check]:
     """Check GitHub CLI availability, version, and authentication."""
     checks: list[_Check] = []
     gh_path = shutil.which("gh")
     if not gh_path:
-        checks.append(("gh CLI", False, "not found -- install: https://cli.github.com/", True))
+        checks.append(("gh CLI", False, "not found. Install: https://cli.github.com/", True))
         checks.append(("gh authenticated", False, "gh CLI not installed", True))
         return checks
 

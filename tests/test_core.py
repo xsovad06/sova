@@ -685,6 +685,14 @@ class TestWorkflowEngine:
 # ---------------------------------------------------------------------------
 
 
+def _mock_git_identity_ok():
+    """Return a patch context manager that mocks check_git_identity as valid."""
+    from sova.utils.shell import GitIdentityResult
+
+    valid = GitIdentityResult(name="Test User", email="test@example.com")
+    return patch("sova.core.steps.sync.check_git_identity", new_callable=AsyncMock, return_value=valid)
+
+
 class TestSyncStep:
     async def test_execute_syncs_branch(self) -> None:
         from sova.core.steps.sync import SyncStep
@@ -692,12 +700,45 @@ class TestSyncStep:
         ctx = _make_ctx()
         step = SyncStep()
 
-        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+        with (
+            _mock_git_identity_ok(),
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
             mock_ops.sync_branch = AsyncMock()
             result = await step.execute(ctx)
 
         assert result.success
         mock_ops.sync_branch.assert_awaited_once_with("main", cwd=Path("/tmp/test"))
+
+    async def test_fails_when_git_identity_missing(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.shell import GitIdentityResult
+
+        ctx = _make_ctx()
+        step = SyncStep()
+        missing_identity = GitIdentityResult(name="", email="")
+
+        with patch("sova.core.steps.sync.check_git_identity", new_callable=AsyncMock, return_value=missing_identity):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "user.name" in result.error
+        assert "user.email" in result.error
+
+    async def test_fails_when_git_name_only_missing(self) -> None:
+        from sova.core.steps.sync import SyncStep
+        from sova.utils.shell import GitIdentityResult
+
+        ctx = _make_ctx()
+        step = SyncStep()
+        partial = GitIdentityResult(name="", email="test@example.com")
+
+        with patch("sova.core.steps.sync.check_git_identity", new_callable=AsyncMock, return_value=partial):
+            result = await step.execute(ctx)
+
+        assert not result.success
+        assert "user.name" in result.error
+        assert result.error.startswith("Missing git config: user.name.")
 
 
 class TestAssessStep:
@@ -4411,7 +4452,10 @@ class TestSyncStepTaskFetch:
         assert ctx.task is None
 
         step = SyncStep()
-        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+        with (
+            _mock_git_identity_ok(),
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
             mock_ops.sync_branch = AsyncMock()
             result = await step.execute(ctx)
 
@@ -4427,7 +4471,10 @@ class TestSyncStepTaskFetch:
         ctx = _make_ctx(adapter=adapter, task=existing_task)
 
         step = SyncStep()
-        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+        with (
+            _mock_git_identity_ok(),
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
             mock_ops.sync_branch = AsyncMock()
             result = await step.execute(ctx)
 
@@ -4443,7 +4490,10 @@ class TestSyncStepTaskFetch:
         ctx = _make_ctx(adapter=adapter)
 
         step = SyncStep()
-        with patch("sova.core.steps.sync.git_ops") as mock_ops:
+        with (
+            _mock_git_identity_ok(),
+            patch("sova.core.steps.sync.git_ops") as mock_ops,
+        ):
             mock_ops.sync_branch = AsyncMock()
             result = await step.execute(ctx)
 

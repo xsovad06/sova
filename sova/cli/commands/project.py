@@ -17,8 +17,10 @@ from rich.console import Console
 from sova.adapters import create_adapter
 from sova.config.loader import load_config
 from sova.dashboard.services.setup_service import DEFAULT_PHASE_TITLES, create_starter_milestones
-from sova.utils.shell import run
+from sova.utils.logging import get_logger
+from sova.utils.shell import check_git_identity, run
 
+log = get_logger(component="cli.project")
 console = Console(stderr=True)
 
 
@@ -52,6 +54,18 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
         await _configure_git_hooks(project_dir)
     except Exception as exc:
         console.print(f"[yellow]Warning: git hooks configuration failed: {exc}[/yellow]")
+
+    # Git identity check (non-fatal warning)
+    try:
+        identity = await check_git_identity(cwd=project_dir)
+        if not identity.valid:
+            missing = ", ".join(identity.missing_fields)
+            console.print(
+                f"[yellow]Warning: git identity incomplete (missing {missing}). "
+                f"Agents need this to commit. Set with: git config user.name / user.email[/yellow]"
+            )
+    except Exception:
+        log.debug("install.git_identity_check_failed", exc_info=True)
 
     # Stage 3: Database
     failed_stages: list[str] = []
