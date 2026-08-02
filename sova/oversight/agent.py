@@ -229,6 +229,7 @@ class OversightAgent:
                 log.warning(
                     "oversight.actions.triage_timeout",
                     issue=finding.github_issue_number,
+                    exc_info=True,
                 )
             except Exception:
                 log.warning(
