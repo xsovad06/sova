@@ -6,10 +6,10 @@
 <!-- Filters -->
 <div class="flex items-center gap-3 mb-4 flex-wrap">
   <div class="flex items-center gap-1">
-    <button onclick="setLevel('')" id="lvl-all" class="px-2.5 py-1 rounded text-xs bg-accent/20 text-accent" data-tooltip="Show all log levels" data-tooltip-pos="bottom">ALL</button>
-    <button onclick="setLevel('INFO')" id="lvl-info" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" data-tooltip="Show info messages only" data-tooltip-pos="bottom">INFO</button>
-    <button onclick="setLevel('WARNING')" id="lvl-warn" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" data-tooltip="Show warnings only" data-tooltip-pos="bottom">WARN</button>
-    <button onclick="setLevel('ERROR')" id="lvl-error" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" data-tooltip="Show errors only" data-tooltip-pos="bottom">ERROR</button>
+    <button type="button" onclick="setLevel('')" id="lvl-all" class="px-2.5 py-1 rounded text-xs bg-accent/20 text-accent" aria-label="Show all log levels" data-tooltip="Show all log levels" data-tooltip-pos="bottom">ALL</button>
+    <button type="button" onclick="setLevel('INFO')" id="lvl-info" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" aria-label="Show info messages only" data-tooltip="Show info messages only" data-tooltip-pos="bottom">INFO</button>
+    <button type="button" onclick="setLevel('WARNING')" id="lvl-warn" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" aria-label="Show warnings only" data-tooltip="Show warnings only" data-tooltip-pos="bottom">WARN</button>
+    <button type="button" onclick="setLevel('ERROR')" id="lvl-error" class="px-2.5 py-1 rounded text-xs bg-surface-card text-gray-400 hover:bg-surface-hover" aria-label="Show errors only" data-tooltip="Show errors only" data-tooltip-pos="bottom">ERROR</button>
   </div>
   <select id="component-filter" onchange="loadLogs()" class="bg-surface text-sm text-gray-300 border border-gray-700/50 rounded px-2 py-1">
     <option value="">All components</option>

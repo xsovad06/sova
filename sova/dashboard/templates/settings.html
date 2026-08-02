@@ -64,7 +64,8 @@ function formatValue(val, type, key) {
     return '<span id="' + uid + '-masked" class="text-gray-300 text-xs font-mono">' + masked + '</span>' +
       '<span id="' + uid + '-plain" class="text-gray-300 text-xs font-mono" style="display:none">' + escapeHtml(String(val)) + '</span>' +
       '<button onclick="event.stopPropagation(); toggleSecret(\'' + uid + '\')" ' +
-        'class="text-xs text-gray-600 hover:text-gray-300 ml-2">' +
+        'class="text-xs text-gray-600 hover:text-gray-300 ml-2" ' +
+        'aria-label="Show secret" id="' + uid + '-btn">' +
         '<span id="' + uid + '-toggle">show</span></button>';
   }
   if (type === 'number') {
@@ -77,11 +78,13 @@ function toggleSecret(uid) {
   var masked = document.getElementById(uid + '-masked');
   var plain = document.getElementById(uid + '-plain');
   var toggle = document.getElementById(uid + '-toggle');
+  var btn = document.getElementById(uid + '-btn');
   if (!masked || !plain || !toggle) return;
   var showing = plain.style.display !== 'none';
   masked.style.display = showing ? '' : 'none';
   plain.style.display = showing ? 'none' : '';
   toggle.textContent = showing ? 'show' : 'hide';
+  if (btn) btn.setAttribute('aria-label', showing ? 'Show secret' : 'Hide secret');
 }
 
 function renderSettingRow(s) {
@@ -119,15 +122,18 @@ function renderSettingRow(s) {
 function toggleGroup(groupId) {
   var body = document.getElementById('group-body-' + groupId);
   var chevron = document.getElementById('group-chevron-' + groupId);
+  var toggle = document.getElementById('group-toggle-' + groupId);
   if (!body) return;
 
   var isOpen = body.style.maxHeight && body.style.maxHeight !== '0px';
   if (isOpen) {
     body.style.maxHeight = '0px';
     chevron.style.transform = 'rotate(-90deg)';
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
   } else {
     body.style.maxHeight = body.scrollHeight + 'px';
     chevron.style.transform = 'rotate(0deg)';
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
   }
 }
 
@@ -159,8 +165,11 @@ async function loadConfig() {
       var count = group.settings.length;
 
       return '<div class="sova-card sova-settings-group">' +
-        '<button onclick="toggleGroup(\'' + group.id + '\')" ' +
-          'class="w-full sova-card-header cursor-pointer hover:bg-surface-hover/30 transition-colors">' +
+        '<button id="group-toggle-' + group.id + '" onclick="toggleGroup(\'' + group.id + '\')" ' +
+          'class="w-full sova-card-header cursor-pointer hover:bg-surface-hover/30 transition-colors" ' +
+          'aria-label="Toggle ' + escapeHtml(group.label) + ' settings" ' +
+          'aria-expanded="false" ' +
+          'aria-controls="group-body-' + group.id + '">' +
           '<div class="flex items-center gap-2">' +
             '<svg id="group-chevron-' + group.id + '" class="w-4 h-4 text-gray-500 transition-transform duration-200" ' +
               'fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">' +
@@ -242,6 +251,8 @@ async function loadConfig() {
       }
       var chevron = document.getElementById('group-chevron-' + id);
       if (chevron) chevron.style.transform = 'rotate(0deg)';
+      var toggle = document.getElementById('group-toggle-' + id);
+      if (toggle) toggle.setAttribute('aria-expanded', 'true');
     });
 
     // Load invariants, personas, installation status, and labels into their containers

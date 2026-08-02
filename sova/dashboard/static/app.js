@@ -557,14 +557,17 @@ function _feedAddEvent(event) {
 
 function _updateFeedBadge() {
   var badge = document.getElementById('feed-badge');
+  var toggle = document.getElementById('feed-toggle');
   if (!badge) return;
   if (_feedUnread > 0) {
     badge.textContent = _feedUnread > 9 ? '9+' : String(_feedUnread);
     badge.classList.remove('hidden');
     badge.classList.add('flex');
+    if (toggle) toggle.setAttribute('aria-label', 'Activity Feed, ' + _feedUnread + ' unread');
   } else {
     badge.classList.add('hidden');
     badge.classList.remove('flex');
+    if (toggle) toggle.setAttribute('aria-label', 'Activity Feed');
   }
 }
 
@@ -609,6 +612,7 @@ function _renderFeedList() {
 function toggleFeedPanel() {
   var panel = document.getElementById('feed-panel');
   var main = document.getElementById('main-content');
+  var toggle = document.getElementById('feed-toggle');
   if (!panel) return;
 
   _feedPanelOpen = !_feedPanelOpen;
@@ -616,12 +620,14 @@ function toggleFeedPanel() {
   if (_feedPanelOpen) {
     panel.classList.remove('hidden');
     if (main) main.classList.add('feed-panel-push');
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
     _feedUnread = 0;
     _updateFeedBadge();
     _renderFeedList();
   } else {
     panel.classList.add('hidden');
     if (main) main.classList.remove('feed-panel-push');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
   }
 }
 

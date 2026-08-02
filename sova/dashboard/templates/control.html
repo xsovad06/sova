@@ -11,7 +11,8 @@
   </div>
   <span id="status-pid" class="text-xs text-gray-500"></span>
   <div class="ml-auto flex items-center gap-2">
-    <button id="stop-btn" onclick="stopAgent()" class="hidden text-xs px-3 py-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors"
+    <button type="button" id="stop-btn" onclick="stopAgent()" class="hidden text-xs px-3 py-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors"
+      aria-label="Send SIGTERM to running agent"
       data-tooltip="Send SIGTERM to running agent">
       Stop Agent
     </button>
@@ -29,7 +30,7 @@
       <div class="flex items-center gap-2">
         <span id="handoff-issue" class="text-xs px-2 py-0.5 rounded bg-accent-purple/20 text-accent-purple"></span>
         <span id="handoff-pr" class="text-xs px-2 py-0.5 rounded bg-accent-lavender/20 text-accent-lavender"></span>
-        <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss handoff">
+        <button type="button" onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Dismiss handoff" data-tooltip="Dismiss handoff">
           Dismiss
         </button>
       </div>
@@ -37,7 +38,7 @@
     <div class="px-4 py-3 border-b border-gray-700/50">
       <p id="handoff-summary" class="text-sm text-gray-300"></p>
       <div id="handoff-details-wrap" class="mt-2 hidden">
-        <button onclick="toggleHandoffDetails()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+        <button type="button" onclick="toggleHandoffDetails()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">
           Show details
         </button>
         <div id="handoff-details" class="hidden mt-2 text-xs bg-surface rounded p-3 border border-gray-700/50 font-mono max-h-48 overflow-y-auto">
@@ -59,7 +60,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-green"></span>
         <h3 class="text-sm font-medium text-accent-green">Workflow Complete</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss completion">
+      <button type="button" onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Dismiss completion" data-tooltip="Dismiss completion">
         Dismiss
       </button>
     </div>
@@ -78,7 +79,7 @@
         <span class="w-2 h-2 rounded-full bg-accent-red"></span>
         <h3 class="text-sm font-medium text-accent-red">Workflow Failed</h3>
       </div>
-      <button onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss failure">
+      <button type="button" onclick="clearHandoff()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Dismiss failure" data-tooltip="Dismiss failure">
         Dismiss
       </button>
     </div>
@@ -100,7 +101,7 @@
       </div>
       <div class="flex items-center gap-3">
         <span id="complete-cost" class="text-xs text-gray-500"></span>
-        <button onclick="dismissComplete()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Dismiss">Dismiss</button>
+        <button type="button" onclick="dismissComplete()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Dismiss" data-tooltip="Dismiss">Dismiss</button>
       </div>
     </div>
     <div class="px-4 py-3 border-t border-gray-700/50">
@@ -113,7 +114,7 @@
 <div id="interrupted-banner" class="hidden bg-yellow-900/20 border border-yellow-600/30 rounded-lg mb-6 p-4">
   <div class="flex items-center justify-between mb-2">
     <h3 class="text-sm font-medium text-yellow-400">Interrupted Runs</h3>
-    <button onclick="dismissInterrupted()" class="text-xs text-gray-500 hover:text-gray-300">Dismiss</button>
+    <button type="button" onclick="dismissInterrupted()" class="text-xs text-gray-500 hover:text-gray-300">Dismiss</button>
   </div>
   <p class="text-xs text-gray-400 mb-3">These agent runs were interrupted when the dashboard was restarted.</p>
   <div id="interrupted-list" class="space-y-2"></div>
@@ -136,7 +137,7 @@
     <label class="flex items-center gap-1 text-xs text-gray-400">
       <input type="checkbox" id="start-force"> --force
     </label>
-    <button id="start-btn" onclick="startAgent()" class="text-xs px-4 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
+    <button type="button" id="start-btn" onclick="startAgent()" class="text-xs px-4 py-1.5 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
       Start
     </button>
   </div>
@@ -148,7 +149,7 @@
     <h3 class="text-sm font-medium text-gray-400">Agent Output</h3>
     <div class="flex items-center gap-3">
       <span class="text-xs text-gray-600" id="output-count"></span>
-      <button onclick="clearOutput()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" data-tooltip="Clear output display">Clear</button>
+      <button type="button" onclick="clearOutput()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Clear output display" data-tooltip="Clear output display">Clear</button>
     </div>
   </div>
   <div class="p-4 max-h-[600px] overflow-y-auto text-sm leading-relaxed" id="agent-output">
@@ -367,8 +368,9 @@ function renderActionButtons(actions, targetEl, variant) {
   targetEl.innerHTML = actions.map(function(action) {
     var style = actionStyles[action.style] || actionStyles.neutral;
     if (variant === 'full') {
-      return '<button onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
+      return '<button type="button" onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
         'class="flex flex-col items-start px-4 py-3 rounded-lg transition-colors ' + style.btn + ' min-w-[140px]" ' +
+        'aria-label="' + escapeHtml(action.description) + '" ' +
         'data-tooltip="' + escapeHtml(action.description) + '">' +
         '<div class="flex items-center gap-2 mb-1">' +
         '<span class="w-1.5 h-1.5 rounded-full ' + style.dot + '"></span>' +
@@ -377,8 +379,9 @@ function renderActionButtons(actions, targetEl, variant) {
         '<span class="text-xs opacity-70 text-left">' + escapeHtml(action.description) + '</span>' +
         '</button>';
     }
-    return '<button onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
+    return '<button type="button" onclick="executeHandoffAction(\'' + escapeJsStr(action.id) + '\')" ' +
       'class="px-3 py-1.5 rounded text-xs transition-colors ' + style.btn + '" ' +
+      'aria-label="' + escapeHtml(action.description) + '" ' +
       'data-tooltip="' + escapeHtml(action.description) + '">' +
       escapeHtml(action.label) + '</button>';
   }).join('');
@@ -524,7 +527,7 @@ async function checkInterrupted() {
       div.className = 'flex items-center justify-between bg-surface rounded px-3 py-2 border border-gray-700/30';
       div.innerHTML = `
         <span class="text-sm text-gray-300">${issueOrPrLink(issue, run.pr_number)}${role} <span class="text-xs text-gray-500">${started}</span></span>
-        <button onclick="restartRun('${safeIssue}', '${safeRole}')"
+        <button type="button" onclick="restartRun('${safeIssue}', '${safeRole}')"
                 class="text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors">
           Restart
         </button>

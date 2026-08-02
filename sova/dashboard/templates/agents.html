@@ -5,6 +5,7 @@
   <h2 class="text-2xl font-semibold">Agents</h2>
   <button type="button" onclick="startPlanner()" id="run-planner-btn"
     class="px-3 py-1.5 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors"
+    aria-label="Analyze project and propose new tasks"
     data-tooltip="Analyze project and propose new tasks" data-tooltip-pos="left">
     Run Planner
   </button>
@@ -79,7 +80,7 @@
     </div>
     <div class="flex items-center gap-2">
       <span id="cr-quota-status" class="text-xs"></span>
-      <button onclick="_syncCrQuota()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Force sync from GitHub now (auto-syncs every 2 minutes)">
+      <button type="button" onclick="_syncCrQuota()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Force sync from GitHub now (auto-syncs every 2 minutes)">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
       </button>
     </div>
@@ -116,11 +117,11 @@
 
 <!-- View Toggle -->
 <div class="flex items-center gap-1 mb-4">
-  <button onclick="switchAgentView('list')" id="view-list"
+  <button type="button" onclick="switchAgentView('list')" id="view-list"
     class="px-3 py-1.5 text-xs font-medium rounded-l border border-gray-700 transition-colors bg-surface-hover text-white">
     List
   </button>
-  <button onclick="switchAgentView('kanban')" id="view-kanban"
+  <button type="button" onclick="switchAgentView('kanban')" id="view-kanban"
     class="px-3 py-1.5 text-xs font-medium rounded-r border border-gray-700 transition-colors bg-surface text-gray-500 hover:text-gray-300">
     Pipeline
   </button>
@@ -145,7 +146,7 @@
 <div id="log-viewer" class="hidden bg-surface-card rounded-lg border border-gray-700/50 overflow-hidden mb-6">
   <div class="flex items-center border-b border-gray-700/50">
     <div id="log-tabs" class="flex flex-1 overflow-x-auto"></div>
-    <button onclick="closeLogViewer()" class="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors" data-tooltip="Close log viewer">Close</button>
+    <button type="button" onclick="closeLogViewer()" class="px-3 py-2 text-gray-500 hover:text-gray-300 text-xs transition-colors" aria-label="Close log viewer" data-tooltip="Close log viewer">Close</button>
   </div>
   <div id="log-content" class="p-4 font-mono text-xs text-gray-300 max-h-[500px] overflow-y-auto whitespace-pre-wrap"></div>
 </div>
@@ -153,13 +154,15 @@
 <!-- History Section -->
 <div class="border-t border-gray-700/30 pt-6">
   <div class="flex items-center gap-1 mb-4 border-b border-gray-700/50">
-    <button onclick="switchTab('history')" id="tab-history"
+    <button type="button" onclick="switchTab('history')" id="tab-history"
       class="px-4 py-2.5 text-sm transition-colors border-b-2 border-accent text-white"
+      aria-label="Completed run history"
       data-tooltip="Completed run history" data-tooltip-pos="bottom">
       History
     </button>
-    <button onclick="switchTab('failed')" id="tab-failed"
+    <button type="button" onclick="switchTab('failed')" id="tab-failed"
       class="px-4 py-2.5 text-sm transition-colors border-b-2 border-transparent text-gray-500 hover:text-gray-300"
+      aria-label="Failed runs only"
       data-tooltip="Failed runs only" data-tooltip-pos="bottom">
       Failed <span id="tab-failed-count" class="text-xs text-gray-500 ml-1"></span>
     </button>
@@ -176,9 +179,9 @@
         <option value="auto">Auto</option>
       </select>
       <div id="history-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
-        <button onclick="historyPrev()" id="history-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
+        <button type="button" onclick="historyPrev()" id="history-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
         <span id="history-page-info"></span>
-        <button onclick="historyNext()" id="history-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
+        <button type="button" onclick="historyNext()" id="history-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
       </div>
     </div>
     <div id="history-table"></div>
@@ -187,9 +190,9 @@
   <div id="panel-failed" class="hidden">
     <div class="flex items-center gap-3 mb-4">
       <div id="failed-pager" class="hidden flex items-center gap-2 ml-auto text-xs text-gray-500">
-        <button onclick="failedPrev()" id="failed-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
+        <button type="button" onclick="failedPrev()" id="failed-prev" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>&lt; Prev</button>
         <span id="failed-page-info"></span>
-        <button onclick="failedNext()" id="failed-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
+        <button type="button" onclick="failedNext()" id="failed-next" class="px-2 py-1 rounded hover:bg-surface-hover disabled:opacity-30 transition-colors" disabled>Next &gt;</button>
       </div>
     </div>
     <div id="failed-table"></div>
@@ -504,7 +507,7 @@ function _renderGateBlockedBtn(gateResult, label, cssClass) {
     .filter(function(g) { return g.enabled && !g.passed; })
     .map(function(g) { return g.reason || g.name; });
   var tooltip = 'Blocked: ' + reasons.join('; ');
-  return '<button disabled class="' + cssClass + '" data-tooltip="' + escapeHtml(tooltip) + '">' +
+  return '<button disabled class="' + cssClass + '" aria-label="' + escapeHtml(tooltip) + '" data-tooltip="' + escapeHtml(tooltip) + '">' +
     escapeHtml(label) + '</button>';
 }
 
@@ -693,8 +696,11 @@ function renderTaskCard(item) {
       '<div class="flex justify-end">' + stateTag(item.state, item.state_label, item.state_color) + '</div>' +
       '<div class="flex-1 flex justify-end gap-1.5">' + actionBtn + '</div>' +
     '</div>' +
-    '<button onclick="toggleCardMenu(event, \'' + escapeJsStr(menuIssue) + '\')" ' +
+    '<button id="card-menu-toggle-' + menuIssue + '" onclick="toggleCardMenu(event, \'' + escapeJsStr(menuIssue) + '\')" ' +
       'class="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-400 transition-all p-0.5 shrink-0 w-4" ' +
+      'aria-label="More options" ' +
+      'aria-expanded="false" ' +
+      'aria-controls="card-menu-' + menuIssue + '" ' +
       'data-tooltip="More options">' +
       '<svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="16" r="1.5"/></svg>' +
     '</button>' +
@@ -1029,25 +1035,34 @@ async function submitFlagWrong(event, issueKey) {
 
 // --- End LLM Suggestion Experiment ---
 
+function _closeAllCardMenus() {
+  document.querySelectorAll('[id^="card-menu-"]:not([id^="card-menu-toggle-"])').forEach(function(m) { m.classList.add('hidden'); });
+  document.querySelectorAll('[id^="card-menu-toggle-"]').forEach(function(t) { t.setAttribute('aria-expanded', 'false'); });
+  _cardMenuOpen = false;
+}
+
 function toggleCardMenu(event, issue) {
   event.stopPropagation();
   var menu = document.getElementById('card-menu-' + issue);
+  var toggle = document.getElementById('card-menu-toggle-' + issue);
   if (!menu) return;
   var wasHidden = menu.classList.contains('hidden');
-  document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
-  if (wasHidden) menu.classList.remove('hidden');
-  _cardMenuOpen = wasHidden;
+  _closeAllCardMenus();
+  if (wasHidden) {
+    menu.classList.remove('hidden');
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    _cardMenuOpen = true;
+  }
 }
 
 document.addEventListener('click', function() {
-  document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
-  _cardMenuOpen = false;
+  if (!_cardMenuOpen) return;
+  _closeAllCardMenus();
 });
 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && _cardMenuOpen) {
-    document.querySelectorAll('[id^="card-menu-"]').forEach(function(m) { m.classList.add('hidden'); });
-    _cardMenuOpen = false;
+    _closeAllCardMenus();
   }
 });
 
@@ -1266,11 +1281,13 @@ function renderPrActionsPanel(pr, issueNumber) {
     if (needsReview) {
       actionsHtml += '<button onclick="runCommand(\'review-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
         'class="px-3 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30 transition-colors" ' +
+        'aria-label="Spawn reviewer agent to analyze this PR" ' +
         'data-tooltip="Spawn reviewer agent to analyze this PR">' +
         'Start Review</button>';
     } else if (changesRequested) {
       actionsHtml += '<button onclick="runCommand(\'address-pr\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
         'class="px-3 py-2 rounded text-sm bg-accent-yellow/20 text-accent-yellow hover:bg-accent-yellow/30 border border-accent-yellow/30 transition-colors" ' +
+        'aria-label="Send agent to address review feedback" ' +
         'data-tooltip="Send agent to address review feedback">' +
         'Address Review</button>';
     }
@@ -1279,12 +1296,14 @@ function renderPrActionsPanel(pr, issueNumber) {
       'class="px-3 py-2 rounded text-sm ' + (readyToIntegrate
         ? 'font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 border border-accent-green/30'
         : 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/30') + ' transition-colors" ' +
+      'aria-label="Rebase, push, merge, and clean up" ' +
       'data-tooltip="Rebase, push, merge, and clean up">' +
       'Integrate PR</button>';
 
   } else if (pr.state === 'MERGED') {
     actionsHtml += '<button onclick="runCommand(\'after-merge\', {issue: \'' + issueNumber + '\', pr: ' + pr.pr_number + '})" ' +
       'class="px-3 py-2 rounded text-sm bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 border border-accent-purple/30 transition-colors" ' +
+      'aria-label="Run post-merge cleanup tasks" ' +
       'data-tooltip="Run post-merge cleanup tasks">' +
       'Post-Merge Cleanup</button>';
   }
@@ -1429,11 +1448,11 @@ function renderAgentCard(agent) {
     '<div class="mb-3" data-pipeline-container>' + pipeline + '</div>' +
     '<div id="handoff-inline-' + agent.run_id + '"></div>' +
     '<div class="flex items-center gap-2 mt-3">' +
-      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" data-tooltip="View agent output">' +
+      '<button onclick="event.stopPropagation(); viewLogs(' + agent.run_id + ', \'' + escapeHtml(agent.status) + '\')" class="px-3 py-1.5 rounded text-xs bg-surface-hover text-gray-300 hover:text-white transition-colors" aria-label="View agent output" data-tooltip="View agent output">' +
         (activeLogRunId === agent.run_id ? 'Viewing Logs' : 'View Logs') +
       '</button>' +
       (agent.source !== 'external'
-        ? '<button onclick="event.stopPropagation(); stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors" data-tooltip="Stop this agent">Stop</button>'
+        ? '<button onclick="event.stopPropagation(); stopAgent(' + agent.run_id + ')" class="px-3 py-1.5 rounded text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors" aria-label="Stop this agent" data-tooltip="Stop this agent">Stop</button>'
         : '') +
     '</div>' +
   '</div>';
@@ -1451,7 +1470,7 @@ function renderCompletedCard(agent) {
   var issueLabel = hasRef ? issueOrPrLink(agent.issue, agent.pr_number) : escapeHtml(formatRole(agent.role));
   var prBadge = (agent.issue && agent.pr_number) ? '<span class="text-xs">' + prLink(agent.pr_number) + '</span>' : '';
 
-  var rerunBtn = '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" data-tooltip="Re-run this task" ' +
+  var rerunBtn = '<button class="rerun-btn px-3 py-1.5 rounded text-xs bg-accent-yellow/10 text-accent-yellow hover:bg-accent-yellow/20 transition-colors" aria-label="Re-run this task" data-tooltip="Re-run this task" ' +
     'data-issue="' + escapeHtml(String(agent.issue)) + '" data-role="' + escapeHtml(agent.role || '') + '" data-pr="' + escapeHtml(String(parseInt(agent.pr_number, 10) || '')) + '">Re-run</button>';
 
   var isPlanner = agent.role === 'planner';
@@ -1540,6 +1559,7 @@ async function enhancePlannerCards(completed) {
             '</div>' +
             '<button onclick="event.stopPropagation(); _submitPlannerIssues(' + agent.run_id + ', \'' + escapeJsStr(handoffIssue) + '\')"' + createBtnDisabled +
               ' class="px-3 py-1.5 rounded text-xs border transition-colors ' + createBtnClass + '"' +
+              ' aria-label="Create selected issues on the tracker"' +
               ' data-tooltip="Create selected issues on the tracker">' +
               'Create Issues' +
             '</button>' +
@@ -2118,14 +2138,17 @@ function _isPrGroupCollapsed(groupId, defaultExpanded) {
 function togglePrGroup(groupId) {
   var content = document.getElementById('pr-group-' + groupId);
   var arrow = document.getElementById('pr-group-' + groupId + '-arrow');
+  var toggle = document.getElementById('pr-group-toggle-' + groupId);
   if (!content) return;
   var isHidden = content.classList.contains('hidden');
   if (isHidden) {
     content.classList.remove('hidden');
     if (arrow) arrow.style.transform = '';
+    if (toggle) toggle.setAttribute('aria-expanded', 'true');
   } else {
     content.classList.add('hidden');
     if (arrow) arrow.style.transform = 'rotate(-90deg)';
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
   }
   localStorage.setItem('sova-pr-group-' + groupId + '-collapsed', (!isHidden).toString());
 }
@@ -2142,9 +2165,13 @@ function renderPrGroups(grouped) {
     var collapsed = _isPrGroupCollapsed(group.id, group.defaultExpanded);
     var arrowStyle = collapsed ? ' style="transform: rotate(-90deg)"' : '';
     var contentHidden = collapsed ? ' hidden' : '';
+    var ariaExpanded = collapsed ? 'false' : 'true';
 
     html += '<div class="border-b border-gray-700/30 last:border-b-0">' +
-      '<button onclick="togglePrGroup(\'' + group.id + '\')" class="w-full flex items-center gap-2 px-4 py-2 hover:bg-surface-hover transition-colors text-left">' +
+      '<button id="pr-group-toggle-' + group.id + '" onclick="togglePrGroup(\'' + group.id + '\')" class="w-full flex items-center gap-2 px-4 py-2 hover:bg-surface-hover transition-colors text-left" ' +
+        'aria-label="Toggle ' + escapeHtml(group.label) + ' group" ' +
+        'aria-expanded="' + ariaExpanded + '" ' +
+        'aria-controls="pr-group-' + group.id + '">' +
         '<svg id="pr-group-' + group.id + '-arrow" class="w-3 h-3 text-gray-500 transition-transform shrink-0"' + arrowStyle + ' fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>' +
         '<span class="text-xs font-medium text-gray-400">' + escapeHtml(group.label) + '</span>' +
         '<span class="text-[10px] px-1.5 py-0.5 rounded-full ' + group.badgeClass + '">' + items.length + '</span>' +
