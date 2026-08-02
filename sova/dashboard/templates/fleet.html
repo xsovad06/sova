@@ -85,12 +85,51 @@
   </div>
 </div>
 
+<!-- Propose Issue Modal -->
+<div id="propose-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+  <div class="absolute inset-0 bg-black/60" onclick="closeProposalModal()"></div>
+  <div class="relative bg-surface-card rounded-lg border border-gray-700/50 w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700/50">
+      <h3 class="text-lg font-medium" id="propose-modal-title">Propose Issue</h3>
+      <button type="button" onclick="closeProposalModal()" class="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
+    </div>
+    <div id="propose-modal-body" class="px-6 py-4 overflow-y-auto flex-1">
+      <!-- Form state -->
+      <div id="propose-form">
+        <label for="propose-title" class="block text-xs text-gray-500 uppercase mb-1">Title</label>
+        <input type="text" id="propose-title"
+               class="w-full px-3 py-2 rounded bg-surface border border-gray-700/50 text-gray-200 text-sm mb-4 focus:outline-none focus:border-accent/50">
+
+        <label class="block text-xs text-gray-500 uppercase mb-1">Labels</label>
+        <div id="propose-labels" class="flex flex-wrap gap-2 mb-4"></div>
+
+        <label for="propose-body" class="block text-xs text-gray-500 uppercase mb-1">Body</label>
+        <textarea id="propose-body" rows="20"
+                  class="w-full px-3 py-2 rounded bg-surface border border-gray-700/50 text-gray-200 text-sm font-mono focus:outline-none focus:border-accent/50"></textarea>
+
+        <div id="propose-error" class="hidden mt-3 text-sm text-accent-red"></div>
+      </div>
+      <!-- Success state -->
+      <div id="propose-success" class="hidden text-center py-8">
+        <p class="text-sm text-gray-400 mb-2">Issue created successfully</p>
+        <a id="propose-issue-link" href="#" target="_blank" rel="noopener"
+           class="text-accent hover:underline text-sm"></a>
+      </div>
+    </div>
+    <div class="px-6 py-4 border-t border-gray-700/50 flex justify-end gap-3">
+      <button type="button" onclick="closeProposalModal()" id="propose-cancel-btn"
+              class="px-4 py-2 rounded text-sm text-gray-400 hover:text-gray-200 transition-colors">Cancel</button>
+      <button type="button" onclick="submitProposal()" id="propose-submit-btn"
+              class="px-4 py-2 rounded text-sm bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Create Issue</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const prefix = '{{ prefix|default("") }}';
 const apiBase = prefix ? `${prefix}/api` : '/api';
 const POLL_MS = 5 * 60 * 1000;
 let _lastFleetKey = null;
-
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -145,19 +184,27 @@ function renderFleet(data) {
       '<th class="text-left py-1 pr-4">Step</th>' +
       '<th class="text-right py-1 pr-4">Total</th>' +
       '<th class="text-right py-1 pr-4">Failures</th>' +
-      '<th class="text-right py-1">Rate</th>' +
+      '<th class="text-right py-1 pr-4">Rate</th>' +
+      '<th class="text-right py-1">Action</th>' +
       '</tr></thead><tbody>';
     for (const s of data.step_failure_stats) {
       const cc = rateColorClass(s.failure_rate);
-      html += `<tr class="border-t border-gray-700/30 cursor-pointer step-row" data-step="${esc(s.step_name)}">` +
+      html += `<tr class="border-t border-gray-700/30">` +
         `<td class="py-2 pr-4 text-gray-300">${esc(s.step_name)}</td>` +
         `<td class="py-2 pr-4 text-right text-gray-400">${s.total_count}</td>` +
         `<td class="py-2 pr-4 text-right text-gray-400">${s.failure_count}</td>` +
-        `<td class="py-2 text-right ${cc}">${fmtRate(s.failure_rate)}</td>` +
+        `<td class="py-2 pr-4 text-right ${cc}">${fmtRate(s.failure_rate)}</td>` +
+        `<td class="py-2 text-right">` +
+          `<button type="button" data-step="${esc(s.step_name)}" ` +
+            `class="propose-btn px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 transition-colors">Propose issue</button>` +
+        `</td>` +
         '</tr>';
     }
     html += '</tbody></table>';
     sfEl.innerHTML = html;
+    sfEl.querySelectorAll('.propose-btn').forEach(btn => {
+      btn.addEventListener('click', () => openProposeDraft(btn.dataset.step));
+    });
   }
 
   // Error Clusters
@@ -263,6 +310,106 @@ async function loadFleet(force) {
     errorBanner.classList.remove('hidden');
   }
 }
+
+async function openProposeDraft(stepName) {
+  const modal = document.getElementById('propose-modal');
+  const form = document.getElementById('propose-form');
+  const success = document.getElementById('propose-success');
+  const errorEl = document.getElementById('propose-error');
+  const submitBtn = document.getElementById('propose-submit-btn');
+
+  form.classList.remove('hidden');
+  success.classList.add('hidden');
+  errorEl.classList.add('hidden');
+  submitBtn.classList.remove('hidden');
+  document.getElementById('propose-title').value = '';
+  document.getElementById('propose-body').value = '';
+  document.getElementById('propose-labels').innerHTML = '';
+  modal.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`${apiBase}/fleet-insights/issue-draft?step_name=${encodeURIComponent(stepName)}`);
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(detail.detail || `HTTP ${res.status}`);
+    }
+    const draft = await res.json();
+    document.getElementById('propose-title').value = draft.title;
+    document.getElementById('propose-body').value = draft.body;
+
+    const labelsEl = document.getElementById('propose-labels');
+    labelsEl.innerHTML = draft.labels.map(l =>
+      `<span class="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent">${esc(l)}</span>`
+    ).join('');
+  } catch (err) {
+    errorEl.textContent = 'Failed to load draft: ' + err.message;
+    errorEl.classList.remove('hidden');
+  }
+}
+
+async function submitProposal() {
+  const errorEl = document.getElementById('propose-error');
+  const submitBtn = document.getElementById('propose-submit-btn');
+  errorEl.classList.add('hidden');
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Creating...';
+
+  const title = document.getElementById('propose-title').value.trim();
+  const body = document.getElementById('propose-body').value.trim();
+  const labelEls = document.querySelectorAll('#propose-labels span');
+  const labels = Array.from(labelEls).map(el => el.textContent);
+
+  if (!title) {
+    errorEl.textContent = 'Title is required';
+    errorEl.classList.remove('hidden');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Create Issue';
+    return;
+  }
+
+  try {
+    const res = await fetch(`${apiBase}/fleet-insights/propose-issue`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title, body, labels}),
+    });
+    const result = await res.json();
+
+    if (!result.ok) {
+      errorEl.textContent = result.error || 'Unknown error';
+      errorEl.classList.remove('hidden');
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Create Issue';
+      return;
+    }
+
+    document.getElementById('propose-form').classList.add('hidden');
+    const successEl = document.getElementById('propose-success');
+    const link = document.getElementById('propose-issue-link');
+    link.href = result.issue_url;
+    link.textContent = result.issue_url;
+    successEl.classList.remove('hidden');
+    submitBtn.classList.add('hidden');
+  } catch (err) {
+    errorEl.textContent = 'Request failed: ' + err.message;
+    errorEl.classList.remove('hidden');
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Create Issue';
+  }
+}
+
+function closeProposalModal() {
+  document.getElementById('propose-modal').classList.add('hidden');
+  const submitBtn = document.getElementById('propose-submit-btn');
+  submitBtn.disabled = false;
+  submitBtn.textContent = 'Create Issue';
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('propose-modal').classList.contains('hidden')) {
+    closeProposalModal();
+  }
+});
 
 loadFleet(false);
 setInterval(() => loadFleet(false), POLL_MS);
