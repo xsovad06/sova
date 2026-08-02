@@ -37,7 +37,7 @@
         </div>
       </a>
       <!-- Activity feed toggle -->
-      <button type="button" id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" data-tooltip="Activity Feed">
+      <button type="button" id="feed-toggle" onclick="toggleFeedPanel()" class="notif-bell absolute top-4 right-3" aria-label="Activity Feed" aria-expanded="false" aria-controls="feed-panel" data-tooltip="Activity Feed">
         {{ icon("bell", "w-5 h-5 text-gray-500 hover:text-gray-300 transition-colors") }}
         <span id="feed-badge" class="hidden absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-accent-red text-xs text-white flex items-center justify-center font-bold leading-none">0</span>
       </button>
@@ -68,6 +68,7 @@
       ] %}
       {% for id, href, label, icon_name in nav_items %}
       <a href="{{ href }}"
+         aria-label="{{ label }}"
          data-tooltip="{{ label }}"
          class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
                 {{ 'bg-sidebar-active text-white' if page == id else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
@@ -79,6 +80,7 @@
       <div class="sidebar-divider border-t border-gray-700/30 my-2 mx-5"></div>
 
       <a href="/setup"
+         aria-label="Add Project"
          data-tooltip="Add Project"
          class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
                 {{ 'bg-sidebar-active text-white' if page == 'setup' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
@@ -86,6 +88,7 @@
         <span class="sidebar-label">Add Project</span>
       </a>
       <a href="{{ prefix }}/settings"
+         aria-label="Settings"
          data-tooltip="Settings"
          class="sidebar-nav-link flex items-center px-5 py-3 text-sm transition-colors
                 {{ 'bg-sidebar-active text-white' if page == 'settings' else 'text-gray-400 hover:bg-sidebar-hover hover:text-gray-200' }}">
@@ -106,10 +109,10 @@
   </nav>
 
   <!-- Activity feed panel (outside sidebar to avoid overflow clipping) -->
-  <aside id="feed-panel" class="feed-panel hidden">
+  <aside id="feed-panel" class="feed-panel hidden" role="region" aria-live="polite" aria-label="Activity Feed">
     <div class="feed-panel-header">
       <span class="text-xs font-medium text-gray-400 uppercase tracking-wide">Activity Feed</span>
-      <button type="button" onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Mark read</button>
+      <button type="button" onclick="clearFeedBadge()" class="text-xs text-gray-500 hover:text-gray-300 transition-colors" aria-label="Mark read">Mark read</button>
     </div>
     <div id="feed-list" class="feed-panel-body">
       <p class="text-xs text-gray-500 text-center py-6">No activity yet</p>

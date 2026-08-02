@@ -17,7 +17,7 @@
       class="bg-surface border border-gray-700/50 rounded px-3 py-1.5 text-sm text-gray-300 placeholder-gray-600 focus:outline-none focus:border-accent/50 w-56">
 
     <div id="filter-state-wrapper" class="relative">
-      <button onclick="toggleDropdown('filter-state-dropdown')"
+      <button type="button" onclick="toggleDropdown('filter-state-dropdown')"
         class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
         State <span id="filter-state-count" class="text-accent"></span>
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -26,7 +26,7 @@
     </div>
 
     <div id="filter-milestone-wrapper" class="relative">
-      <button onclick="toggleDropdown('filter-milestone-dropdown')"
+      <button type="button" onclick="toggleDropdown('filter-milestone-dropdown')"
         class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
         Milestone <span id="filter-milestone-count" class="text-accent"></span>
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -35,7 +35,7 @@
     </div>
 
     <div id="filter-label-wrapper" class="relative">
-      <button onclick="toggleDropdown('filter-label-dropdown')"
+      <button type="button" onclick="toggleDropdown('filter-label-dropdown')"
         class="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-surface border border-gray-700/50 text-gray-400 hover:text-gray-300 hover:border-gray-600 transition-colors">
         Label <span id="filter-label-count" class="text-accent"></span>
         <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
@@ -50,7 +50,7 @@
       </div>
     </div>
 
-    <button id="filter-clear-btn" onclick="clearAllFilters()" style="display:none"
+    <button type="button" id="filter-clear-btn" onclick="clearAllFilters()" style="display:none"
       class="px-3 py-1.5 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors">
       Clear filters
     </button>
@@ -67,18 +67,18 @@
     <div class="flex items-center gap-3">
       <span id="bulk-count" class="text-sm text-gray-300 font-medium"></span>
       <div class="w-px h-5 bg-gray-700"></div>
-      <button id="bulk-triage-btn" onclick="executeBulkAction('triage')"
+      <button type="button" id="bulk-triage-btn" onclick="executeBulkAction('triage')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled data-tooltip="Run triage on selected issues">Triage</button>
-      <button id="bulk-harden-btn" onclick="executeBulkAction('harden')"
+        disabled aria-label="Run triage on selected issues" data-tooltip="Run triage on selected issues">Triage</button>
+      <button type="button" id="bulk-harden-btn" onclick="executeBulkAction('harden')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled data-tooltip="Run spec hardening on selected issues">Harden</button>
-      <button id="bulk-run-btn" onclick="executeBulkAction('run')"
+        disabled aria-label="Run spec hardening on selected issues" data-tooltip="Run spec hardening on selected issues">Harden</button>
+      <button type="button" id="bulk-run-btn" onclick="executeBulkAction('run')"
         class="px-3 py-1.5 rounded text-xs font-medium bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-        disabled data-tooltip="Start agents for selected issues">Run</button>
+        disabled aria-label="Start agents for selected issues" data-tooltip="Start agents for selected issues">Run</button>
     </div>
     <div class="flex items-center gap-3">
-      <button onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors" data-tooltip="Clear selection">
+      <button type="button" onclick="deselectAll()" class="px-2 py-1 rounded text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-700/30 transition-colors" aria-label="Clear selection" data-tooltip="Clear selection">
         Deselect
       </button>
     </div>
@@ -209,6 +209,7 @@ function renderStartButton(item) {
     var prefix = window.SOVA_PROJECT_SLUG ? '/p/' + window.SOVA_PROJECT_SLUG : '';
     return '<a href="' + prefix + '/spec/' + escapeHtml(String(item.issue)) + '" ' +
       'class="px-3 py-1.5 rounded text-xs bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors inline-flex items-center gap-1" ' +
+      'aria-label="Review spec before development" ' +
       'data-tooltip="Review spec before development">' +
       '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>' +
       'View Spec</a>';
@@ -217,8 +218,9 @@ function renderStartButton(item) {
   var role = _STATE_ROLE_MAP[item.state] || 'developer';
   var label = item.last_run && item.last_run.status === 'failed' ? 'Retry' : 'Start';
   var tooltip = label === 'Retry' ? 'Retry this failed task' : 'Start ' + role + ' for this issue';
-  return '<button onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', \'' + role + '\', event)" ' +
+  return '<button type="button" onclick="startFromQueue(\'' + escapeJsStr(String(item.issue)) + '\', \'' + role + '\', event)" ' +
     'class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors" ' +
+    'aria-label="' + tooltip + '" ' +
     'data-tooltip="' + tooltip + '">' +
     label + '</button>';
 }
