@@ -87,7 +87,7 @@ class TestOversightAgent:
             return {"projects": [], "partial": False}
 
         async def _noop_analyze(snapshot, run_id):
-            return None
+            return [], None
 
         with (
             patch.object(agent, "_observe", side_effect=_noop_observe),
@@ -159,7 +159,7 @@ class TestOversightAgent:
             return {"projects": [], "partial": False}
 
         async def _noop_analyze(snapshot, run_id):
-            return None
+            return [], None
 
         # First cycle runs immediately, then sleep raises CancelledError
         with (
@@ -345,6 +345,377 @@ class TestOversightAgent:
         with patch("sova.db.session.get_session", side_effect=RuntimeError("DB gone")):
             # Should not raise
             await agent._record_run("test-uuid", 1, OversightRunStatus.DONE, 42)
+
+
+# ---------------------------------------------------------------------------
+# Action wiring tests
+# ---------------------------------------------------------------------------
+
+
+class TestOversightActionWiring:
+    @pytest.mark.asyncio
+    async def test_propose_issues_called_with_findings(self) -> None:
+        """When _analyze returns findings and no error, _propose_issues is called."""
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
+        propose_called = False
+
+        async def _mock_observe():
+            return {"projects": []}
+
+        async def _mock_analyze(snapshot, run_id):
+            return [finding], None
+
+        async def _mock_propose(findings):
+            nonlocal propose_called
+            propose_called = True
+            assert len(findings) == 1
+
+        async def _mock_record(*args, **kwargs):
+            pass
+
+        async def _fake_sleep(seconds):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_mock_analyze),
+            patch.object(agent, "_propose_issues", side_effect=_mock_propose),
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert propose_called is True
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_skipped_on_analysis_error(self) -> None:
+        """When _analyze returns an error, _propose_issues is NOT called."""
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
+        propose_called = False
+
+        async def _mock_observe():
+            return {"projects": []}
+
+        async def _mock_analyze(snapshot, run_id):
+            return [finding], "partial: parse failed"
+
+        async def _mock_propose(findings):
+            nonlocal propose_called
+            propose_called = True
+
+        async def _mock_record(*args, **kwargs):
+            pass
+
+        async def _fake_sleep(seconds):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_mock_analyze),
+            patch.object(agent, "_propose_issues", side_effect=_mock_propose),
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert propose_called is False
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_skipped_with_empty_findings(self) -> None:
+        """When _analyze returns no findings, _propose_issues is NOT called."""
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        propose_called = False
+
+        async def _mock_observe():
+            return {"projects": []}
+
+        async def _mock_analyze(snapshot, run_id):
+            return [], None
+
+        async def _mock_propose(findings):
+            nonlocal propose_called
+            propose_called = True
+
+        async def _mock_record(*args, **kwargs):
+            pass
+
+        async def _fake_sleep(seconds):
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(agent, "_observe", side_effect=_mock_observe),
+            patch.object(agent, "_analyze", side_effect=_mock_analyze),
+            patch.object(agent, "_propose_issues", side_effect=_mock_propose),
+            patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
+        ):
+            task = agent.start()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert propose_called is False
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_skips_jira_task_source(self) -> None:
+        """_propose_issues returns early when task_source.type is not github."""
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        from unittest.mock import MagicMock
+
+        from sova.config.models import TaskSourceConfig
+        from sova.db.models import OversightFinding
+
+        finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
+
+        mock_config = MagicMock()
+        mock_config.github_repo = "owner/repo"
+        mock_config.task_source = TaskSourceConfig(type="jira")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.adapters.create_adapter") as mock_create,
+            patch("sova.oversight.actions.propose_issues") as mock_propose,
+        ):
+            await agent._propose_issues([finding])
+
+        mock_create.assert_not_called()
+        mock_propose.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_happy_path(self) -> None:
+        """_propose_issues creates adapter, calls propose_issues, and triggers auto_triage."""
+        from unittest.mock import MagicMock
+
+        from sova.config.models import TaskSourceConfig
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1, auto_triage=True)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(
+            run_id="r",
+            title="t",
+            scope="global",
+            confidence=0.9,
+            github_issue_number=42,
+        )
+
+        mock_config = MagicMock()
+        mock_config.github_repo = "owner/repo"
+        mock_config.task_source = TaskSourceConfig(type="github")
+
+        mock_adapter = MagicMock()
+        triage_called = False
+
+        async def _mock_triage(findings):
+            nonlocal triage_called
+            triage_called = True
+
+        async def _mock_propose(*args, **kwargs):
+            return [finding]
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch("sova.config.registry.list_projects", return_value={}),
+            patch("sova.oversight.actions.propose_issues", side_effect=_mock_propose),
+            patch.object(agent, "_auto_triage", side_effect=_mock_triage),
+        ):
+            await agent._propose_issues([finding])
+
+        assert triage_called is True
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_skips_jira_projects(self) -> None:
+        """_propose_issues only creates adapters for GitHub-backed projects."""
+        from unittest.mock import MagicMock
+
+        from sova.config.models import TaskSourceConfig
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(
+            run_id="r",
+            title="t",
+            scope="project",
+            confidence=0.9,
+            project_slug="gh-proj",
+        )
+
+        sova_cfg = MagicMock()
+        sova_cfg.github_repo = "owner/sova"
+        sova_cfg.task_source = TaskSourceConfig(type="github")
+
+        gh_cfg = MagicMock()
+        gh_cfg.github_repo = "owner/gh-proj"
+        gh_cfg.task_source = TaskSourceConfig(type="github")
+
+        jira_cfg = MagicMock()
+        jira_cfg.github_repo = ""
+        jira_cfg.task_source = TaskSourceConfig(type="jira")
+
+        def _load(path=None):
+            if path is None:
+                return sova_cfg
+            if str(path) == "/projects/gh-proj":
+                return gh_cfg
+            return jira_cfg
+
+        adapters_created: list[str] = []
+        original_mock = MagicMock()
+
+        def _create(cfg_arg):
+            adapters_created.append(cfg_arg.github_repo)
+            return original_mock
+
+        async def _mock_propose(*args, **kwargs):
+            return []
+
+        with (
+            patch("sova.config.loader.load_config", side_effect=_load),
+            patch("sova.adapters.create_adapter", side_effect=_create),
+            patch(
+                "sova.config.registry.list_projects",
+                return_value={"gh-proj": "/projects/gh-proj", "jira-proj": "/projects/jira-proj"},
+            ),
+            patch("sova.oversight.actions.propose_issues", side_effect=_mock_propose) as mock_propose,
+        ):
+            await agent._propose_issues([finding])
+
+        # SOVA adapter + gh-proj adapter created, but not jira-proj
+        assert "owner/sova" in adapters_created
+        assert "owner/gh-proj" in adapters_created
+        assert len(adapters_created) == 2
+
+        # propose_issues was called with project_adapters containing only gh-proj
+        call_kwargs = mock_propose.call_args
+        project_adapters = call_kwargs[0][3] if len(call_kwargs[0]) > 3 else call_kwargs[1].get("project_adapters", {})
+        assert "gh-proj" in project_adapters
+        assert "jira-proj" not in project_adapters
+
+    @pytest.mark.asyncio
+    async def test_auto_triage_runs_subprocess(self) -> None:
+        """_auto_triage spawns sova triage for global findings with issue numbers."""
+        from unittest.mock import AsyncMock
+
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(
+            run_id="r",
+            title="t",
+            scope="global",
+            confidence=0.9,
+            github_issue_number=42,
+        )
+
+        mock_proc = AsyncMock()
+        mock_proc.wait = AsyncMock(return_value=None)
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await agent._auto_triage([finding])
+
+        mock_exec.assert_awaited_once()
+        args = mock_exec.call_args[0]
+        assert "sova" in args
+        assert "triage" in args
+        assert "42" in args
+
+    @pytest.mark.asyncio
+    async def test_auto_triage_skips_non_global(self) -> None:
+        """_auto_triage skips local findings."""
+
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(
+            run_id="r",
+            title="t",
+            scope="local",
+            confidence=0.9,
+            github_issue_number=42,
+        )
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            await agent._auto_triage([finding])
+
+        mock_exec.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_triage_timeout_kills_process(self) -> None:
+        """_auto_triage kills the process on timeout."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(
+            run_id="r",
+            title="t",
+            scope="global",
+            confidence=0.9,
+            github_issue_number=42,
+        )
+
+        mock_proc = AsyncMock()
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.wait_for", side_effect=TimeoutError),
+        ):
+            await agent._auto_triage([finding])
+
+        mock_proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_propose_issues_exception_is_non_fatal(self) -> None:
+        """_propose_issues catches and logs exceptions without propagating."""
+        from unittest.mock import MagicMock
+
+        from sova.config.models import TaskSourceConfig
+        from sova.db.models import OversightFinding
+
+        cfg = OversightConfig(wake_interval_minutes=1)
+        agent = OversightAgent(config=cfg)
+
+        finding = OversightFinding(run_id="r", title="t", scope="global", confidence=0.9)
+
+        mock_config = MagicMock()
+        mock_config.github_repo = "owner/repo"
+        mock_config.task_source = TaskSourceConfig(type="github")
+
+        with (
+            patch("sova.config.loader.load_config", return_value=mock_config),
+            patch("sova.adapters.create_adapter", side_effect=RuntimeError("adapter boom")),
+        ):
+            await agent._propose_issues([finding])
 
 
 # ---------------------------------------------------------------------------

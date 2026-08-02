@@ -402,6 +402,7 @@ class TestAgentAnalyzeWiring:
         async def _mock_analyze(snapshot, run_id):
             nonlocal analyze_called
             analyze_called = True
+            return [], None
 
         async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             recorded.append({"status": status})
@@ -441,6 +442,7 @@ class TestAgentAnalyzeWiring:
         async def _mock_analyze(snapshot, run_id):
             nonlocal analyze_called
             analyze_called = True
+            return [], None
 
         async def _mock_record(*args, **kwargs):
             pass
