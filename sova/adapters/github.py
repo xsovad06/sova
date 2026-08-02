@@ -261,7 +261,7 @@ class GitHubAdapter(TaskAdapter):
 
         data = json.loads(result.stdout)
 
-        if data.get("state") in ("CLOSED", "MERGED"):
+        if data.get("state") == "CLOSED":
             return TaskState.DONE
 
         labels = set(lbl["name"] for lbl in data.get("labels", []))
@@ -725,10 +725,8 @@ def _parse_issue(data: dict) -> Task:
     milestone_data = data.get("milestone")
     milestone = milestone_data["title"] if milestone_data else ""
 
-    # Closed issues (and merged PRs fetched via `gh issue view`) are DONE
-    # regardless of labels.  `gh issue view <PR_NUMBER>` returns
-    # state="MERGED" for merged pull requests, not "CLOSED".
-    if data.get("state") in ("CLOSED", "MERGED"):
+    # Closed issues are DONE regardless of labels
+    if data.get("state") == "CLOSED":
         state = TaskState.DONE
     else:
         # Check labels in priority order: HUMAN_ONLY always wins over any other

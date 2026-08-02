@@ -1188,16 +1188,23 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "oversight.auto_create_issues",
         "Auto-create issues",
-        "Automatically create GitHub Issues from oversight findings (placeholder, not yet wired)",
+        "Automatically create GitHub Issues from oversight findings above the confidence threshold",
         "oversight",
         "boolean",
     ),
     SettingMeta(
         "oversight.auto_triage",
         "Auto-triage",
-        "Automatically triage issues created by the oversight agent (placeholder, not yet wired)",
+        "Automatically run sova triage on global issues created by the oversight agent",
         "oversight",
         "boolean",
+    ),
+    SettingMeta(
+        "oversight.confidence_threshold",
+        "Confidence threshold",
+        "Minimum confidence score (0.0 to 1.0) for a finding to be filed as an issue",
+        "oversight",
+        "number",
     ),
     SettingMeta(
         "oversight.persona_path",
@@ -1208,7 +1215,7 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "oversight.analysis_model",
         "Analysis model",
-        "LLM model tier for oversight analysis (placeholder, not yet wired)",
+        "LLM model tier for oversight analysis (e.g. sonnet, haiku)",
         "oversight",
     ),
     SettingMeta(

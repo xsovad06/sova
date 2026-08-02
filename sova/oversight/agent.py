@@ -3,19 +3,21 @@
 Records each wake cycle to the OversightRun DB table. The persona is loaded
 fresh each cycle and available via ``get_system_prompt()`` for LLM context
 injection. Each cycle runs the observation phase (#445) to collect a
-cross-project health snapshot, then the analysis phase (#446) sends the
-snapshot to the LLM to produce structured findings.
+cross-project health snapshot, the analysis phase (#446) sends the snapshot
+to the LLM to produce structured findings, and the action phase (#447)
+creates GitHub Issues from confirmed findings.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from datetime import datetime, timezone
 
 from sova.config.models import OversightConfig
-from sova.db.models import OversightRun, OversightRunStatus
+from sova.db.models import OversightFinding, OversightRun, OversightRunStatus
 from sova.oversight.persona import load_persona
 from sova.utils.logging import get_logger
 
@@ -106,9 +108,11 @@ class OversightAgent:
                 self._persona = load_persona(self._config.persona_path)
                 snapshot = await self._observe()
                 analysis_error: str | None = None
+                findings: list[OversightFinding] = []
                 if snapshot is not None:
-                    analysis_error = await self._analyze(snapshot, run_id)
-                # Future hooks (#447) execute here.
+                    findings, analysis_error = await self._analyze(snapshot, run_id)
+                if findings and analysis_error is None:
+                    await self._propose_issues(findings)
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 status, error = self._determine_outcome(snapshot, analysis_error)
                 await self._record_run(
@@ -131,18 +135,18 @@ class OversightAgent:
                 await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
             await asyncio.sleep(interval_seconds)
 
-    async def _analyze(self, snapshot: dict, run_id: str) -> str | None:
+    async def _analyze(self, snapshot: dict, run_id: str) -> tuple[list[OversightFinding], str | None]:
         """Run the analysis phase: send snapshot to LLM, persist findings.
 
         Returns:
-            Error message if analysis failed, None if successful.
+            Tuple of (list of findings, error message or None).
         """
         from sova.llm.client import get_provider
         from sova.oversight.analysis import analyze_snapshot
 
         try:
             provider = get_provider()
-            _, error = await analyze_snapshot(
+            findings, error = await analyze_snapshot(
                 snapshot,
                 run_id,
                 self._persona,
@@ -151,10 +155,87 @@ class OversightAgent:
                 dedup_window_days=self._config.dedup_window_days,
                 analysis_timeout=self._config.analysis_timeout_seconds,
             )
-            return error
+            return findings, error
         except Exception as exc:
             log.warning("oversight.analyze_failed", run_id=run_id, exc_info=True)
-            return f"analyze_failed: {exc}"
+            return [], f"analyze_failed: {exc}"
+
+    async def _propose_issues(self, findings: list[OversightFinding]) -> None:
+        """Create GitHub Issues from high-confidence findings (action phase).
+
+        Non-fatal: failures are logged but do not abort the cycle.
+        """
+        from pathlib import Path
+
+        from sova.adapters import create_adapter
+        from sova.config.loader import load_config
+        from sova.config.registry import list_projects
+        from sova.oversight.actions import propose_issues
+
+        try:
+            sova_cfg = load_config()
+            if not sova_cfg.github_repo or sova_cfg.task_source.type != "github":
+                log.debug("oversight.actions.skip", reason="no github_repo or non-github task source")
+                return
+
+            sova_adapter = create_adapter(sova_cfg)
+
+            project_adapters = {}
+            for slug, path_str in list_projects().items():
+                try:
+                    proj_cfg = load_config(Path(path_str))
+                    if proj_cfg.github_repo and proj_cfg.task_source.type == "github":
+                        project_adapters[slug] = create_adapter(proj_cfg)
+                except Exception:
+                    log.debug("oversight.actions.project_adapter_failed", slug=slug, exc_info=True)
+
+            created = await propose_issues(
+                findings,
+                self._config,
+                sova_adapter,
+                project_adapters,
+                confidence_threshold=self._config.confidence_threshold,
+            )
+
+            if created and self._config.auto_triage:
+                await self._auto_triage(created)
+
+        except Exception:
+            log.warning("oversight.actions.failed", exc_info=True)
+
+    async def _auto_triage(self, findings: list[OversightFinding]) -> None:
+        """Run sova triage on newly created global issues."""
+        for finding in findings:
+            if finding.scope != "global" or finding.github_issue_number is None:
+                continue
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "sova",
+                    "triage",
+                    str(finding.github_issue_number),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(proc.wait(), timeout=300)
+                log.info(
+                    "oversight.actions.auto_triage",
+                    issue=finding.github_issue_number,
+                    exit_code=proc.returncode,
+                )
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                await proc.wait()
+                log.warning(
+                    "oversight.actions.triage_timeout",
+                    issue=finding.github_issue_number,
+                )
+            except Exception:
+                log.warning(
+                    "oversight.actions.triage_failed",
+                    issue=finding.github_issue_number,
+                    exc_info=True,
+                )
 
     async def _observe(self) -> dict | None:
         """Run the observation phase and return the snapshot as a dict."""

@@ -549,6 +549,7 @@ class OversightConfig(BaseSettings):
     wake_interval_minutes: int = Field(60, ge=1)
     auto_create_issues: bool = False
     auto_triage: bool = False
+    confidence_threshold: float = Field(0.7, ge=0.0, le=1.0)
     persona_path: str = ""
     analysis_model: str = "sonnet"
     dedup_window_days: int = Field(14, ge=1)
