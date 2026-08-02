@@ -574,6 +574,7 @@ class FleetConfig(BaseSettings):
     cache_ttl_seconds: int = Field(300, gt=0)
     query_timeout_seconds: int = Field(10, gt=0)
     telemetry_window_days: int = Field(90, gt=0)
+    sova_repo: str = "xsovad06/sova"
 
     model_config = SettingsConfigDict(env_prefix="SOVA_FLEET_")
 

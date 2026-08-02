@@ -580,3 +580,87 @@ class _ResumedRow:
 
 # Result tuple from _query_project
 _ProjectResult = tuple[list[_RunRow], list[_StepRow], list[_FailureRow], list[_ResumedRow]]
+
+
+# ---------------------------------------------------------------------------
+# Step-to-area label mapping and issue draft builder
+# ---------------------------------------------------------------------------
+
+STEP_AREA_MAP: dict[str, str] = {
+    "sync": "core",
+    "assess": "core",
+    "develop": "core",
+    "simplify": "core",
+    "self_review": "core",
+    "commit": "core",
+    "validate": "core",
+    "capture_baseline": "core",
+    "extract_memory": "core",
+    "monitor_ci": "core",
+    "scan_project": "core",
+    "generate_tasks": "core",
+    "validate_tasks": "core",
+    "fetch_task": "adapters",
+    "create_pr": "adapters",
+    "push": "adapters",
+    "wait_for_external_reviews": "adapters",
+    "address_external_findings": "adapters",
+    "resolve_external_reviews": "adapters",
+    "research": "adapters",
+    "spec": "adapters",
+    "create_worktree": "agent",
+    "ensure_worktree": "agent",
+    "rebase": "agent",
+    "rearrange_commits": "agent",
+    "handoff_to_reviewer": "agent",
+    "handoff_to_user": "agent",
+    "address_review": "agent",
+}
+
+_DEFAULT_AREA = "core"
+
+
+def build_issue_draft(step_name: str, insights: FleetInsights) -> dict[str, object] | None:
+    """Build a pre-filled issue draft from fleet failure data for a given step.
+
+    Returns ``{"title": ..., "body": ..., "labels": [...]}`` or None if the
+    step has no failure data in the current insights.
+    """
+    stat = next((s for s in insights.step_failure_stats if s.step_name == step_name), None)
+    if stat is None:
+        return None
+
+    area = STEP_AREA_MAP.get(step_name, _DEFAULT_AREA)
+    rate_pct = f"{stat.failure_rate * 100:.1f}"
+
+    title = f"fix({area}): {step_name} fails in {rate_pct}% of runs"
+
+    clusters = [c for c in insights.failure_clusters if c.count > 0][:5]
+
+    body_parts = [
+        (
+            f"## Problem\n\n"
+            f"`{step_name}` fails in {rate_pct}% of runs "
+            f"({stat.failure_count} failures out of {stat.total_count} executions) "
+            f"across the fleet.\n"
+        ),
+    ]
+
+    if clusters:
+        body_parts.append("## Top error messages\n")
+        for i, cluster in enumerate(clusters, 1):
+            projects_str = ", ".join(cluster.projects) if cluster.projects else "unknown"
+            body_parts.append(f'{i}. "{cluster.pattern}" ({cluster.count} occurrences, projects: {projects_str})')
+        body_parts.append("")
+
+    body_parts.append(
+        "## Suggested investigation\n\n"
+        f"- [ ] Review `sova/core/steps/{step_name}.py` for timeout or error handling gaps\n"
+        "- [ ] Check whether the failure correlates with specific project configurations\n"
+        "- [ ] Add targeted test coverage for the failure scenario\n\n"
+        "*Proposed by SOVA fleet self-improvement loop*"
+    )
+
+    labels = ["type: bug", f"area: {area}"]
+
+    return {"title": title, "body": "\n".join(body_parts), "labels": labels}

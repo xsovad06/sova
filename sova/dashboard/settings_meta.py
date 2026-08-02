@@ -1108,6 +1108,13 @@ _REGISTRY: list[SettingMeta] = [
         "fleet",
         "number",
     ),
+    SettingMeta(
+        "fleet.sova_repo",
+        "SOVA repository",
+        "GitHub repository (owner/repo) where fleet-proposed issues are created",
+        "fleet",
+        "string",
+    ),
     # -- Awareness --
     SettingMeta(
         "awareness.enabled",
