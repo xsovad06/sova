@@ -3,9 +3,11 @@ set -euo pipefail
 
 # Claude Code Stop hook: captures session metrics and appends to benchmark log.
 # Receives JSON payload via stdin with session_id, transcript_path, cwd, etc.
-# Graceful no-op when not on a benchmark branch or no log exists.
+# Graceful no-op when not on a benchmark branch.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=resolve_root.sh
+source "$SCRIPT_DIR/resolve_root.sh"
 
 # Branch name regex pattern (must match log.sh: GitHub issues only)
 readonly ISSUE_BRANCH_PATTERN='^(feat|fix|refactor|chore|test|docs)/issue-([0-9]+)'
@@ -35,12 +37,14 @@ main() {
     session_id="$(printf '%s' "$hook_payload" | jq -r '.session_id // ""')" || true
     cwd="$(printf '%s' "$hook_payload" | jq -r '.cwd // ""')" || true
 
-    # Use cwd from payload, fallback to SCRIPT_DIR-based detection
+    # Resolve project root (works from worktrees).
+    # Prefer cwd from payload when available for branch detection,
+    # but always write logs to the primary checkout via resolve_log_dir.
     local project_dir
     if [ -n "$cwd" ]; then
         project_dir="$cwd"
     else
-        project_dir="$(cd "$SCRIPT_DIR/../.." && pwd)"
+        project_dir="$(resolve_project_root)"
     fi
 
     # Detect issue number from branch name
@@ -56,12 +60,11 @@ main() {
         exit 0
     fi
 
-    # Check if benchmark log exists for this issue (only append, never create)
-    local log_dir="${LOG_DIR:-$SCRIPT_DIR}"
+    # Write to primary checkout's benchmark dir (survives worktree cleanup)
+    local log_dir
+    log_dir="$(resolve_log_dir)"
+    mkdir -p "$log_dir"
     local log_file="${log_dir}/issue-${issue}.jsonl"
-    if [ ! -f "$log_file" ]; then
-        exit 0
-    fi
 
     # Parse transcript for metrics (single jq invocation for efficiency)
     # NOTE: transcript_path from hook payload is trusted (Claude Code provides it).

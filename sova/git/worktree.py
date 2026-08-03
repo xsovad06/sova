@@ -353,7 +353,7 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
 
 
 _CLAUDE_DIRS = ("commands", "rules", "agent-memory")
-_CLAUDE_FILES = ("CLAUDE.md", "settings.local.json")
+_CLAUDE_FILES = ("CLAUDE.md", "settings.local.json", "settings.json")
 
 
 def _copy_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
