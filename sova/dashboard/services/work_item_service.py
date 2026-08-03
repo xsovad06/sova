@@ -619,7 +619,8 @@ async def _attach_integration_gates(
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
-    Returns: {items: [...], running_count, slots_available, max_concurrent}
+    Returns: {items, running_count, slots_available, max_concurrent, github_user, api_health}
+    api_health: {status: "ok"} or {status: "rate_limited", detail, cooldown_seconds, hits}
     """
     from sova.dashboard.services.agent_pool import _get_project_agents
 
@@ -701,12 +702,28 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
 
     github_user = cfg.github_user if cfg else ""
 
+    api_health: dict[str, object] = {"status": "ok"}
+    try:
+        from sova.supervisor.github_quota import get_github_quota_status
+
+        gh_status = get_github_quota_status(github_user)
+        if gh_status.is_limited:
+            api_health = {
+                "status": "rate_limited",
+                "detail": "GitHub API rate limit exceeded. Data may be stale.",
+                "cooldown_seconds": round(gh_status.cooldown_remaining_seconds),
+                "hits": gh_status.hits_in_window,
+            }
+    except Exception:
+        log.debug("work_items.quota_status_failed", exc_info=True)
+
     return {
         "items": items,
         "running_count": running_count,
         "slots_available": max(0, max_concurrent - running_count),
         "max_concurrent": max_concurrent,
         "github_user": github_user,
+        "api_health": api_health,
     }
 
 
