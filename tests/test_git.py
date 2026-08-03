@@ -1258,11 +1258,13 @@ class TestCopyClaudeArtifacts:
         claude.mkdir(parents=True)
         (claude / "CLAUDE.md").write_text("project instructions")
         (claude / "settings.local.json").write_text("{}")
+        (claude / "settings.json").write_text('{"hooks": {}}')
 
         _copy_claude_artifacts(project, worktree)
 
         assert (worktree / ".claude" / "CLAUDE.md").read_text() == "project instructions"
         assert (worktree / ".claude" / "settings.local.json").read_text() == "{}"
+        assert (worktree / ".claude" / "settings.json").read_text() == '{"hooks": {}}'
 
     def test_copies_root_claude_md(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
