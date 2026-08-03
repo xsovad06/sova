@@ -1431,6 +1431,7 @@ class TestLiteLLMProvider:
         mock_module = MagicMock()
         mock_module.acompletion = AsyncMock()
         mock_module.completion_cost = MagicMock(return_value=0.005)
+        mock_module.cost_per_token = MagicMock(return_value=(0.003, 0.002))
         mock_module.__version__ = "1.0.0"
 
         old = sys.modules.get("litellm")

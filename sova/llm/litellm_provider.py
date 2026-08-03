@@ -223,7 +223,7 @@ class LiteLLMProvider(LLMProvider):
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
         response_model = getattr(response, "model", model) or model
-        cost = _get_cost(response_model, input_tokens, output_tokens)
+        cost = _get_cost(response_model, input_tokens, output_tokens, completion_response=response)
         stop = response.choices[0].finish_reason or "end_turn"
 
         return LLMResult(
@@ -250,19 +250,30 @@ def _build_messages(prompt: str) -> list[dict[str, str]]:
     return [{"role": "user", "content": prompt}]
 
 
-def _get_cost(model: str, input_tokens: int, output_tokens: int) -> Decimal:
+def _get_cost(
+    model: str, input_tokens: int, output_tokens: int, *, completion_response: object | None = None
+) -> Decimal:
     """Get cost from LiteLLM's cost tracking.
 
-    Returns Decimal('0') when the model is not in LiteLLM's pricing database
-    (common for custom/local models). Programming errors propagate normally.
+    When *completion_response* is provided (non-streaming calls), passes it
+    directly to ``litellm.completion_cost`` for accurate pricing.  For
+    streaming calls where only token counts are available, uses
+    ``litellm.cost_per_token`` for per-token pricing.
+
+    Returns Decimal('0') when cost calculation fails, including models that
+    are not in LiteLLM's pricing database.
     """
     try:
-        cost = litellm.completion_cost(  # type: ignore[union-attr]
-            model=model,
-            prompt_tokens=input_tokens,
-            completion_tokens=output_tokens,
-        )
+        if completion_response is not None:
+            cost = litellm.completion_cost(completion_response=completion_response)  # type: ignore[union-attr]
+        else:
+            prompt_cost, completion_cost = litellm.cost_per_token(  # type: ignore[union-attr]
+                model=model,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+            )
+            cost = prompt_cost + completion_cost
         return Decimal(str(cost))
-    except (ValueError, KeyError, TypeError):
+    except Exception:  # noqa: BLE001
         log.warning("llm.litellm.cost_unknown", model=model, exc_info=True)
         return Decimal("0")
