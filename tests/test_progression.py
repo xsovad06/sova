@@ -2668,3 +2668,113 @@ class TestOwnershipGateAddressReview:
         block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_ADDRESS_REVIEW)
         assert block is None
         assert pr_num is None  # No PR lookup for development-style actions
+
+
+# ---------------------------------------------------------------------------
+# GitHub API rate limit gate tests
+# ---------------------------------------------------------------------------
+
+
+class TestRateLimitGate:
+    @pytest.mark.asyncio
+    async def test_evaluate_all_returns_empty_when_rate_limited(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        rate_block = BlockReason(gate="rate_limit", detail="limited")
+        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+            decisions = await engine.evaluate_all()
+        assert decisions == []
+
+    @pytest.mark.asyncio
+    async def test_evaluate_all_mid_loop_rate_limit_breaks(self) -> None:
+        """If rate limit triggers mid-loop, processing stops."""
+        tasks = [_task(1, state=TaskState.TRIAGED), _task(2, state=TaskState.TRIAGED)]
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "me"
+        engine = _make_engine(SupervisorConfig(auto_research=True), mock_adapter)
+
+        call_count = 0
+
+        def rate_limit_after_first() -> BlockReason | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 1:
+                return None  # initial check passes
+            return BlockReason(gate="rate_limit", detail="mid-loop limit")
+
+        with (
+            patch.object(engine, "_check_github_rate_limit_gate", side_effect=rate_limit_after_first),
+            patch("sova.supervisor.progression.build_dependency_graph", new_callable=AsyncMock) as mock_graph,
+        ):
+            graph = MagicMock()
+            graph.nodes = [1, 2]
+            graph.get_task = lambda n: tasks[0] if n == 1 else tasks[1]
+            mock_graph.return_value = graph
+
+            decisions = await engine.evaluate_all()
+
+        assert len(decisions) == 0
+
+    @pytest.mark.asyncio
+    async def test_evaluate_task_returns_blocked_when_rate_limited(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        rate_block = BlockReason(gate="rate_limit", detail="limited")
+        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+            decision = await engine.evaluate_task(42)
+        assert decision.action == ProgressionAction.BLOCKED
+        assert "rate limit" in decision.reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_collect_gate_blockers_short_circuits_on_rate_limit(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        graph = MagicMock()
+        graph.get_dependencies = MagicMock(return_value=[])
+
+        rate_block = BlockReason(gate="rate_limit", detail="limited")
+        blockers, pr = await engine._collect_gate_blockers(
+            42,
+            ProgressionAction.SPAWN_RESEARCHER,
+            graph,
+            precomputed_rate_limit=rate_block,
+        )
+        assert len(blockers) == 1
+        assert blockers[0].gate == "rate_limit"
+        assert pr is None
+
+    @pytest.mark.asyncio
+    async def test_collect_gate_blockers_computes_rate_limit_on_demand(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        graph = MagicMock()
+        graph.get_dependencies = MagicMock(return_value=[])
+
+        with patch.object(
+            engine,
+            "_check_github_rate_limit_gate",
+            return_value=BlockReason(gate="rate_limit", detail="on-demand"),
+        ):
+            blockers, pr = await engine._collect_gate_blockers(
+                42,
+                ProgressionAction.SPAWN_RESEARCHER,
+                graph,
+            )
+        assert any(b.gate == "rate_limit" for b in blockers)
+        assert pr is None
+
+    @pytest.mark.asyncio
+    async def test_auto_close_epics_skips_when_rate_limited(self) -> None:
+        engine = _make_engine(SupervisorConfig())
+        rate_block = BlockReason(gate="rate_limit", detail="limited")
+        with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
+            results = await engine.auto_close_epics()
+        assert results == []
+
+
+class TestExecuteDecisionsCap:
+    @pytest.mark.asyncio
+    async def test_cap_limits_spawns(self) -> None:
+        engine = _make_engine(SupervisorConfig(max_spawns_per_cycle=1))
+        d1 = ProgressionDecision(issue_number=1, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")
+        d2 = ProgressionDecision(issue_number=2, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")
+
+        with patch.object(engine, "execute_decision", new_callable=AsyncMock, return_value={"ok": True}):
+            results = await engine.execute_decisions([d1, d2])
+        assert len(results) == 1

@@ -523,6 +523,7 @@ class SupervisorConfig(BaseSettings):
     respect_ownership: bool = True
     file_overlap_gate: bool = True
     file_overlap_threshold: float = Field(0.0, ge=0.0, le=1.0)
+    max_spawns_per_cycle: int = Field(2, ge=1)
     poll_interval_seconds: int = Field(120, gt=0)
     log_retention_days: int = Field(30, gt=0)
     max_researcher_failures: int = Field(3, ge=0)

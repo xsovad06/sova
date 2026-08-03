@@ -1934,3 +1934,78 @@ class TestHeuristicVerdictRegexScope:
         assert result is not None
         # Must be "revise" (from ## Verdict), not "approve" (from ## Findings bold line)
         assert result["verdict"] == "revise"
+
+
+class TestApiHealth:
+    """Tests for the api_health field in get_work_items response."""
+
+    @pytest.mark.asyncio
+    async def test_api_health_rate_limited(self, monkeypatch, tmp_path) -> None:
+        """When GitHub quota tracker reports limited, api_health reflects it."""
+        from sova.supervisor.github_quota import GitHubQuotaStatus
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        monkeypatch.setattr(
+            "sova.supervisor.github_quota.get_github_quota_status",
+            lambda _user: GitHubQuotaStatus(
+                is_limited=True, last_hit_at=100.0, hits_in_window=5, cooldown_remaining_seconds=120.0
+            ),
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["api_health"]["status"] == "rate_limited"
+        assert result["api_health"]["cooldown_seconds"] == 120
+        assert result["api_health"]["hits"] == 5
+
+    @pytest.mark.asyncio
+    async def test_api_health_ok_when_not_limited(self, monkeypatch, tmp_path) -> None:
+        """When GitHub quota tracker reports OK, api_health is ok."""
+        from sova.supervisor.github_quota import GitHubQuotaStatus
+
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        monkeypatch.setattr(
+            "sova.supervisor.github_quota.get_github_quota_status",
+            lambda _user: GitHubQuotaStatus(
+                is_limited=False, last_hit_at=None, hits_in_window=0, cooldown_remaining_seconds=0.0
+            ),
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["api_health"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_api_health_exception_contained(self, monkeypatch, tmp_path) -> None:
+        """If quota status throws, api_health falls back to ok."""
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+
+        def _raise_on_import(*args, **kwargs):
+            raise ImportError("no module")
+
+        monkeypatch.setattr(
+            "sova.supervisor.github_quota.get_github_quota_status",
+            _raise_on_import,
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["api_health"]["status"] == "ok"
