@@ -23,6 +23,14 @@ class ShellResult:
     def success(self) -> bool:
         return self.returncode == 0
 
+    @property
+    def is_rate_limited(self) -> bool:
+        """Check if the command failed due to a GitHub API rate limit."""
+        if self.success:
+            return False
+        lower = self.stderr.lower()
+        return "rate limit" in lower or "abuse detection" in lower
+
 
 async def run(
     *args: str,
