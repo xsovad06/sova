@@ -111,14 +111,23 @@ class TaskProgressionEngine:
         self._adapter = adapter
         self._project_dir = project_dir
         self._session_factory = session_factory
+        self._last_graph: DependencyGraph | None = None
 
     async def evaluate_all(self) -> list[ProgressionDecision]:
         """Scan all active tasks, return next action for each."""
+        # Check rate limit before making any API calls (graph build calls list_tasks)
+        global_rate_limit = self._check_github_rate_limit_gate()
+        if global_rate_limit is not None:
+            log.info("evaluate_all.skipped_rate_limited")
+            return []
+
         try:
             graph = await build_dependency_graph(self._adapter)
         except Exception:
             log.warning("evaluate_all.graph_build_failed", exc_info=True)
             return []
+
+        self._last_graph = graph
 
         # Load config once for the whole evaluation cycle
         cfg = load_config(self._project_dir)
@@ -180,6 +189,15 @@ class TaskProgressionEngine:
                 continue
             issue = int(task.id)
 
+            # Re-check rate limit each iteration: if a GitHub API call during
+            # a prior task's evaluation triggered the tracker, stop making
+            # further API calls. The precomputed None from line 119 is stale
+            # once the tracker transitions mid-loop.
+            mid_loop_rate_limit = self._check_github_rate_limit_gate()
+            if mid_loop_rate_limit is not None:
+                log.info("evaluate_all.mid_loop_rate_limited", issue=issue)
+                break
+
             # Recompute slot blocker based on remaining capacity
             effective_slots = global_slots
             if effective_slots is None and remaining_slots <= 0:
@@ -201,6 +219,7 @@ class TaskProgressionEngine:
                 task.state,
                 graph,
                 precomputed_memory=global_memory,
+                precomputed_rate_limit=global_rate_limit,
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
                 precomputed_conflicts=precomputed_conflicts,
@@ -221,6 +240,16 @@ class TaskProgressionEngine:
 
     async def evaluate_task(self, issue_number: int) -> ProgressionDecision:
         """Evaluate a single task's readiness for progression."""
+        # Check rate limit before any GitHub API calls (get_state, build_dependency_graph, etc.)
+        rate_limit_block = self._check_github_rate_limit_gate()
+        if rate_limit_block is not None:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.BLOCKED,
+                reason="GitHub API rate limited",
+                blocked_by=(rate_limit_block,),
+            )
+
         try:
             state = await self._adapter.get_state(str(issue_number))
         except Exception:
@@ -371,8 +400,20 @@ class TaskProgressionEngine:
         return await start_agent(**kwargs)
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
-        """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED)."""
+        """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED).
+
+        Respects ``max_spawns_per_cycle`` to prevent burst API usage.
+        """
         actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
+        cap = self._config.max_spawns_per_cycle
+        if len(actionable) > cap:
+            log.info(
+                "execute_decisions.capped",
+                total=len(actionable),
+                cap=cap,
+                deferred=len(actionable) - cap,
+            )
+            actionable = actionable[:cap]
         results: list[dict] = []
         for decision in actionable:
             result = await self.execute_decision(decision)
@@ -402,7 +443,7 @@ class TaskProgressionEngine:
             log.warning("auto_close_epics.transition_failed", issue=node_id, exc_info=True)
             return {"issue": node_id, "title": title, "closed": False}
 
-    async def auto_close_epics(self) -> list[dict]:
+    async def auto_close_epics(self, graph: DependencyGraph | None = None) -> list[dict]:
         """Auto-close epic issues when all child issues are DONE.
 
         Returns a list of closed epic info dicts: {issue, title, closed}.
@@ -412,14 +453,23 @@ class TaskProgressionEngine:
         when all their children (issues that list the epic in Dependencies) are done.
         Epics with no children are never auto-closed (manual tracking container).
         Manually closed epics are not reopened if children become un-done.
+
+        When ``graph`` is provided (e.g. from a prior ``evaluate_all`` call),
+        it is reused to avoid a redundant ``list_tasks`` API call.
         """
         from sova.supervisor.dependency_graph import is_epic
 
-        try:
-            graph = await build_dependency_graph(self._adapter)
-        except Exception:
-            log.warning("auto_close_epics.graph_build_failed", exc_info=True)
-            return []
+        if graph is None:
+            graph = self._last_graph
+        if graph is None:
+            if self._check_github_rate_limit_gate() is not None:
+                log.info("auto_close_epics.skipped_rate_limited")
+                return []
+            try:
+                graph = await build_dependency_graph(self._adapter)
+            except Exception:
+                log.warning("auto_close_epics.graph_build_failed", exc_info=True)
+                return []
 
         results: list[dict] = []
         for node_id in graph.nodes:
@@ -448,6 +498,7 @@ class TaskProgressionEngine:
         graph: DependencyGraph,
         *,
         precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
@@ -497,6 +548,7 @@ class TaskProgressionEngine:
             candidate,
             graph,
             precomputed_memory=precomputed_memory,
+            precomputed_rate_limit=precomputed_rate_limit,
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
             precomputed_conflicts=precomputed_conflicts,
@@ -541,6 +593,7 @@ class TaskProgressionEngine:
         graph: DependencyGraph,
         *,
         precomputed_memory: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
@@ -552,6 +605,17 @@ class TaskProgressionEngine:
     ) -> tuple[list[BlockReason], int | None]:
         """Run all gate checks and return (active_blockers, discovered_pr_number)."""
         blockers: list[BlockReason] = []
+
+        # Rate limit gate first: if GitHub API is throttled, skip gates that make API calls
+        # (ownership calls find_pr_for_issue, repeated_failures/budget query DB only but
+        # circuit_breaker calls _count_address_review_runs which is DB-only too).
+        if precomputed_rate_limit is _NOT_COMPUTED:
+            rate_limit_block = self._check_github_rate_limit_gate()
+        else:
+            rate_limit_block = precomputed_rate_limit
+        if rate_limit_block:
+            blockers.append(rate_limit_block)
+            return blockers, None
 
         # Dependency gate is sync (reads in-memory graph only)
         if self._config.respect_dependencies:
@@ -593,12 +657,13 @@ class TaskProgressionEngine:
             if overlap_block:
                 blockers.append(overlap_block)
 
-        # Add precomputed global gates (or compute on demand for single-task eval)
+        # Add remaining precomputed global gates (rate limit already resolved above)
         global_blocks = await self._resolve_global_gates(
             candidate,
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
             precomputed_memory=precomputed_memory,
+            precomputed_rate_limit=rate_limit_block,  # already resolved, pass through
         )
         blockers.extend(global_blocks)
 
@@ -611,9 +676,18 @@ class TaskProgressionEngine:
         precomputed_quota: BlockReason | None | object,
         precomputed_slots: BlockReason | None | object,
         precomputed_memory: BlockReason | None | object,
+        precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
     ) -> list[BlockReason]:
         """Resolve precomputed-or-on-demand global gates and return active blockers."""
         blocks: list[BlockReason] = []
+
+        # GitHub API rate limit gate (runs first: if API is down, other gates may produce bad data)
+        if precomputed_rate_limit is _NOT_COMPUTED:
+            rate_limit_block = self._check_github_rate_limit_gate()
+        else:
+            rate_limit_block = precomputed_rate_limit
+        if rate_limit_block:
+            blocks.append(rate_limit_block)
 
         # Quota gate only applies to actions that produce PRs (SPAWN_DEVELOPER)
         if precomputed_quota is _NOT_COMPUTED:
@@ -756,6 +830,22 @@ class TaskProgressionEngine:
         except Exception:
             log.debug("slot_gate.check_failed", exc_info=True)
 
+        return None
+
+    def _check_github_rate_limit_gate(self) -> BlockReason | None:
+        """Check if GitHub API rate limit is exhausted. Fail-open."""
+        try:
+            from sova.supervisor.github_quota import get_github_quota_tracker
+
+            tracker = get_github_quota_tracker(self._adapter.github_user)
+            if tracker.should_skip():
+                status = tracker.get_status()
+                return BlockReason(
+                    gate="rate_limit",
+                    detail=f"GitHub API rate limited (cooldown: {status.cooldown_remaining_seconds:.0f}s remaining)",
+                )
+        except Exception:
+            log.debug("rate_limit_gate.check_failed", exc_info=True)
         return None
 
     def _check_memory_pressure_gate(self, cfg: ProjectConfig | None = None) -> BlockReason | None:

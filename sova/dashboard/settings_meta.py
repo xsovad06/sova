@@ -974,6 +974,13 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "supervisor.max_spawns_per_cycle",
+        "Max spawns per cycle",
+        "Maximum number of agents the supervisor spawns per poll cycle",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
         "supervisor.max_researcher_failures",
         "Max researcher failures",
         "Block researcher spawn after this many consecutive failures (0 = unlimited)",

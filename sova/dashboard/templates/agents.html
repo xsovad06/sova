@@ -139,6 +139,9 @@
   </div>
 </div>
 
+<!-- API Health Banner (rate limit) -->
+<div id="api-health-banner" class="hidden mb-6"></div>
+
 <!-- Memory Pressure Banner -->
 <div id="memory-pressure-banner" class="hidden mb-6"></div>
 
@@ -327,6 +330,7 @@ async function loadWorkItems() {
     var data = await res.json();
     _workItems = data.items || [];
     if (data.github_user) _githubUser = data.github_user;
+    _updateApiHealthBanner(data.api_health);
 
     var slotsInfo = document.getElementById('slots-info');
     slotsInfo.textContent = data.slots_available + '/' + data.max_concurrent + ' slots';
@@ -3104,6 +3108,31 @@ function dismissMemoryPressure() {
 }
 
 var _memPressureInterval = setInterval(checkMemoryPressure, 3000);
+
+// -- API Health Banner (rate limit) --
+
+function _updateApiHealthBanner(health) {
+  var banner = document.getElementById('api-health-banner');
+  if (!banner) return;
+  if (!health || health.status === 'ok') {
+    banner.classList.add('hidden');
+    return;
+  }
+  var cooldown = health.cooldown_seconds || 0;
+  var minutes = Math.floor(cooldown / 60);
+  var seconds = cooldown % 60;
+  var timeStr = minutes > 0 ? minutes + 'm ' + seconds + 's' : seconds + 's';
+
+  banner.classList.remove('hidden');
+  banner.innerHTML = '<div class="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">' +
+    '<div class="flex items-center justify-between">' +
+      '<div class="flex items-center gap-2">' +
+        '<span class="text-sm font-medium text-accent-yellow">GitHub API rate limit exceeded</span>' +
+        '<span class="text-xs text-gray-500">Data may be stale. Cooldown: ' + escapeHtml(timeStr) + '</span>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
 
 // -- Pre-launch modal --
 

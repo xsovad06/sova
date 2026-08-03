@@ -165,8 +165,9 @@ class TestSupervisorDaemon:
         # Test _poll_progression with a broken adapter
         adapter = AsyncMock()
         with patch("sova.supervisor.progression.TaskProgressionEngine", side_effect=Exception("engine failed")):
-            result = await daemon._poll_progression(adapter)
+            result, engine = await daemon._poll_progression(adapter)
             assert "error" in result
+            assert engine is None
 
         # Verify error was logged
         async with session_factory() as session:
@@ -280,10 +281,11 @@ class TestSupervisorDaemon:
         adapter = AsyncMock()
 
         with patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine):
-            result = await daemon._poll_progression(adapter)
+            result, engine = await daemon._poll_progression(adapter)
 
         assert result["decisions"] == 1
         assert result["executed"] == 1
+        assert engine is mock_engine
 
         # Verify the decision was logged to DB
         async with session_factory() as session:
@@ -315,7 +317,7 @@ class TestSupervisorDaemon:
         adapter = AsyncMock()
 
         with patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine):
-            result = await daemon._poll_progression(adapter)
+            result, _engine = await daemon._poll_progression(adapter)
 
         assert result["decisions"] == 1
 
@@ -410,7 +412,7 @@ class TestSupervisorDaemon:
 
         async def mock_progression(_adapter):
             call_order.append("progression")
-            return {"decisions": 0, "executed": 0}
+            return {"decisions": 0, "executed": 0}, None
 
         with (
             patch.object(daemon, "_poll_quota", side_effect=mock_quota),

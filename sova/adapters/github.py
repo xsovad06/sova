@@ -62,7 +62,18 @@ class GitHubAdapter(TaskAdapter):
     async def _gh(self, *args: str, **kwargs: object) -> ShellResult:
         """Run a ``gh`` CLI command with per-project auth."""
         env = await resolve_gh_env(self.github_user)
-        return await run("gh", *args, env=env, **kwargs)
+        result = await run("gh", *args, env=env, **kwargs)
+        self._track_rate_limit(result)
+        return result
+
+    def _track_rate_limit(self, result: ShellResult) -> None:
+        from sova.supervisor.github_quota import get_github_quota_tracker
+
+        tracker = get_github_quota_tracker(self.github_user)
+        if result.is_rate_limited:
+            tracker.record_rate_limit_hit()
+        elif result.success:
+            tracker.record_success()
 
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:
         filters = filters or TaskFilters()
@@ -92,7 +103,8 @@ class GitHubAdapter(TaskAdapter):
 
         result = await self._gh(*args)
         if not result.success:
-            log.warning("list_tasks.failed", stderr=result.stderr[:200])
+            event = "list_tasks.rate_limited" if result.is_rate_limited else "list_tasks.failed"
+            log.warning(event, stderr=result.stderr[:200])
             return []
 
         try:

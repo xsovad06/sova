@@ -143,6 +143,14 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
         tasks = await adapter.list_tasks(TaskFilters(paginate=True))
     except Exception as e:
         log.warning("Failed to fetch tasks for queue: %s", e)
+        _queue_cache.pop(cache_key, None)
+        return []
+
+    from sova.supervisor.github_quota import get_github_quota_tracker
+
+    if not tasks and get_github_quota_tracker(cfg.github_user).should_skip():
+        log.warning("queue.empty_due_to_rate_limit")
+        _queue_cache.pop(cache_key, None)
         return []
 
     actionable = [t for t in tasks if t.state in _ACTIONABLE_STATES]

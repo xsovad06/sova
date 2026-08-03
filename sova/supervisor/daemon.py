@@ -74,16 +74,34 @@ class SupervisorDaemon:
         }
 
     async def _run_loop(self) -> None:
-        """Main daemon loop: purge old logs on start, then poll periodically."""
+        """Main daemon loop: purge old logs on start, then poll periodically.
+
+        Applies exponential backoff on consecutive failures (capped at 600s).
+        """
         await self._purge_old_logs()
+        base_interval = self._config.supervisor.poll_interval_seconds
+        consecutive_failures = 0
+        max_backoff = 600
         while self._running:
             try:
-                await self.poll_once()
+                result = await self.poll_once()
+                has_error = any(isinstance(v, dict) and "error" in v for v in result.values())
+                if has_error:
+                    consecutive_failures += 1
+                    log.warning("daemon.poll_partial_error", consecutive=consecutive_failures, result=result)
+                else:
+                    consecutive_failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.warning("daemon.poll_error", exc_info=True)
-            await asyncio.sleep(self._config.supervisor.poll_interval_seconds)
+                consecutive_failures += 1
+                log.warning("daemon.poll_error", consecutive=consecutive_failures, exc_info=True)
+            if consecutive_failures > 0:
+                backoff = min(base_interval * (2**consecutive_failures), max_backoff)
+                log.info("daemon.backoff", sleep_s=backoff, consecutive=consecutive_failures)
+                await asyncio.sleep(backoff)
+            else:
+                await asyncio.sleep(base_interval)
 
     async def _poll_once(self) -> dict:
         """Single ordered poll: quota -> progression -> health."""
@@ -103,10 +121,11 @@ class SupervisorDaemon:
         results["quota"] = await self._poll_quota()
 
         # Phase 2: Progression engine (evaluates against freshly synced quota)
-        results["progression"] = await self._poll_progression(adapter)
+        progression_engine = None
+        results["progression"], progression_engine = await self._poll_progression(adapter)
 
-        # Phase 2.5: Epic auto-close (runs after progression to avoid race with state transitions)
-        results["epic_close"] = await self._poll_epic_close(adapter)
+        # Phase 2.5: Epic auto-close (reuses the graph from progression to avoid a redundant API call)
+        results["epic_close"] = await self._poll_epic_close(adapter, engine=progression_engine)
 
         # Phase 3: Health check
         results["health"] = await self._poll_health()
@@ -114,8 +133,11 @@ class SupervisorDaemon:
         self._last_poll_at = datetime.now(timezone.utc)
         return results
 
-    async def _poll_progression(self, adapter) -> dict:
+    async def _poll_progression(self, adapter: TaskAdapter) -> tuple[dict, object]:
         """Run the task progression engine and log decisions.
+
+        Returns (result_dict, engine) so the caller can reuse the engine's
+        cached dependency graph for subsequent phases (e.g. epic close).
 
         When ``require_approval`` is True the actionable decisions are stored in
         the pending plan (visible on the supervisor dashboard) and execution is
@@ -153,16 +175,14 @@ class SupervisorDaemon:
             actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
             if self._config.supervisor.require_approval:
-                # Store actionable decisions for human review; do not execute yet.
                 from sova.dashboard.services.supervisor_service import set_pending_plan
 
                 set_pending_plan(actionable)
                 log.info("poll.progression_pending_approval", count=len(actionable))
-                return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}
+                return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}, engine
 
-            # Auto-execute mode: spawn agents immediately.
             executed = await engine.execute_decisions(decisions)
-            return {"decisions": len(decisions), "executed": executed, "pending": 0}
+            return {"decisions": len(decisions), "executed": executed, "pending": 0}, engine
         except Exception as exc:
             await self._log_decision(
                 component="progression",
@@ -171,19 +191,20 @@ class SupervisorDaemon:
                 detail=str(exc),
             )
             log.warning("poll.progression_error", exc_info=True)
-            return {"error": str(exc)}
+            return {"error": str(exc)}, None
 
-    async def _poll_epic_close(self, adapter: TaskAdapter) -> dict:
+    async def _poll_epic_close(self, adapter: TaskAdapter, *, engine: object = None) -> dict:
         """Auto-close epic issues when all children are DONE."""
         try:
             from sova.supervisor.progression import TaskProgressionEngine
 
-            engine = TaskProgressionEngine(
-                config=self._config.supervisor,
-                adapter=adapter,
-                project_dir=self._project_dir,
-                session_factory=self._session_factory,
-            )
+            if engine is None or not isinstance(engine, TaskProgressionEngine):
+                engine = TaskProgressionEngine(
+                    config=self._config.supervisor,
+                    adapter=adapter,
+                    project_dir=self._project_dir,
+                    session_factory=self._session_factory,
+                )
             results = await engine.auto_close_epics()
 
             # Log each closed epic as a decision
