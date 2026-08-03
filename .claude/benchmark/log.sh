@@ -13,6 +13,8 @@ set -euo pipefail
 #         human_idle_start, human_idle_end, error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=resolve_root.sh
+source "$SCRIPT_DIR/resolve_root.sh"
 
 # Branch name regex pattern (GitHub issues only; cf. sova/git/worktree.py _ISSUE_BRANCH_RE for JIRA support)
 readonly ISSUE_BRANCH_PATTERN='^(feat|fix|refactor|chore|test|docs)/issue-([0-9]+)'
@@ -54,8 +56,10 @@ if [ -z "$issue" ]; then
     echo "Warning: No issue number provided or detected from branch" >&2
 fi
 
-# Allow test override of log directory
-LOG_DIR="${LOG_DIR:-$SCRIPT_DIR}"
+# Resolve log directory to primary checkout (survives worktree cleanup).
+# LOG_DIR env var overrides for test isolation.
+LOG_DIR="$(resolve_log_dir)"
+mkdir -p "$LOG_DIR"
 if [ -n "$issue" ]; then
     log_file="${LOG_DIR}/issue-${issue}.jsonl"
 else

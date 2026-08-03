@@ -59,21 +59,22 @@ git add README.md
 git commit -q -m "Initial commit"
 git checkout -q -b feat/issue-42
 
-# ── Test 1: No-op when no log file exists ─────────────────────
-# Even on an issue branch, if no benchmark log exists, hook is a no-op.
+# ── Test 1: Self-healing creates log file when none exists ────
+# On an issue branch, hook should create the log file even without session_start.
 cd "$TEST_DIR"
 if echo '{"session_id":"s1","transcript_path":"","cwd":"'"$GIT_FIXTURE"'"}' \
     | bash "$HOOK" 2>/dev/null; then
-    assert_pass "No-op exits successfully when no log exists"
+    assert_pass "Self-healing exits successfully"
 else
-    assert_fail "No-op exits successfully when no log exists (exit code: $?)"
+    assert_fail "Self-healing exits successfully (exit code: $?)"
 fi
 
-if [ ! -f "$TEST_DIR/issue-42.jsonl" ]; then
-    assert_pass "No-op when no log created"
+if [ -f "$TEST_DIR/issue-42.jsonl" ]; then
+    assert_pass "Self-healing creates log file when none exists"
 else
-    assert_fail "No-op when no log created"
+    assert_fail "Self-healing creates log file when none exists"
 fi
+rm -f "$TEST_DIR/issue-42.jsonl"
 
 # ── Test 2: No-op on non-issue branch ─────────────────────────
 cd "$GIT_FIXTURE"
@@ -101,18 +102,20 @@ cd "$TEST_DIR"
 issue=42
 log_file="$TEST_DIR/issue-${issue}.jsonl"
 
-# ── Test 3: No-op when benchmark log doesn't exist ────────────
+# ── Test 3: Self-healing creates file on issue branch ─────────
+rm -f "$log_file"
 if echo '{"session_id":"s3","transcript_path":"","cwd":"'"$GIT_FIXTURE"'"}' \
     | bash "$HOOK" 2>/dev/null; then
-    assert_pass "No-op exits successfully when benchmark log missing"
+    assert_pass "Self-healing exits successfully on issue branch"
 else
-    assert_fail "No-op exits successfully when benchmark log missing (exit code: $?)"
+    assert_fail "Self-healing exits successfully on issue branch (exit code: $?)"
 fi
 
-if [ ! -f "$log_file" ]; then
-    assert_pass "No-op when benchmark log missing"
+if [ -f "$log_file" ] \
+    && jq -e 'select(.event == "session_end" and .session_id == "s3")' "$log_file" >/dev/null 2>&1; then
+    assert_pass "Self-healing creates file with session_end event"
 else
-    assert_fail "No-op when benchmark log missing"
+    assert_fail "Self-healing creates file with session_end event"
 fi
 
 # ── Test 4: Appends session_end with fallback data ────────────
