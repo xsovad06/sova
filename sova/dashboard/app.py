@@ -42,6 +42,7 @@ from sova.dashboard.routers import (
     lifecycle,
     logs,
     memory,
+    oversight,
     overview,
     prs,
     queue,
@@ -309,12 +310,14 @@ async def _shutdown_tasks(
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
+    from sova.dashboard.routers.oversight import cancel_run_now_tasks
     from sova.dashboard.services.agent_lifecycle import cancel_background_tasks
     from sova.dashboard.services.batch_service import cancel_all_batches
 
     await cancel_background_tasks()
     await _ws_manager.cancel_all()
     await cancel_all_batches()
+    await cancel_run_now_tasks()
     if metrics_writer is not None:
         await metrics_writer.stop()
     if oversight_agent is not None:
@@ -510,6 +513,7 @@ def create_app(
             metrics_writer.start()
 
         # Start oversight agent
+        from sova.dashboard.routers.oversight import set_oversight_agent
         from sova.oversight.agent import OversightAgent as _OversightAgent
         from sova.oversight.persona import ensure_persona_exists
 
@@ -519,6 +523,7 @@ def create_app(
         if cfg.oversight.enabled:
             oversight_agent = _OversightAgent(config=cfg.oversight)
             oversight_agent.start()
+        set_oversight_agent(oversight_agent)
 
         # Start supervisor daemons
         from sova.dashboard.routers.supervisor import set_daemon_registry
@@ -778,6 +783,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_fleet(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "fleet.html", "fleet")
 
+    @app.get("/p/{slug}/oversight")
+    async def project_oversight(request: Request, slug: str) -> Response:
+        return _project_page(request, templates, slug, "oversight.html", "oversight")
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -917,6 +926,10 @@ def _register_page_routes(app: FastAPI, templates: Jinja2Templates) -> None:
     async def fleet_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "fleet.html", {"page": "fleet"})
 
+    @app.get("/oversight")
+    async def oversight_page(request: Request) -> Response:
+        return templates.TemplateResponse(request, "oversight.html", {"page": "oversight"})
+
     @app.get("/style-guide")
     async def style_guide_page(request: Request) -> Response:
         return templates.TemplateResponse(request, "style_guide.html", {"page": "style-guide"})
@@ -945,6 +958,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(dependencies.router, prefix=prefix)
     app.include_router(resources.router, prefix=prefix)
     app.include_router(supervisor.router, prefix=prefix)
+    app.include_router(oversight.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
     app.include_router(fleet_insights.router, prefix=prefix)
 
