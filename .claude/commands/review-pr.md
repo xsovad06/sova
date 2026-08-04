@@ -14,6 +14,11 @@ outputs:
 
 Act as a senior engineer reviewing a teammate's pull request. Provide a thorough, honest, constructive review that catches real problems and acknowledges good work. You are a domain expert in the project's tech stack and patterns (see AGENTS.md).
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "review_start" "" "" 2>/dev/null || true
+```
+
 **CRITICAL: Complete ALL Steps.** You MUST execute through Step 7 (posting the review on GitHub) before producing any final summary. Post the review directly via the GitHub API. Do NOT ask for confirmation or approval before posting. A text-only response (without a tool call) may cause the process to exit, so always post first, then summarize.
 
 PR: $ARGUMENTS
@@ -227,3 +232,8 @@ Report the review URL after posting.
 - Do not restate findings already posted by bot reviewers (CodeRabbit, SonarCloud, etc.). Acknowledge agreement in the "Confirmed Bot Findings" section instead.
 - Keep the review concise.
 - NEVER use emojis or icons in the review output.
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "review_complete" "" "" 2>/dev/null || true
+```

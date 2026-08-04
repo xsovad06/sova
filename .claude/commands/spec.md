@@ -14,6 +14,11 @@ outputs:
 
 Produce a structured specification document for a task before development starts. Shifts architectural and UX decisions to the cheap planning phase instead of the expensive coding phase.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "spec_start" "" "" 2>/dev/null || true
+```
+
 **Task**: $ARGUMENTS
 
 ## Instructions
@@ -262,3 +267,8 @@ If the user declines, skip this step -- the spec file in `.claude/specs/` is the
 - Ground every recommendation in actual code found during Step 3
 - If the issue lacks enough detail to spec, list concrete open questions instead of guessing
 - Never populate Open Questions with implementation details findable by reading the codebase. If all uncertainties can be resolved by reading code, the Open Questions section should be omitted entirely.
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "spec_complete" "" "" 2>/dev/null || true
+```
