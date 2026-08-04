@@ -17,6 +17,11 @@ outputs:
 
 Develop a feature or fix end-to-end with TDD, testing, self-review, and clean commit history.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "develop_start" "" "" 2>/dev/null || true
+```
+
 ## Instructions
 
 ### Phase 0: Understand the Task
@@ -109,3 +114,8 @@ After this command completes, run `/pr` to create the pull request.
 
 - Follow patterns from the project's existing code and CLAUDE.md/AGENTS.md
 - NEVER use emojis in any output
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "develop_complete" "" "" 2>/dev/null || true
+```

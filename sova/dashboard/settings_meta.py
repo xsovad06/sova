@@ -164,6 +164,39 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
         "object",
     ),
+    SettingMeta(
+        "llm.batch_eligible_tasks",
+        "Batch-eligible tasks",
+        "Task types routed through the Batch API when available (50% discount, async delivery)",
+        "llm",
+        "list",
+    ),
+    SettingMeta(
+        "llm.batch_gcs_bucket",
+        "Batch GCS bucket",
+        "Google Cloud Storage bucket for Vertex AI batch I/O (required for Vertex backend)",
+        "llm",
+    ),
+    SettingMeta(
+        "llm.batch_gcs_prefix",
+        "Batch GCS prefix",
+        "Path prefix within the GCS bucket for batch files (default: sova-batch)",
+        "llm",
+    ),
+    SettingMeta(
+        "llm.batch_poll_interval",
+        "Batch poll interval",
+        "Seconds between polling for batch completion (default 60)",
+        "llm",
+        "number",
+    ),
+    SettingMeta(
+        "llm.batch_timeout",
+        "Batch timeout",
+        "Maximum seconds to wait for batch completion (default 86400 = 24h)",
+        "llm",
+        "number",
+    ),
     # -- Agent --
     SettingMeta(
         "agent.runtime",

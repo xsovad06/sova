@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
 
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
 log = get_logger(component="llm.provider")
@@ -83,6 +83,40 @@ class LLMProvider(ABC):
         prompt = f"{command} {args}".strip() if args else command
         log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
         return await self.invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
+
+    async def invoke_batch(
+        self,
+        requests: list[BatchRequest],
+        *,
+        poll_interval: int = 60,
+        timeout: int = 86400,
+    ) -> list[BatchResult]:
+        """Submit a batch of prompts and return results in input order.
+
+        Default implementation calls invoke() sequentially.
+        Batch-capable providers override this.
+
+        Limitation: invoke() accepts neither a system prompt nor a token cap,
+        so BatchRequest.system and BatchRequest.max_tokens are ignored on this
+        path. Batch-capable backends honor both.
+        """
+        results: list[BatchResult] = []
+        deadline = time.monotonic() + timeout
+        for req in requests:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                results.append(BatchResult(request=req, error=f"Batch timeout of {timeout}s exhausted"))
+                continue
+            try:
+                r = await self.invoke(
+                    req.prompt,
+                    model=req.model or None,
+                    timeout=remaining,
+                )
+                results.append(BatchResult(request=req, result=r))
+            except Exception as exc:
+                results.append(BatchResult(request=req, error=str(exc)))
+        return results
 
     def normalize_model_name(self, model: str) -> str:
         """Map generic model tiers (fast/smart/cheap) to provider-specific IDs.

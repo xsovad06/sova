@@ -14,6 +14,11 @@ outputs:
 
 Run a complete pre-push quality pipeline: simplify code, review for issues, then organize commits into clean history.
 
+```bash
+# Benchmark logging (entry)
+bash .claude/benchmark/log.sh "review_start" "" "" 2>/dev/null || true
+```
+
 Scope: $ARGUMENTS
 
 ## Phase 1: Simplify
@@ -93,3 +98,8 @@ After this command completes, run `/pr` to create the pull request.
 - If a simplification or fix is risky, flag it for human review instead of applying.
 - Each phase builds on the previous -- Phase 2 reviews the state after Phase 1's changes.
 - NEVER use emojis in any output.
+
+```bash
+# Benchmark logging (exit)
+bash .claude/benchmark/log.sh "review_complete" "" "" 2>/dev/null || true
+```

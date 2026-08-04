@@ -81,6 +81,11 @@ class LLMConfig(BaseSettings):
     fallback_model: str = ""
     api_base: str = ""
     routing: dict[str, str] = Field(default_factory=dict)
+    batch_eligible_tasks: list[str] = Field(default_factory=lambda: ["triage", "triage_enrich"])
+    batch_gcs_bucket: str = ""
+    batch_gcs_prefix: str = "sova-batch"
+    batch_poll_interval: int = Field(60, gt=0)
+    batch_timeout: int = Field(86400, gt=0)
 
     model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
 

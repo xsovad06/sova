@@ -47,6 +47,7 @@ Documentation = "https://github.com/xsovad06/sova/blob/main/README.md"
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.40"]
+batch = ["google-auth>=2.0"]
 embeddings = ["sentence-transformers>=2.2"]
 postgres = ["asyncpg>=0.30"]
 dev = [
