@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% from "_components.html" import stat_card %}
+{% block title %}Oversight - SOVA{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+  <h2 class="text-2xl font-semibold">Oversight</h2>
+  <div class="flex items-center gap-3">
+    <a href="{{ prefix|default('') }}/settings#oversight"
+       class="text-xs text-gray-500 hover:text-gray-300 transition-colors">Settings</a>
+    <button id="run-now-btn" onclick="triggerRunNow()"
+            title="Trigger an immediate oversight cycle"
+            class="text-sm px-4 py-2 rounded bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-50" disabled>
+      Run Now
+    </button>
+  </div>
+</div>
+
+<!-- Disabled Banner -->
+<div id="disabled-banner" class="hidden mb-4 px-4 py-3 rounded bg-accent-yellow/10 border border-accent-yellow/30 text-accent-yellow text-sm">
+  Oversight agent is disabled. <a href="{{ prefix|default('') }}/settings#oversight" class="underline hover:text-yellow-200">Enable it in Settings</a> to start monitoring.
+</div>
+
+<!-- Transient Messages -->
+<div id="flash-msg" class="hidden mb-4 px-4 py-3 rounded text-sm"></div>
+
+<!-- Stat Strip -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+  {{ stat_card("Last Run", "stat-last-run", detail_id="stat-last-run-detail") }}
+  {{ stat_card("Next Wake", "stat-next-wake") }}
+  {{ stat_card("Pending Findings", "stat-pending") }}
+  {{ stat_card("Issues This Week", "stat-issues-week") }}
+</div>
+
+<!-- Pending Findings -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50 flex items-center justify-between">
+    <h3 class="text-sm font-medium text-gray-400" id="findings-title">Pending Findings</h3>
+    <select id="findings-filter" onchange="loadFindings()"
+            class="text-xs bg-surface border border-gray-700/50 rounded px-2 py-1 text-gray-400 focus:outline-none focus:border-accent/50">
+      <option value="pending">Pending</option>
+      <option value="created">Created</option>
+      <option value="dismissed">Dismissed</option>
+    </select>
+  </div>
+  <div id="findings-container" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Run History -->
+<div class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <div class="px-4 py-3 border-b border-gray-700/50">
+    <h3 class="text-sm font-medium text-gray-400">Run History</h3>
+  </div>
+  <div id="runs-container" class="p-4">
+    <p class="text-sm text-gray-500">Loading...</p>
+  </div>
+</div>
+
+<!-- Persona Preview -->
+<details class="bg-surface-card rounded-lg border border-gray-700/50 mb-6">
+  <summary class="px-4 py-3 cursor-pointer flex items-center justify-between select-none">
+    <h3 class="text-sm font-medium text-gray-400">Operations Persona</h3>
+    <span class="text-xs text-gray-600">click to expand</span>
+  </summary>
+  <div class="px-4 pb-4">
+    <div class="flex justify-end mb-2">
+      <button onclick="openPersona()" class="text-xs text-accent hover:text-blue-300 transition-colors">Edit</button>
+    </div>
+    <pre id="persona-preview" class="text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-surface rounded p-3 border border-gray-700/30 max-h-64 overflow-y-auto">Loading...</pre>
+  </div>
+</details>
+
+<script>
+const prefix = '{{ prefix|default("") }}';
+const apiBase = prefix ? `${prefix}/api` : '/api';
+const POLL_MS = 15000;
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function timeAgo(iso) {
+  if (!iso) return 'Never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+function timeUntil(iso) {
+  if (!iso) return 'N/A';
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return 'imminent';
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return 'in ' + m + 'm';
+  return 'in ' + Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+
+function severityClass(sev) {
+  if (sev === 'critical') return 'text-accent-red';
+  if (sev === 'warning') return 'text-accent-yellow';
+  return 'text-accent';
+}
+
+function statusBadge(status) {
+  const colors = {
+    done: 'bg-accent-green/15 text-accent-green',
+    error: 'bg-accent-red/15 text-accent-red',
+    running: 'bg-accent/15 text-accent',
+  };
+  const cls = colors[status] || 'bg-gray-700/30 text-gray-400';
+  return `<span class="text-xs px-2 py-0.5 rounded ${cls}">${esc(status)}</span>`;
+}
+
+function flash(msg, type) {
+  const el = document.getElementById('flash-msg');
+  el.textContent = msg;
+  el.className = 'mb-4 px-4 py-3 rounded text-sm ' +
+    (type === 'error' ? 'bg-accent-red/10 border border-accent-red/30 text-accent-red'
+                      : 'bg-accent-green/10 border border-accent-green/30 text-accent-green');
+  el.classList.remove('hidden');
+  setTimeout(() => el.classList.add('hidden'), 5000);
+}
+
+// -- Status --
+async function loadStatus() {
+  try {
+    const res = await fetch(`${apiBase}/oversight/status`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+
+    const banner = document.getElementById('disabled-banner');
+    const btn = document.getElementById('run-now-btn');
+
+    if (!d.enabled) {
+      banner.classList.remove('hidden');
+      btn.disabled = true;
+    } else {
+      banner.classList.add('hidden');
+      btn.disabled = !d.running;
+    }
+
+    const lastEl = document.getElementById('stat-last-run');
+    const detailEl = document.getElementById('stat-last-run-detail');
+    if (d.last_run) {
+      lastEl.textContent = timeAgo(d.last_run.started_at);
+      detailEl.textContent = d.last_run.status + (d.last_run.duration_ms != null ? ' (' + (d.last_run.duration_ms / 1000).toFixed(1) + 's)' : '');
+    } else {
+      lastEl.textContent = 'Never';
+      detailEl.textContent = '';
+    }
+
+    document.getElementById('stat-next-wake').textContent = d.running ? timeUntil(d.next_wake_approx) : (d.enabled ? 'Stopped' : 'Disabled');
+    document.getElementById('stat-pending').textContent = d.pending_findings_count;
+    document.getElementById('stat-issues-week').textContent = d.issues_proposed_this_week;
+  } catch (err) {
+    console.error('Failed to load oversight status:', err);
+  }
+}
+
+// -- Findings --
+async function loadFindings() {
+  const status = document.getElementById('findings-filter').value;
+  const container = document.getElementById('findings-container');
+  try {
+    const res = await fetch(`${apiBase}/oversight/findings?status=${status}&limit=50`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    renderFindings(d.findings, status);
+  } catch (err) {
+    container.innerHTML = `<p class="text-sm text-accent-red">Failed to load findings</p>`;
+  }
+}
+
+function renderFindings(findings, status) {
+  const container = document.getElementById('findings-container');
+  const title = document.getElementById('findings-title');
+  const labels = {pending: 'Pending Findings', created: 'Created Findings', dismissed: 'Dismissed Findings'};
+  title.textContent = (labels[status] || 'Findings') + (findings.length ? ` (${findings.length})` : '');
+
+  if (findings.length === 0) {
+    const msgs = {
+      pending: 'No pending findings. All patterns addressed or no cycles run yet.',
+      created: 'No findings with issues created yet.',
+      dismissed: 'No dismissed findings.',
+    };
+    container.innerHTML = `<p class="text-sm text-gray-500">${msgs[status] || 'No findings'}</p>`;
+    return;
+  }
+
+  let html = '<div class="space-y-2">';
+  for (const f of findings) {
+    const sevCls = severityClass(f.severity);
+    const conf = (f.confidence * 100).toFixed(0) + '%';
+    const issueLink = f.github_issue_number
+      ? `<a href="#" class="text-xs text-accent hover:underline">#${f.github_issue_number}</a>`
+      : '';
+    html += `<div class="border border-gray-700/30 rounded">` +
+      `<button type="button" aria-expanded="false" class="w-full flex items-center gap-3 px-3 py-2 cursor-pointer select-none hover:bg-surface-hover/30 transition-colors text-left" onclick="toggleFinding(this)">` +
+        `<span class="text-xs font-medium ${sevCls} w-16 shrink-0">${esc(f.severity)}</span>` +
+        `<span class="text-sm text-gray-300 flex-1 truncate">${esc(f.title)}</span>` +
+        `<span class="text-xs text-gray-500 shrink-0">${esc(f.scope)}</span>` +
+        `<span class="text-xs text-gray-500 shrink-0 w-10 text-right">${conf}</span>` +
+        `${issueLink}` +
+        `<span class="text-xs text-gray-600 shrink-0">&#9662;</span>` +
+      `</button>` +
+      `<div class="hidden px-3 pb-3 pt-1 border-t border-gray-700/20">` +
+        (f.description ? `<p class="text-xs text-gray-400 mb-2 leading-relaxed">${esc(f.description)}</p>` : '') +
+        (f.recommendation ? `<p class="text-xs text-gray-500 mb-3 leading-relaxed"><span class="text-gray-400 font-medium">Recommendation:</span> ${esc(f.recommendation)}</p>` : '') +
+        `<div class="flex items-center gap-3 text-xs text-gray-500">` +
+          `<span>${timeAgo(f.created_at)}</span>` +
+          (f.project_slug ? `<span>Project: ${esc(f.project_slug)}</span>` : '') +
+        `</div>` +
+        `<div class="flex items-center gap-2 mt-3">`;
+
+    if (status === 'pending') {
+      html += `<button onclick="createIssue(${f.id})" class="px-3 py-1 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors">Create Issue</button>` +
+              `<button onclick="dismissFinding(${f.id})" class="px-3 py-1 rounded text-xs bg-gray-700/30 text-gray-400 hover:bg-gray-700/50 hover:text-gray-300 transition-colors">Dismiss</button>`;
+    } else if (f.github_issue_number) {
+      html += `<span class="text-xs text-accent-green">Issue #${f.github_issue_number} created</span>`;
+    } else if (f.dismissed) {
+      html += `<span class="text-xs text-gray-500">Dismissed</span>`;
+    }
+
+    html += `</div></div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function toggleFinding(header) {
+  const detail = header.nextElementSibling;
+  const arrow = header.querySelector('span:last-child');
+  detail.classList.toggle('hidden');
+  const expanded = !detail.classList.contains('hidden');
+  arrow.innerHTML = expanded ? '&#9652;' : '&#9662;';
+  header.setAttribute('aria-expanded', String(expanded));
+}
+
+async function createIssue(findingId) {
+  try {
+    const res = await fetch(`${apiBase}/oversight/findings/${findingId}/create-issue`, {method: 'POST'});
+    const d = await res.json();
+    if (!res.ok) { flash(d.detail || 'Failed to create issue', 'error'); return; }
+    flash('Issue #' + d.issue_number + ' created', 'success');
+    loadFindings();
+    loadStatus();
+  } catch (err) {
+    flash('Failed to create issue: ' + err.message, 'error');
+  }
+}
+
+async function dismissFinding(findingId) {
+  try {
+    const res = await fetch(`${apiBase}/oversight/findings/${findingId}/dismiss`, {method: 'POST'});
+    if (!res.ok) { const d = await res.json(); flash(d.detail || 'Failed to dismiss', 'error'); return; }
+    flash('Finding dismissed', 'success');
+    loadFindings();
+    loadStatus();
+  } catch (err) {
+    flash('Failed to dismiss: ' + err.message, 'error');
+  }
+}
+
+// -- Runs --
+async function loadRuns() {
+  const container = document.getElementById('runs-container');
+  try {
+    const res = await fetch(`${apiBase}/oversight/runs?limit=20`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    renderRuns(d.runs);
+  } catch (err) {
+    container.innerHTML = `<p class="text-sm text-accent-red">Failed to load run history</p>`;
+  }
+}
+
+function renderRuns(runs) {
+  const container = document.getElementById('runs-container');
+  if (runs.length === 0) {
+    container.innerHTML = '<p class="text-sm text-gray-500">No runs yet. The oversight agent has not completed any cycles.</p>';
+    return;
+  }
+
+  let html = '<table class="w-full text-sm"><thead><tr class="text-xs text-gray-500 uppercase">' +
+    '<th class="text-left py-1 pr-4">Cycle</th>' +
+    '<th class="text-left py-1 pr-4">When</th>' +
+    '<th class="text-left py-1 pr-4">Status</th>' +
+    '<th class="text-right py-1 pr-4">Findings</th>' +
+    '<th class="text-right py-1 pr-4">Issues</th>' +
+    '<th class="text-right py-1 pr-4">Duration</th>' +
+    '<th class="text-left py-1">Error</th>' +
+    '</tr></thead><tbody>';
+
+  for (const r of runs) {
+    const dur = r.duration_ms != null ? (r.duration_ms / 1000).toFixed(1) + 's' : '--';
+    html += '<tr class="border-t border-gray-700/30">' +
+      `<td class="py-2 pr-4 text-gray-400 font-mono text-xs">#${r.cycle_number}</td>` +
+      `<td class="py-2 pr-4 text-gray-400 text-xs" title="${esc(r.started_at || '')}">${timeAgo(r.started_at)}</td>` +
+      `<td class="py-2 pr-4">${statusBadge(r.status)}</td>` +
+      `<td class="py-2 pr-4 text-right text-gray-300">${r.findings_count}</td>` +
+      `<td class="py-2 pr-4 text-right ${r.issues_created > 0 ? 'text-accent-green' : 'text-gray-500'}">${r.issues_created}</td>` +
+      `<td class="py-2 pr-4 text-right text-gray-400 text-xs">${dur}</td>` +
+      `<td class="py-2 text-xs text-accent-red truncate max-w-[200px]" title="${esc(r.error || '')}">${r.error ? esc(r.error) : ''}</td>` +
+      '</tr>';
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// -- Run Now --
+async function triggerRunNow() {
+  const btn = document.getElementById('run-now-btn');
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  try {
+    const res = await fetch(`${apiBase}/oversight/run-now`, {method: 'POST'});
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      flash(d.detail || 'Failed to trigger run', 'error');
+      return;
+    }
+    flash('Oversight cycle triggered. Results will appear shortly.', 'success');
+    setTimeout(() => { loadStatus(); loadRuns(); loadFindings(); }, 10000);
+  } catch (err) {
+    flash('Failed to trigger run: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Now';
+  }
+}
+
+// -- Persona --
+async function loadPersona() {
+  try {
+    const res = await fetch(`${apiBase}/settings/persona`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    const lines = (d.content || '').split('\n').slice(0, 15);
+    document.getElementById('persona-preview').textContent = lines.join('\n') + (d.content && d.content.split('\n').length > 15 ? '\n...' : '');
+  } catch (err) {
+    document.getElementById('persona-preview').textContent = 'Failed to load persona';
+  }
+}
+
+async function openPersona() {
+  try {
+    const res = await fetch(`${apiBase}/settings/persona/open`, {method: 'POST'});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    flash('Failed to open persona editor', 'error');
+  }
+}
+
+// -- Init --
+loadStatus();
+loadFindings();
+loadRuns();
+loadPersona();
+setInterval(() => { loadStatus(); loadFindings(); loadRuns(); }, POLL_MS);
+</script>
+{% endblock %}
