@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 
+class BatchTimeoutError(Exception):
+    """Raised when a batch does not complete within the timeout."""
+
+
 @dataclass
 class LLMResult:
     """Result from a Claude Code CLI invocation."""
@@ -42,3 +46,27 @@ class StreamEvent:
     type: str
     text: str = ""
     result: LLMResult | None = field(default=None)
+
+
+@dataclass
+class BatchRequest:
+    """A single request in a batch submission."""
+
+    custom_id: str
+    prompt: str
+    model: str = ""
+    max_tokens: int = 4096
+    system: str = ""
+
+
+@dataclass
+class BatchResult:
+    """Result for a single request in a batch submission."""
+
+    request: BatchRequest
+    result: LLMResult | None = None
+    error: str = ""
+
+    @property
+    def succeeded(self) -> bool:
+        return self.result is not None and not self.error
