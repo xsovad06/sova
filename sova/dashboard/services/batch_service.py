@@ -7,10 +7,17 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 from sova.dashboard.services.queue_service import VALID_STATES_FOR_ACTION
 from sova.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from sova.adapters.base import TaskAdapter
+    from sova.config.models import ProjectConfig
+    from sova.roles.base import TaskAssessment
+    from sova.roles.triage import TriageRole
 
 log = get_logger(component="dashboard.batch")
 
@@ -184,6 +191,8 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
         adapter = create_adapter(config)
         role = TriageRole()
 
+        batch_assessments = await _try_batch_llm_triage(job, config, adapter, role, project_dir)
+
         sem = asyncio.Semaphore(job.max_concurrency)
 
         async def _process_item(item: BatchItemResult) -> None:
@@ -203,7 +212,10 @@ async def _run_batch_triage(job: BatchJob, project_dir: Path) -> None:
                         return
 
                     triage_cfg = config.triage
-                    assessment = role.heuristic_assess(task, triage_cfg)
+
+                    assessment = batch_assessments.get(item.issue_id)
+                    if assessment is None:
+                        assessment = role.heuristic_assess(task, triage_cfg)
 
                     if triage_cfg.mode == "dry_run":
                         item.status = "done"
@@ -373,3 +385,63 @@ async def _run_batch_harden(
             category="batch",
             metadata={"batch_id": job.batch_id, "failed": failed, "total": total},
         )
+
+
+async def _try_batch_llm_triage(
+    job: BatchJob,
+    config: ProjectConfig,
+    adapter: TaskAdapter,
+    role: TriageRole,
+    project_dir: Path,
+) -> dict[str, TaskAssessment]:
+    """Attempt LLM-based batch triage via the Batch API.
+
+    Returns a dict mapping issue_id -> TaskAssessment for issues that were
+    successfully assessed via the batch path. Returns empty dict if the batch
+    path is unavailable or fails.
+    """
+
+    if "triage" not in config.llm.batch_eligible_tasks:
+        return {}
+
+    from sova.llm.providers.anthropic_batch import create_batch_provider
+
+    if create_batch_provider(gcs_bucket=config.llm.batch_gcs_bucket, gcs_prefix=config.llm.batch_gcs_prefix) is None:
+        return {}
+
+    try:
+        from sova.core.context import ExecutionContext
+
+        ctx = ExecutionContext(project_dir=project_dir, config=config, adapter=adapter)
+
+        eligible_tasks = []
+        task_issue_ids: dict[str, str] = {}
+        for item in job.results:
+            if job.cancelled:
+                break
+            try:
+                task = await adapter.get_task(item.issue_id)
+                if task.state not in VALID_STATES_FOR_ACTION["triage"]:
+                    continue
+                eligible_tasks.append(task)
+                task_issue_ids[str(task.id)] = item.issue_id
+            except Exception:
+                log.warning("batch.triage.fetch_failed", issue=item.issue_id, exc_info=True)
+
+        if not eligible_tasks:
+            return {}
+
+        log.info("batch.triage.llm_batch", count=len(eligible_tasks))
+        results = await role.assess_tasks_batch(eligible_tasks, ctx)
+
+        assessments: dict[str, TaskAssessment] = {}
+        for task, assessment in results:
+            issue_id = task_issue_ids.get(str(task.id), str(task.id))
+            assessments[issue_id] = assessment
+
+        log.info("batch.triage.llm_batch_done", assessed=len(assessments))
+        return assessments
+
+    except Exception as exc:
+        log.warning("batch.triage.llm_batch_failed", error=str(exc), exc_info=True)
+        return {}

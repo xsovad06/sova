@@ -320,6 +320,121 @@ class TriageRole(AgentRole):
 
         return self._heuristic_assess(task)
 
+    async def assess_tasks_batch(
+        self,
+        tasks: list[Task],
+        ctx: ExecutionContext,
+    ) -> list[tuple[Task, TaskAssessment]]:
+        """Assess multiple tasks via the Batch API.
+
+        Falls back to sequential assess_task_with_llm() if batch submission
+        fails or no batch backend is available.
+        """
+        from sova.llm.client import invoke_batch, resolve_model
+        from sova.llm.cost import record_cost
+        from sova.llm.models import BatchRequest
+
+        resolved = resolve_model("triage", ctx.config.roles, llm_config=ctx.config.llm)
+        model = resolved[0] if resolved else ""
+        model_reason = resolved[1] if resolved else None
+
+        batch_requests: list[BatchRequest] = []
+        heuristic_results: list[tuple[int, Task, TaskAssessment]] = []
+
+        triage_cfg = ctx.config.triage
+        for i, task in enumerate(tasks):
+            if not task.body or not task.body.strip():
+                heuristic_results.append((i, task, self._heuristic_assess(task)))
+                continue
+            skip_assessment = self.heuristic_assess(task, triage_cfg)
+            if skip_assessment.suitability == "human_only":
+                heuristic_results.append((i, task, skip_assessment))
+                continue
+            prompt = _ASSESSMENT_PROMPT.format(
+                issue_id=task.id,
+                title=task.title,
+                body=task.body or "(no description)",
+                labels=", ".join(task.labels) if task.labels else "none",
+            )
+            batch_requests.append(
+                BatchRequest(
+                    custom_id=str(task.id),
+                    prompt=prompt,
+                    model=model,
+                )
+            )
+
+        if not batch_requests:
+            return [(t, a) for _, t, a in sorted(heuristic_results, key=lambda x: x[0])]
+
+        try:
+            batch_results = await invoke_batch(
+                batch_requests,
+                poll_interval=ctx.config.llm.batch_poll_interval,
+                timeout=ctx.config.llm.batch_timeout,
+                gcs_bucket=ctx.config.llm.batch_gcs_bucket,
+                gcs_prefix=ctx.config.llm.batch_gcs_prefix,
+            )
+        except Exception as exc:
+            log.warning("triage.batch_fallback", error=str(exc), exc_info=True)
+            return await self._sequential_fallback(tasks, ctx)
+
+        task_by_id = {str(t.id): t for t in tasks}
+        llm_results: list[tuple[int, Task, TaskAssessment]] = []
+        task_index = {str(t.id): i for i, t in enumerate(tasks)}
+
+        for br in batch_results:
+            task = task_by_id.get(br.request.custom_id)
+            if task is None:
+                log.warning("triage.batch_unknown_custom_id", custom_id=br.request.custom_id)
+                continue
+            idx = task_index[str(task.id)]
+
+            if br.error:
+                log.warning("triage.batch_item_failed", issue=task.id, error=br.error)
+
+            if br.succeeded and br.result is not None:
+                ctx.add_cost(br.result.cost_usd)
+                try:
+                    await record_cost(
+                        br.result,
+                        phase="batch_triage",
+                        issue=str(task.id),
+                        task_run_id=ctx.task_run_id,
+                        model_selection_reason=f"batch:{model_reason}" if model_reason else "batch",
+                    )
+                except Exception:
+                    log.warning("triage.batch_cost_record_failed", issue=task.id, exc_info=True)
+
+                assessment = self._parse_llm_assessment(br.result.text)
+                if assessment:
+                    llm_results.append((idx, task, assessment))
+                    continue
+
+            llm_results.append((idx, task, self._heuristic_assess(task)))
+
+        covered_indices = {i for i, _, _ in heuristic_results} | {i for i, _, _ in llm_results}
+        for i, task in enumerate(tasks):
+            if i not in covered_indices:
+                log.warning("triage.batch_missing_result", issue=task.id)
+                llm_results.append((i, task, self._heuristic_assess(task)))
+
+        all_results = heuristic_results + llm_results
+        all_results.sort(key=lambda x: x[0])
+        return [(t, a) for _, t, a in all_results]
+
+    async def _sequential_fallback(
+        self,
+        tasks: list[Task],
+        ctx: ExecutionContext,
+    ) -> list[tuple[Task, TaskAssessment]]:
+        """Fall back to sequential LLM assessment for each task."""
+        results: list[tuple[Task, TaskAssessment]] = []
+        for task in tasks:
+            assessment = await self.assess_task_with_llm(task, ctx)
+            results.append((task, assessment))
+        return results
+
     def _heuristic_assess(self, task: Task) -> TaskAssessment:
         """Quick heuristic-based assessment without LLM.
 
