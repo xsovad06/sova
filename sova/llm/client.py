@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from sova.config.models import LLMConfig, RolesConfig
 from sova.llm.complexity import ComplexityTier
-from sova.llm.models import LLMResult, StreamEvent
+from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -110,6 +110,28 @@ async def invoke_command(
     return await get_provider().invoke_command(
         command, args, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
     )
+
+
+async def invoke_batch(
+    requests: list[BatchRequest],
+    *,
+    poll_interval: int = 60,
+    timeout: int = 86400,
+    gcs_bucket: str = "",
+    gcs_prefix: str = "sova-batch",
+) -> list[BatchResult]:
+    """Submit a batch of prompts. Uses a dedicated batch provider if available,
+    otherwise falls back to the global provider's sequential default."""
+    if not requests:
+        return []
+
+    from sova.llm.providers.anthropic_batch import create_batch_provider
+
+    batch_provider = create_batch_provider(gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix)
+    if batch_provider is not None:
+        return await batch_provider.invoke_batch(requests, poll_interval=poll_interval, timeout=timeout)
+
+    return await get_provider().invoke_batch(requests, poll_interval=poll_interval, timeout=timeout)
 
 
 async def invoke_streaming(
