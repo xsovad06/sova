@@ -32,6 +32,7 @@ class OversightAgent:
         self._task: asyncio.Task | None = None
         self._cycle_number: int = 0
         self._persona: str = ""
+        self._cycle_lock = asyncio.Lock()
 
     def start(self) -> asyncio.Task:
         """Start the oversight background loop. Returns the task for cancellation."""
@@ -94,10 +95,20 @@ class OversightAgent:
         except Exception:
             log.warning("oversight.error_record_failed", exc_info=True)
 
-    async def _run_loop(self) -> None:
-        """Main loop: execute a wake cycle, then sleep for the configured interval."""
-        interval_seconds = self._config.wake_interval_minutes * 60
-        while True:
+    @property
+    def running(self) -> bool:
+        """Return True if the background loop task is alive."""
+        return self._task is not None and not self._task.done()
+
+    async def run_cycle_once(self) -> None:
+        """Execute a single wake cycle (observe, analyze, propose, record).
+
+        Extracted from the loop body so the dashboard "Run Now" button can
+        trigger an immediate cycle without waiting for the sleep interval.
+        Serialized via ``_cycle_lock`` so a "Run Now" call waits for any
+        in-progress scheduled cycle (and vice versa).
+        """
+        async with self._cycle_lock:
             run_id = str(uuid.uuid4())
             self._cycle_number += 1
             cycle = self._cycle_number
@@ -133,6 +144,12 @@ class OversightAgent:
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 log.warning("oversight.cycle_error", cycle=cycle, run_id=run_id, exc_info=True)
                 await self._record_error_safe(run_id, cycle, duration_ms, started_at, str(exc))
+
+    async def _run_loop(self) -> None:
+        """Main loop: execute a wake cycle, then sleep for the configured interval."""
+        interval_seconds = self._config.wake_interval_minutes * 60
+        while True:
+            await self.run_cycle_once()
             await asyncio.sleep(interval_seconds)
 
     async def _analyze(self, snapshot: dict, run_id: str) -> tuple[list[OversightFinding], str | None]:
