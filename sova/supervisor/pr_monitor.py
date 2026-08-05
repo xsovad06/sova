@@ -21,10 +21,20 @@ from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from sova.config.models import NotificationConfig
+    from sova.utils.shell import ShellResult
 
 log = get_logger(component="supervisor.pr_monitor")
 
 _RATE_LIMIT_KEYWORDS = frozenset({"rate limit", "hourly quota", "usage limit"})
+
+
+def _track_gh_rate_limit_pr_monitor(result: "ShellResult", github_user: str = "") -> None:
+    """Record rate limit state from a gh CLI call in the PR monitor."""
+    from sova.supervisor.github_quota import track_rate_limit
+
+    track_rate_limit(result, github_user)
+
+
 _CODERABBIT_LOGINS = frozenset({"coderabbitai", "coderabbit-ai[bot]", "coderabbitai[bot]"})
 
 _NOTIFY_STATES: dict[str, str] = {
@@ -80,6 +90,12 @@ class PRMonitor:
         """Single poll cycle: fetch PRs, detect transitions, act."""
         from sova.config.context import clear_project_context, set_project_context
         from sova.dashboard.services.pr_service import list_open_prs_with_state
+        from sova.supervisor.github_quota import get_github_quota_tracker
+
+        tracker = get_github_quota_tracker(self.github_user)
+        if tracker.should_skip():
+            log.info("pr_monitor.skipped_rate_limited")
+            return
 
         # list_open_prs_with_state() uses get_project_dir() from a ContextVar
         # that is normally set by request middleware.  Background tasks have no
@@ -108,6 +124,12 @@ class PRMonitor:
                     rate_limits[number] = False
                 else:
                     rate_limits[number] = result
+
+        # Recheck: _is_coderabbit_rate_limited calls above may have
+        # triggered a rate limit hit during the gather.
+        if tracker.should_skip():
+            log.info("pr_monitor.skipped_rate_limited_mid_cycle")
+            return
 
         for pr in prs:
             number = pr["number"]
@@ -194,6 +216,7 @@ class PRMonitor:
             "@coderabbitai review",
             env=env,
         )
+        _track_gh_rate_limit_pr_monitor(result, self.github_user)
         if not result.success:
             log.warning(
                 "pr_monitor.retry_coderabbit_failed",
@@ -260,6 +283,7 @@ async def _is_coderabbit_rate_limited(
         "comments",
         env=env,
     )
+    _track_gh_rate_limit_pr_monitor(result, github_user)
     if not result.success:
         return False
 

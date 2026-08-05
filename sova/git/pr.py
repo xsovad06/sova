@@ -11,9 +11,16 @@ from urllib.parse import urlparse
 
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
-from sova.utils.shell import run
+from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="git.pr")
+
+
+def _track_gh_rate_limit(result: ShellResult, github_user: str = "") -> None:
+    """Record rate limit state from a gh CLI call into the global tracker."""
+    from sova.supervisor.github_quota import track_rate_limit
+
+    track_rate_limit(result, github_user)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +156,7 @@ async def create_pr(
         head,
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
 
     if not result.success:
         raise RuntimeError(f"Failed to create PR: {result.stderr[:200]}")
@@ -177,6 +185,7 @@ async def assign_pr(pr_number: int, *, assignee: str, repo: str, github_user: st
         assignee,
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.assign_pr.failed", pr=pr_number, stderr=result.stderr[:200])
 
@@ -193,14 +202,21 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     issue_num = issue_id.lstrip("#").strip()
     env = await resolve_gh_env(github_user)
 
-    found = await _search_prs_by_body(issue_num, repo=repo, env=env)
+    found = await _search_prs_by_body(issue_num, repo=repo, env=env, github_user=github_user)
     if found:
         return found
 
-    return await _search_prs_by_branch(issue_num, repo=repo, env=env)
+    from sova.supervisor.github_quota import get_github_quota_tracker
+
+    if get_github_quota_tracker(github_user).should_skip():
+        return None
+
+    return await _search_prs_by_branch(issue_num, repo=repo, env=env, github_user=github_user)
 
 
-async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
+async def _search_prs_by_body(
+    issue_num: str, *, repo: str, env: dict[str, str], github_user: str = ""
+) -> PRInfo | None:
     result = await run(
         "gh",
         "pr",
@@ -217,6 +233,7 @@ async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str])
         "5",
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.find_pr_for_issue.body_search_failed", stderr=result.stderr[:200])
         return None
@@ -224,7 +241,9 @@ async def _search_prs_by_body(issue_num: str, *, repo: str, env: dict[str, str])
     return _match_pr_results(result.stdout, issue_num)
 
 
-async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str]) -> PRInfo | None:
+async def _search_prs_by_branch(
+    issue_num: str, *, repo: str, env: dict[str, str], github_user: str = ""
+) -> PRInfo | None:
     async def _lookup(prefix: str) -> PRInfo | None:
         result = await run(
             "gh",
@@ -242,6 +261,7 @@ async def _search_prs_by_branch(issue_num: str, *, repo: str, env: dict[str, str
             "1",
             env=env,
         )
+        _track_gh_rate_limit(result, github_user)
         if not result.success:
             return None
         try:
@@ -296,6 +316,7 @@ async def list_open_prs(*, repo: str, github_user: str = "", author: str | None 
     if author:
         cmd.extend(["--author", author])
     result = await run(*cmd, env=env)
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.list_open_prs.failed", stderr=result.stderr[:200])
         return []
@@ -332,6 +353,7 @@ async def get_review_thread_counts(
     query = f'{{ repository(owner:"{owner}", name:"{name}") {{ {" ".join(aliases)} }} }}'
     env = await resolve_gh_env(github_user)
     result = await run("gh", "api", "graphql", "-f", f"query={query}", env=env)
+    _track_gh_rate_limit(result, github_user)
 
     if not result.success:
         log.warning("git.review_threads.failed", stderr=result.stderr[:200])
@@ -368,6 +390,7 @@ async def get_pr_branch(pr_number: int, *, repo: str, github_user: str = "") -> 
         "headRefName",
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         return ""
     try:
@@ -391,6 +414,7 @@ async def get_pr_status(pr_number: int, *, repo: str, github_user: str = "") -> 
         "number,state,mergeable,reviewDecision,url,title",
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
 
     if not result.success:
         raise RuntimeError(f"Failed to get PR #{pr_number}: {result.stderr[:200]}")
@@ -440,6 +464,7 @@ async def get_pr_diff(pr_number: int, *, repo: str, github_user: str = "") -> st
         repo,
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         raise RuntimeError(f"Failed to get diff for PR #{pr_number}: {result.stderr[:200]}")
     return result.stdout
@@ -458,6 +483,7 @@ async def get_pr_files(pr_number: int, *, repo: str, github_user: str = "") -> l
         "--name-only",
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         raise RuntimeError(f"Failed to get files for PR #{pr_number}: {result.stderr[:200]}")
     return [f for f in result.stdout.strip().splitlines() if f.strip()]
@@ -482,6 +508,7 @@ async def get_ci_checks(pr_number: int, *, repo: str, github_user: str = "") -> 
         "name,state,link",
         env=env,
     )
+    _track_gh_rate_limit(result, github_user)
 
     if not result.success:
         log.warning("git.ci_checks.failed", pr=pr_number, stderr=result.stderr[:200])
@@ -547,7 +574,7 @@ async def get_ci_failure_logs(
             continue
         seen_runs.add(run_id)
 
-        output = await _fetch_run_log(run_id, repo, env)
+        output = await _fetch_run_log(run_id, repo, env, github_user=github_user)
         if not output:
             continue
 
@@ -558,9 +585,10 @@ async def get_ci_failure_logs(
     return "\n\n".join(sections)
 
 
-async def _fetch_run_log(run_id: str, repo: str, env: dict[str, str] | None) -> str:
+async def _fetch_run_log(run_id: str, repo: str, env: dict[str, str] | None, *, github_user: str = "") -> str:
     """Fetch the failed-job log for a single run."""
     result = await run("gh", "run", "view", run_id, "--repo", repo, "--log-failed", env=env)
+    _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.ci_logs.fetch_failed", run_id=run_id, stderr=result.stderr[:200])
         return ""

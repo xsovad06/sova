@@ -10,6 +10,7 @@ import pytest
 
 from sova.adapters.base import Task, TaskAdapter, TaskState
 from sova.config.models import SupervisorConfig
+from sova.git.pr import PRInfo
 from sova.supervisor.progression import (
     BlockReason,
     ProgressionAction,
@@ -67,6 +68,7 @@ class TestDataclasses:
         assert ProgressionAction.SPAWN_ADDRESS_REVIEW == "spawn_address_review"
         assert ProgressionAction.WAIT == "wait"
         assert ProgressionAction.BLOCKED == "blocked"
+        assert ProgressionAction.SPAWN_REBASE == "spawn_rebase"
         assert ProgressionAction.CHECKPOINT_NEEDED == "checkpoint_needed"
 
     def test_block_reason_frozen(self) -> None:
@@ -853,7 +855,7 @@ class TestExecuteDecision:
     async def test_spawn_integrate_needs_pr(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 3}
         engine = _make_engine()
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         decision = ProgressionDecision(
             issue_number=20,
             action=ProgressionAction.SPAWN_INTEGRATE,
@@ -1226,12 +1228,12 @@ class TestFindPRForIssue:
     async def test_finds_pr(self, mock_cfg: MagicMock, mock_find: AsyncMock) -> None:
         mock_cfg.return_value.github_repo = "owner/repo"
         mock_cfg.return_value.github_user = "testuser"
-        mock_pr = MagicMock()
-        mock_pr.number = 55
+        mock_pr = PRInfo(number=55, url="")
         mock_find.return_value = mock_pr
         engine = _make_engine()
         result = await engine._find_pr_for_issue(42)
-        assert result == 55
+        assert result is not None
+        assert result.number == 55
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
@@ -1793,7 +1795,7 @@ class TestAutoRebase:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
         ):
@@ -1818,7 +1820,7 @@ class TestAutoRebase:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
         ):
@@ -1846,7 +1848,7 @@ class TestAutoRebase:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_collect_gate_blockers", new_callable=AsyncMock) as mock_gates,
         ):
@@ -2011,7 +2013,6 @@ class TestOwnershipGate:
     @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_checks_pr_author(self, mock_find_pr: AsyncMock) -> None:
         """For review/integrate actions, gate on PR author instead of issue assignee."""
-        from sova.git.pr import PRInfo
 
         task = _task(42, state=TaskState.IN_REVIEW)
         task.assignees = ["bob"]  # Issue assigned to bob
@@ -2032,7 +2033,6 @@ class TestOwnershipGate:
     @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
     async def test_review_phase_pr_author_mismatch_blocks(self, mock_find_pr: AsyncMock) -> None:
         """Review/integrate actions block if PR author doesn't match github_user."""
-        from sova.git.pr import PRInfo
 
         task = _task(42, state=TaskState.IN_REVIEW)
         task.assignees = ["alice"]  # Issue assigned to alice
@@ -2262,8 +2262,7 @@ class TestOwnershipGate:
 
         engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
 
-        # Mock _find_pr_for_issue to return a PR number
-        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=10):
+        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=PRInfo(number=10, url="")):
             decision = ProgressionDecision(
                 issue_number=42,
                 action=ProgressionAction.SPAWN_INTEGRATE,
@@ -2275,6 +2274,40 @@ class TestOwnershipGate:
             # assign() should NOT be called for integrate actions
             mock_adapter.assign.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_known_pr_info_skips_find_pr_api_call(self, mock_find_pr: AsyncMock) -> None:
+        """When known_pr_info is passed with author matching github_user, find_pr_for_issue is not called."""
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+
+        pr_info = PRInfo(number=55, url="", branch="feat/42", author_login="alice")
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE, known_pr_info=pr_info)
+        assert block is None
+        assert pr_num == 55
+        mock_find_pr.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.find_pr_for_issue", new_callable=AsyncMock)
+    async def test_known_pr_info_blocks_other_author(self, mock_find_pr: AsyncMock) -> None:
+        """When known_pr_info has a different author, the ownership gate blocks."""
+
+        mock_adapter = AsyncMock()
+        mock_adapter.github_user = "alice"
+        mock_adapter.repo = "owner/repo"
+
+        pr_info = PRInfo(number=55, url="", branch="feat/42", author_login="bob")
+        engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
+        block, pr_num = await engine._check_ownership_gate(42, ProgressionAction.SPAWN_INTEGRATE, known_pr_info=pr_info)
+        assert block is not None
+        assert block.gate == "ownership"
+        assert "bob" in block.detail
+        assert pr_num == 55
+        mock_find_pr.assert_not_awaited()
+
 
 # ---------------------------------------------------------------------------
 # SPAWN_ADDRESS_REVIEW: _refine_in_review_action
@@ -2285,7 +2318,7 @@ class TestRefineInReviewAction:
     @pytest.mark.asyncio
     async def test_verdict_revise_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True, auto_integrate=False))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2298,12 +2331,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_verdict_block_with_auto_enabled_spawns_address_review(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=10)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=10, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2311,12 +2345,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
-        assert pr == 10
+        assert pr is not None
+        assert pr.number == 10
 
     @pytest.mark.asyncio
     async def test_verdict_revise_with_auto_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=False, auto_integrate=False))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2329,12 +2364,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.CHECKPOINT_NEEDED
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_verdict_approve_with_auto_integrate_spawns_integrate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2347,12 +2383,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_INTEGRATE
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_no_sova_review_with_auto_integrate_spawns_integrate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2360,12 +2397,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_INTEGRATE
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_no_sova_review_auto_integrate_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2373,7 +2411,8 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.CHECKPOINT_NEEDED
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_no_pr_found_returns_wait(self) -> None:
@@ -2386,7 +2425,7 @@ class TestRefineInReviewAction:
     @pytest.mark.asyncio
     async def test_verdict_post_failed_with_auto_integrate_spawns_integrate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2399,12 +2438,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_INTEGRATE
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_verdict_check_failure_falls_back_to_integrate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2412,12 +2452,13 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.SPAWN_INTEGRATE
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
     @pytest.mark.asyncio
     async def test_verdict_check_failure_with_no_auto_integrate_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
-        engine._find_pr_for_issue = AsyncMock(return_value=55)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
             new_callable=AsyncMock,
@@ -2425,7 +2466,8 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.CHECKPOINT_NEEDED
-        assert pr == 55
+        assert pr is not None
+        assert pr.number == 55
 
 
 # ---------------------------------------------------------------------------
@@ -2516,7 +2558,7 @@ class TestExecuteDecisionAddressReview:
     async def test_spawn_address_review_discovers_pr(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
         mock_start.return_value = {"run_id": 100}
         engine = _make_engine()
-        engine._find_pr_for_issue = AsyncMock(return_value=77)
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=77, url=""))
         decision = ProgressionDecision(
             issue_number=42,
             action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
@@ -2548,7 +2590,7 @@ class TestExecuteDecisionAddressReview:
         mock_adapter = AsyncMock()
         mock_adapter.github_user = "alice"
         engine = _make_engine(SupervisorConfig(respect_ownership=True), mock_adapter)
-        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=55):
+        with patch.object(engine, "_find_pr_for_issue", new_callable=AsyncMock, return_value=PRInfo(number=55, url="")):
             decision = ProgressionDecision(
                 issue_number=42,
                 action=ProgressionAction.SPAWN_ADDRESS_REVIEW,
@@ -2579,7 +2621,7 @@ class TestEvaluateTaskAddressReview:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, 55),
+                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
@@ -2612,7 +2654,7 @@ class TestEvaluateTaskAddressReview:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, 55),
+                return_value=(ProgressionAction.SPAWN_ADDRESS_REVIEW, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),

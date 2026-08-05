@@ -562,6 +562,11 @@ class TestAssignPR:
 
 
 class TestFindPRForIssue:
+    def setup_method(self) -> None:
+        from sova.supervisor import github_quota
+
+        github_quota._trackers.clear()
+
     async def test_finds_pr_by_closes_keyword(self) -> None:
         pr_json = json.dumps(
             [
