@@ -10,6 +10,8 @@ from httpx import Response
 
 from sova.adapters.base import TaskFilters, TaskState
 from sova.adapters.jira import (
+    _DEFAULT_TRANSITIONS,
+    _JIRA_STATUS_TO_STATE,
     _LABEL_TO_STATE,
     _STATE_LABELS,
     JiraAdapter,
@@ -80,6 +82,16 @@ class TestJiraAdapterInit:
     def test_resolve_key_with_number_only(self) -> None:
         adapter = _adapter(project_key="MYPROJ")
         assert adapter._resolve_key("42") == "MYPROJ-42"
+
+    def test_resolve_key_rejects_path_traversal(self) -> None:
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="Invalid Jira issue key"):
+            adapter._resolve_key("../admin")
+
+    def test_resolve_key_rejects_empty(self) -> None:
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="Invalid Jira issue key"):
+            adapter._resolve_key("")
 
 
 class TestClose:
@@ -248,6 +260,42 @@ class TestJiraStatusMapping:
         adapter = _adapter()
         task = adapter._parse_issue(_issue_json(status_name="Custom Status"))
         assert task.state == TaskState.BACKLOG
+
+    def test_on_qa_status_maps_to_on_qa(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="On QA", status_category="In Progress"),
+        )
+        assert task.state == TaskState.ON_QA
+
+    def test_qa_status_maps_to_on_qa(self) -> None:
+        adapter = _adapter()
+        task = adapter._parse_issue(
+            _issue_json(status_name="QA", status_category="In Progress"),
+        )
+        assert task.state == TaskState.ON_QA
+
+
+class TestOnQaMappings:
+    def test_state_labels_contains_on_qa(self) -> None:
+        assert TaskState.ON_QA in _STATE_LABELS
+        assert _STATE_LABELS[TaskState.ON_QA] == "agent:on-qa"
+
+    def test_label_to_state_contains_on_qa(self) -> None:
+        assert "agent:on-qa" in _LABEL_TO_STATE
+        assert _LABEL_TO_STATE["agent:on-qa"] == TaskState.ON_QA
+
+    def test_default_transitions_contains_on_qa(self) -> None:
+        assert TaskState.ON_QA in _DEFAULT_TRANSITIONS
+        names = _DEFAULT_TRANSITIONS[TaskState.ON_QA]
+        assert "On QA" in names
+        assert "QA" in names
+        assert "Verification" in names
+        assert "Ready for QA" in names
+
+    def test_jira_status_to_state_contains_on_qa(self) -> None:
+        assert _JIRA_STATUS_TO_STATE["On QA"] == TaskState.ON_QA
+        assert _JIRA_STATUS_TO_STATE["QA"] == TaskState.ON_QA
 
 
 class TestConfigurableStatusMapping:
@@ -718,6 +766,72 @@ class TestTransitionState:
         assert route.called
         body = route.calls[0].request.content
         assert b'"5"' in body
+
+    @respx.mock
+    async def test_transition_to_on_qa(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={"transitions": [{"id": "41", "name": "On QA", "to": {"name": "On QA"}}]},
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.ON_QA)
+        assert route.called
+        body = route.calls[0].request.content
+        assert b'"41"' in body
+
+    @respx.mock
+    async def test_transition_to_on_qa_with_config_override(self) -> None:
+        adapter = _adapter(state_transitions={"on_qa": "Move to QA"})
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "transitions": [
+                        {"id": "50", "name": "Move to QA", "to": {"name": "QA"}},
+                        {"id": "41", "name": "On QA", "to": {"name": "On QA"}},
+                    ]
+                },
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.ON_QA)
+        assert route.called
+        body = route.calls[0].request.content
+        assert b'"50"' in body
+
+    @respx.mock
+    async def test_transition_no_match_skips_labels(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1", labels=["agent:triaged"])),
+        )
+        put_issue = respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "99", "name": "Unrelated Step"}]}),
+        )
+        await adapter.transition_state("1", TaskState.ON_QA)
+        assert not put_issue.called
 
 
 class TestGetPrReviews:
