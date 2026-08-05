@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
+
+if TYPE_CHECKING:
+    from sova.adapters.base import TaskAdapter
 
 log = get_logger(component="git.merge")
 
@@ -383,8 +388,32 @@ async def handle_post_merge_state(
     post_merge_state: str,
     repo: str,
     github_user: str = "",
+    adapter: TaskAdapter | None = None,
 ) -> None:
     if not issue_number:
+        return
+
+    if adapter is not None:
+        _VALID_POST_MERGE = {TaskState.DONE, TaskState.ON_QA}
+        try:
+            target_state = TaskState(post_merge_state)
+        except ValueError:
+            log.warning(
+                "git.merge.unknown_post_merge_state",
+                state=post_merge_state,
+                issue=issue_number,
+                msg="Invalid post_merge_state value, skipping adapter transition",
+            )
+            return
+        if target_state not in _VALID_POST_MERGE:
+            log.warning(
+                "git.merge.unknown_post_merge_state",
+                state=post_merge_state,
+                issue=issue_number,
+                msg="Unsupported post_merge_state value, skipping adapter transition",
+            )
+            return
+        await adapter.transition_state(str(issue_number), target_state)
         return
 
     env = await resolve_gh_env(github_user)
@@ -423,5 +452,5 @@ async def handle_post_merge_state(
         "git.merge.unknown_post_merge_state",
         state=post_merge_state,
         issue=issue_number,
-        msg="Unknown post_merge_state for GitHub adapter, skipping state transition",
+        msg="Unknown post_merge_state, skipping state transition",
     )
