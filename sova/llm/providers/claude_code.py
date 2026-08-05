@@ -160,7 +160,7 @@ def _build_args(
         "--output-format",
         output_format,
         "--permission-mode",
-        "auto",
+        "bypassPermissions",
     ]
 
     if model:

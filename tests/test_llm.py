@@ -1055,13 +1055,13 @@ class TestLLMProvider:
         with pytest.raises(RuntimeError, match="Failed to parse Claude CLI JSON"):
             _parse_json_output("not valid json {{{")
 
-    def test_build_args_includes_permission_mode_auto(self) -> None:
+    def test_build_args_includes_permission_mode_bypass(self) -> None:
         from sova.llm.providers.claude_code import _build_args
 
         args = _build_args("hello")
         assert "--permission-mode" in args
         pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "auto"
+        assert args[pm_idx + 1] == "bypassPermissions"
 
     def test_build_args_includes_all_flags(self) -> None:
         from sova.llm.providers.claude_code import _build_args

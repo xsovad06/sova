@@ -77,7 +77,7 @@ async def create_worktree(
                     commits_ahead=ahead.stdout.strip(),
                 )
             log.info("worktree.reuse", path=str(worktree_path), branch=branch)
-            _copy_claude_artifacts(project_dir, worktree_path)
+            ensure_claude_artifacts(project_dir, worktree_path)
             return WorktreeInfo(path=worktree_path, branch=branch, issue_id=issue_id)
         # Stale or wrong-branch worktree -- remove and recreate
         log.info("worktree.stale_remove", path=str(worktree_path))
@@ -119,7 +119,7 @@ async def create_worktree(
     if copy_files:
         _copy_worktree_files(project_dir, worktree_path, copy_files)
 
-    _copy_claude_artifacts(project_dir, worktree_path)
+    ensure_claude_artifacts(project_dir, worktree_path)
     _ensure_compose_project_name(project_dir, worktree_path)
 
     return WorktreeInfo(
@@ -356,18 +356,23 @@ _CLAUDE_DIRS = ("commands", "rules", "agent-memory")
 _CLAUDE_FILES = ("CLAUDE.md", "settings.local.json", "settings.json")
 
 
-def _copy_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
+def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     """Copy .claude/ artifacts that are gitignored but needed by agents.
 
     Projects that gitignore ``.claude/`` (the standard pattern for SOVA-installed
     projects) end up with worktrees missing slash commands, rules, and config.
-    This copies the essential subset -- never the database, worktrees dir, or
+    This copies the essential subset: never the database, worktrees dir, or
     ephemeral agent state.
+
+    Safe to call repeatedly (idempotent via ``dirs_exist_ok=True``).
+    Called at worktree creation and after operations that may destroy
+    ``.claude/`` (e.g. rebase stash pop conflicts).
     """
     root_claude_md = project_dir / "CLAUDE.md"
-    if root_claude_md.is_file():
+    wt_claude_md = worktree_path / "CLAUDE.md"
+    if root_claude_md.is_file() and not wt_claude_md.is_file():
         try:
-            shutil.copy2(root_claude_md, worktree_path / "CLAUDE.md")
+            shutil.copy2(root_claude_md, wt_claude_md)
         except OSError:
             log.warning("worktree.copy_claude_md.failed", exc_info=True)
 
@@ -393,6 +398,9 @@ def _copy_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
                 shutil.copy2(src, claude_dst / filename)
             except OSError:
                 log.warning("worktree.copy_claude_file.failed", file=filename, exc_info=True)
+
+
+_copy_claude_artifacts = ensure_claude_artifacts
 
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:

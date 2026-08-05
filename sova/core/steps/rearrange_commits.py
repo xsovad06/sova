@@ -10,11 +10,15 @@ Used in the address-review pipeline in place of CommitStep.
 
 from __future__ import annotations
 
+import re
+
 from sova.core.context import ExecutionContext
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
 from sova.llm.client import invoke_command
 from sova.utils.logging import get_logger
 from sova.utils.shell import run
+
+_IGNORABLE_UNTRACKED_RE = re.compile(r"^\.claude/|^\.sova/")
 
 log = get_logger(component="step.rearrange_commits")
 
@@ -58,11 +62,18 @@ class RearrangeCommitsStep(BaseStep):
             return GateCheckResult(passed=False, reason="Uncommitted changes remain after rearranging")
 
         status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
-        has_untracked = bool(
-            status_result.success and any(line.startswith("??") for line in status_result.stdout.splitlines())
-        )
-        if has_untracked:
-            return GateCheckResult(passed=False, reason="Untracked files remain after rearranging")
+        if not status_result.success:
+            return GateCheckResult(passed=False, reason="git status failed")
+        untracked_lines = [
+            line[3:].strip()
+            for line in status_result.stdout.splitlines()
+            if line.startswith("??") and not _IGNORABLE_UNTRACKED_RE.search(line[3:].strip())
+        ]
+        if untracked_lines:
+            return GateCheckResult(
+                passed=False,
+                reason=f"Untracked files remain after rearranging: {', '.join(untracked_lines[:5])}",
+            )
 
         return GateCheckResult(passed=True)
 

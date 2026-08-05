@@ -1061,7 +1061,7 @@ class TestClaudeCodeRuntime:
         assert "--verbose" in args
         assert "--permission-mode" in args
         pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "auto"
+        assert args[pm_idx + 1] == "bypassPermissions"
 
     def test_headless_preamble_forbids_pipeline_actions(self) -> None:
         from sova.ipc.runtime import _HEADLESS_PREAMBLE
