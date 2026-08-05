@@ -122,6 +122,9 @@
     <div id="quota-panel" class="space-y-2">
       <p class="text-xs text-gray-500">Loading...</p>
     </div>
+    <div id="ci-budget-panel" class="space-y-2 mt-3 pt-3 border-t border-gray-700/30">
+      <p class="text-xs text-gray-500">Loading CI budget...</p>
+    </div>
   </div>
   <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
     <h3 class="text-sm font-medium text-gray-300 mb-3">Daemon Status</h3>
@@ -382,6 +385,45 @@ async function loadQuota() {
     `;
   } catch (e) {
     document.getElementById('quota-panel').innerHTML = '<p class="text-xs text-gray-500">Failed to load quota status</p>';
+  }
+}
+
+// CI Budget
+async function loadCIBudget() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/ci-budget`);
+    if (!res.ok) {
+      document.getElementById('ci-budget-panel').innerHTML = '<p class="text-xs text-gray-500">CI budget data unavailable</p>';
+      return;
+    }
+    const data = await res.json();
+    const panel = document.getElementById('ci-budget-panel');
+
+    if (data.total === 0 && data.remaining === 0) {
+      panel.innerHTML = '<p class="text-xs text-gray-500">CI Minutes: not configured</p>';
+      return;
+    }
+
+    let statusLabel, statusColor;
+    if (data.block) {
+      statusLabel = 'Critical';
+      statusColor = 'text-accent-red';
+    } else if (data.warn) {
+      statusLabel = 'Low';
+      statusColor = 'text-accent-yellow';
+    } else {
+      statusLabel = 'OK';
+      statusColor = 'text-accent-green';
+    }
+
+    panel.innerHTML = `
+      <div class="text-xs font-medium text-gray-400 mb-1">CI Minutes</div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Used</span><span class="text-gray-300">${data.used} / ${data.total}</span></div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Remaining</span><span class="text-gray-300">${data.remaining} min</span></div>
+      <div class="flex justify-between text-xs"><span class="text-gray-400">Status</span><span class="${statusColor} font-medium">${statusLabel}</span></div>
+    `;
+  } catch (e) {
+    document.getElementById('ci-budget-panel').innerHTML = '<p class="text-xs text-gray-500">Failed to load CI budget</p>';
   }
 }
 
@@ -1254,7 +1296,7 @@ async function triggerPoll() {
   try {
     await fetch(`${apiBase}/supervisor/poll`, { method: 'POST' });
     setTimeout(() => {
-      loadDecisions(); loadQuota();
+      loadDecisions(); loadQuota(); loadCIBudget();
       _graphKey = null; // force graph refresh after manual poll
       loadGraph();
       loadPlan();
@@ -1482,10 +1524,10 @@ async function clearQueue() {
 }
 
 // -- Init --
-loadStatus(); loadQuota(); loadGraph(); loadDecisions(); loadPlan(); loadQueue();
+loadStatus(); loadQuota(); loadCIBudget(); loadGraph(); loadDecisions(); loadPlan(); loadQueue();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes
-setInterval(() => { loadStatus(); loadQuota(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); }, 30000);
+setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
