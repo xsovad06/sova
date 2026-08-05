@@ -57,7 +57,6 @@ class ProgressionAction(StrEnum):
     WAIT = "wait"
     BLOCKED = "blocked"
     SPAWN_REBASE = "spawn_rebase"
-    CHECKPOINT_NEEDED = "checkpoint_needed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +91,6 @@ NON_ACTIONABLE_ACTIONS = frozenset(
     {
         ProgressionAction.WAIT,
         ProgressionAction.BLOCKED,
-        ProgressionAction.CHECKPOINT_NEEDED,
     }
 )
 
@@ -261,19 +259,13 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="get_state() call failed"),),
             )
 
-        # Short-circuit: skip graph build if no transition is possible or automation is disabled
+        # Short-circuit: skip graph build if no transition is possible
         candidate = self._determine_transition(state)
         if candidate is None:
             return ProgressionDecision(
                 issue_number=issue_number,
                 action=ProgressionAction.WAIT,
                 reason=f"No transition available from state '{state.value}'",
-            )
-        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
-            return ProgressionDecision(
-                issue_number=issue_number,
-                action=ProgressionAction.CHECKPOINT_NEEDED,
-                reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
         try:
@@ -329,7 +321,7 @@ class TaskProgressionEngine:
 
     async def execute_decision(self, decision: ProgressionDecision) -> dict:
         """Spawn agent based on decision. Returns start_agent result or error dict."""
-        if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}:
+        if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED}:
             return {"skipped": True, "action": decision.action.value, "reason": decision.reason}
 
         if decision.action == ProgressionAction.SPAWN_REBASE:
@@ -400,7 +392,7 @@ class TaskProgressionEngine:
         return await start_agent(**kwargs)
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
-        """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED).
+        """Execute all actionable decisions (filters out WAIT/BLOCKED).
 
         Respects ``max_spawns_per_cycle`` to prevent burst API usage.
         """
@@ -516,17 +508,9 @@ class TaskProgressionEngine:
                 reason=f"No transition available from state '{state.value}'",
             )
 
-        # Short-circuit: CHECKPOINT_NEEDED means automation is disabled -- no gates to run
-        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
-            return ProgressionDecision(
-                issue_number=issue_number,
-                action=ProgressionAction.CHECKPOINT_NEEDED,
-                reason=f"Automation disabled for state '{state.value}': requires human approval",
-            )
-
         # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
-        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW when
-        # either auto flag is enabled; we refine it here based on the actual PR verdict.
+        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW;
+        # we refine it here based on the actual PR verdict.
         refined_pr: int | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
             candidate, refined_pr = await self._refine_in_review_action(issue_number)
@@ -536,12 +520,17 @@ class TaskProgressionEngine:
                     action=ProgressionAction.WAIT,
                     reason="No PR found for IN_REVIEW issue",
                 )
-            if candidate == ProgressionAction.CHECKPOINT_NEEDED:
-                return ProgressionDecision(
-                    issue_number=issue_number,
-                    action=ProgressionAction.CHECKPOINT_NEEDED,
-                    reason=f"Automation disabled for state '{state.value}': requires human approval",
-                )
+
+        # Auto-flag gate: when the relevant auto flag is disabled and require_approval
+        # is also false, there is nothing to do (no auto-exec, no plan). Return WAIT.
+        # When require_approval is true, the decision passes through so the daemon can
+        # store it in the pending plan for human approval.
+        if not self._is_auto_enabled(candidate) and not self._config.require_approval:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.WAIT,
+                reason=f"Automation disabled for state '{state.value}' (auto flag off, no approval requested)",
+            )
 
         blockers, discovered_pr = await self._collect_gate_blockers(
             issue_number,
@@ -716,35 +705,35 @@ class TaskProgressionEngine:
         return blocks
 
     def _determine_transition(self, state: TaskState) -> ProgressionAction | None:
-        """Map current state to candidate action based on config flags.
+        """Map current state to its candidate action.
 
-        Returns the action to take, CHECKPOINT_NEEDED when a transition is possible but
-        the relevant auto flag is disabled (needs human approval), or None when no
-        transition exists from this state.
+        Pure state-to-action mapping with no policy checks. Returns the action
+        that *would* be taken from this state, or None when no transition exists.
+        Auto-flag and approval gating happen in ``_evaluate_single`` and the daemon.
         """
         if state == TaskState.TRIAGED:
-            return (
-                ProgressionAction.SPAWN_RESEARCHER
-                if self._config.auto_research
-                else ProgressionAction.CHECKPOINT_NEEDED
-            )
+            return ProgressionAction.SPAWN_RESEARCHER
         if state == TaskState.RESEARCHED:
-            return (
-                ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
-            )
+            return ProgressionAction.SPAWN_DEVELOPER
         if state == TaskState.IN_REVIEW:
-            # IN_REVIEW has two possible actions: address-review (if SOVA verdict is revise/block)
-            # or integrate (if PR is approved). The actual action is refined in _refine_in_review_action
-            # which checks the SOVA verdict (requires I/O). Return SPAWN_INTEGRATE as a placeholder
-            # if either auto flag is enabled; CHECKPOINT_NEEDED if both are disabled.
-            if self._config.auto_integrate or self._config.auto_address_review:
-                return ProgressionAction.SPAWN_INTEGRATE
-            return ProgressionAction.CHECKPOINT_NEEDED
+            return ProgressionAction.SPAWN_INTEGRATE
         # BACKLOG: triage is manual per spec
         # NEEDS_SPEC: human approves spec externally
         # IN_PROGRESS: handled by existing role chaining
         # DONE, HUMAN_ONLY: no action
         return None
+
+    def _is_auto_enabled(self, action: ProgressionAction) -> bool:
+        """Check whether the auto flag for the given action is enabled."""
+        if action == ProgressionAction.SPAWN_RESEARCHER:
+            return self._config.auto_research
+        if action == ProgressionAction.SPAWN_DEVELOPER:
+            return self._config.auto_develop
+        if action == ProgressionAction.SPAWN_INTEGRATE:
+            return self._config.auto_integrate
+        if action == ProgressionAction.SPAWN_ADDRESS_REVIEW:
+            return self._config.auto_address_review
+        return True
 
     def _check_dependency_gate(self, issue: int, graph: DependencyGraph) -> BlockReason | None:
         """Check if all dependencies are DONE (no I/O: reads in-memory graph only)."""
@@ -1109,9 +1098,8 @@ class TaskProgressionEngine:
     async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, int | None]:
         """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
 
-        Returns (action, pr_number). Checks the SOVA review verdict to decide
-        between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
-        (verdict is approve or no review exists).
+        Returns (action, pr_number). Pure action mapping: auto-flag and approval
+        gating happen in ``_evaluate_single`` via ``_is_auto_enabled``.
         """
         pr_number = await self._find_pr_for_issue(issue)
         if pr_number is None:
@@ -1121,21 +1109,15 @@ class TaskProgressionEngine:
             verdict_data = await get_sova_review_verdict(str(issue), pr_number=pr_number, project_dir=self._project_dir)
         except Exception:
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
-            if self._config.auto_integrate:
-                return ProgressionAction.SPAWN_INTEGRATE, pr_number
-            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+            return ProgressionAction.SPAWN_INTEGRATE, pr_number
 
         verdict = verdict_data.get("verdict")
         has_review = verdict_data.get("has_sova_review", False)
 
         if has_review and verdict in ("revise", "block"):
-            if self._config.auto_address_review:
-                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
-            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+            return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
 
-        if self._config.auto_integrate:
-            return ProgressionAction.SPAWN_INTEGRATE, pr_number
-        return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+        return ProgressionAction.SPAWN_INTEGRATE, pr_number
 
     async def _check_address_review_circuit_breaker_gate(
         self, issue: int, *, pr_number: int | None
