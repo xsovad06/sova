@@ -2421,6 +2421,63 @@ class TestRearrangeCommitsStep:
         assert not gate.passed
         assert "Uncommitted" in gate.reason
 
+    async def test_validate_fails_when_git_status_fails(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=False, stdout=""),  # status --porcelain (failed)
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "git status failed" in gate.reason
+
+    async def test_validate_ignores_claude_and_sova_untracked(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(
+                    success=True,
+                    stdout="?? .claude/commands/foo.md\n?? .sova/state.json\n",
+                ),
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert gate.passed
+
+    async def test_validate_reports_untracked_filenames(self) -> None:
+        from sova.core.steps.rearrange_commits import RearrangeCommitsStep
+
+        ctx = _make_ctx(worktree_dir=Path("/tmp/worktree"))
+        step = RearrangeCommitsStep()
+
+        with patch("sova.core.steps.rearrange_commits.run", new_callable=AsyncMock) as mock_run:
+            mock_run.side_effect = [
+                MagicMock(success=True, stdout="abc123 feat(core): something\n"),  # log
+                MagicMock(success=True, stdout=""),  # diff --stat (clean)
+                MagicMock(success=True, stdout=""),  # staged (clean)
+                MagicMock(success=True, stdout="?? leftover.py\n?? extra.txt\n"),
+            ]
+            gate = await step.validate_output(ctx)
+
+        assert not gate.passed
+        assert "leftover.py" in gate.reason
+        assert "extra.txt" in gate.reason
+
     async def test_can_skip_when_already_completed(self) -> None:
         from sova.core.steps.rearrange_commits import RearrangeCommitsStep
 
@@ -5037,7 +5094,10 @@ class TestRebaseStep:
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
         step = RebaseStep()
 
-        with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts"),
+        ):
             mock_rebase.return_value = (
                 MagicMock(success=True, conflicts_resolved=0),
                 Decimal("0"),
@@ -5053,7 +5113,10 @@ class TestRebaseStep:
         ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/worktree"))
         step = RebaseStep()
 
-        with patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase:
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts"),
+        ):
             mock_rebase.return_value = (
                 MagicMock(success=True, conflicts_resolved=2),
                 Decimal("0.05"),
@@ -5123,6 +5186,72 @@ class TestRebaseStep:
 
         assert not gate.passed
         assert "Cannot determine git directory" in gate.reason
+
+    async def test_ensure_claude_artifacts_called_on_success(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(
+            branch_name="feat/test",
+            worktree_dir=Path("/tmp/worktree"),
+            project_dir=Path("/tmp/project"),
+        )
+        step = RebaseStep()
+
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts") as mock_artifacts,
+        ):
+            mock_rebase.return_value = (
+                MagicMock(success=True, conflicts_resolved=0),
+                Decimal("0"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_artifacts.assert_called_once_with(Path("/tmp/project"), Path("/tmp/worktree"))
+
+    async def test_ensure_claude_artifacts_not_called_when_same_dir(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(branch_name="feat/test", worktree_dir=Path("/tmp/project"))
+        ctx.project_dir = Path("/tmp/project")
+        step = RebaseStep()
+
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts") as mock_artifacts,
+        ):
+            mock_rebase.return_value = (
+                MagicMock(success=True, conflicts_resolved=0),
+                Decimal("0"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_artifacts.assert_not_called()
+
+    async def test_ensure_claude_artifacts_not_called_on_failure(self) -> None:
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(
+            branch_name="feat/test",
+            worktree_dir=Path("/tmp/worktree"),
+            project_dir=Path("/tmp/project"),
+        )
+        step = RebaseStep()
+
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts") as mock_artifacts,
+        ):
+            mock_rebase.return_value = (
+                MagicMock(success=False, conflicts_resolved=0, error="conflict"),
+                Decimal("0.01"),
+            )
+            result = await step.execute(ctx)
+
+        assert not result.success
+        mock_artifacts.assert_not_called()
 
     async def test_can_skip_when_completed(self) -> None:
         from sova.core.steps.rebase import RebaseStep

@@ -65,7 +65,7 @@ def _assert_command_exists(command: str, cwd: Path) -> None:
                     log.info("llm.command_restored", command=command, cwd=str(cwd))
                     return
             except Exception:
-                pass
+                log.debug("llm.command_restore_failed", command=command, cwd=str(cwd), exc_info=True)
         raise RuntimeError(
             f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
         )

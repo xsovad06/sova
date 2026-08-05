@@ -165,6 +165,23 @@ class TestCopyClaudeArtifacts:
         _copy_claude_artifacts(project, worktree)
         assert not (worktree / ".claude").exists()
 
+    def test_skips_claude_md_when_already_exists(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "CLAUDE.md").write_text("# Primary instructions")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "CLAUDE.md").write_text("# Worktree-specific")
+        _copy_claude_artifacts(project, worktree)
+        assert (worktree / "CLAUDE.md").read_text() == "# Worktree-specific"
+
+
+class TestEnsureClaudeArtifactsAlias:
+    def test_backward_compat_alias_exists(self) -> None:
+        from sova.git.worktree import _copy_claude_artifacts, ensure_claude_artifacts
+
+        assert _copy_claude_artifacts is ensure_claude_artifacts
+
 
 class TestCopyWorktreeFilesTraversal:
     def test_rejects_source_path_traversal(self, tmp_path: Path) -> None:

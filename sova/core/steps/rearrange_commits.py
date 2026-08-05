@@ -62,15 +62,13 @@ class RearrangeCommitsStep(BaseStep):
             return GateCheckResult(passed=False, reason="Uncommitted changes remain after rearranging")
 
         status_result = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
-        untracked_lines = (
-            [
-                line[3:].strip()
-                for line in status_result.stdout.splitlines()
-                if line.startswith("??") and not _IGNORABLE_UNTRACKED_RE.search(line[3:].strip())
-            ]
-            if status_result.success
-            else []
-        )
+        if not status_result.success:
+            return GateCheckResult(passed=False, reason="git status failed")
+        untracked_lines = [
+            line[3:].strip()
+            for line in status_result.stdout.splitlines()
+            if line.startswith("??") and not _IGNORABLE_UNTRACKED_RE.search(line[3:].strip())
+        ]
         if untracked_lines:
             return GateCheckResult(
                 passed=False,
