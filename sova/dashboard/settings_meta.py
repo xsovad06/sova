@@ -1021,6 +1021,20 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "supervisor.ci_warn_minutes",
+        "CI warn threshold (minutes)",
+        "Warn in dashboard when remaining CI minutes drop below this value",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
+        "supervisor.ci_block_minutes",
+        "CI block threshold (minutes)",
+        "Block developer spawns when remaining CI minutes drop below this value",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
         "supervisor.task_queue",
         "Task queue",
         "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",

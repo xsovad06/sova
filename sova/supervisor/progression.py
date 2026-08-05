@@ -57,6 +57,7 @@ class ProgressionAction(StrEnum):
     WAIT = "wait"
     BLOCKED = "blocked"
     SPAWN_REBASE = "spawn_rebase"
+    CHECKPOINT_NEEDED = "checkpoint_needed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,7 @@ NON_ACTIONABLE_ACTIONS = frozenset(
     {
         ProgressionAction.WAIT,
         ProgressionAction.BLOCKED,
+        ProgressionAction.CHECKPOINT_NEEDED,
     }
 )
 
@@ -133,6 +135,7 @@ class TaskProgressionEngine:
         # Pre-compute global gates once, then decrement as slots/quota are consumed
         global_memory = self._check_memory_pressure_gate(cfg)
         global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
+        global_ci_budget = await self._check_ci_budget_gate(cfg=cfg)
 
         # Pre-fetch merge conflict state for all open PRs (fail-open)
         try:
@@ -220,6 +223,7 @@ class TaskProgressionEngine:
                 precomputed_rate_limit=global_rate_limit,
                 precomputed_quota=effective_quota,
                 precomputed_slots=effective_slots,
+                precomputed_ci_budget=global_ci_budget,
                 precomputed_conflicts=precomputed_conflicts,
                 precomputed_file_sets=precomputed_file_sets,
                 task_labels=task.labels,
@@ -259,13 +263,19 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="get_state() call failed"),),
             )
 
-        # Short-circuit: skip graph build if no transition is possible
+        # Short-circuit: skip graph build if no transition is possible or automation is disabled
         candidate = self._determine_transition(state)
         if candidate is None:
             return ProgressionDecision(
                 issue_number=issue_number,
                 action=ProgressionAction.WAIT,
                 reason=f"No transition available from state '{state.value}'",
+            )
+        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.CHECKPOINT_NEEDED,
+                reason=f"Automation disabled for state '{state.value}': requires human approval",
             )
 
         try:
@@ -321,7 +331,7 @@ class TaskProgressionEngine:
 
     async def execute_decision(self, decision: ProgressionDecision) -> dict:
         """Spawn agent based on decision. Returns start_agent result or error dict."""
-        if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED}:
+        if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}:
             return {"skipped": True, "action": decision.action.value, "reason": decision.reason}
 
         if decision.action == ProgressionAction.SPAWN_REBASE:
@@ -392,7 +402,7 @@ class TaskProgressionEngine:
         return await start_agent(**kwargs)
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
-        """Execute all actionable decisions (filters out WAIT/BLOCKED).
+        """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED).
 
         Respects ``max_spawns_per_cycle`` to prevent burst API usage.
         """
@@ -493,6 +503,7 @@ class TaskProgressionEngine:
         precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
@@ -508,9 +519,17 @@ class TaskProgressionEngine:
                 reason=f"No transition available from state '{state.value}'",
             )
 
+        # Short-circuit: CHECKPOINT_NEEDED means automation is disabled -- no gates to run
+        if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.CHECKPOINT_NEEDED,
+                reason=f"Automation disabled for state '{state.value}': requires human approval",
+            )
+
         # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
-        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW;
-        # we refine it here based on the actual PR verdict.
+        # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW when
+        # either auto flag is enabled; we refine it here based on the actual PR verdict.
         refined_pr: int | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
             candidate, refined_pr = await self._refine_in_review_action(issue_number)
@@ -520,17 +539,12 @@ class TaskProgressionEngine:
                     action=ProgressionAction.WAIT,
                     reason="No PR found for IN_REVIEW issue",
                 )
-
-        # Auto-flag gate: when the relevant auto flag is disabled and require_approval
-        # is also false, there is nothing to do (no auto-exec, no plan). Return WAIT.
-        # When require_approval is true, the decision passes through so the daemon can
-        # store it in the pending plan for human approval.
-        if not self._is_auto_enabled(candidate) and not self._config.require_approval:
-            return ProgressionDecision(
-                issue_number=issue_number,
-                action=ProgressionAction.WAIT,
-                reason=f"Automation disabled for state '{state.value}' (auto flag off, no approval requested)",
-            )
+            if candidate == ProgressionAction.CHECKPOINT_NEEDED:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.CHECKPOINT_NEEDED,
+                    reason=f"Automation disabled for state '{state.value}': requires human approval",
+                )
 
         blockers, discovered_pr = await self._collect_gate_blockers(
             issue_number,
@@ -540,6 +554,7 @@ class TaskProgressionEngine:
             precomputed_rate_limit=precomputed_rate_limit,
             precomputed_quota=precomputed_quota,
             precomputed_slots=precomputed_slots,
+            precomputed_ci_budget=precomputed_ci_budget,
             precomputed_conflicts=precomputed_conflicts,
             precomputed_file_sets=precomputed_file_sets,
             task_labels=task_labels,
@@ -585,6 +600,7 @@ class TaskProgressionEngine:
         precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
         precomputed_quota: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_slots: BlockReason | None | object = _NOT_COMPUTED,
+        precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
         precomputed_conflicts: dict[int, str] | None = None,
         precomputed_file_sets: list[BranchFileSet] | None = None,
         task_labels: list[str] | None = None,
@@ -653,6 +669,7 @@ class TaskProgressionEngine:
             precomputed_slots=precomputed_slots,
             precomputed_memory=precomputed_memory,
             precomputed_rate_limit=rate_limit_block,  # already resolved, pass through
+            precomputed_ci_budget=precomputed_ci_budget,
         )
         blockers.extend(global_blocks)
 
@@ -666,6 +683,7 @@ class TaskProgressionEngine:
         precomputed_slots: BlockReason | None | object,
         precomputed_memory: BlockReason | None | object,
         precomputed_rate_limit: BlockReason | object | None = _NOT_COMPUTED,
+        precomputed_ci_budget: BlockReason | None | object = _NOT_COMPUTED,
     ) -> list[BlockReason]:
         """Resolve precomputed-or-on-demand global gates and return active blockers."""
         blocks: list[BlockReason] = []
@@ -688,6 +706,19 @@ class TaskProgressionEngine:
         if quota_block:
             blocks.append(quota_block)
 
+        # CI budget gate only applies to SPAWN_DEVELOPER (developers trigger CI runs)
+        if precomputed_ci_budget is _NOT_COMPUTED:
+            if candidate == ProgressionAction.SPAWN_DEVELOPER:
+                ci_budget_block = await self._check_ci_budget_gate()
+            else:
+                ci_budget_block = None
+        elif candidate == ProgressionAction.SPAWN_DEVELOPER:
+            ci_budget_block = precomputed_ci_budget
+        else:
+            ci_budget_block = None
+        if ci_budget_block:
+            blocks.append(ci_budget_block)
+
         if precomputed_slots is _NOT_COMPUTED:
             slot_block = await self._check_slot_gate()
         else:
@@ -705,35 +736,35 @@ class TaskProgressionEngine:
         return blocks
 
     def _determine_transition(self, state: TaskState) -> ProgressionAction | None:
-        """Map current state to its candidate action.
+        """Map current state to candidate action based on config flags.
 
-        Pure state-to-action mapping with no policy checks. Returns the action
-        that *would* be taken from this state, or None when no transition exists.
-        Auto-flag and approval gating happen in ``_evaluate_single`` and the daemon.
+        Returns the action to take, CHECKPOINT_NEEDED when a transition is possible but
+        the relevant auto flag is disabled (needs human approval), or None when no
+        transition exists from this state.
         """
         if state == TaskState.TRIAGED:
-            return ProgressionAction.SPAWN_RESEARCHER
+            return (
+                ProgressionAction.SPAWN_RESEARCHER
+                if self._config.auto_research
+                else ProgressionAction.CHECKPOINT_NEEDED
+            )
         if state == TaskState.RESEARCHED:
-            return ProgressionAction.SPAWN_DEVELOPER
+            return (
+                ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
+            )
         if state == TaskState.IN_REVIEW:
-            return ProgressionAction.SPAWN_INTEGRATE
+            # IN_REVIEW has two possible actions: address-review (if SOVA verdict is revise/block)
+            # or integrate (if PR is approved). The actual action is refined in _refine_in_review_action
+            # which checks the SOVA verdict (requires I/O). Return SPAWN_INTEGRATE as a placeholder
+            # if either auto flag is enabled; CHECKPOINT_NEEDED if both are disabled.
+            if self._config.auto_integrate or self._config.auto_address_review:
+                return ProgressionAction.SPAWN_INTEGRATE
+            return ProgressionAction.CHECKPOINT_NEEDED
         # BACKLOG: triage is manual per spec
         # NEEDS_SPEC: human approves spec externally
         # IN_PROGRESS: handled by existing role chaining
         # DONE, HUMAN_ONLY: no action
         return None
-
-    def _is_auto_enabled(self, action: ProgressionAction) -> bool:
-        """Check whether the auto flag for the given action is enabled."""
-        if action == ProgressionAction.SPAWN_RESEARCHER:
-            return self._config.auto_research
-        if action == ProgressionAction.SPAWN_DEVELOPER:
-            return self._config.auto_develop
-        if action == ProgressionAction.SPAWN_INTEGRATE:
-            return self._config.auto_integrate
-        if action == ProgressionAction.SPAWN_ADDRESS_REVIEW:
-            return self._config.auto_address_review
-        return True
 
     def _check_dependency_gate(self, issue: int, graph: DependencyGraph) -> BlockReason | None:
         """Check if all dependencies are DONE (no I/O: reads in-memory graph only)."""
@@ -783,6 +814,40 @@ class TaskProgressionEngine:
                     )
         except Exception:
             log.debug("quota_gate.check_failed", exc_info=True)
+
+        return None
+
+    async def _check_ci_budget_gate(self, *, cfg: ProjectConfig | None = None) -> BlockReason | None:
+        """Check GitHub Actions CI minutes headroom. Blocks SPAWN_DEVELOPER when low. Fail-open."""
+        try:
+            from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, get_ci_budget_tracker
+
+            if cfg is None:
+                cfg = load_config(self._project_dir)
+            if not cfg.github_repo:
+                return None
+            if cfg.supervisor.ci_block_minutes <= 0:
+                return None
+
+            tracker = get_ci_budget_tracker(self._adapter.github_user)
+            budget = await tracker.get_budget(cfg.github_repo, self._adapter.github_user)
+
+            if budget.remaining >= _UNLIMITED_SENTINEL:
+                return None
+
+            # Zero-state from API errors: data unavailable, fail open
+            if budget.total == 0 and budget.remaining == 0:
+                return None
+
+            if budget.remaining < cfg.supervisor.ci_block_minutes:
+                return BlockReason(
+                    gate="ci_budget",
+                    detail=(
+                        f"CI minutes low: {budget.remaining} remaining (threshold: {cfg.supervisor.ci_block_minutes})"
+                    ),
+                )
+        except Exception:
+            log.debug("ci_budget_gate.check_failed", exc_info=True)
 
         return None
 
@@ -1098,8 +1163,9 @@ class TaskProgressionEngine:
     async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, int | None]:
         """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
 
-        Returns (action, pr_number). Pure action mapping: auto-flag and approval
-        gating happen in ``_evaluate_single`` via ``_is_auto_enabled``.
+        Returns (action, pr_number). Checks the SOVA review verdict to decide
+        between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
+        (verdict is approve or no review exists).
         """
         pr_number = await self._find_pr_for_issue(issue)
         if pr_number is None:
@@ -1109,15 +1175,21 @@ class TaskProgressionEngine:
             verdict_data = await get_sova_review_verdict(str(issue), pr_number=pr_number, project_dir=self._project_dir)
         except Exception:
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
-            return ProgressionAction.SPAWN_INTEGRATE, pr_number
+            if self._config.auto_integrate:
+                return ProgressionAction.SPAWN_INTEGRATE, pr_number
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
 
         verdict = verdict_data.get("verdict")
         has_review = verdict_data.get("has_sova_review", False)
 
         if has_review and verdict in ("revise", "block"):
-            return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
+            if self._config.auto_address_review:
+                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
 
-        return ProgressionAction.SPAWN_INTEGRATE, pr_number
+        if self._config.auto_integrate:
+            return ProgressionAction.SPAWN_INTEGRATE, pr_number
+        return ProgressionAction.CHECKPOINT_NEEDED, pr_number
 
     async def _check_address_review_circuit_breaker_gate(
         self, issue: int, *, pr_number: int | None

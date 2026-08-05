@@ -159,6 +159,51 @@ async def stop_supervisor() -> dict[str, Any]:
         return {"stopped": True, "running": False}
 
 
+_CI_BUDGET_ZERO = {
+    "total": 0,
+    "used": 0,
+    "remaining": 0,
+    "pct_used": 0.0,
+    "warn": False,
+    "block": False,
+    "cached": False,
+}
+
+
+@router.get("/ci-budget")
+async def get_ci_budget() -> dict:
+    """Return current GitHub Actions CI minutes usage and threshold status."""
+    from sova.config.loader import load_config
+    from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, get_ci_budget_tracker
+
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    if not cfg.github_repo:
+        return dict(_CI_BUDGET_ZERO)
+
+    try:
+        tracker = get_ci_budget_tracker(cfg.github_user)
+        budget = await tracker.get_budget(cfg.github_repo, cfg.github_user)
+    except Exception:
+        log.warning("ci_budget.endpoint_failed", exc_info=True)
+        return dict(_CI_BUDGET_ZERO)
+
+    if budget.total == 0 and budget.remaining == 0:
+        return dict(_CI_BUDGET_ZERO)
+
+    warn = budget.remaining < cfg.supervisor.ci_warn_minutes and budget.remaining < _UNLIMITED_SENTINEL
+    block = budget.remaining < cfg.supervisor.ci_block_minutes and budget.remaining < _UNLIMITED_SENTINEL
+    return {
+        "total": budget.total,
+        "used": budget.used,
+        "remaining": budget.remaining,
+        "pct_used": budget.pct_used,
+        "warn": warn,
+        "block": block,
+        "cached": bool(tracker._cache),
+    }
+
+
 @router.get("/counts")
 async def get_counts() -> dict:
     """Return per-component decision counts."""

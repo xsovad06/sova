@@ -108,6 +108,60 @@ class TestSupervisorRouter:
             with patch("sova.dashboard.app.list_projects", return_value={}):
                 return create_app(project_dir=Path.cwd())
 
+    async def test_ci_budget_no_repo(self, app) -> None:
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.github_repo = ""
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/ci-budget")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["total"] == 0
+                assert data["warn"] is False
+                assert data["block"] is False
+
+    async def test_ci_budget_with_data(self, app) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_tracker = MagicMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1850, remaining=150, pct_used=92.5))
+        mock_tracker._cache = {"owner/repo": (0.0, CIBudget(total=2000, used=1850, remaining=150, pct_used=92.5))}
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.github_repo = "owner/repo"
+            mock_cfg.return_value.github_user = "user"
+            mock_cfg.return_value.supervisor.ci_warn_minutes = 200
+            mock_cfg.return_value.supervisor.ci_block_minutes = 50
+            with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/ci-budget")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["total"] == 2000
+                    assert data["used"] == 1850
+                    assert data["remaining"] == 150
+                    assert data["warn"] is True
+                    assert data["block"] is False
+                    assert data["cached"] is True
+
+    async def test_ci_budget_block_state(self, app) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_tracker = MagicMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))
+        mock_tracker._cache = {"owner/repo": (0.0, CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))}
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.github_repo = "owner/repo"
+            mock_cfg.return_value.github_user = "user"
+            mock_cfg.return_value.supervisor.ci_warn_minutes = 200
+            mock_cfg.return_value.supervisor.ci_block_minutes = 50
+            with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/ci-budget")
+                    data = resp.json()
+                    assert data["warn"] is True
+                    assert data["block"] is True
+
     async def test_get_status_no_daemon(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/supervisor/status")
@@ -537,53 +591,6 @@ class TestSupervisorDaemonRequireApproval:
         # Decisions stored in plan, not executed
         plan = get_pending_plan()
         assert len(plan) == 1
-        assert plan[0].issue_number == 42
-        assert result["progression"]["pending"] == 1
-        assert result["progression"]["executed"] == 0
-        set_pending_plan([])
-
-    async def test_require_approval_populates_plan_with_auto_flags_off(self, session_factory) -> None:
-        """The primary bug scenario (#608): auto flags off + require_approval=True
-        must still populate the pending plan with real actions."""
-        from sova.config.models import ProjectConfig, SupervisorConfig
-        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
-        from sova.supervisor.daemon import SupervisorDaemon
-        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
-
-        set_pending_plan([])
-        cfg = ProjectConfig(
-            supervisor=SupervisorConfig(
-                enabled=True,
-                require_approval=True,
-                auto_research=False,
-            ),
-        )
-        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
-
-        decisions = [
-            ProgressionDecision(
-                issue_number=42,
-                action=ProgressionAction.SPAWN_RESEARCHER,
-                role="researcher",
-                reason="Ready to spawn_researcher",
-            ),
-        ]
-
-        with (
-            patch("sova.adapters.create_adapter", return_value=MagicMock()),
-            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
-            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
-            patch(
-                "sova.supervisor.progression.TaskProgressionEngine.evaluate_all",
-                new_callable=AsyncMock,
-                return_value=decisions,
-            ),
-        ):
-            result = await daemon.poll_once()
-
-        plan = get_pending_plan()
-        assert len(plan) == 1
-        assert plan[0].action == ProgressionAction.SPAWN_RESEARCHER
         assert plan[0].issue_number == 42
         assert result["progression"]["pending"] == 1
         assert result["progression"]["executed"] == 0

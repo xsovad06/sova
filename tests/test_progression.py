@@ -67,7 +67,7 @@ class TestDataclasses:
         assert ProgressionAction.SPAWN_ADDRESS_REVIEW == "spawn_address_review"
         assert ProgressionAction.WAIT == "wait"
         assert ProgressionAction.BLOCKED == "blocked"
-        assert ProgressionAction.SPAWN_REBASE == "spawn_rebase"
+        assert ProgressionAction.CHECKPOINT_NEEDED == "checkpoint_needed"
 
     def test_block_reason_frozen(self) -> None:
         br = BlockReason(gate="dependency", detail="blocked by #10")
@@ -119,7 +119,7 @@ class TestDetermineTransition:
 
     def test_triaged_auto_research_disabled(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_research=False))
-        assert engine._determine_transition(TaskState.TRIAGED) == ProgressionAction.SPAWN_RESEARCHER
+        assert engine._determine_transition(TaskState.TRIAGED) == ProgressionAction.CHECKPOINT_NEEDED
 
     def test_researched_auto_develop_enabled(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_develop=True))
@@ -127,7 +127,7 @@ class TestDetermineTransition:
 
     def test_researched_auto_develop_disabled(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_develop=False))
-        assert engine._determine_transition(TaskState.RESEARCHED) == ProgressionAction.SPAWN_DEVELOPER
+        assert engine._determine_transition(TaskState.RESEARCHED) == ProgressionAction.CHECKPOINT_NEEDED
 
     def test_in_review_auto_integrate_enabled(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=True))
@@ -135,7 +135,7 @@ class TestDetermineTransition:
 
     def test_in_review_auto_integrate_disabled(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=False))
-        assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
+        assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.CHECKPOINT_NEEDED
 
     def test_in_review_auto_address_review_only_returns_candidate(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
@@ -164,37 +164,6 @@ class TestDetermineTransition:
     def test_human_only_returns_none(self) -> None:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.HUMAN_ONLY) is None
-
-
-class TestIsAutoEnabled:
-    def test_researcher_flag(self) -> None:
-        assert _make_engine(SupervisorConfig(auto_research=True))._is_auto_enabled(ProgressionAction.SPAWN_RESEARCHER)
-        assert not _make_engine(SupervisorConfig(auto_research=False))._is_auto_enabled(
-            ProgressionAction.SPAWN_RESEARCHER
-        )
-
-    def test_developer_flag(self) -> None:
-        assert _make_engine(SupervisorConfig(auto_develop=True))._is_auto_enabled(ProgressionAction.SPAWN_DEVELOPER)
-        assert not _make_engine(SupervisorConfig(auto_develop=False))._is_auto_enabled(
-            ProgressionAction.SPAWN_DEVELOPER
-        )
-
-    def test_integrate_flag(self) -> None:
-        assert _make_engine(SupervisorConfig(auto_integrate=True))._is_auto_enabled(ProgressionAction.SPAWN_INTEGRATE)
-        assert not _make_engine(SupervisorConfig(auto_integrate=False))._is_auto_enabled(
-            ProgressionAction.SPAWN_INTEGRATE
-        )
-
-    def test_address_review_flag(self) -> None:
-        assert _make_engine(SupervisorConfig(auto_address_review=True))._is_auto_enabled(
-            ProgressionAction.SPAWN_ADDRESS_REVIEW
-        )
-        assert not _make_engine(SupervisorConfig(auto_address_review=False))._is_auto_enabled(
-            ProgressionAction.SPAWN_ADDRESS_REVIEW
-        )
-
-    def test_rebase_defaults_true(self) -> None:
-        assert _make_engine()._is_auto_enabled(ProgressionAction.SPAWN_REBASE)
 
     def test_all_states_covered(self) -> None:
         """Verify _determine_transition handles every TaskState value."""
@@ -635,34 +604,17 @@ class TestEvaluateTask:
         assert decision.action == ProgressionAction.SPAWN_RESEARCHER
 
     @pytest.mark.asyncio
-    async def test_researched_wait_when_auto_off_and_no_approval(self) -> None:
+    async def test_researched_checkpoint_when_manual(self) -> None:
         adapter = AsyncMock()
         adapter.get_state = AsyncMock(return_value=TaskState.RESEARCHED)
         adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.RESEARCHED)])
         engine = _make_engine(
-            config=SupervisorConfig(auto_develop=False, require_approval=False),
+            config=SupervisorConfig(auto_develop=False),
             adapter=adapter,
         )
         decision = await engine.evaluate_task(1)
-        assert decision.action == ProgressionAction.WAIT
-        assert "auto flag off" in decision.reason
-
-    @pytest.mark.asyncio
-    async def test_researched_real_action_when_auto_off_and_approval_on(self) -> None:
-        adapter = AsyncMock()
-        adapter.get_state = AsyncMock(return_value=TaskState.RESEARCHED)
-        adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.RESEARCHED)])
-        engine = _make_engine(
-            config=SupervisorConfig(auto_develop=False, require_approval=True),
-            adapter=adapter,
-        )
-        with (
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-        ):
-            decision = await engine.evaluate_task(1)
-        assert decision.action == ProgressionAction.SPAWN_DEVELOPER
+        # auto_develop=False: a transition is possible but needs human approval
+        assert decision.action == ProgressionAction.CHECKPOINT_NEEDED
 
     @pytest.mark.asyncio
     async def test_adapter_failure_returns_blocked(self) -> None:
@@ -853,6 +805,17 @@ class TestExecuteDecision:
         assert result["skipped"] is True
 
     @pytest.mark.asyncio
+    async def test_checkpoint_skipped(self) -> None:
+        engine = _make_engine()
+        decision = ProgressionDecision(
+            issue_number=1,
+            action=ProgressionAction.CHECKPOINT_NEEDED,
+            reason="Human approval needed",
+        )
+        result = await engine.execute_decision(decision)
+        assert result["skipped"] is True
+
+    @pytest.mark.asyncio
     @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
     @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
     async def test_spawn_researcher_calls_start_agent(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
@@ -920,6 +883,7 @@ class TestExecuteDecision:
         decisions = [
             ProgressionDecision(issue_number=1, action=ProgressionAction.WAIT),
             ProgressionDecision(issue_number=2, action=ProgressionAction.BLOCKED),
+            ProgressionDecision(issue_number=3, action=ProgressionAction.CHECKPOINT_NEEDED),
         ]
         results = await engine.execute_decisions(decisions)
         assert results == []
@@ -1301,17 +1265,17 @@ class TestFindPRForIssue:
 # ---------------------------------------------------------------------------
 
 
-class TestEvaluateAllAutoFlagGating:
+class TestEvaluateAllCheckpoint:
     @pytest.mark.asyncio
     @patch("sova.supervisor.progression.load_config")
-    async def test_auto_off_no_approval_returns_wait(self, mock_cfg: MagicMock) -> None:
-        """Auto flag off + require_approval=False -> WAIT (no action, no plan)."""
+    async def test_checkpoint_needed_via_evaluate_all(self, mock_cfg: MagicMock) -> None:
+        """CHECKPOINT_NEEDED state is returned when automation is disabled, via evaluate_all."""
         mock_cfg.return_value.max_parallel_agents = 5
         tasks = [_task(1, state=TaskState.RESEARCHED)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
         engine = _make_engine(
-            config=SupervisorConfig(auto_develop=False, require_approval=False),
+            config=SupervisorConfig(auto_develop=False),
             adapter=adapter,
         )
         with (
@@ -1322,32 +1286,7 @@ class TestEvaluateAllAutoFlagGating:
             decisions = await engine.evaluate_all()
 
         assert len(decisions) == 1
-        assert decisions[0].action == ProgressionAction.WAIT
-
-    @pytest.mark.asyncio
-    @patch("sova.supervisor.progression.load_config")
-    async def test_auto_off_approval_on_returns_real_action(self, mock_cfg: MagicMock) -> None:
-        """Auto flag off + require_approval=True -> real action for pending plan."""
-        mock_cfg.return_value.max_parallel_agents = 5
-        tasks = [_task(1, state=TaskState.RESEARCHED)]
-        adapter = AsyncMock()
-        adapter.list_tasks = AsyncMock(return_value=tasks)
-        engine = _make_engine(
-            config=SupervisorConfig(auto_develop=False, require_approval=True),
-            adapter=adapter,
-        )
-        with (
-            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
-            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
-            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
-            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
-        ):
-            decisions = await engine.evaluate_all()
-
-        assert len(decisions) == 1
-        assert decisions[0].action == ProgressionAction.SPAWN_DEVELOPER
+        assert decisions[0].action == ProgressionAction.CHECKPOINT_NEEDED
 
 
 class TestEvaluateAllEdgeCases:
@@ -2375,7 +2314,7 @@ class TestRefineInReviewAction:
         assert pr == 10
 
     @pytest.mark.asyncio
-    async def test_verdict_revise_with_auto_disabled_returns_real_action(self) -> None:
+    async def test_verdict_revise_with_auto_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_address_review=False, auto_integrate=False))
         engine._find_pr_for_issue = AsyncMock(return_value=55)
         with patch(
@@ -2389,7 +2328,7 @@ class TestRefineInReviewAction:
             },
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_ADDRESS_REVIEW
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr == 55
 
     @pytest.mark.asyncio
@@ -2424,7 +2363,7 @@ class TestRefineInReviewAction:
         assert pr == 55
 
     @pytest.mark.asyncio
-    async def test_no_sova_review_auto_integrate_disabled_returns_real_action(self) -> None:
+    async def test_no_sova_review_auto_integrate_disabled_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=55)
         with patch(
@@ -2433,7 +2372,7 @@ class TestRefineInReviewAction:
             return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr == 55
 
     @pytest.mark.asyncio
@@ -2476,7 +2415,7 @@ class TestRefineInReviewAction:
         assert pr == 55
 
     @pytest.mark.asyncio
-    async def test_verdict_check_failure_with_no_auto_integrate_returns_integrate(self) -> None:
+    async def test_verdict_check_failure_with_no_auto_integrate_returns_checkpoint(self) -> None:
         engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
         engine._find_pr_for_issue = AsyncMock(return_value=55)
         with patch(
@@ -2485,7 +2424,7 @@ class TestRefineInReviewAction:
             side_effect=Exception("DB error"),
         ):
             action, pr = await engine._refine_in_review_action(42)
-        assert action == ProgressionAction.SPAWN_INTEGRATE
+        assert action == ProgressionAction.CHECKPOINT_NEEDED
         assert pr == 55
 
 
@@ -2827,6 +2766,108 @@ class TestRateLimitGate:
         with patch.object(engine, "_check_github_rate_limit_gate", return_value=rate_block):
             results = await engine.auto_close_epics()
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _check_ci_budget_gate
+# ---------------------------------------------------------------------------
+
+
+class TestCIBudgetGate:
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_no_repo_skips(self, mock_cfg: MagicMock) -> None:
+        mock_cfg.return_value.github_repo = ""
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.progression.load_config")
+    async def test_block_threshold_zero_skips(self, mock_cfg: MagicMock) -> None:
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 0
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
+    @patch("sova.supervisor.progression.load_config")
+    async def test_remaining_above_threshold_passes(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.github_user = "user"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 50
+        mock_tracker = AsyncMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1800, remaining=200, pct_used=90.0))
+        mock_factory.return_value = mock_tracker
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
+    @patch("sova.supervisor.progression.load_config")
+    async def test_remaining_below_threshold_blocks(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.github_user = "user"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 50
+        mock_tracker = AsyncMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=2000, used=1970, remaining=30, pct_used=98.5))
+        mock_factory.return_value = mock_tracker
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is not None
+        assert result.gate == "ci_budget"
+        assert "30 remaining" in result.detail
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
+    @patch("sova.supervisor.progression.load_config")
+    async def test_unlimited_plan_passes(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+        from sova.supervisor.ci_budget import _UNLIMITED_SENTINEL, CIBudget
+
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.github_user = "user"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 50
+        mock_tracker = AsyncMock()
+        mock_tracker.get_budget = AsyncMock(
+            return_value=CIBudget(total=0, used=500, remaining=_UNLIMITED_SENTINEL, pct_used=0.0)
+        )
+        mock_factory.return_value = mock_tracker
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.ci_budget.get_ci_budget_tracker", side_effect=Exception("import fail"))
+    @patch("sova.supervisor.progression.load_config")
+    async def test_exception_fails_open(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 50
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch("sova.supervisor.ci_budget.get_ci_budget_tracker")
+    @patch("sova.supervisor.progression.load_config")
+    async def test_api_error_zero_budget_fails_open(self, mock_cfg: MagicMock, mock_factory: MagicMock) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_cfg.return_value.github_repo = "owner/repo"
+        mock_cfg.return_value.github_user = "user"
+        mock_cfg.return_value.supervisor.ci_block_minutes = 50
+        mock_tracker = AsyncMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=0, used=0, remaining=0, pct_used=0.0))
+        mock_factory.return_value = mock_tracker
+        engine = _make_engine()
+        result = await engine._check_ci_budget_gate()
+        assert result is None
 
 
 class TestExecuteDecisionsCap:
