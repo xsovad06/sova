@@ -581,6 +581,14 @@ def create_app(
         return {"status": "ok"}
 
     app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
+
+    @app.middleware("http")
+    async def static_cache_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        response = await call_next(request)
+        if request.url.path.startswith("/static/") and response.status_code < 400:
+            response.headers["Cache-Control"] = "public, max-age=3600"
+        return response
+
     templates = Jinja2Templates(directory=BASE / "templates")
 
     if is_multi:

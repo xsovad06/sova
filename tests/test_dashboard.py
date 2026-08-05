@@ -252,6 +252,16 @@ class TestDashboardHealth:
         resp = await client.get("/static/app.js")
         assert resp.status_code == 200
 
+    async def test_static_cache_header_on_success(self, client: AsyncClient) -> None:
+        resp = await client.get("/static/style.css")
+        assert resp.status_code == 200
+        assert resp.headers.get("cache-control") == "public, max-age=3600"
+
+    async def test_static_cache_header_absent_on_404(self, client: AsyncClient) -> None:
+        resp = await client.get("/static/nonexistent-file.xyz")
+        assert resp.status_code == 404
+        assert "max-age" not in resp.headers.get("cache-control", "")
+
     async def test_status_badge_has_step_label_mapping(self, client: AsyncClient) -> None:
         resp = await client.get("/static/app.js")
         js = resp.text
@@ -7088,6 +7098,11 @@ class TestIssueBudgetCheck:
 
 class TestMemoryPressureGate:
     """check_memory_pressure blocks, warns, or clears based on available memory."""
+
+    def setup_method(self) -> None:
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache.clear()
 
     def test_blocks_when_below_block_threshold(self) -> None:
         from pathlib import Path
@@ -14560,6 +14575,11 @@ class TestCheckMemoryPressure:
 
 
 class TestResourceServiceMemoryPressure:
+    def setup_method(self) -> None:
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache.clear()
+
     def test_get_memory_guard_config_returns_config(self) -> None:
         from unittest.mock import patch
 
