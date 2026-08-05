@@ -834,6 +834,43 @@ class TestTransitionState:
         assert not put_issue.called
 
 
+class TestTriggerTransitionEdgeCases:
+    @respx.mock
+    async def test_no_transitions_available(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": []}),
+        )
+        post_route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+        assert not post_route.called
+
+    @respx.mock
+    async def test_no_matching_transition_name(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "99", "name": "Unrelated Action"}]}),
+        )
+        post_route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+        assert not post_route.called
+
+    @respx.mock
+    async def test_transition_post_failure(self) -> None:
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(200, json={"transitions": [{"id": "31", "name": "In Progress"}]}),
+        )
+        respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(500, json={"error": "Internal Server Error"}),
+        )
+        await adapter._trigger_transition("TEST-1", TaskState.IN_PROGRESS)
+
+
 class TestGetPrReviews:
     async def test_returns_empty_list(self) -> None:
         adapter = _adapter()

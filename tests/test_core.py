@@ -5126,6 +5126,26 @@ class TestRebaseStep:
         assert result.success
         assert "2 conflicts resolved" in result.summary
 
+    async def test_clean_rebase_same_dir_skips_artifacts(self) -> None:
+        """When working_dir == project_dir, ensure_claude_artifacts is not called."""
+        from sova.core.steps.rebase import RebaseStep
+
+        ctx = _make_ctx(branch_name="feat/test")
+        step = RebaseStep()
+
+        with (
+            patch("sova.core.steps.rebase.rebase_with_conflict_resolution", new_callable=AsyncMock) as mock_rebase,
+            patch("sova.core.steps.rebase.ensure_claude_artifacts") as mock_artifacts,
+        ):
+            mock_rebase.return_value = (
+                MagicMock(success=True, conflicts_resolved=0),
+                Decimal("0"),
+            )
+            result = await step.execute(ctx)
+
+        assert result.success
+        mock_artifacts.assert_not_called()
+
     async def test_rebase_failure(self) -> None:
         from sova.core.steps.rebase import RebaseStep
 

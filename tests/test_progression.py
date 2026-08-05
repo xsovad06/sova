@@ -1627,6 +1627,71 @@ class TestResolveGlobalGates:
         gates = {b.gate for b in blocks}
         assert gates == {"quota", "slots", "memory"}
 
+    @pytest.mark.asyncio
+    async def test_precomputed_ci_budget_blocks_developer(self) -> None:
+        """Precomputed CI budget blocker is used when candidate is SPAWN_DEVELOPER."""
+        engine = _make_engine()
+        ci_block = BlockReason(gate="ci_budget", detail="30 remaining < 50 threshold")
+        blocks = await engine._resolve_global_gates(
+            ProgressionAction.SPAWN_DEVELOPER,
+            precomputed_quota=None,
+            precomputed_slots=None,
+            precomputed_memory=None,
+            precomputed_ci_budget=ci_block,
+        )
+        assert len(blocks) == 1
+        assert blocks[0].gate == "ci_budget"
+
+    @pytest.mark.asyncio
+    async def test_precomputed_ci_budget_ignored_for_researcher(self) -> None:
+        """Precomputed CI budget blocker is ignored for non-developer actions."""
+        engine = _make_engine()
+        ci_block = BlockReason(gate="ci_budget", detail="30 remaining < 50 threshold")
+        blocks = await engine._resolve_global_gates(
+            ProgressionAction.SPAWN_RESEARCHER,
+            precomputed_quota=None,
+            precomputed_slots=None,
+            precomputed_memory=None,
+            precomputed_ci_budget=ci_block,
+        )
+        assert len(blocks) == 0
+
+    @pytest.mark.asyncio
+    async def test_on_demand_ci_budget_gate_for_developer(self) -> None:
+        """When ci_budget is _NOT_COMPUTED and candidate is SPAWN_DEVELOPER, computed on demand."""
+        from sova.supervisor.progression import _NOT_COMPUTED
+
+        engine = _make_engine()
+        ci_block = BlockReason(gate="ci_budget", detail="low minutes")
+        with patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock, return_value=ci_block) as mock_cb:
+            blocks = await engine._resolve_global_gates(
+                ProgressionAction.SPAWN_DEVELOPER,
+                precomputed_quota=None,
+                precomputed_slots=None,
+                precomputed_memory=None,
+                precomputed_ci_budget=_NOT_COMPUTED,
+            )
+        mock_cb.assert_called_once()
+        assert len(blocks) == 1
+        assert blocks[0].gate == "ci_budget"
+
+    @pytest.mark.asyncio
+    async def test_on_demand_ci_budget_gate_skipped_for_researcher(self) -> None:
+        """When ci_budget is _NOT_COMPUTED and candidate is SPAWN_RESEARCHER, gate is skipped."""
+        from sova.supervisor.progression import _NOT_COMPUTED
+
+        engine = _make_engine()
+        with patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock) as mock_cb:
+            blocks = await engine._resolve_global_gates(
+                ProgressionAction.SPAWN_RESEARCHER,
+                precomputed_quota=None,
+                precomputed_slots=None,
+                precomputed_memory=None,
+                precomputed_ci_budget=_NOT_COMPUTED,
+            )
+        mock_cb.assert_not_called()
+        assert len(blocks) == 0
+
 
 # ---------------------------------------------------------------------------
 # _check_file_overlap_gate
