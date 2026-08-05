@@ -29,6 +29,7 @@ def _task(
     body: str = "",
     state: TaskState = TaskState.BACKLOG,
     milestone: str = "",
+    labels: list[str] | None = None,
 ) -> Task:
     return Task(
         id=str(issue_id),
@@ -36,6 +37,7 @@ def _task(
         body=body,
         state=state,
         milestone=milestone,
+        labels=labels or [],
     )
 
 
@@ -233,6 +235,18 @@ class TestDependencyGate:
         assert result is not None
         assert result.gate == "dependency"
         assert "missing" in result.detail.lower()
+
+    def test_epic_dependency_does_not_block(self) -> None:
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        tasks = [
+            _task(99, state=TaskState.HUMAN_ONLY, labels=["type: epic", "agent:human-only"]),
+            _task(1, body="## Dependencies\n- Part of #99\n", state=TaskState.TRIAGED),
+        ]
+        graph = DependencyGraph(tasks)
+        engine = _make_engine()
+        result = engine._check_dependency_gate(1, graph)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

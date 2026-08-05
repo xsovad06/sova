@@ -24,7 +24,7 @@ from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_r
 from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
 from sova.git.pr import PRInfo, find_pr_for_issue
-from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
+from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, is_epic
 from sova.supervisor.file_overlap import (
     BranchFileSet,
     check_file_overlap,
@@ -460,7 +460,6 @@ class TaskProgressionEngine:
         When ``graph`` is provided (e.g. from a prior ``evaluate_all`` call),
         it is reused to avoid a redundant ``list_tasks`` API call.
         """
-        from sova.supervisor.dependency_graph import is_epic
 
         if graph is None:
             graph = self._last_graph
@@ -771,7 +770,11 @@ class TaskProgressionEngine:
         return None
 
     def _check_dependency_gate(self, issue: int, graph: DependencyGraph) -> BlockReason | None:
-        """Check if all dependencies are DONE (no I/O: reads in-memory graph only)."""
+        """Check if all non-epic dependencies are DONE (no I/O: reads in-memory graph only).
+
+        Epic dependencies are skipped: epics are tracking containers,
+        not real blockers.
+        """
         deps = graph.get_dependencies(issue)
         if not deps:
             return None
@@ -783,6 +786,8 @@ class TaskProgressionEngine:
                     gate="dependency",
                     detail=f"Dependency #{dep_id} not found (missing reference)",
                 )
+            if is_epic(dep_task.labels):
+                continue
             if dep_task.state != TaskState.DONE:
                 return BlockReason(
                     gate="dependency",

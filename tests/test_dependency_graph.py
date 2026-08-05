@@ -29,6 +29,7 @@ def _task(
     body: str = "",
     state: TaskState = TaskState.BACKLOG,
     milestone: str = "",
+    labels: list[str] | None = None,
 ) -> Task:
     return Task(
         id=str(issue_id),
@@ -36,6 +37,7 @@ def _task(
         body=body,
         state=state,
         milestone=milestone,
+        labels=labels or [],
     )
 
 
@@ -460,6 +462,26 @@ class TestDependencyGraph:
         ]
         graph = DependencyGraph(tasks)
         assert graph.get_ready_tasks() == [2]
+
+    def test_epic_dependency_does_not_block_children(self) -> None:
+        """Children of an epic should be ready even when the epic is not DONE."""
+        tasks = [
+            _task(99, state=TaskState.HUMAN_ONLY, labels=["type: epic", "agent:human-only"]),
+            _task(1, body="## Dependencies\n- Part of #99\n", state=TaskState.BACKLOG),
+            _task(2, body="## Dependencies\n- Part of #99\n", state=TaskState.BACKLOG),
+        ]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == [1, 2]
+
+    def test_epic_dependency_mixed_with_real_dependency(self) -> None:
+        """Epic dep is skipped but a real non-done dep still blocks."""
+        tasks = [
+            _task(99, state=TaskState.HUMAN_ONLY, labels=["type: epic"]),
+            _task(10, state=TaskState.BACKLOG),
+            _task(1, body="## Dependencies\n- #99\n- #10\n", state=TaskState.BACKLOG),
+        ]
+        graph = DependencyGraph(tasks)
+        assert 1 not in graph.get_ready_tasks()
 
     def test_has_task(self) -> None:
         graph = DependencyGraph([_task(42)])

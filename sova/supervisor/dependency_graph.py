@@ -183,7 +183,11 @@ class DependencyGraph:
         )
 
     def _are_dependencies_satisfied(self, task_id: int, all_ids: set[int]) -> bool:
-        """Check if all dependencies of a task are known and DONE."""
+        """Check if all non-epic dependencies of a task are known and DONE.
+
+        Epic dependencies are skipped: epics are tracking containers,
+        not real blockers.
+        """
         deps = self._deps.get(task_id, set())
         if not deps:
             return True
@@ -191,12 +195,14 @@ class DependencyGraph:
             if dep not in all_ids:
                 return False
             dep_task = self._tasks[dep]
+            if is_epic(dep_task.labels):
+                continue
             if dep_task.state != TaskState.DONE:
                 return False
         return True
 
     def get_ready_tasks(self) -> list[int]:
-        """Issues whose dependencies are all DONE (ready to work on).
+        """Issues whose non-epic dependencies are all DONE (ready to work on).
 
         Missing deps are treated as blocking (fail-closed).
         Issues already in progress, in review, done, or human-only are excluded.
