@@ -545,6 +545,11 @@ class TestAgentLiveMetrics:
 
 
 class TestSystemMetricsService:
+    def setup_method(self) -> None:
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache.clear()
+
     def test_returns_available_and_system_data(self) -> None:
         from sova.dashboard.services.resource_service import get_system_metrics
 
@@ -675,6 +680,11 @@ class TestSystemMetricsService:
 
 
 class TestSystemMetricsRouter:
+    def setup_method(self) -> None:
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache.clear()
+
     @pytest.mark.asyncio
     async def test_system_metrics_endpoint(self, client: AsyncClient) -> None:
         resp = await client.get("/api/resources/system/metrics")
@@ -697,7 +707,13 @@ class TestSystemMetricsRouter:
 
 
 class TestSystemMetricsHistory:
+    def setup_method(self) -> None:
+        import sova.dashboard.services.resource_service as rs
+
+        rs._metrics_cache.clear()
+
     def test_history_accumulates(self) -> None:
+        import sova.dashboard.services.resource_service as rs
         from sova.dashboard.services.resource_service import (
             _system_metrics_history,
             get_system_metrics,
@@ -705,9 +721,9 @@ class TestSystemMetricsHistory:
         )
 
         _system_metrics_history.clear()
-        get_system_metrics()
-        get_system_metrics()
-        get_system_metrics()
+        for _ in range(3):
+            rs._metrics_cache.clear()
+            get_system_metrics()
 
         history = get_system_metrics_history()
         assert len(history) == 3
@@ -717,6 +733,7 @@ class TestSystemMetricsHistory:
             assert "timestamp" in entry
 
     def test_history_respects_max_size(self) -> None:
+        import sova.dashboard.services.resource_service as rs
         from sova.dashboard.services.resource_service import (
             _SYSTEM_HISTORY_MAX,
             _system_metrics_history,
@@ -726,6 +743,7 @@ class TestSystemMetricsHistory:
 
         _system_metrics_history.clear()
         for _ in range(_SYSTEM_HISTORY_MAX + 10):
+            rs._metrics_cache.clear()
             get_system_metrics()
 
         history = get_system_metrics_history()
@@ -760,13 +778,16 @@ class TestSystemMetricsHistory:
 
     @pytest.mark.asyncio
     async def test_history_endpoint(self, client: AsyncClient) -> None:
+        import sova.dashboard.services.resource_service as rs
         from sova.dashboard.services.resource_service import (
             _system_metrics_history,
             get_system_metrics,
         )
 
         _system_metrics_history.clear()
+        rs._metrics_cache.clear()
         get_system_metrics()
+        rs._metrics_cache.clear()
         get_system_metrics()
 
         resp = await client.get("/api/resources/system/history")

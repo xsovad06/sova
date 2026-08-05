@@ -51,6 +51,10 @@ def _get_memory_guard_config() -> MemoryGuardConfig | None:
 
 _history_lock = threading.Lock()
 
+_METRICS_CACHE_TTL = 3.0
+_metrics_cache: dict[str | None, tuple[float, dict]] = {}
+_metrics_cache_lock = threading.Lock()
+
 
 async def get_resource_summary(session: AsyncSession, run_id: int) -> dict | None:
     """Get the persisted resource summary for a run, or None if absent."""
@@ -117,7 +121,16 @@ def get_system_metrics(slug: str | None = None) -> dict:
     """Get real-time system metrics and per-agent resource data.
 
     No DB queries -- reads from psutil and the in-memory agent pool.
+    Results are cached for 3 seconds to avoid redundant psutil calls
+    when multiple pollers hit this endpoint concurrently.
     """
+    with _metrics_cache_lock:
+        entry = _metrics_cache.get(slug)
+        if entry is not None:
+            cached_ts, cached_result = entry
+            if (time.monotonic() - cached_ts) < _METRICS_CACHE_TTL:
+                return cached_result
+
     try:
         cpu_percent: float | None = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory()
@@ -170,7 +183,7 @@ def get_system_metrics(slug: str | None = None) -> dict:
         elif memory_available_gb < guard.warn_threshold_gb:
             pressure_level = "warning"
 
-    return {
+    result = {
         "available": True,
         "system": {
             "cpu_percent": cpu_percent,
@@ -188,6 +201,13 @@ def get_system_metrics(slug: str | None = None) -> dict:
             "max": pa.max_concurrent,
         },
     }
+    with _metrics_cache_lock:
+        now = time.monotonic()
+        expired = [k for k, (ts, _) in _metrics_cache.items() if (now - ts) >= _METRICS_CACHE_TTL]
+        for k in expired:
+            del _metrics_cache[k]
+        _metrics_cache[slug] = (now, result)
+    return result
 
 
 def get_system_metrics_history() -> list[dict]:
