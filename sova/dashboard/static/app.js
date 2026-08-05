@@ -432,6 +432,7 @@ document.addEventListener('visibilitychange', function() {
 async function _pollActivity() {
   try {
     var data = await fetchAPI(apiUrl('/agents/active'));
+    window._sovaActiveAgents = { data: data, ts: Date.now() };
     var dot = document.getElementById('activity-dot');
     if (!dot) return;
 

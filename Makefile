@@ -1,4 +1,4 @@
-.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help
+.PHONY: serve dev test lint lint-bash lint-py format check install-deps setup help css css-watch
 
 SHELL := /bin/bash
 
@@ -57,6 +57,14 @@ lint-py: ## Ruff lint + format check
 format: ## Auto-format Python code
 	$(RUFF) format sova/ tests/
 	$(RUFF) check --fix sova/ tests/
+
+# ── CSS ───────────────────────────────────────────────────────
+
+css: ## Rebuild Tailwind CSS (run after changing template classes)
+	npx tailwindcss@3 -o sova/dashboard/static/tailwind.min.css --minify
+
+css-watch: ## Watch and rebuild Tailwind CSS on template changes
+	npx tailwindcss@3 -o sova/dashboard/static/tailwind.min.css --minify --watch
 
 # ── Setup ─────────────────────────────────────────────────────
 

@@ -75,9 +75,11 @@ main() {
     if [ -n "$transcript_path" ] && [ -f "$transcript_path" ]; then
         # Single pass extraction: model, aggregated tokens, and timestamps
         local transcript_data
+        # Model and usage live at .message.model / .message.usage (Claude Code transcript format).
+        # Fall back to root .model / .usage for older formats.
         transcript_data="$(jq -s '{
-            model: (map(select(.model != null) | .model) | first),
-            usage: ([.[] | select(.usage != null) | .usage] | {
+            model: ([.[] | ((.message // {}).model // .model) | select(. != null)] | first),
+            usage: ([.[] | ((.message // {}).usage // .usage) | select(. != null)] | {
                 input: (map(.input_tokens // 0) | add // 0),
                 output: (map(.output_tokens // 0) | add // 0),
                 cache_read: (map(.cache_read_input_tokens // 0) | add // 0),

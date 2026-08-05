@@ -2492,34 +2492,27 @@ function _startPollingFallback() {
 }
 
 var _metricsInterval = null;
-var _isRefreshingMetrics = false;
-async function _refreshCardMetrics() {
+function _refreshCardMetrics() {
   if (!document.querySelector('[id^="agent-card-"]')) return;
-  if (_isRefreshingMetrics) return;
-  _isRefreshingMetrics = true;
-  try {
-    var data = await fetchAPI(apiUrl('/agents/active'));
-    data.agents.forEach(function(agent) {
-      var card = document.getElementById('agent-card-' + agent.run_id);
-      if (!card) return;
-      var cpuEl = card.querySelector('[data-field="cpu"]');
-      if (cpuEl && agent.cpu_percent != null) {
-        cpuEl.textContent = 'CPU ' + agent.cpu_percent.toFixed(1) + '%';
-      }
-      var memEl = card.querySelector('[data-field="mem"]');
-      if (memEl && agent.memory_rss_bytes != null) {
-        memEl.textContent = (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB';
-      }
-      var costEl = card.querySelector('[data-field="cost"]');
-      if (costEl) {
-        costEl.textContent = '$' + parseFloat(agent.cost_usd || 0).toFixed(4);
-      }
-    });
-  } catch (e) {
-    /* metrics refresh is best-effort */
-  } finally {
-    _isRefreshingMetrics = false;
-  }
+  var cached = window._sovaActiveAgents;
+  if (!cached || !cached.data || (Date.now() - cached.ts) > 5000) return;
+  var data = cached.data;
+  (data.agents || []).forEach(function(agent) {
+    var card = document.getElementById('agent-card-' + agent.run_id);
+    if (!card) return;
+    var cpuEl = card.querySelector('[data-field="cpu"]');
+    if (cpuEl && agent.cpu_percent != null) {
+      cpuEl.textContent = 'CPU ' + agent.cpu_percent.toFixed(1) + '%';
+    }
+    var memEl = card.querySelector('[data-field="mem"]');
+    if (memEl && agent.memory_rss_bytes != null) {
+      memEl.textContent = (agent.memory_rss_bytes / 1048576).toFixed(0) + ' MB';
+    }
+    var costEl = card.querySelector('[data-field="cost"]');
+    if (costEl) {
+      costEl.textContent = '$' + parseFloat(agent.cost_usd || 0).toFixed(4);
+    }
+  });
 }
 _metricsInterval = setInterval(_refreshCardMetrics, 5000);
 
@@ -2995,7 +2988,7 @@ document.addEventListener('visibilitychange', function() {
     _syncCrQuota();
     _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
     checkMemoryPressure();
-    _memPressureInterval = setInterval(checkMemoryPressure, 3000);
+    _memPressureInterval = setInterval(checkMemoryPressure, 5000);
     if (activeLogRunId !== null) {
       _logBackoffMs = _LOG_BACKOFF_BASE;
       _connectLogSSE(activeLogRunId);
@@ -3061,10 +3054,29 @@ var _crQuotaPollInterval = setInterval(_syncCrQuota, 300000);
 
 // -- Memory Pressure Banner --
 
-async function checkMemoryPressure() {
-  var banner = document.getElementById('memory-pressure-banner');
+var _memPressureSeeded = false;
+async function _seedMemoryPressure() {
+  if (_memPressureSeeded) return;
+  _memPressureSeeded = true;
   try {
     var data = await fetchAPI(apiUrl('/resources/system/metrics'));
+    window._sovaSystemMetrics = { data: data, ts: Date.now() };
+    _applyMemoryPressure(data);
+  } catch (e) { /* best-effort */ }
+}
+
+function checkMemoryPressure() {
+  var cached = window._sovaSystemMetrics;
+  if (!cached || !cached.data || (Date.now() - cached.ts) > 10000) {
+    _seedMemoryPressure();
+    return;
+  }
+  _applyMemoryPressure(cached.data);
+}
+
+function _applyMemoryPressure(data) {
+  var banner = document.getElementById('memory-pressure-banner');
+  try {
     if (!data.available || !data.system) { banner.classList.add('hidden'); return; }
     var pressure = data.system.memory_pressure;
     var availGb = data.system.memory_available_gb;
@@ -3107,7 +3119,7 @@ function dismissMemoryPressure() {
   document.getElementById('memory-pressure-banner').classList.add('hidden');
 }
 
-var _memPressureInterval = setInterval(checkMemoryPressure, 3000);
+var _memPressureInterval = setInterval(checkMemoryPressure, 5000);
 
 // -- API Health Banner (rate limit) --
 

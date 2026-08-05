@@ -112,6 +112,7 @@
 
     consecutiveErrors = 0;
     lastSuccessTime = Date.now();
+    window._sovaSystemMetrics = { data: data, ts: Date.now() };
 
     if (!data.available) {
       widget.style.display = 'none';
