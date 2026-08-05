@@ -30,9 +30,9 @@ SOVA has four main components:
 
 ### 3. Dashboard (`sova/dashboard/`)
 - Python/FastAPI web UI with app factory pattern (`create_app(project_dir=None)`)
-- Jinja2 templates + Tailwind CSS (via CDN), Catppuccin dark theme
+- Jinja2 templates + Tailwind CSS (prebuilt via `make css`), Catppuccin dark theme
 - 25 pages: dashboard, agents, run_detail, lifecycle, costs, pr_metrics, queue, specs, logs, settings, memory, setup, home, style_guide, roles, role_editor, spec, control, overview, runs, tasks, base, supervisor, fleet, oversight
-- **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, shared Tailwind config in `_head.html`, SVG icon macro in `_icons.html`, component macros in `_components.html`
+- **Design system**: CSS variables (Catppuccin Mocha) in `static/style.css`, Tailwind config in `tailwind.config.js` (repo root), SVG icon macro in `_icons.html`, component macros in `_components.html`. Run `make css` after adding or removing Tailwind classes in templates/JS (the prebuilt `static/tailwind.min.css` is checked in, not built by CI)
 - 26 API routers under `/api`: overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry
 - 38 services: run, cost, memory, control (facade), feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output (re-export facade for core/output), role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push
 - Old pages (overview, control, runs, tasks, work) redirect to current equivalents (dashboard or agents)
