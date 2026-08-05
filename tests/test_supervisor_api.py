@@ -542,6 +542,53 @@ class TestSupervisorDaemonRequireApproval:
         assert result["progression"]["executed"] == 0
         set_pending_plan([])
 
+    async def test_require_approval_populates_plan_with_auto_flags_off(self, session_factory) -> None:
+        """The primary bug scenario (#608): auto flags off + require_approval=True
+        must still populate the pending plan with real actions."""
+        from sova.config.models import ProjectConfig, SupervisorConfig
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.daemon import SupervisorDaemon
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        set_pending_plan([])
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(
+                enabled=True,
+                require_approval=True,
+                auto_research=False,
+            ),
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        decisions = [
+            ProgressionDecision(
+                issue_number=42,
+                action=ProgressionAction.SPAWN_RESEARCHER,
+                role="researcher",
+                reason="Ready to spawn_researcher",
+            ),
+        ]
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=MagicMock()),
+            patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
+            patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch(
+                "sova.supervisor.progression.TaskProgressionEngine.evaluate_all",
+                new_callable=AsyncMock,
+                return_value=decisions,
+            ),
+        ):
+            result = await daemon.poll_once()
+
+        plan = get_pending_plan()
+        assert len(plan) == 1
+        assert plan[0].action == ProgressionAction.SPAWN_RESEARCHER
+        assert plan[0].issue_number == 42
+        assert result["progression"]["pending"] == 1
+        assert result["progression"]["executed"] == 0
+        set_pending_plan([])
+
     async def test_require_approval_false_executes_directly(self, session_factory) -> None:
         from sova.config.models import ProjectConfig, SupervisorConfig
         from sova.supervisor.daemon import SupervisorDaemon
