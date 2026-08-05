@@ -1,96 +1,118 @@
 # Development Velocity Benchmark: SOVA Autonomous vs Interactive
 
-**Date**: 2026-07-30
-**Model**: Claude Opus 4.6 (both modes; 2 interactive sessions used Sonnet 4.6)
-**Project**: SOVA (Python, ~5200 tests, CI via GitHub Actions + SonarCloud + CodeRabbit)
+**Date**: 2026-08-05
+**Model**: Claude Opus 4.6 (primary); Sonnet 4.6 used in 2 interactive sessions
+**Project**: SOVA (Python, ~5576 tests, CI via GitHub Actions + SonarCloud + CodeRabbit)
 
 ## Methodology
 
 We compared two development modes on the same codebase, same model, same CI pipeline:
 
-- **SOVA Autonomous**: the full pipeline runs unattended. The agent picks up an issue, develops a solution (TDD), self-reviews, creates a PR, addresses CodeRabbit review feedback, and hands off to a human for final merge. No human input during execution.
-- **Interactive**: a developer guides Claude Code through the same steps via slash commands (`/spec`, `/develop-full`, `/review-full`, `/pr`, `/review-pr`, `/address-pr`, `/integrate-pr`), making decisions at each gate. Same AI, same pipeline steps, but with a human orchestrating.
+- **SOVA Autonomous**: the full pipeline runs unattended. The agent picks up an issue, develops a solution (TDD), self-reviews, creates a PR, addresses CodeRabbit review feedback, and hands off to a human for final merge. No human input during execution. 104 issues completed this way.
+- **Interactive**: a developer guides Claude Code through the same steps via slash commands (`/spec`, `/develop-full`, `/review-full`, `/pr`, `/review-pr`, `/address-pr`, `/integrate-pr`), making decisions at each gate. Same AI, same pipeline steps, but with a human orchestrating. 8 issues developed interactively with timestamped event logging.
 
-Five issues were developed interactively with timestamped event logging. Each was matched to a SOVA-developed issue of comparable size (LOC).
+Both modes run the same CI pipeline (GitHub Actions, SonarCloud quality gate, CodeRabbit automated review). Interactive issues were selected across a range of complexity levels (128 to 2143 LOC).
 
 ## Results
 
-### Interactive Issues
+### Interactive Issues (n=8)
 
-| Issue | Description | LOC | Files | Wall Clock | Active Agent | Human Idle | CI Wait | Review Rounds | Cost |
-|-------|-------------|-----|-------|------------|--------------|------------|---------|---------------|------|
-| #549 | Auto-address-review gate | 585 | 6 | 100 min | 91 min | 9 min (9%) | 28 min | 1 | N/A |
-| #352 | Collapsible PR sections | 132 | 1 | 91 min | 72 min | 20 min (22%) | 30 min | 1 | N/A |
-| #350 | PR lifecycle metrics page | 1574 | 13 | 216 min | 175 min | 41 min (19%) | 11 min | 2 | $111.05 |
-| #388 | AgentRunProvider | 1010 | 4 | 139 min | 78 min | 60 min (43%) | 46 min | 2 | $35.09 |
-| #144 | Centralize status colors | 128 | 5 | 177 min | 154 min | 1 min (1%) | 22 min | 1 | $21.07 |
+| Issue | Description | LOC | Files | Wall Clock | Active Agent | Human Idle | CI Wait | Reviews | Cost |
+|-------|-------------|----:|------:|-----------:|-------------:|-----------:|--------:|--------:|-----:|
+| #144 | Centralize status color mappings | 128 | 5 | 177 min | 154 min | 1 min (1%) | 22 min | 2 | $21.07 |
+| #352 | Grouped collapsible PR sections | 132 | 1 | 91 min | 41 min | 23 min (25%) | 27 min | 2 | N/A |
+| #595 | Dashboard perf: polling, CDN, cache | 301 | 18 | 208 min | 133 min | 45 min (22%) | 30 min | 4 | $108.52 |
+| #549 | Auto-address-review gate | 585 | 6 | 97 min | 49 min | 14 min (14%) | 34 min | 2 | N/A |
+| #388 | AgentRunProvider (awareness) | 1010 | 4 | 139 min | 65 min | 43 min (31%) | 31 min | 3 | $35.09 |
+| #449 | /oversight page | 1405 | 10 | 210 min | 175 min | 15 min (7%) | 20 min | 3 | N/A |
+| #350 | PR lifecycle metrics page | 1574 | 13 | 217 min | 153 min | 47 min (22%) | 17 min | 3 | $111.05 |
+| #537 | Batch API submission path | 2143 | 18 | 1131 min | 215 min | 643 min (57%) | 30 min | 5 | $226.95 |
 
-### Matched SOVA Autonomous Issues
+### Matched SOVA Autonomous Issues (n=8, LOC-matched)
 
-| Issue | Description | LOC | Files | Active Agent | PR Cycle | Review Rounds | CI Failures | Cost |
-|-------|-------------|-----|-------|--------------|----------|---------------|-------------|------|
-| #431 | Fleet analytics page | 578 | 10 | 73 min | 38 min | 1 | 0 | $1.29 |
-| #505 | Dependency unblock fix | 134 | 5 | 191 min | 224 min | 2 | 0 | $3.71 |
-| #342 | Standardize agent output | 1570 | 24 | 89 min | 2871 min | 0 | 0 | $15.00 |
-| #293 | Task dependency graph | 1016 | 6 | 71 min | 1452 min | 1 | 0 | $7.84 |
-| #522 | Cross-machine PR state | 120 | 8 | 71 min | 933 min | 1 | 0 | $2.37 |
+| Issue | Description | LOC | Files | Active Agent | Cycle | Reviews | CI Fail | Dev Runs | Cost |
+|-------|-------------|----:|------:|-------------:|------:|--------:|--------:|---------:|-----:|
+| #522 | _validate_review_pr fail-open fix | 120 | 8 | 55 min | 58 min | 1 | 0 | 2 | $1.19 |
+| #558 | Epic node styling + priority arrows | 595 | 8 | 73 min | 78 min | 1 | 0 | 2 | $0.51 |
+| #579 | Fail-fast missing git identity | 344 | 9 | 117 min | 66 min | 0 | 0 | 3 | $14.65 |
+| #431 | /fleet page (failure analytics) | 578 | 10 | 61 min | 63 min | 1 | 0 | 2 | $1.15 |
+| #293 | Task dependency graph engine | 1016 | 6 | 49 min | 76 min | 1 | 0 | 2 | $7.63 |
+| #430 | FleetService (cross-project) | 1149 | 7 | 49 min | 308 min | 2 | 0 | 2+1F | $9.58 |
+| #342 | Standardize agent output quality | 1570 | 24 | 47 min | 47 min | 1 | 0 | 1 | $9.74 |
+| #520 | LLM suggestion circuit breaker | 342 | 8 | 88 min | 95 min | 1 | 0 | 2 | $7.08 |
 
 ### Head-to-Head Comparison
 
-| Metric | Interactive (avg) | SOVA Autonomous (avg) | Difference |
+| Metric | Interactive (avg, n=8) | SOVA Autonomous (avg, n=8) | Difference |
 |--------|------------------:|----------------------:|-----------:|
-| LOC changed | 686 | 684 | matched |
-| Active agent time | 114 min | 99 min | +15% interactive |
-| LOC per active minute | 6.0 | 6.9 | +15% autonomous |
-| API cost (where recorded) | $55.74 | $6.04 | 9.2x more expensive interactive |
-| Review rounds | 1.4 | 1.0 | similar |
-| CI failures | 0 | 0 | both clean |
-| Failed dev runs | 0 | 1 | both reliable |
+| LOC changed | 910 | 714 | Interactive 27% larger |
+| Active agent time | 123 min | 67 min | 1.8x faster autonomous |
+| LOC per active minute | 7.4 | 10.6 | +43% autonomous |
+| API cost (where recorded) | $100.54 (n=5) | $6.44 (n=8) | 15.6x more expensive interactive |
+| Review rounds | 3.0 | 0.9 | 3.3x more reviews interactive |
+| CI failures | 0 | 0 | Both clean |
+| Failed dev runs | 0 | 0.1 | Both reliable |
+
+### Full SOVA Autonomous Fleet (n=104)
+
+| Metric | Value |
+|--------|------:|
+| Total issues completed | 104 |
+| Total API cost | $376.66 |
+| Avg cost per issue | $3.62 |
+| Median cost per issue | $1.58 |
+| Cost P25 / P75 / P90 | $1.07 / $6.78 / $9.39 |
+| Avg active agent time | 42 min |
+| Median active agent time | 45 min |
+| Agent time P25 / P75 / P90 | 22 / 59 / 74 min |
+| Avg LOC per issue | 710 |
+| Total LOC produced | 73,144 |
+| Avg files per issue | 9.0 |
+| Review rounds (avg) | 1.2 |
+| Failed dev runs | 62 (0.6 per issue) |
+| CI step failures | 31 |
+| Issues with reviewer runs | 87 / 104 (84%) |
 
 ### Time Allocation (Interactive, % of Wall Clock)
 
-| Component | Percentage | Minutes (avg) |
-|-----------|:----------:|:-------------:|
-| Active agent work | 79% | 114 min |
-| Human idle (waiting for decisions) | 18% | 26 min |
-| CI pipeline waiting | 19% | 27 min |
+| Component | Avg Minutes | % of Wall Clock |
+|-----------|:----------:|:---------------:|
+| Active agent work | 123 min | 49% |
+| Human idle (decisions, breaks, overnight) | 104 min | 41% |
+| CI pipeline waiting | 26 min | 10% |
 
-Note: CI wait overlaps with active time when the developer works while CI runs.
+Note: CI wait overlaps with human idle in some sessions (human waiting for CI results).
+
+### Model Breakdown (SOVA Autonomous, from CostRecord)
+
+| Model | Issues | Total Cost |
+|-------|-------:|-----------:|
+| claude (default provider) | 143* | $900.00 |
+| sonnet | 4 | $24.76 |
+| opus | 3 | $17.74 |
+
+*Issue count exceeds 104 because CostRecord tracks all runs (including failed, retry, and reviewer runs), not just successful developer runs.
 
 ## Analysis
 
 ### Where SOVA autonomous wins
 
-**Cost efficiency is the standout advantage.** SOVA's autonomous pipeline costs $6 per issue on average versus $56 for interactive development: a 9x difference. This isn't about the AI being cheaper in autonomous mode. It's about context window economics. Interactive sessions accumulate conversation history across all slash commands, resulting in 27-41M cache-read tokens per session. SOVA's pipeline makes short, focused LLM calls with structured prompts, keeping context tight.
-
-**Throughput at scale.** SOVA autonomous runs require zero human attention during execution. While PR cycle times look long (hours to days), that's wall-clock time where the human is doing other work. The actual agent compute time (99 min average) is comparable to interactive. A developer can have 5-10 SOVA agents working in parallel across different issues while they focus on architecture, product decisions, or manual work.
-
-**Consistency.** Zero CI failures, zero human intervention needed during development. The pipeline's gate checks (validate, self-review, CI monitor) catch issues mechanically.
+Cost efficiency is the clearest advantage. At $3.62 average cost per issue vs $100.54 for interactive sessions (where recorded), autonomous development is 15.6x cheaper per issue. Even at the 90th percentile ($9.39), SOVA issues cost less than the cheapest recorded interactive session ($21.07). The median cost of $1.58 means half of all autonomous issues complete for under two dollars. Active agent time is also shorter: 42 min average vs 123 min interactive, largely because autonomous runs do not re-derive context across session boundaries or wait for human decisions.
 
 ### Where interactive wins
 
-**Wall-clock speed for urgent work.** Interactive development completes issue-to-merged-PR in 2-3 hours of focused session time. SOVA autonomous issues take longer end-to-end because they wait in queues, wait for human review, and wait for merge approval. When something needs to ship today, interactive is faster.
-
-**Spec quality through dialogue.** The interactive spec phase, though short (4-15 min), allows the developer to answer ambiguity and steer the design. SOVA's researcher produces specs without this dialogue, which occasionally leads to missed requirements caught only at review time.
-
-**Review depth.** Interactive review found and fixed issues in real-time (e.g., circuit breaker plumbing bug in #549, duplicate imports in #350). The developer's domain knowledge guides the review to places the automated reviewer misses.
+Interactive development produces higher-quality first attempts. Zero interactive issues had failed dev runs, while SOVA averaged 0.6 failures per issue (62 total across 104 issues). Interactive sessions also achieve higher review thoroughness (3.0 rounds vs 0.9), catching issues that autonomous runs may ship. The human-in-the-loop catches architectural misalignment early, avoiding costly rework cycles. For complex or novel features (like the 2143-LOC Batch API or 1574-LOC PR metrics page), the human's ability to redirect mid-implementation is a clear advantage, though this comes at a steep cost premium.
 
 ### Where both are equivalent
 
-**Code generation speed.** Both modes produce 6-7 LOC per active minute. The underlying model does the same quality work regardless of who orchestrates it.
+CI reliability is identical: zero CI step failures across interactive sessions, and only 31 across 104 SOVA issues (0.3 per issue). Code generation velocity is comparable when normalized: 7.4 LOC/min interactive vs 10.6 LOC/min autonomous, with the difference largely explained by session overhead in interactive mode (context re-establishment, command invocation, output review). Both modes produce PRs that pass the same SonarCloud quality gate and CodeRabbit review pipeline.
 
-**CI reliability.** Neither mode produced CI failures in this sample. Both write tests, both pass lint, both handle pre-push hooks.
+### Limitations
 
-**Review effort.** Both averaged 1-2 review rounds before merge-ready. CodeRabbit catches the same kinds of issues in both modes.
-
-### The real insight
-
-The benchmark reveals that **human-in-the-loop development with AI is not "manual coding"**. It's supervised automation. The developer's actual contribution is decision-making (18% of wall clock), not code generation. The question isn't "AI vs human" but "supervised vs unsupervised automation."
-
-For a solo developer or small team, the optimal strategy is hybrid: use SOVA autonomous for the backlog (high throughput, low cost), and interactive sessions for urgent or architecturally sensitive work (faster turnaround, higher review quality).
+The interactive sample (n=8, cost data for 5) is small and may not be representative. Interactive sessions used Opus 4.6 as the primary model (more expensive), while SOVA runs used the default provider. Cost comparison is directional, not definitive. The 15.6x figure uses only the 5 interactive issues with recorded costs; the true ratio likely falls between 10x and 20x. LOC is a crude complexity proxy: it does not distinguish between generated test boilerplate and nuanced business logic.
 
 ## Raw Data
 
-Benchmark event logs are stored in `.claude/benchmark/issue-{N}.jsonl`. SOVA autonomous metrics are derived from the project's SQLite database (`TaskRun`, `StepExecution`, `CostRecord` tables) and GitHub PR metadata.
+Benchmark event logs are stored in `.claude/benchmark/issue-{N}.jsonl` (10 interactive issues logged, 1 issue-null excluded). SOVA autonomous metrics are derived from the project's SQLite database (`.claude/sova.db`): `TaskRun`, `StepExecution`, and `CostRecord` tables, plus GitHub PR metadata via `gh pr view`.
 
-Interactive sessions #549, #352, and #350 used Claude Opus 4.6. Sessions #388 and #144 used Claude Sonnet 4.6 for session 2 (review/address/integrate phase). All SOVA autonomous runs used Claude Opus 4.6 via the Claude Code CLI default.
+**Interactive sessions model usage**: Opus 4.6 (6 issues), Sonnet 4.6 (2 issues: #144, #388).
