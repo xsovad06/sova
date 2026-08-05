@@ -135,11 +135,22 @@ Poll every `merge_queue_poll_interval` seconds (default 30), up to `merge_queue_
 
 ### 4. Post-Merge Issue State
 
-Handle the issue based on `post_merge_state` from config:
+Handle the issue based on `post_merge_state` from config.
+
+**GitHub projects** (`task_source.type = "github"` or no `sova.toml`):
 
 - **"done"** (default): close the linked issue (`gh issue close <ISSUE_NUMBER>`)
 - **"on_qa"**: add `agent:on-qa` label, do NOT close the issue
 - **Other value**: log a warning and skip the state transition
+
+**Jira projects** (`task_source.type = "jira"`):
+
+Read the Jira connection settings from `sova.toml` (`[task_source]` section). Use the Jira REST API to transition the issue:
+
+- **"done"**: trigger a Jira workflow transition matching "Done", "Closed", "Resolved", or "Close"
+- **"on_qa"**: trigger a Jira workflow transition matching "On QA", "QA", "Verification", or "Ready for QA". Also add the `agent:on-qa` label.
+- Check `jira_state_transitions` in `sova.toml` for custom transition name overrides
+- If no matching transition is available on the Jira board, log a warning and skip
 
 ### 5. Local Cleanup
 
