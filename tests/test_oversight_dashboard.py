@@ -381,10 +381,14 @@ class TestRunNow:
     async def test_run_now_rejects_while_pending(self, client: AsyncClient) -> None:
         from sova.dashboard.routers.oversight import _background_tasks, set_oversight_agent
 
-        pending_future: asyncio.Future = asyncio.get_event_loop().create_future()
+        pending_future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        async def _block() -> None:
+            await pending_future
+
         mock_agent = AsyncMock()
         mock_agent.running = True
-        mock_agent.run_cycle_once = AsyncMock(side_effect=lambda: pending_future)
+        mock_agent.run_cycle_once = AsyncMock(side_effect=_block)
         set_oversight_agent(mock_agent)
 
         try:
