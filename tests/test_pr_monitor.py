@@ -14,6 +14,14 @@ from sova.supervisor.pr_monitor import PRMonitor, PRSnapshot, _is_coderabbit_rat
 from sova.utils.shell import ShellResult
 
 
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_trackers() -> None:
+    """Ensure rate limit tracker state does not leak between tests."""
+    from sova.supervisor import github_quota
+
+    github_quota._trackers.clear()
+
+
 def _make_monitor(**overrides: object) -> PRMonitor:
     defaults = {
         "project_dir": Path("/tmp/test"),
@@ -824,3 +832,45 @@ class TestNotifyStatesValidation:
 
         for state, flag in _NOTIFY_STATES.items():
             assert flag in PRMonitorConfig.model_fields, f"_NOTIFY_STATES[{state!r}] references unknown field {flag!r}"
+
+
+# ---------------------------------------------------------------------------
+# GitHub API rate limit gate in PR monitor
+# ---------------------------------------------------------------------------
+
+
+class TestPRMonitorRateLimitGate:
+    @pytest.mark.asyncio
+    async def test_poll_cycle_skips_when_rate_limited(self) -> None:
+        """PR monitor should skip its entire poll cycle when the GitHub API is rate limited."""
+        from sova.supervisor.github_quota import get_github_quota_tracker
+
+        tracker = get_github_quota_tracker("testuser")
+        with patch.object(tracker, "_emit_hit_event"):
+            tracker.record_rate_limit_hit()
+
+        monitor = _make_monitor()
+
+        with patch(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            new_callable=AsyncMock,
+        ) as mock_list:
+            await monitor._poll_cycle()
+
+        mock_list.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_poll_cycle_runs_when_not_rate_limited(self) -> None:
+        """PR monitor should run normally when the GitHub API is not rate limited."""
+        monitor = _make_monitor()
+
+        with (
+            patch(
+                "sova.dashboard.services.pr_service.list_open_prs_with_state",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_list,
+        ):
+            await monitor._poll_cycle()
+
+        mock_list.assert_called_once()
