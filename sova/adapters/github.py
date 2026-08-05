@@ -67,13 +67,9 @@ class GitHubAdapter(TaskAdapter):
         return result
 
     def _track_rate_limit(self, result: ShellResult) -> None:
-        from sova.supervisor.github_quota import get_github_quota_tracker
+        from sova.supervisor.github_quota import track_rate_limit
 
-        tracker = get_github_quota_tracker(self.github_user)
-        if result.is_rate_limited:
-            tracker.record_rate_limit_hit()
-        elif result.success:
-            tracker.record_success()
+        track_rate_limit(result, self.github_user)
 
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:
         filters = filters or TaskFilters()

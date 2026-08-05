@@ -122,3 +122,16 @@ def get_github_quota_tracker(identity: str = "") -> GitHubQuotaTracker:
 def get_github_quota_status(identity: str = "") -> GitHubQuotaStatus:
     """Return the quota status for a given GitHub identity."""
     return get_github_quota_tracker(identity).get_status()
+
+
+def track_rate_limit(result: object, identity: str = "") -> None:
+    """Record rate limit state from a gh CLI ShellResult.
+
+    Accepts any object with ``is_rate_limited`` and ``success`` attributes
+    (i.e. ShellResult) to avoid importing from sova.utils.shell.
+    """
+    tracker = get_github_quota_tracker(identity)
+    if getattr(result, "is_rate_limited", False):
+        tracker.record_rate_limit_hit()
+    elif getattr(result, "success", False):
+        tracker.record_success()
