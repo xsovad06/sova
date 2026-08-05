@@ -12,6 +12,7 @@ import pytest
 from sova.adapters.base import Task, TaskState
 from sova.config.models import SupervisorConfig
 from sova.dashboard.services.pr_service import get_pr_mergeability_map
+from sova.git.pr import PRInfo
 from sova.supervisor.progression import (
     ProgressionAction,
     TaskProgressionEngine,
@@ -101,7 +102,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
@@ -183,7 +184,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
@@ -216,7 +217,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
@@ -250,7 +251,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
@@ -280,7 +281,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),
@@ -310,7 +311,7 @@ class TestConflictGateIntegration:
                 engine,
                 "_refine_in_review_action",
                 new_callable=AsyncMock,
-                return_value=(ProgressionAction.SPAWN_INTEGRATE, 55),
+                return_value=(ProgressionAction.SPAWN_INTEGRATE, PRInfo(number=55, url="")),
             ),
             patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
             patch.object(engine, "_check_dependency_gate", return_value=None),

@@ -23,7 +23,7 @@ from sova.dashboard.services.agent_handoff import _count_address_review_runs
 from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_review_verdict
 from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
-from sova.git.pr import find_pr_for_issue
+from sova.git.pr import PRInfo, find_pr_for_issue
 from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph
 from sova.supervisor.file_overlap import (
     BranchFileSet,
@@ -364,7 +364,8 @@ class TaskProgressionEngine:
 
         # Actions that operate on an existing PR need the PR number
         if decision.action in (ProgressionAction.SPAWN_INTEGRATE, ProgressionAction.SPAWN_ADDRESS_REVIEW):
-            pr_number = decision.pr_number or await self._find_pr_for_issue(decision.issue_number)
+            pr_info = await self._find_pr_for_issue(decision.issue_number) if not decision.pr_number else None
+            pr_number = decision.pr_number or (pr_info.number if pr_info else None)
             if pr_number is None:
                 return {"error": f"No open PR found for issue #{decision.issue_number}"}
             kwargs["pr_number"] = pr_number
@@ -530,9 +531,9 @@ class TaskProgressionEngine:
         # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
         # _determine_transition returns SPAWN_INTEGRATE as a placeholder for IN_REVIEW when
         # either auto flag is enabled; we refine it here based on the actual PR verdict.
-        refined_pr: int | None = None
+        refined_pr_info: PRInfo | None = None
         if state == TaskState.IN_REVIEW and candidate == ProgressionAction.SPAWN_INTEGRATE:
-            candidate, refined_pr = await self._refine_in_review_action(issue_number)
+            candidate, refined_pr_info = await self._refine_in_review_action(issue_number)
             if candidate == ProgressionAction.WAIT:
                 return ProgressionDecision(
                     issue_number=issue_number,
@@ -560,7 +561,7 @@ class TaskProgressionEngine:
             task_labels=task_labels,
             task_body=task_body,
             task_assignees=task_assignees,
-            refined_pr=refined_pr,
+            refined_pr_info=refined_pr_info,
         )
 
         if blockers:
@@ -581,7 +582,8 @@ class TaskProgressionEngine:
                 blocked_by=tuple(blockers),
             )
 
-        final_pr = refined_pr or discovered_pr
+        refined_pr_num = refined_pr_info.number if refined_pr_info else None
+        final_pr = refined_pr_num or discovered_pr
         return ProgressionDecision(
             issue_number=issue_number,
             action=candidate,
@@ -606,7 +608,7 @@ class TaskProgressionEngine:
         task_labels: list[str] | None = None,
         task_body: str = "",
         task_assignees: list[str] | None = None,
-        refined_pr: int | None = None,
+        refined_pr_info: PRInfo | None = None,
     ) -> tuple[list[BlockReason], int | None]:
         """Run all gate checks and return (active_blockers, discovered_pr_number)."""
         blockers: list[BlockReason] = []
@@ -632,7 +634,9 @@ class TaskProgressionEngine:
         running_result, budget_result, ownership_result = await asyncio.gather(
             self._check_already_running(issue_number),
             self._check_budget_gate(issue_number),
-            self._check_ownership_gate(issue_number, candidate, task_assignees=task_assignees),
+            self._check_ownership_gate(
+                issue_number, candidate, task_assignees=task_assignees, known_pr_info=refined_pr_info
+            ),
         )
         ownership_block, discovered_pr = ownership_result
 
@@ -640,7 +644,7 @@ class TaskProgressionEngine:
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
             simple_results.append(await self._check_repeated_failures_gate(issue_number))
         if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
-            cb_pr = refined_pr or discovered_pr
+            cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
             cb_block = await self._check_address_review_circuit_breaker_gate(issue_number, pr_number=cb_pr)
             simple_results.append(cb_block)
         blockers.extend(r for r in simple_results if r is not None)
@@ -1074,6 +1078,7 @@ class TaskProgressionEngine:
         candidate: ProgressionAction,
         *,
         task_assignees: list[str] | None = None,
+        known_pr_info: PRInfo | None = None,
     ) -> tuple[BlockReason | None, int | None]:
         """Check if issue/PR is owned by the configured github_user.
 
@@ -1082,6 +1087,7 @@ class TaskProgressionEngine:
         Fail-open on API errors (log warning and proceed).
 
         ``task_assignees`` avoids a redundant API call when the caller already has the task data.
+        ``known_pr_info`` avoids a redundant find_pr_for_issue call when the caller already resolved it.
 
         Returns (block_reason, discovered_pr_number). The PR number is populated when
         the gate checks a PR (SPAWN_INTEGRATE) and can be reused by execute_decision
@@ -1096,30 +1102,38 @@ class TaskProgressionEngine:
 
         try:
             # For review/integrate phases, check PR author (PR ownership is authoritative post-development)
+            discovered_pr: int | None = None
             if candidate == ProgressionAction.SPAWN_INTEGRATE:
-                pr_result, pr_number = await self._check_pr_ownership(issue)
+                pr_result, discovered_pr = await self._check_pr_ownership(issue, known_pr_info=known_pr_info)
                 if pr_result is not _NOT_COMPUTED:
-                    return pr_result, pr_number
+                    return pr_result, discovered_pr
 
             # Development phase or fallback: check issue assignee
             block = await self._check_issue_ownership(issue, task_assignees)
-            return block, None
+            return block, discovered_pr
 
         except Exception:
             log.warning("ownership_gate.check_failed", issue=issue, exc_info=True)
             return None, None  # Fail-open
 
-    async def _check_pr_ownership(self, issue: int) -> tuple[BlockReason | None | object, int | None]:
+    async def _check_pr_ownership(
+        self, issue: int, *, known_pr_info: PRInfo | None = None
+    ) -> tuple[BlockReason | object | None, int | None]:
         """Check PR author ownership.
 
         Returns (gate_result, pr_number) where gate_result is:
         BlockReason if blocked, None if authorized,
         _NOT_COMPUTED if should fall through.
+
+        ``known_pr_info`` reuses the PRInfo (with author_login) already
+        discovered by _refine_in_review_action, avoiding a redundant API call.
         """
         if not self._adapter.repo:
             return _NOT_COMPUTED, None
 
-        pr = await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
+        pr = known_pr_info or await find_pr_for_issue(
+            str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user
+        )
         if not pr or not pr.author_login:
             return _NOT_COMPUTED, pr.number if pr else None
 
@@ -1149,47 +1163,48 @@ class TaskProgressionEngine:
             detail=f"Issue #{issue} is assigned to {assignee_str} (not {self._adapter.github_user})",
         )
 
-    async def _find_pr_for_issue(self, issue: int) -> int | None:
+    async def _find_pr_for_issue(self, issue: int) -> PRInfo | None:
         """Find an open PR linked to this issue."""
         try:
             if not self._adapter.repo:
                 return None
-            pr = await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
-            return pr.number if pr else None
+            return await find_pr_for_issue(str(issue), repo=self._adapter.repo, github_user=self._adapter.github_user)
         except Exception:
             log.debug("find_pr.failed", issue=issue, exc_info=True)
             return None
 
-    async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, int | None]:
+    async def _refine_in_review_action(self, issue: int) -> tuple[ProgressionAction, PRInfo | None]:
         """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
 
-        Returns (action, pr_number). Checks the SOVA review verdict to decide
+        Returns (action, pr_info). Checks the SOVA review verdict to decide
         between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
         (verdict is approve or no review exists).
         """
-        pr_number = await self._find_pr_for_issue(issue)
-        if pr_number is None:
+        pr_info = await self._find_pr_for_issue(issue)
+        if pr_info is None:
             return ProgressionAction.WAIT, None
 
         try:
-            verdict_data = await get_sova_review_verdict(str(issue), pr_number=pr_number, project_dir=self._project_dir)
+            verdict_data = await get_sova_review_verdict(
+                str(issue), pr_number=pr_info.number, project_dir=self._project_dir
+            )
         except Exception:
             log.debug("refine_in_review.verdict_failed", issue=issue, exc_info=True)
             if self._config.auto_integrate:
-                return ProgressionAction.SPAWN_INTEGRATE, pr_number
-            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+                return ProgressionAction.SPAWN_INTEGRATE, pr_info
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
         verdict = verdict_data.get("verdict")
         has_review = verdict_data.get("has_sova_review", False)
 
         if has_review and verdict in ("revise", "block"):
             if self._config.auto_address_review:
-                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_number
-            return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+                return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_info
+            return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
         if self._config.auto_integrate:
-            return ProgressionAction.SPAWN_INTEGRATE, pr_number
-        return ProgressionAction.CHECKPOINT_NEEDED, pr_number
+            return ProgressionAction.SPAWN_INTEGRATE, pr_info
+        return ProgressionAction.CHECKPOINT_NEEDED, pr_info
 
     async def _check_address_review_circuit_breaker_gate(
         self, issue: int, *, pr_number: int | None
