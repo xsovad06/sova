@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cachetools import TTLCache
 
 from sova.dashboard.services.llm_suggestion_service import (
     _PR_ACTION_LABELS,
@@ -184,9 +185,10 @@ class TestGetLlmSuggestion:
         assert mod._warned_no_key is True
 
     async def test_expired_cache_entry_is_deleted(self) -> None:
-        import time
-
         import sova.dashboard.services.llm_suggestion_service as mod
+
+        fake_time = [0.0]
+        test_cache: TTLCache[str, dict] = TTLCache(maxsize=100, ttl=mod._CACHE_TTL, timer=lambda: fake_time[0])
 
         mock_resp = _mock_response("integrate")
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
@@ -195,17 +197,18 @@ class TestGetLlmSuggestion:
                 mock_client_cls.return_value.__aenter__.return_value = mock_client
                 mock_client.post.return_value = mock_resp
 
-                # First call populates cache
-                await get_llm_suggestion(**_kwargs())
-                assert len(mod._cache) == 1
+                original_cache = mod._cache
+                mod._cache = test_cache
+                try:
+                    await get_llm_suggestion(**_kwargs())
+                    assert len(mod._cache) == 1
 
-                # Expire the cache entry
-                key = list(mod._cache.keys())[0]
-                mod._cache[key] = (time.monotonic() - mod._CACHE_TTL - 1, mod._cache[key][1])
+                    fake_time[0] = mod._CACHE_TTL + 1
 
-                # Second call should delete expired entry and re-fetch
-                await get_llm_suggestion(**_kwargs())
-                assert mock_client.post.call_count == 2
+                    await get_llm_suggestion(**_kwargs())
+                    assert mock_client.post.call_count == 2
+                finally:
+                    mod._cache = original_cache
 
     async def test_returns_none_on_prompt_format_error(self) -> None:
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):

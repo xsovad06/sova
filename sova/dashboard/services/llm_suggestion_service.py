@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import httpx
+from cachetools import TTLCache
 
 from sova.utils.logging import get_logger
 
@@ -30,7 +30,7 @@ _MODEL = "claude-haiku-4-5-20251001"
 _warned_no_key = False
 _CACHE_TTL = 300  # 5 minutes
 
-_cache: dict[str, tuple[float, dict]] = {}
+_cache: TTLCache[str, dict] = TTLCache(maxsize=100, ttl=_CACHE_TTL)
 
 # Valid action IDs for PR-stage work items and their human-readable labels.
 # Must match action ids used in work_item_service._get_actions().
@@ -73,19 +73,6 @@ def _make_cache_key(pr_number: int, deterministic_state: str, pr_computed_state:
     return f"{pr_number}|{deterministic_state}|{pr_computed_state}"
 
 
-def _get_cached(key: str) -> dict | None:
-    entry = _cache.get(key)
-    if entry and (time.monotonic() - entry[0]) < _CACHE_TTL:
-        return entry[1]
-    if entry:
-        del _cache[key]
-    return None
-
-
-def _set_cached(key: str, result: dict) -> None:
-    _cache[key] = (time.monotonic(), result)
-
-
 async def get_llm_suggestion(
     *,
     pr_number: int,
@@ -113,7 +100,7 @@ async def get_llm_suggestion(
         return None
 
     cache_key = _make_cache_key(pr_number, deterministic_state, pr_computed_state)
-    cached = _get_cached(cache_key)
+    cached = _cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -168,7 +155,7 @@ async def get_llm_suggestion(
         "reasoning": str(parsed.get("reasoning", "")),
         "disagrees": action_id != deterministic_action_id,
     }
-    _set_cached(cache_key, result)
+    _cache[cache_key] = result
     return result
 
 
