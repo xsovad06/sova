@@ -22,6 +22,7 @@ _STATE_LABELS: dict[TaskState, str] = {
     TaskState.RESEARCHED: "agent:researched",
     TaskState.IN_PROGRESS: "agent:in-progress",
     TaskState.IN_REVIEW: "agent:in-review",
+    TaskState.ON_QA: "agent:on-qa",
     TaskState.NEEDS_SPEC: "agent:needs-spec",
     TaskState.HUMAN_ONLY: "agent:human-only",
 }
@@ -36,6 +37,7 @@ _STATE_TO_BOARD_NAMES: dict[TaskState, list[str]] = {
     TaskState.RESEARCHED: ["researched", _COL_READY, "todo", _COL_TODO],
     TaskState.IN_PROGRESS: ["in progress", "doing"],
     TaskState.IN_REVIEW: ["in review", "review", "verification"],
+    TaskState.ON_QA: ["on qa", "qa", "verification"],
     TaskState.DONE: ["done", "completed"],
     TaskState.NEEDS_SPEC: ["todo", _COL_TODO, _COL_BACKLOG],
     TaskState.HUMAN_ONLY: ["todo", _COL_TODO, _COL_BACKLOG],
