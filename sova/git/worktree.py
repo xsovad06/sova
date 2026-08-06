@@ -352,7 +352,7 @@ def _ensure_compose_project_name(project_dir: Path, worktree_path: Path) -> None
         log.info("worktree.compose_project_name", project_name=project_name)
 
 
-_CLAUDE_DIRS = ("commands", "rules", "agent-memory")
+_CLAUDE_DIRS = ("commands", "rules", "agent-memory", "skills")
 _CLAUDE_FILES = ("CLAUDE.md", "settings.local.json", "settings.json")
 
 
@@ -360,7 +360,7 @@ def ensure_claude_artifacts(project_dir: Path, worktree_path: Path) -> None:
     """Copy .claude/ artifacts that are gitignored but needed by agents.
 
     Projects that gitignore ``.claude/`` (the standard pattern for SOVA-installed
-    projects) end up with worktrees missing slash commands, rules, and config.
+    projects) end up with worktrees missing slash commands, rules, skills, and config.
     This copies the essential subset: never the database, worktrees dir, or
     ephemeral agent state.
 

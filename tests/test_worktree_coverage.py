@@ -175,6 +175,20 @@ class TestCopyClaudeArtifacts:
         _copy_claude_artifacts(project, worktree)
         assert (worktree / "CLAUDE.md").read_text() == "# Worktree-specific"
 
+    def test_copies_skills_directory(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        claude_dir = project / ".claude"
+        skills_dir = claude_dir / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "testing-patterns").mkdir()
+        (skills_dir / "testing-patterns" / "skill.md").write_text("test skill")
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _copy_claude_artifacts(project, worktree)
+        wt_skill = worktree / ".claude" / "skills" / "testing-patterns" / "skill.md"
+        assert wt_skill.exists()
+        assert wt_skill.read_text() == "test skill"
+
 
 class TestEnsureClaudeArtifactsAlias:
     def test_backward_compat_alias_exists(self) -> None:
