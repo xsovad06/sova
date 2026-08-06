@@ -215,8 +215,7 @@ def _build_history_item(
 
 async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     """Get a single run with its step executions and pipeline progress."""
-    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
-    run = (await session.execute(stmt)).scalar_one_or_none()
+    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
     if run is None:
         return None
 
@@ -343,8 +342,7 @@ async def list_runs(
 
 async def get_run(session: AsyncSession, run_id: int) -> dict | None:
     """Get a single task run by ID."""
-    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
-    run = (await session.execute(stmt)).scalar_one_or_none()
+    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
     return _run_to_dict(run) if run else None
 
 
@@ -368,8 +366,7 @@ async def get_run_steps(
 
 async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Manually abandoned") -> dict | None:
     """Mark a non-terminal run as failed."""
-    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
-    run = (await session.execute(stmt)).scalar_one_or_none()
+    run = await session.get(TaskRun, run_id, options=[selectinload(TaskRun.resource_summary)])
     if run is None:
         return None
     if run.status in _TERMINAL:

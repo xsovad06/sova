@@ -190,7 +190,7 @@ class ClaudeCodeRuntime(AgentRuntime):
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "auto",
+            "bypassPermissions",
         ]
 
         if model:

@@ -162,6 +162,46 @@ class TestSupervisorRouter:
                     assert data["warn"] is True
                     assert data["block"] is True
 
+    async def test_ci_budget_exception_returns_zero(self, app) -> None:
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.github_repo = "owner/repo"
+            mock_cfg.return_value.github_user = "user"
+            with patch(
+                "sova.supervisor.ci_budget.get_ci_budget_tracker",
+                side_effect=RuntimeError("connection failed"),
+            ):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/ci-budget")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["total"] == 0
+                    assert data["used"] == 0
+                    assert data["remaining"] == 0
+                    assert data["warn"] is False
+                    assert data["block"] is False
+                    assert data["cached"] is False
+
+    async def test_ci_budget_zero_from_api(self, app) -> None:
+        from sova.supervisor.ci_budget import CIBudget
+
+        mock_tracker = MagicMock()
+        mock_tracker.get_budget = AsyncMock(return_value=CIBudget(total=0, used=0, remaining=0, pct_used=0.0))
+        mock_tracker._cache = {}
+
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value.github_repo = "owner/repo"
+            mock_cfg.return_value.github_user = "user"
+            mock_cfg.return_value.supervisor.ci_warn_minutes = 200
+            mock_cfg.return_value.supervisor.ci_block_minutes = 50
+            with patch("sova.supervisor.ci_budget.get_ci_budget_tracker", return_value=mock_tracker):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                    resp = await client.get("/api/supervisor/ci-budget")
+                    assert resp.status_code == 200
+                    data = resp.json()
+                    assert data["total"] == 0
+                    assert data["warn"] is False
+                    assert data["block"] is False
+
     async def test_get_status_no_daemon(self, app) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/supervisor/status")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1055,13 +1056,13 @@ class TestLLMProvider:
         with pytest.raises(RuntimeError, match="Failed to parse Claude CLI JSON"):
             _parse_json_output("not valid json {{{")
 
-    def test_build_args_includes_permission_mode_auto(self) -> None:
+    def test_build_args_includes_permission_mode_bypass(self) -> None:
         from sova.llm.providers.claude_code import _build_args
 
         args = _build_args("hello")
         assert "--permission-mode" in args
         pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "auto"
+        assert args[pm_idx + 1] == "bypassPermissions"
 
     def test_build_args_includes_all_flags(self) -> None:
         from sova.llm.providers.claude_code import _build_args
@@ -1150,6 +1151,119 @@ class TestAssertCommandExists:
 
         with pytest.raises(RuntimeError, match="Invalid slash command"):
             _assert_command_exists("/foo\\bar", tmp_path)
+
+    def test_missing_command_restored_from_primary_root(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        cmd_dir = cwd / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        primary_cmd_dir = primary / ".claude" / "commands"
+        primary_cmd_dir.mkdir(parents=True)
+        (primary_cmd_dir / "develop.md").write_text("# develop")
+
+        def fake_ensure(project_root: Path, wt: Path) -> None:
+            src = project_root / ".claude" / "commands" / "develop.md"
+            dst = wt / ".claude" / "commands" / "develop.md"
+            if src.is_file():
+                dst.write_text(src.read_text())
+
+        with patch("sova.llm.provider._resolve_primary_root", return_value=primary):
+            with patch("sova.git.worktree.ensure_claude_artifacts", side_effect=fake_ensure):
+                _assert_command_exists("/develop", cwd)
+
+    def test_missing_command_restoration_fails_still_raises(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        cmd_dir = cwd / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+
+        with patch("sova.llm.provider._resolve_primary_root", return_value=tmp_path / "primary"):
+            with patch("sova.git.worktree.ensure_claude_artifacts", side_effect=OSError("fail")):
+                with pytest.raises(RuntimeError, match="not found"):
+                    _assert_command_exists("/develop", cwd)
+
+    def test_missing_command_no_primary_root_raises(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _assert_command_exists
+
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        cmd_dir = cwd / ".claude" / "commands"
+        cmd_dir.mkdir(parents=True)
+
+        with patch("sova.llm.provider._resolve_primary_root", return_value=None):
+            with pytest.raises(RuntimeError, match="not found"):
+                _assert_command_exists("/develop", cwd)
+
+
+class TestResolvePrimaryRoot:
+    def test_returns_root_from_absolute_git_common_dir(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _resolve_primary_root
+
+        primary_root = tmp_path / "primary"
+        primary_root.mkdir()
+        common_dir = primary_root / ".git"
+        common_dir.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=str(common_dir) + "\n")
+            result = _resolve_primary_root(tmp_path / "worktree")
+
+        assert result == primary_root
+
+    def test_returns_root_from_relative_git_common_dir(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _resolve_primary_root
+
+        cwd = tmp_path / "worktree"
+        cwd.mkdir()
+        primary_root = tmp_path / "primary"
+        primary_root.mkdir()
+        git_dir = primary_root / ".git"
+        git_dir.mkdir()
+
+        rel_path = os.path.relpath(git_dir, cwd)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=rel_path + "\n")
+            result = _resolve_primary_root(cwd)
+
+        assert result == primary_root
+
+    def test_returns_none_when_root_equals_cwd(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _resolve_primary_root
+
+        cwd = tmp_path / "repo"
+        cwd.mkdir()
+        git_dir = cwd / ".git"
+        git_dir.mkdir()
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=str(git_dir) + "\n")
+            result = _resolve_primary_root(cwd)
+
+        assert result is None
+
+    def test_returns_none_on_git_failure(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _resolve_primary_root
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=128, stdout="")
+            result = _resolve_primary_root(tmp_path)
+
+        assert result is None
+
+    def test_returns_none_on_exception(self, tmp_path: Path) -> None:
+        from sova.llm.provider import _resolve_primary_root
+
+        with patch("subprocess.run", side_effect=OSError("git not found")):
+            result = _resolve_primary_root(tmp_path)
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

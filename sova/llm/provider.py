@@ -18,13 +18,54 @@ from sova.utils.logging import get_logger
 log = get_logger(component="llm.provider")
 
 
+def _resolve_primary_root(cwd: Path) -> Path | None:
+    """Resolve the primary worktree root synchronously (for fallback restoration)."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        common = Path(result.stdout.strip())
+        if not common.is_absolute():
+            common = (cwd / common).resolve()
+        root = common.parent if common.name == ".git" else common.parent.parent
+        if root == cwd:
+            return None
+        return root
+    except Exception:
+        return None
+
+
 def _assert_command_exists(command: str, cwd: Path) -> None:
-    """Fail fast if a slash command file is missing from the target project."""
+    """Fail fast if a slash command file is missing from the target project.
+
+    When running inside a worktree, attempts to restore ``.claude/`` artifacts
+    from the primary checkout before raising, since rebase stash operations
+    can destroy them.
+    """
     name = command.lstrip("/")
     if not name or "/" in name or "\\" in name or ".." in name:
         raise RuntimeError(f"Invalid slash command: {command!r}")
     cmd_path = cwd / ".claude" / "commands" / f"{name}.md"
     if not cmd_path.is_file():
+        project_root = _resolve_primary_root(cwd)
+        if project_root:
+            try:
+                from sova.git.worktree import ensure_claude_artifacts
+
+                ensure_claude_artifacts(project_root, cwd)
+                if cmd_path.is_file():
+                    log.info("llm.command_restored", command=command, cwd=str(cwd))
+                    return
+            except Exception:
+                log.debug("llm.command_restore_failed", command=command, cwd=str(cwd), exc_info=True)
         raise RuntimeError(
             f"Command {command} not found at {cmd_path}. Run 'sova commands update --project {cwd}' to install it."
         )
