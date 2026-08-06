@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sova.adapters.base import Milestone, Task, TaskAdapter, TaskFilters, TaskState
-from sova.adapters.github import GitHubAdapter
+from sova.adapters.github import _STATE_LABELS, _STATE_TO_BOARD_NAMES, GitHubAdapter
+from sova.config.models import _VALID_TASK_STATES
 
 # ---------------------------------------------------------------------------
 # TaskState enum
@@ -24,6 +25,7 @@ class TestTaskState:
             "researched",
             "in_progress",
             "in_review",
+            "on_qa",
             "done",
             "needs_spec",
             "human_only",
@@ -32,6 +34,25 @@ class TestTaskState:
     def test_string_value(self) -> None:
         assert TaskState.IN_PROGRESS == "in_progress"
         assert str(TaskState.DONE) == "done"
+
+    def test_on_qa_state_exists(self) -> None:
+        assert TaskState.ON_QA == "on_qa"
+
+    def test_valid_task_states_matches_enum(self) -> None:
+        enum_values = {s.value for s in TaskState}
+        assert _VALID_TASK_STATES == enum_values
+
+
+class TestGitHubOnQaMappings:
+    def test_state_labels_contains_on_qa(self) -> None:
+        assert TaskState.ON_QA in _STATE_LABELS
+        assert _STATE_LABELS[TaskState.ON_QA] == "agent:on-qa"
+
+    def test_board_names_contains_on_qa(self) -> None:
+        assert TaskState.ON_QA in _STATE_TO_BOARD_NAMES
+        names = _STATE_TO_BOARD_NAMES[TaskState.ON_QA]
+        assert "on qa" in names
+        assert "qa" in names
 
 
 # ---------------------------------------------------------------------------

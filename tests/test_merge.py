@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+from sova.adapters.base import TaskState
 from sova.config.models import IntegrationConfig
 from sova.git.merge import (
     MergeQueueStatus,
@@ -440,6 +441,49 @@ class TestHandlePostMergeState:
         ):
             await handle_post_merge_state(42, post_merge_state="custom_qa", repo="owner/repo")
         mock_run.assert_not_called()
+
+
+class TestHandlePostMergeStateWithAdapter:
+    async def test_adapter_done_delegates_to_transition_state(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state(42, post_merge_state="done", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.DONE)
+
+    async def test_adapter_on_qa_delegates_to_transition_state(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state(42, post_merge_state="on_qa", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_awaited_once_with("42", TaskState.ON_QA)
+
+    async def test_adapter_invalid_state_logs_warning(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state(42, post_merge_state="invalid_state", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_adapter_rejects_unsupported_lifecycle_state(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state(42, post_merge_state="in_progress", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_adapter_no_issue_is_noop(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state(None, post_merge_state="done", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_not_awaited()
+
+    async def test_no_adapter_falls_back_to_gh_cli(self) -> None:
+        with (
+            patch("sova.git.merge.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.git.merge.resolve_gh_env", return_value={}),
+        ):
+            mock_run.return_value = _shell_ok()
+            await handle_post_merge_state(42, post_merge_state="done", repo="owner/repo")
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0]
+        assert "close" in args
+
+    async def test_adapter_string_issue_number(self) -> None:
+        adapter = AsyncMock()
+        await handle_post_merge_state("PROJ-123", post_merge_state="on_qa", repo="owner/repo", adapter=adapter)
+        adapter.transition_state.assert_awaited_once_with("PROJ-123", TaskState.ON_QA)
 
 
 class TestIntegrationConfigDefaults:

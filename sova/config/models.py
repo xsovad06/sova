@@ -16,6 +16,7 @@ _VALID_TASK_STATES = frozenset(
         "researched",
         "in_progress",
         "in_review",
+        "on_qa",
         "done",
         "needs_spec",
         "human_only",

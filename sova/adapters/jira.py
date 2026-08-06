@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+from urllib.parse import quote
 
 import httpx
 
@@ -17,6 +18,7 @@ _STATE_LABELS: dict[TaskState, str] = {
     TaskState.RESEARCHED: "agent:researched",
     TaskState.IN_PROGRESS: "agent:in-progress",
     TaskState.IN_REVIEW: "agent:in-review",
+    TaskState.ON_QA: "agent:on-qa",
     TaskState.NEEDS_SPEC: "agent:needs-spec",
     TaskState.HUMAN_ONLY: "agent:human-only",
 }
@@ -32,12 +34,15 @@ _JIRA_STATUS_TO_STATE: dict[str, TaskState] = {
     "In Progress": TaskState.IN_PROGRESS,
     "Code Review": TaskState.IN_REVIEW,
     "Review": TaskState.IN_REVIEW,
+    "On QA": TaskState.ON_QA,
+    "QA": TaskState.ON_QA,
 }
 
 _DEFAULT_TRANSITIONS: dict[TaskState, list[str]] = {
     TaskState.BACKLOG: ["To Do", "Backlog", "Open"],
     TaskState.IN_PROGRESS: ["In Progress", "Start Progress"],
     TaskState.IN_REVIEW: ["In Review", "Review"],
+    TaskState.ON_QA: ["On QA", "QA", "Verification", "Ready for QA"],
     TaskState.DONE: ["Done", "Closed", "Resolved", "Close"],
 }
 
@@ -219,7 +224,7 @@ class JiraAdapter(TaskAdapter):
 
     async def get_task(self, task_id: str) -> Task:
         issue_key = self._resolve_key(task_id)
-        response = await self._http.get(f"/issue/{issue_key}")
+        response = await self._http.get(self._issue_path(issue_key))
         if response.status_code != 200:
             msg = f"Failed to fetch issue {issue_key}: {response.text[:200]}"
             raise RuntimeError(msg)
@@ -252,7 +257,7 @@ class JiraAdapter(TaskAdapter):
     async def get_state(self, task_id: str) -> TaskState:
         issue_key = self._resolve_key(task_id)
         response = await self._http.get(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             params={"fields": "status,labels"},
         )
         if response.status_code != 200:
@@ -269,13 +274,15 @@ class JiraAdapter(TaskAdapter):
     async def transition_state(self, task_id: str, new_state: TaskState) -> None:
         issue_key = self._resolve_key(task_id)
 
+        transitioned = await self._trigger_transition(issue_key, new_state)
+        if not transitioned:
+            return
+
         await self._clear_state_labels(issue_key)
         if new_state != TaskState.DONE:
             label = _STATE_LABELS.get(new_state)
             if label:
                 await self.add_label(task_id, label)
-
-        await self._trigger_transition(issue_key, new_state)
 
     async def assign(self, task_id: str, agent_role: str) -> bool:
         await self.add_label(task_id, f"role:{agent_role}")
@@ -284,7 +291,7 @@ class JiraAdapter(TaskAdapter):
     async def add_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             json={"update": {"labels": [{"add": label}]}},
         )
         if response.status_code not in (200, 204):
@@ -293,7 +300,7 @@ class JiraAdapter(TaskAdapter):
     async def remove_label(self, task_id: str, label: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             json={"update": {"labels": [{"remove": label}]}},
         )
         if response.status_code not in (200, 204):
@@ -302,7 +309,7 @@ class JiraAdapter(TaskAdapter):
     async def _do_post_comment(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.post(
-            f"/issue/{issue_key}/comment",
+            f"{self._issue_path(issue_key)}/comment",
             json={"body": _build_adf_doc(body)},
         )
         if response.status_code not in (200, 201):
@@ -323,7 +330,7 @@ class JiraAdapter(TaskAdapter):
     async def _do_edit_body(self, task_id: str, body: str) -> None:
         issue_key = self._resolve_key(task_id)
         response = await self._http.put(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             json={"fields": {"description": _build_adf_doc(body)}},
         )
         if response.status_code not in (200, 204):
@@ -336,7 +343,7 @@ class JiraAdapter(TaskAdapter):
 
     async def get_comments(self, task_id: str) -> list[str]:
         issue_key = self._resolve_key(task_id)
-        response = await self._http.get(f"/issue/{issue_key}/comment", params={"orderBy": "-created"})
+        response = await self._http.get(f"{self._issue_path(issue_key)}/comment", params={"orderBy": "-created"})
         if response.status_code != 200:
             log.warning("get_comments.failed", issue=issue_key, status=response.status_code)
             return []
@@ -351,7 +358,7 @@ class JiraAdapter(TaskAdapter):
         issue_key = self._resolve_key(task_id)
         pr_id = pr_url.rstrip("/").split("/")[-1]
         response = await self._http.post(
-            f"/issue/{issue_key}/remotelink",
+            f"{self._issue_path(issue_key)}/remotelink",
             json={
                 "object": {
                     "url": pr_url,
@@ -432,7 +439,7 @@ class JiraAdapter(TaskAdapter):
             raise RuntimeError(f"Fix version '{milestone_title}' not found in project {self.project_key}")
 
         update_resp = await self._http.put(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             json={"update": {"fixVersions": [{"add": {"id": version_id}}]}},
         )
         if update_resp.status_code not in (200, 204):
@@ -440,10 +447,17 @@ class JiraAdapter(TaskAdapter):
                 f"Failed to set milestone '{milestone_title}' on issue {issue_key}: {update_resp.text[:200]}"
             )
 
+    _ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]+-\d+$")
+
     def _resolve_key(self, task_id: str) -> str:
-        if "-" in task_id:
-            return task_id
-        return f"{self.project_key}-{task_id}"
+        key = task_id if "-" in task_id else f"{self.project_key}-{task_id}"
+        if not self._ISSUE_KEY_RE.match(key):
+            raise ValueError(f"Invalid Jira issue key: {key!r}")
+        return key
+
+    @staticmethod
+    def _issue_path(issue_key: str) -> str:
+        return f"/issue/{quote(issue_key, safe='')}"
 
     def _parse_issue(self, data: dict) -> Task:
         fields = data.get("fields", {})
@@ -522,7 +536,7 @@ class JiraAdapter(TaskAdapter):
 
     async def _clear_state_labels(self, issue_key: str) -> None:
         response = await self._http.get(
-            f"/issue/{issue_key}",
+            self._issue_path(issue_key),
             params={"fields": "labels"},
         )
         if response.status_code != 200:
@@ -532,7 +546,7 @@ class JiraAdapter(TaskAdapter):
         removals = [{"remove": label} for label in labels if label in _LABEL_TO_STATE]
         if removals:
             resp = await self._http.put(
-                f"/issue/{issue_key}",
+                self._issue_path(issue_key),
                 json={"update": {"labels": removals}},
             )
             if resp.status_code not in (200, 204):
@@ -573,7 +587,7 @@ class JiraAdapter(TaskAdapter):
 
     async def get_available_transitions(self, task_id: str) -> list[dict[str, str]]:
         issue_key = self._resolve_key(task_id)
-        response = await self._http.get(f"/issue/{issue_key}/transitions")
+        response = await self._http.get(f"{self._issue_path(issue_key)}/transitions")
         if response.status_code != 200:
             log.warning("transitions.fetch_failed", issue=issue_key, status=response.status_code)
             return []
@@ -590,10 +604,15 @@ class JiraAdapter(TaskAdapter):
             )
         return result
 
-    async def _trigger_transition(self, issue_key: str, target_state: TaskState) -> None:
+    async def _trigger_transition(self, issue_key: str, target_state: TaskState) -> bool:
         transitions = await self.get_available_transitions(issue_key)
         if not transitions:
-            return
+            log.warning(
+                "transition.no_transitions",
+                issue=issue_key,
+                state=str(target_state),
+            )
+            return False
 
         target_names = list(_DEFAULT_TRANSITIONS.get(target_state, []))
         config_name = self._state_transitions.get(target_state.value)
@@ -603,7 +622,7 @@ class JiraAdapter(TaskAdapter):
         for transition in transitions:
             if transition["name"] in target_names:
                 resp = await self._http.post(
-                    f"/issue/{issue_key}/transitions",
+                    f"{self._issue_path(issue_key)}/transitions",
                     json={"transition": {"id": transition["id"]}},
                 )
                 if resp.status_code not in (200, 204):
@@ -613,13 +632,14 @@ class JiraAdapter(TaskAdapter):
                         transition=transition["name"],
                         status=resp.status_code,
                     )
-                    return
+                    return False
                 log.info("transition.triggered", issue=issue_key, transition=transition["name"])
-                return
+                return True
 
-        log.debug(
+        log.warning(
             "transition.no_match",
             issue=issue_key,
             state=str(target_state),
             available=[t["name"] for t in transitions],
         )
+        return False

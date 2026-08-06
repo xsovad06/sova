@@ -215,7 +215,8 @@ def _build_history_item(
 
 async def get_work_detail(session: AsyncSession, run_id: int) -> dict | None:
     """Get a single run with its step executions and pipeline progress."""
-    run = await session.get(TaskRun, run_id)
+    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
+    run = (await session.execute(stmt)).scalar_one_or_none()
     if run is None:
         return None
 
@@ -314,7 +315,12 @@ async def _find_superseded_issues(session: AsyncSession, issue_numbers: list[str
 async def get_runs_for_issue(session: AsyncSession, issue_number: str) -> list[dict]:
     """Get all runs for a specific issue, most recent first."""
     issue_number = issue_number.lstrip("#").strip()
-    stmt = select(TaskRun).where(TaskRun.issue_number == issue_number).order_by(TaskRun.started_at.desc())
+    stmt = (
+        select(TaskRun)
+        .options(selectinload(TaskRun.resource_summary))
+        .where(TaskRun.issue_number == issue_number)
+        .order_by(TaskRun.started_at.desc())
+    )
     result = await session.execute(stmt)
     return [_run_to_dict(r) for r in result.scalars().all()]
 
@@ -337,7 +343,8 @@ async def list_runs(
 
 async def get_run(session: AsyncSession, run_id: int) -> dict | None:
     """Get a single task run by ID."""
-    run = await session.get(TaskRun, run_id)
+    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
+    run = (await session.execute(stmt)).scalar_one_or_none()
     return _run_to_dict(run) if run else None
 
 
@@ -361,7 +368,8 @@ async def get_run_steps(
 
 async def mark_run_failed(session: AsyncSession, run_id: int, reason: str = "Manually abandoned") -> dict | None:
     """Mark a non-terminal run as failed."""
-    run = await session.get(TaskRun, run_id)
+    stmt = select(TaskRun).options(selectinload(TaskRun.resource_summary)).where(TaskRun.id == run_id)
+    run = (await session.execute(stmt)).scalar_one_or_none()
     if run is None:
         return None
     if run.status in _TERMINAL:

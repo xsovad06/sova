@@ -22,6 +22,7 @@ class TaskState(StrEnum):
     RESEARCHED = "researched"
     IN_PROGRESS = "in_progress"
     IN_REVIEW = "in_review"
+    ON_QA = "on_qa"
     DONE = "done"
     NEEDS_SPEC = "needs_spec"
     HUMAN_ONLY = "human_only"
