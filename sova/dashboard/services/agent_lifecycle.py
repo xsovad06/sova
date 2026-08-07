@@ -837,6 +837,66 @@ async def start_command(
 
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
+_DB_TERMINAL_POLL_INTERVAL = 30.0
+
+
+async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
+    """Check if a TaskRun has reached terminal status in the database.
+
+    Used by _wait_and_finalize to detect when the inner subprocess (sova run)
+    has finalized the DB record but the outer claude -p process is still alive.
+    """
+    from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            if task_run is None:
+                return True
+            return task_run.status in _TERMINAL_STATUSES
+    except Exception:
+        log.debug("finalize.terminal_check_failed", run_id=run_id, exc_info=True)
+        return False
+
+
+async def _wait_with_terminal_check(agent: AgentState) -> int:
+    """Wait for process exit, killing the process if its DB record becomes terminal.
+
+    The inner subprocess (sova run) may finalize the TaskRun to a terminal
+    status while the outer claude -p process is stuck (context exhaustion,
+    tool hang, retry loop). Without this check, _wait_and_finalize blocks
+    forever, and on dashboard restart the process becomes an invisible zombie
+    (terminal DB status means no recovery mechanism will ever find it).
+    """
+    while True:
+        try:
+            return await asyncio.wait_for(agent.process.wait(), timeout=_DB_TERMINAL_POLL_INTERVAL)
+        except TimeoutError:
+            pass
+
+        if await _is_run_terminal_in_db(agent.run_id, agent.project_dir):
+            log.warning(
+                "finalize.db_terminal_process_alive",
+                run_id=agent.run_id,
+                pid=agent.process.pid,
+            )
+            try:
+                await agent.process.stop(timeout=5.0)
+            except Exception:
+                try:
+                    agent.process._proc.kill()
+                except OSError:
+                    pass
+                else:
+                    try:
+                        await asyncio.wait_for(agent.process._proc.wait(), timeout=3.0)
+                    except (TimeoutError, asyncio.CancelledError):
+                        pass
+            rc = agent.process.returncode
+            return rc if rc is not None else -1
+
 
 async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
     """Wait for the process to exit, then finalize the DB record."""
@@ -846,13 +906,21 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
         return
 
     try:
-        exit_code = await agent.process.wait()
+        exit_code = await _wait_with_terminal_check(agent)
     except asyncio.CancelledError:
         if agent.process is not None and agent.process.is_running:
             try:
-                await agent.process.stop(timeout=3.0)
-            except Exception:
-                log.debug("finalize.stop_on_cancel_failed", run_id=agent.run_id, exc_info=True)
+                agent.process._proc.terminate()
+            except OSError:
+                pass
+            else:
+                try:
+                    await asyncio.wait_for(agent.process._proc.wait(), timeout=2.0)
+                except (TimeoutError, asyncio.CancelledError):
+                    try:
+                        agent.process._proc.kill()
+                    except OSError:
+                        pass
         raise
     run_id = agent.run_id
 

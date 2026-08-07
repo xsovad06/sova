@@ -20,6 +20,30 @@ from sova.ipc.runtime import AgentRuntime
 from sova.llm.models import StreamEvent
 
 
+class _MockSubprocess:
+    """Minimal mock for asyncio.subprocess.Process used by _BaseAgentProcess._proc."""
+
+    def __init__(self, owner: MockAgentProcess) -> None:
+        self._owner = owner
+
+    @property
+    def returncode(self) -> int | None:
+        return self._owner._returncode
+
+    def terminate(self) -> None:
+        self._owner._hang_release.set()
+        self._owner._stop_event.set()
+
+    def kill(self) -> None:
+        self._owner._hang_release.set()
+        self._owner._stop_event.set()
+        if self._owner._returncode is None:
+            self._owner._returncode = self._owner._exit_code
+
+    async def wait(self) -> int:
+        return await self._owner.wait()
+
+
 class MockAgentProcess:
     """AgentProcess-compatible mock that simulates subprocess behavior."""
 
@@ -42,6 +66,7 @@ class MockAgentProcess:
         self._returncode: int | None = None
         self._hang_release = asyncio.Event()
         self._stop_event = asyncio.Event()
+        self._proc = _MockSubprocess(self)
 
     @property
     def pid(self) -> int:

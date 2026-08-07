@@ -315,6 +315,7 @@ class WorkflowEngine:
                     error="step_hard_timeout",
                 )
             except Exception as exc:
+                log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
                 step_result = StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
 
             elapsed_ms = int((time.monotonic() - start) * 1000)

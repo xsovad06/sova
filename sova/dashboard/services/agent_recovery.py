@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cachetools import TTLCache
@@ -82,8 +82,123 @@ def _is_process_alive(pid: int) -> bool:
         return False
 
 
+async def _kill_process(pid: int) -> None:
+    """Send SIGTERM, wait briefly, then SIGKILL if still alive."""
+    import asyncio
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    await asyncio.sleep(2)
+    try:
+        os.kill(pid, 0)
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
 _MERGE_CHECK_TIMEOUT = 10.0  # per-PR GitHub check during recovery
 _RECOVERY_TOTAL_TIMEOUT = 20.0  # hard cap on the entire recover_stale_runs() call
+
+
+_ZOMBIE_RECENCY_HOURS = 24
+
+
+def _is_zombie_process(pid: int, started_at: datetime | None) -> bool:
+    """Verify a PID belongs to the expected agent process, not a recycled PID.
+
+    Compares the process creation time against the TaskRun's started_at to guard
+    against killing unrelated processes that inherited a recycled PID.
+    """
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+        create_time = datetime.fromtimestamp(proc.create_time(), tz=timezone.utc)
+        if started_at is not None:
+            started_utc = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+            if create_time > started_utc + timedelta(minutes=5):
+                log.info(
+                    "recovery.pid_recycled",
+                    pid=pid,
+                    proc_created=create_time.isoformat(),
+                    run_started=started_utc.isoformat(),
+                )
+                return False
+        return True
+    except Exception:
+        return _is_process_alive(pid)
+
+
+def _get_managed_run_ids() -> tuple[set[int], bool]:
+    """Return (managed_run_ids, loaded_ok) from the in-memory agent pool.
+
+    Returns an empty set with loaded_ok=False if the pool is unavailable,
+    so callers can decide how to handle unknown managed state.
+    """
+    try:
+        from sova.dashboard.services.agent_pool import _projects
+
+        ids: set[int] = set()
+        for pa in _projects.values():
+            ids.update(pa.agents.keys())
+        return ids, True
+    except Exception:
+        log.warning("recovery.managed_run_ids_failed", exc_info=True)
+        return set(), False
+
+
+async def _kill_terminal_zombies(project_dir: Path | None = None) -> int:
+    """Kill processes attached to terminal TaskRuns that are still alive.
+
+    When the inner subprocess (sova run) finalizes a TaskRun to terminal status
+    but the outer claude -p process never exits, and the dashboard restarts,
+    the process becomes invisible to all recovery mechanisms (they only query
+    non-terminal runs). This function scans recent terminal runs with PIDs and
+    kills any that are still alive and match the expected process identity.
+
+    Returns the number of zombie processes killed.
+    """
+    import asyncio
+
+    from sqlalchemy import func, select
+
+    from sova.dashboard.services.work_service import _TERMINAL
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    managed_run_ids, _ = _get_managed_run_ids()
+
+    killed = 0
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=_ZOMBIE_RECENCY_HOURS)
+        async with await get_session(project_dir=project_dir) as session:
+            stmt = select(TaskRun.id, TaskRun.pid, TaskRun.started_at).where(
+                TaskRun.status.in_(_TERMINAL),
+                TaskRun.pid.isnot(None),
+                func.coalesce(TaskRun.ended_at, TaskRun.started_at) >= cutoff,
+            )
+            result = await session.execute(stmt)
+            terminal_with_pid = result.fetchall()
+
+        kill_tasks = []
+        for run_id, pid, started_at in terminal_with_pid:
+            if not pid or run_id in managed_run_ids:
+                continue
+            if _is_zombie_process(pid, started_at):
+                log.warning("recovery.killing_terminal_zombie", run_id=run_id, pid=pid)
+                kill_tasks.append(_kill_process(pid))
+        if kill_tasks:
+            await asyncio.gather(*kill_tasks, return_exceptions=True)
+            killed = len(kill_tasks)
+    except Exception:
+        log.warning("recovery.terminal_zombie_scan_failed", exc_info=True)
+
+    if killed:
+        log.info("recovery.terminal_zombies_killed", count=killed)
+    return killed
 
 
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
@@ -119,11 +234,22 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
         # Collect dead runs with their snapshot data for writing back later.
         # We deliberately work outside a session here so the write lock is free.
+        # Build set of run_ids managed by the current dashboard instance so we
+        # can distinguish "alive and managed" from "alive but orphaned".
+        managed_run_ids, _managed_loaded = _get_managed_run_ids()
+
+        orphan_kill_tasks: list[asyncio.Task[None]] = []
         dead_runs: list[dict] = []
         for run in all_stale:
-            if run.pid and _is_process_alive(run.pid):
-                log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
-                continue
+            if run.pid and _is_zombie_process(run.pid, run.started_at):
+                if run.id in managed_run_ids:
+                    log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                    continue
+                if not _managed_loaded:
+                    log.info("recovery.still_alive", run_id=run.id, pid=run.pid)
+                    continue
+                log.warning("recovery.killing_orphan", run_id=run.id, pid=run.pid)
+                orphan_kill_tasks.append(asyncio.ensure_future(_kill_process(run.pid)))
 
             was_status = run.status
             final_status = "interrupted"
@@ -178,6 +304,9 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     "needs_merge_check": needs_merge_check,
                 }
             )
+
+        if orphan_kill_tasks:
+            await asyncio.gather(*orphan_kill_tasks, return_exceptions=True)
 
         if not dead_runs:
             return []
@@ -749,8 +878,6 @@ async def get_synthesized_handoff() -> dict | None:
     Queries recent completed developer/review runs that have a PR, then
     synthesizes actionable handoff buttons from the PR's review state.
     """
-    from datetime import timedelta
-
     from sqlalchemy import func, select
 
     from sova.db.models import TaskRun
