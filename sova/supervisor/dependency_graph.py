@@ -53,7 +53,7 @@ _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
 
 # Actions a user or supervisor can take for each issue state, surfaced in the graph drawer.
 _STATE_ACTIONS: dict[TaskState, list[dict]] = {
-    TaskState.BACKLOG: [],
+    TaskState.BACKLOG: [{"id": "triage", "label": "Triage", "role": "triage"}],
     TaskState.TRIAGED: [{"id": "researcher", "label": "Run Researcher", "role": "researcher"}],
     TaskState.RESEARCHED: [{"id": "developer", "label": "Run Developer", "role": "developer"}],
     TaskState.IN_PROGRESS: [],
