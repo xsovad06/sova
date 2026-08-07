@@ -185,6 +185,12 @@ class TestDependencyGraph:
         graph = DependencyGraph(tasks)
         assert graph.get_ready_tasks() == []
 
+    def test_epic_excluded_from_ready(self) -> None:
+        """Epics should never be included in ready tasks, regardless of state."""
+        tasks = [_task(1, state=TaskState.BACKLOG, labels=["type: epic"])]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == []
+
     def test_triaged_included_in_ready(self) -> None:
         tasks = [_task(1, state=TaskState.TRIAGED)]
         graph = DependencyGraph(tasks)
