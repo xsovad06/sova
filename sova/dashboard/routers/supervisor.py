@@ -228,10 +228,11 @@ async def get_plan() -> dict:
     decisions here instead of executing them immediately.  The frontend polls
     this endpoint to render the "Pending Actions" panel.
     """
-    from sova.dashboard.services.supervisor_service import get_pending_plan
+    from sova.dashboard.services.supervisor_service import get_pending_plan, get_plan_deferred, get_plan_reasoning
 
     plan = get_pending_plan()
     return {
+        "reasoning": get_plan_reasoning(),
         "pending": [
             {
                 "issue_number": d.issue_number,
@@ -240,7 +241,8 @@ async def get_plan() -> dict:
                 "reason": d.reason,
             }
             for d in plan
-        ]
+        ],
+        "deferred": get_plan_deferred(),
     }
 
 
