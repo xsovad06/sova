@@ -15,7 +15,7 @@ type = "github"
 github_project_number = 2
 
 [agent]
-model = "opus"
+model = "claude-opus-4-6"
 max_budget = 10.00
 
 [review]
