@@ -147,13 +147,24 @@ class SupervisorDaemon:
         try:
             from sova.supervisor.progression import NON_ACTIONABLE_ACTIONS, TaskProgressionEngine
 
+            plan = None
+            if self._config.supervisor.llm_planning:
+                from sova.supervisor.planner import SupervisorPlanner
+
+                planner = SupervisorPlanner(
+                    config=self._config,
+                    project_dir=self._project_dir,
+                    session_factory=self._session_factory,
+                )
+                plan = await planner.plan(adapter)
+
             engine = TaskProgressionEngine(
                 config=self._config.supervisor,
                 adapter=adapter,
                 project_dir=self._project_dir,
                 session_factory=self._session_factory,
             )
-            decisions = await engine.evaluate_all()
+            decisions = await engine.evaluate_all(plan=plan)
 
             records = [
                 SupervisorDecision(
@@ -177,7 +188,13 @@ class SupervisorDaemon:
             if self._config.supervisor.require_approval:
                 from sova.dashboard.services.supervisor_service import set_pending_plan
 
-                set_pending_plan(actionable)
+                reasoning = plan.reasoning if plan else None
+                deferred = (
+                    [{"action": d.action, "issue": d.issue, "reason": d.reason} for d in plan.deferred]
+                    if plan
+                    else None
+                )
+                set_pending_plan(actionable, reasoning=reasoning, deferred=deferred)
                 log.info("poll.progression_pending_approval", count=len(actionable))
                 return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}, engine
 

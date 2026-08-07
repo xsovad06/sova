@@ -31,6 +31,7 @@ from sova.supervisor.file_overlap import (
     get_active_branch_file_sets,
     predict_candidate_files,
 )
+from sova.supervisor.planner import PlanResult
 from sova.utils.logging import get_logger
 
 try:
@@ -113,8 +114,13 @@ class TaskProgressionEngine:
         self._session_factory = session_factory
         self._last_graph: DependencyGraph | None = None
 
-    async def evaluate_all(self) -> list[ProgressionDecision]:
-        """Scan all active tasks, return next action for each."""
+    async def evaluate_all(self, *, plan: PlanResult | None = None) -> list[ProgressionDecision]:
+        """Scan all active tasks, return next action for each.
+
+        When *plan* is provided, actionable decisions whose ``(action, issue)``
+        pair is not in the plan's approved list are converted to WAIT.
+        Deterministic gates still hard-block regardless of the plan.
+        """
         # Check rate limit before making any API calls (graph build calls list_tasks)
         global_rate_limit = self._check_github_rate_limit_gate()
         if global_rate_limit is not None:
@@ -237,6 +243,32 @@ class TaskProgressionEngine:
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
+
+        if plan is not None:
+            approved_set = {(a.action, a.issue) for a in plan.actions}
+            filtered: list[ProgressionDecision] = []
+            for d in decisions:
+                if d.action in NON_ACTIONABLE_ACTIONS:
+                    filtered.append(d)
+                elif (d.action.value, d.issue_number) in approved_set:
+                    filtered.append(d)
+                else:
+                    log.info(
+                        "progression.plan_filtered",
+                        issue=d.issue_number,
+                        action=d.action.value,
+                        detail="not in LLM plan; skipped",
+                    )
+                    filtered.append(
+                        ProgressionDecision(
+                            issue_number=d.issue_number,
+                            action=ProgressionAction.WAIT,
+                            reason=f"not in LLM plan (deterministic: {d.action.value})",
+                            blocked_by=d.blocked_by,
+                            pr_number=d.pr_number,
+                        )
+                    )
+            decisions = filtered
 
         return decisions
 

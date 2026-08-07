@@ -1041,6 +1041,15 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor",
     ),
     SettingMeta(
+        "supervisor.llm_planning",
+        "LLM Planning",
+        "Enable LLM-based planning before each supervisor cycle. "
+        "Requires ANTHROPIC_API_KEY. When disabled, the supervisor runs in "
+        "purely deterministic mode.",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.task_queue",
         "Task queue",
         "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",
