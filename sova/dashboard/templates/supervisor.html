@@ -134,6 +134,20 @@
   </div>
 </div>
 
+<!-- Supervisor Persona -->
+<details class="bg-surface-card rounded-lg border border-gray-700/50 mb-4">
+  <summary class="px-4 py-3 cursor-pointer flex items-center justify-between select-none">
+    <h3 class="text-sm font-medium text-gray-300">Supervisor Persona</h3>
+    <span class="text-xs text-gray-600">click to expand</span>
+  </summary>
+  <div class="px-4 pb-4">
+    <div class="flex justify-end mb-2">
+      <button onclick="openSupervisorPersona()" class="text-xs text-accent hover:text-blue-300 transition-colors">Edit</button>
+    </div>
+    <pre id="supervisor-persona-preview" class="text-xs text-gray-400 whitespace-pre-wrap font-mono leading-relaxed bg-surface rounded p-3 border border-gray-700/30 max-h-64 overflow-y-auto">Loading...</pre>
+  </div>
+</details>
+
 <!-- Activity Stream -->
 <div class="bg-surface-card rounded-lg border border-gray-700/50 p-4">
   <div class="flex items-center justify-between mb-3">
@@ -1523,11 +1537,36 @@ async function clearQueue() {
   } catch (e) { console.error('clearQueue failed:', e); }
 }
 
+// -- Supervisor Persona --
+async function loadSupervisorPersona() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/persona`, {cache: 'no-store'});
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    const lines = (d.content || '').split('\n').slice(0, 15);
+    document.getElementById('supervisor-persona-preview').textContent = lines.join('\n') + (d.content && d.content.split('\n').length > 15 ? '\n...' : '');
+  } catch (err) {
+    document.getElementById('supervisor-persona-preview').textContent = 'Failed to load persona';
+  }
+}
+
+async function openSupervisorPersona() {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/persona/open`, {method: 'POST'});
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      showToast(d.detail || 'Failed to open persona editor', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to open persona editor', 'error');
+  }
+}
+
 // -- Init --
-loadStatus(); loadQuota(); loadCIBudget(); loadGraph(); loadDecisions(); loadPlan(); loadQueue();
+loadStatus(); loadQuota(); loadCIBudget(); loadGraph(); loadDecisions(); loadPlan(); loadQueue(); loadSupervisorPersona();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes
-setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); }, 30000);
+setInterval(() => { loadStatus(); loadQuota(); loadCIBudget(); loadDecisions(); loadGraph(); loadPlan(); loadQueue(); loadSupervisorPersona(); }, 30000);
 
 window.addEventListener('beforeunload', () => {
   if (_confirmPoll) { clearInterval(_confirmPoll); _confirmPoll = null; }
