@@ -1,4 +1,4 @@
-"""Supervisor API router: status, manual poll trigger, decision log queries, and approval plan."""
+"""Supervisor API router: status, manual poll trigger, decision log queries, approval plan, and persona."""
 
 from __future__ import annotations
 
@@ -414,3 +414,65 @@ async def clear_queue() -> dict:
         project_dir = get_project_dir()
         _save_task_queue(project_dir, [])
         return {"queue": []}
+
+
+# -- Supervisor Persona --
+
+
+@router.get("/persona", responses={500: {"description": "Failed to fetch supervisor persona"}})
+async def get_supervisor_persona() -> dict:
+    """Get the supervisor persona content and metadata."""
+    try:
+        from sova.config.loader import load_config
+        from sova.supervisor.persona import get_persona_info
+
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+        return get_persona_info(cfg.supervisor.persona_path)
+    except Exception:
+        log.warning("supervisor.persona.error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch supervisor persona")
+
+
+@router.post(
+    "/persona/open",
+    responses={400: {"description": "Cannot open editor"}, 500: {"description": "Failed to open editor"}},
+)
+async def open_supervisor_persona_in_editor() -> dict:
+    """Open the supervisor persona file in the OS default editor.
+
+    Fire-and-forget: spawns the editor process without waiting for it to exit.
+    """
+    from sova.config.loader import load_config
+    from sova.oversight.persona import get_open_command
+    from sova.supervisor.persona import ensure_persona_exists
+
+    try:
+        project_dir = get_project_dir()
+        cfg = load_config(project_dir)
+    except Exception:
+        log.warning("supervisor.persona.open.config_error", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load project configuration")
+
+    path = ensure_persona_exists(cfg.supervisor.persona_path)
+    cmd = get_open_command()
+    if cmd is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No editor command found for this OS. Edit manually: {path}",
+        )
+
+    try:
+        await asyncio.create_subprocess_exec(cmd, str(path))
+        return {"status": "spawned", "path": str(path)}
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{cmd}' not found. Edit the file manually: {path}",
+        )
+    except Exception:
+        log.warning("supervisor.persona.open.subprocess_error", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to open editor. Edit manually: {path}",
+        )

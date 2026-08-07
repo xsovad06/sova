@@ -1,4 +1,4 @@
-"""Tests for sova.oversight.persona -- operations persona file management."""
+"""Tests for sova.oversight.persona: operations persona file management."""
 
 from __future__ import annotations
 
