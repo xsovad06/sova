@@ -321,6 +321,47 @@ class TestSupervisorDaemon:
 
         assert result["decisions"] == 1
 
+    async def test_poll_progression_with_llm_planning(
+        self,
+        session_factory: async_sessionmaker,
+    ) -> None:
+        """_poll_progression invokes planner when llm_planning is True."""
+        from sova.config.models import ProjectConfig, SupervisorConfig
+        from sova.supervisor.planner import PlanResult
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(
+                enabled=True, poll_interval_seconds=1, require_approval=True, llm_planning=True
+            ),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        mock_plan = PlanResult(reasoning="Merge first, then develop.", actions=())
+        mock_planner = AsyncMock()
+        mock_planner.plan = AsyncMock(return_value=mock_plan)
+
+        mock_decision = ProgressionDecision(
+            issue_number=42,
+            action=ProgressionAction.SPAWN_DEVELOPER,
+            reason="Ready",
+        )
+        mock_engine = AsyncMock()
+        mock_engine.evaluate_all.return_value = [mock_decision]
+
+        adapter = AsyncMock()
+
+        with (
+            patch("sova.supervisor.planner.SupervisorPlanner", return_value=mock_planner),
+            patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine),
+        ):
+            result, engine = await daemon._poll_progression(adapter)
+
+        mock_planner.plan.assert_awaited_once_with(adapter)
+        mock_engine.evaluate_all.assert_awaited_once_with(plan=mock_plan)
+        assert result["pending"] == 1
+
     async def test_poll_health_ok(
         self,
         daemon: SupervisorDaemon,

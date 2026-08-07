@@ -89,7 +89,12 @@
       Approve All
     </button>
   </div>
+  <div id="plan-reasoning" class="hidden mb-3 p-3 rounded bg-surface-overlay text-sm text-gray-300 leading-relaxed whitespace-pre-wrap border-l-2 border-accent-blue/40"></div>
   <div id="pending-plan-items" class="space-y-1.5"></div>
+  <div id="plan-deferred" class="hidden mt-3 pt-3 border-t border-gray-700/50">
+    <h4 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Deferred</h4>
+    <div id="plan-deferred-items" class="space-y-1"></div>
+  </div>
 </div>
 
 <!-- Task Queue -->
@@ -1207,8 +1212,21 @@ async function loadPlan() {
     const items = data.pending || [];
     const panel = document.getElementById('pending-plan');
     const itemsEl = document.getElementById('pending-plan-items');
-    if (!items.length) { _hidePlan(); return; }
+    const reasoningEl = document.getElementById('plan-reasoning');
+    const deferredEl = document.getElementById('plan-deferred');
+    const deferredItemsEl = document.getElementById('plan-deferred-items');
+    if (!items.length && !data.reasoning) { _hidePlan(); return; }
     panel.classList.remove('hidden');
+
+    // Render LLM reasoning if present
+    if (data.reasoning) {
+      reasoningEl.textContent = data.reasoning;
+      reasoningEl.classList.remove('hidden');
+    } else {
+      reasoningEl.classList.add('hidden');
+    }
+
+    // Render pending action items
     itemsEl.innerHTML = items.map(item => `
       <div class="flex items-center justify-between gap-3 text-xs py-1.5 px-2 rounded bg-surface/60 border border-gray-700/40">
         <div class="flex items-center gap-2 min-w-0">
@@ -1226,6 +1244,21 @@ async function loadPlan() {
         </div>
       </div>
     `).join('');
+
+    // Render deferred items if present
+    const deferredItems = data.deferred || [];
+    if (deferredItems.length) {
+      deferredEl.classList.remove('hidden');
+      deferredItemsEl.innerHTML = deferredItems.map(item => `
+        <div class="flex items-center gap-2 text-xs py-1 px-2 text-gray-500">
+          <span class="font-mono shrink-0">#${item.issue}</span>
+          <span class="capitalize shrink-0">${esc((item.action || '').replace(/_/g, ' '))}</span>
+          <span class="truncate">${esc(item.reason || '')}</span>
+        </div>
+      `).join('');
+    } else {
+      deferredEl.classList.add('hidden');
+    }
   } catch (e) {
     console.error('loadPlan failed:', e);
   }

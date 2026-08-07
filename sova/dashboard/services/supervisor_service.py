@@ -19,6 +19,8 @@ log = get_logger(component="dashboard.service.supervisor")
 # In-memory plan store. Ephemeral: cleared on server restart. The daemon
 # rebuilds the plan on the next poll cycle so nothing is permanently lost.
 _pending_plan: list["ProgressionDecision"] = []
+_plan_reasoning: str | None = None
+_plan_deferred: list[dict] = []
 
 
 def get_pending_plan() -> list["ProgressionDecision"]:
@@ -26,10 +28,27 @@ def get_pending_plan() -> list["ProgressionDecision"]:
     return list(_pending_plan)
 
 
-def set_pending_plan(decisions: list["ProgressionDecision"]) -> None:
+def get_plan_reasoning() -> str | None:
+    """Return the LLM planner's reasoning text, if any."""
+    return _plan_reasoning
+
+
+def get_plan_deferred() -> list[dict]:
+    """Return the LLM planner's deferred action list, if any."""
+    return list(_plan_deferred)
+
+
+def set_pending_plan(
+    decisions: list["ProgressionDecision"],
+    *,
+    reasoning: str | None = None,
+    deferred: list[dict] | None = None,
+) -> None:
     """Replace the pending plan with a new set of decisions."""
-    global _pending_plan
+    global _pending_plan, _plan_reasoning, _plan_deferred  # noqa: PLW0603
     _pending_plan = list(decisions)
+    _plan_reasoning = reasoning
+    _plan_deferred = list(deferred) if deferred else []
 
 
 def remove_plan_items(issue_numbers: set[int]) -> list["ProgressionDecision"]:
