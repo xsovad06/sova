@@ -130,6 +130,7 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **Decouple display metadata from config models** -- create `SettingMeta` dataclass registry rather than embedding display concerns in config models. Module: `sova/dashboard/settings_meta.py`. [confirmed: 1]
 - **Disable inline editing for non-scalar config types** -- list/object settings saved through scalar edit path corrupt TOML structure. Gate behind `isStructured` check. [confirmed: 1]
 - **Config fields must be wired to runtime, not just defined** -- `ProjectConfig.max_parallel_agents` existed but `ProjectAgents.max_concurrent` was hardcoded to 3. Pattern: when adding a config field, grep for the runtime equivalent and wire the read. When saving via the settings API, hot-reload the in-memory value (e.g., `sync_max_concurrent()` called from the settings router). Issue #436 tracks 33 dead settings. [confirmed: 1]
+- **Pin explicit model IDs in `sova.toml`, never use generic aliases** -- `model = "opus"` broke when Claude Code updated its alias to resolve to `claude-opus-5` (unavailable on Vertex). Generic aliases (`opus`, `sonnet`, `haiku`) are resolved by the Claude CLI, not SOVA, so new model releases silently change the target. Use full IDs like `claude-opus-4-6`, `claude-sonnet-4-5`, `claude-haiku-4-5`. Applies to `model`, `researcher_model`, and `triage_model` in `[agent]` section. Verify availability on Vertex before pinning: 404 = model not found, 429 = available but quota-limited. Issue #619 post-mortem. [confirmed: 1]
 
 ## Command Design
 

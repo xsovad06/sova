@@ -185,6 +185,12 @@ class TestDependencyGraph:
         graph = DependencyGraph(tasks)
         assert graph.get_ready_tasks() == []
 
+    def test_epic_excluded_from_ready(self) -> None:
+        """Epics should never be included in ready tasks, regardless of state."""
+        tasks = [_task(1, state=TaskState.BACKLOG, labels=["type: epic"])]
+        graph = DependencyGraph(tasks)
+        assert graph.get_ready_tasks() == []
+
     def test_triaged_included_in_ready(self) -> None:
         tasks = [_task(1, state=TaskState.TRIAGED)]
         graph = DependencyGraph(tasks)
@@ -340,19 +346,36 @@ class TestDependencyGraph:
     def test_to_dict_node_has_available_actions(self) -> None:
         """Each node should expose the actions available given its current state."""
         tasks = [
+            _task(0, state=TaskState.BACKLOG),
             _task(1, state=TaskState.TRIAGED),
             _task(2, state=TaskState.RESEARCHED),
             _task(3, state=TaskState.IN_REVIEW),
             _task(4, state=TaskState.IN_PROGRESS),
             _task(5, state=TaskState.DONE),
+            _task(6, state=TaskState.NEEDS_SPEC),
+            _task(7, state=TaskState.ON_QA),
         ]
         d = DependencyGraph(tasks).to_dict()
         by_id = {n["id"]: n["available_actions"] for n in d["nodes"]}
+        assert any(a["role"] == "triage" for a in by_id[0])
         assert any(a["role"] == "researcher" for a in by_id[1])
         assert any(a["role"] == "developer" for a in by_id[2])
         assert any(a["role"] == "integrate-pr" for a in by_id[3])
         assert by_id[4] == []
         assert by_id[5] == []
+        assert any(a["role"] == "researcher" for a in by_id[6])
+        assert by_id[7] == []
+
+    def test_backlog_node_has_triage_action(self) -> None:
+        """BACKLOG nodes should expose a Triage action."""
+        tasks = [_task(1, state=TaskState.BACKLOG)]
+        d = DependencyGraph(tasks).to_dict()
+        node = d["nodes"][0]
+        actions = node["available_actions"]
+        assert len(actions) == 1
+        assert actions[0]["id"] == "triage"
+        assert actions[0]["label"] == "Triage"
+        assert actions[0]["role"] == "triage"
 
     def test_to_dict_no_pr_map_backward_compatible(self) -> None:
         """to_dict without pr_map returns nodes without PR fields."""
