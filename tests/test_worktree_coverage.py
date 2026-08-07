@@ -265,6 +265,19 @@ class TestCopyWorktreeFilesDestTraversal:
         mock_copy2.assert_not_called()
 
 
+class TestCopyWorktreeFilesDirConflict:
+    def test_raises_when_regular_file_blocks_dir_symlink(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        src_dir = project / "mydir"
+        src_dir.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "mydir").write_text("i am a file")
+        with pytest.raises(FileExistsError, match="regular file already exists"):
+            _copy_worktree_files(project, worktree, ["mydir"])
+
+
 class TestCheckActiveAgentImportError:
     async def test_import_error_returns_none(self) -> None:
         from sova.git.worktree import _check_worktree_active_agent

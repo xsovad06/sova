@@ -394,6 +394,7 @@ def create_app(
         set_runtime(create_runtime(cfg.agent.runtime))
 
         from sova.core.output import cleanup_old_output
+        from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
 
         gc_task: asyncio.Task | None = None
         if is_multi:
@@ -404,10 +405,12 @@ def create_app(
                 if p.is_dir():
                     await init_db_for_project(p)
                     await recover_stale_runs(p)
+                    await _kill_terminal_zombies(p)
                     await cleanup_old_output(p, cfg.output.retention_days)
         else:
             await init_db(resolved)
             await recover_stale_runs(resolved)
+            await _kill_terminal_zombies(resolved)
             await cleanup_old_output(resolved, cfg.output.retention_days)
 
             if cfg.dashboard.gc_on_startup:

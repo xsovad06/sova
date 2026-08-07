@@ -404,7 +404,10 @@ _copy_claude_artifacts = ensure_claude_artifacts
 
 
 def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str]) -> None:
-    """Copy files from the project root into a worktree."""
+    """Copy files from the project root into a worktree.
+
+    Files are copied; directories are symlinked (e.g. ``.venv``).
+    """
     resolved_project = project_dir.resolve()
     resolved_worktree = worktree_path.resolve()
     for filename in files:
@@ -414,13 +417,25 @@ def _copy_worktree_files(project_dir: Path, worktree_path: Path, files: list[str
             continue
         if not src.exists():
             continue
-        dst = (worktree_path / filename).resolve()
-        if not dst.is_relative_to(resolved_worktree):
+        dst_raw = worktree_path / filename
+        dst_resolved = dst_raw.resolve()
+        if not dst_resolved.is_relative_to(resolved_worktree):
             log.warning("worktree.copy_file.path_traversal", file=filename)
             continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        log.debug("worktree.copy_file", file=filename)
+        dst_raw.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            if dst_raw.is_symlink() or dst_raw.is_dir():
+                log.debug("worktree.symlink_dir.exists", file=filename)
+            elif dst_raw.exists():
+                raise FileExistsError(
+                    f"Cannot symlink directory '{filename}': a regular file already exists at {dst_raw}"
+                )
+            else:
+                dst_raw.symlink_to(src)
+                log.debug("worktree.symlink_dir", file=filename)
+        else:
+            shutil.copy2(src, dst_raw)
+            log.debug("worktree.copy_file", file=filename)
 
 
 async def get_primary_worktree_root(cwd: Path | None = None) -> Path:

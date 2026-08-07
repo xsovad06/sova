@@ -7441,8 +7441,10 @@ class TestAgentRecoveryDirect:
         interrupted = await recover_stale_runs()
         assert len(interrupted) == 1
 
-    async def test_recover_stale_runs_skips_alive(self) -> None:
+    async def test_recover_stale_runs_skips_alive_managed(self) -> None:
+        """Alive processes that are managed by the current dashboard are skipped."""
         import os
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.agent_recovery import recover_stale_runs
 
@@ -7455,9 +7457,22 @@ class TestAgentRecoveryDirect:
                 pid=os.getpid(),
             )
             session.add(run)
+            await session.flush()
+            run_id = run.id
 
-        interrupted = await recover_stale_runs()
-        assert len(interrupted) == 0
+        # Register the run as managed so it is not killed as orphan
+        from sova.dashboard.services.agent_pool import _projects
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {run_id: MagicMock()}
+        _projects["__test__"] = mock_pa
+        try:
+            with patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill:
+                interrupted = await recover_stale_runs()
+            assert len(interrupted) == 0
+            mock_kill.assert_not_called()
+        finally:
+            _projects.pop("__test__", None)
 
     async def test_dismiss_interrupted_runs(self) -> None:
         from sova.dashboard.services.agent_recovery import dismiss_interrupted_runs
@@ -8162,6 +8177,474 @@ class TestAgentRecoveryDirect:
             result = await get_sova_review_verdict("999")
         assert result["has_sova_review"] is False
         assert result["verdict"] is None
+
+
+# ---------------------------------------------------------------------------
+# Terminal zombie and orphan recovery
+# ---------------------------------------------------------------------------
+
+
+class TestZombieProcessIdentity:
+    """Tests for _is_zombie_process and _kill_process."""
+
+    def test_is_zombie_process_returns_true_for_matching_pid(self) -> None:
+        """Process created before the run started is treated as the expected agent."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _is_zombie_process
+
+        run_start = datetime.now(timezone.utc)
+        mock_proc = MagicMock()
+        mock_proc.create_time.return_value = (run_start - timedelta(seconds=10)).timestamp()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            assert _is_zombie_process(12345, run_start) is True
+
+    def test_is_zombie_process_detects_recycled_pid(self) -> None:
+        """Process created well after the run started indicates PID reuse."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _is_zombie_process
+
+        run_start = datetime.now(timezone.utc) - timedelta(hours=2)
+        mock_proc = MagicMock()
+        mock_proc.create_time.return_value = (run_start + timedelta(minutes=30)).timestamp()
+
+        with patch("psutil.Process", return_value=mock_proc):
+            assert _is_zombie_process(12345, run_start) is False
+
+    def test_is_zombie_process_falls_back_on_psutil_error(self) -> None:
+        """When psutil fails, fall back to basic liveness check."""
+        from datetime import datetime, timezone
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _is_zombie_process
+
+        with patch("psutil.Process", side_effect=Exception("no psutil")):
+            with patch("sova.dashboard.services.agent_recovery._is_process_alive", return_value=True):
+                assert _is_zombie_process(12345, datetime.now(timezone.utc)) is True
+
+    def test_is_zombie_process_with_none_started_at(self) -> None:
+        """When started_at is None, skip time comparison and return True for alive PIDs."""
+        from unittest.mock import MagicMock, patch
+
+        from sova.dashboard.services.agent_recovery import _is_zombie_process
+
+        mock_proc = MagicMock()
+        mock_proc.create_time.return_value = 1000000.0
+
+        with patch("psutil.Process", return_value=mock_proc):
+            assert _is_zombie_process(12345, None) is True
+
+    async def test_kill_process_sends_sigterm_then_sigkill(self) -> None:
+        """Verify the SIGTERM -> sleep -> SIGKILL escalation."""
+        from unittest.mock import call, patch
+
+        from sova.dashboard.services.agent_recovery import _kill_process
+
+        with (
+            patch("os.kill") as mock_kill,
+            patch("asyncio.sleep") as mock_sleep,
+        ):
+            import signal
+
+            mock_kill.side_effect = [None, None, None]  # SIGTERM, alive check, SIGKILL
+            await _kill_process(99999)
+            assert mock_kill.call_args_list[0] == call(99999, signal.SIGTERM)
+            assert mock_kill.call_args_list[1] == call(99999, 0)
+            assert mock_kill.call_args_list[2] == call(99999, signal.SIGKILL)
+            mock_sleep.assert_awaited_once_with(2)
+
+    async def test_kill_process_returns_if_process_gone(self) -> None:
+        """When SIGTERM raises OSError, the function returns without SIGKILL."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_recovery import _kill_process
+
+        with patch("os.kill", side_effect=OSError("no such process")):
+            await _kill_process(99999)  # should not raise
+
+
+class TestTerminalZombieRecovery:
+    """Tests for _kill_terminal_zombies and orphan detection."""
+
+    async def test_kill_terminal_zombies_kills_alive_process(self) -> None:
+        """Terminal runs with alive PIDs should be killed."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="900", role="dev", status="done", pid=999999)
+            session.add(run)
+
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+        ):
+            killed = await _kill_terminal_zombies()
+
+        assert killed >= 1
+        mock_kill.assert_any_call(999999)
+
+    async def test_kill_terminal_zombies_skips_dead_process(self) -> None:
+        """Terminal runs with dead PIDs should not be killed."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="901", role="dev", status="done", pid=999999)
+            session.add(run)
+
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=False),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+        ):
+            await _kill_terminal_zombies()
+
+        assert 999999 not in [c.args[0] for c in mock_kill.call_args_list]
+
+    async def test_kill_terminal_zombies_skips_managed(self) -> None:
+        """Terminal runs that are managed by the current dashboard should be skipped."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_pool import _projects
+        from sova.dashboard.services.agent_recovery import _kill_terminal_zombies
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="902", role="dev", status="done", pid=999999)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        mock_pa = MagicMock()
+        mock_pa.agents = {run_id: MagicMock()}
+        _projects["__test__"] = mock_pa
+        try:
+            with (
+                patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+                patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+            ):
+                await _kill_terminal_zombies()
+            assert 999999 not in [c.args[0] for c in mock_kill.call_args_list]
+        finally:
+            _projects.pop("__test__", None)
+
+    async def test_recover_stale_runs_kills_orphan(self) -> None:
+        """Alive processes not managed by current dashboard should be killed."""
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_recovery import recover_stale_runs
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="903", role="dev", status="running", pid=999999)
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        with (
+            patch("sova.dashboard.services.agent_recovery._is_zombie_process", return_value=True),
+            patch("sova.dashboard.services.agent_recovery._kill_process", new_callable=AsyncMock) as mock_kill,
+        ):
+            interrupted = await recover_stale_runs()
+
+        assert any(r["run_id"] == run_id for r in interrupted)
+        mock_kill.assert_any_call(999999)
+
+
+class TestWaitWithTerminalCheck:
+    """Tests for _wait_with_terminal_check and _is_run_terminal_in_db."""
+
+    async def test_is_run_terminal_in_db_true(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="910", role="dev", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        result = await _is_run_terminal_in_db(run_id, None)
+        assert result is True
+
+    async def test_is_run_terminal_in_db_false(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="911", role="dev", status="running")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        result = await _is_run_terminal_in_db(run_id, None)
+        assert result is False
+
+    async def test_is_run_terminal_in_db_missing(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
+
+        result = await _is_run_terminal_in_db(99999, None)
+        assert result is True
+
+    async def test_is_run_terminal_in_db_returns_false_on_db_error(self) -> None:
+        """DB errors should return False (fail open for polling safety)."""
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _is_run_terminal_in_db
+
+        with patch("sova.db.session.get_session", side_effect=Exception("db broken")):
+            result = await _is_run_terminal_in_db(1, None)
+        assert result is False
+
+    async def test_wait_with_terminal_check_kills_on_terminal_db(self) -> None:
+        """When DB shows terminal, the hanging process should be stopped."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
+        from sova.ipc.testing import MockAgentProcess
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="920", role="dev", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        process = MockAgentProcess(should_hang=True, exit_code=0, pid=88888)
+        agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
+
+        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
+
+        assert rc == 0
+
+    async def test_wait_with_terminal_check_returns_on_normal_exit(self) -> None:
+        """When process exits normally, return its exit code."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
+        from sova.ipc.testing import MockAgentProcess
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="921", role="dev", status="running")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        process = MockAgentProcess(should_hang=False, exit_code=0, pid=88889)
+        agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
+
+        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
+
+        assert rc == 0
+
+    async def test_wait_with_terminal_check_preserves_nonzero_exit(self) -> None:
+        """Non-zero exit codes should be preserved, not converted to -1."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
+        from sova.ipc.testing import MockAgentProcess
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="922", role="dev", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        process = MockAgentProcess(should_hang=True, exit_code=1, pid=88890)
+        agent = SimpleNamespace(run_id=run_id, process=process, project_dir=None)
+
+        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
+
+        assert rc == 1
+
+    async def test_wait_with_terminal_check_stop_failure_escalates_to_kill(self) -> None:
+        """When stop() raises, the process should be killed via _proc.kill()."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_lifecycle import _wait_with_terminal_check
+
+        session = await get_session()
+        async with session.begin():
+            run = TaskRun(issue_number="923", role="dev", status="done")
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+
+        mock_proc = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=None)
+        mock_process = MagicMock()
+        mock_process.pid = 88891
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_process.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+        mock_process._proc = mock_proc
+
+        agent = SimpleNamespace(run_id=run_id, process=mock_process, project_dir=None)
+
+        with patch("sova.dashboard.services.agent_lifecycle._DB_TERMINAL_POLL_INTERVAL", 0.1):
+            rc = await asyncio.wait_for(_wait_with_terminal_check(agent), timeout=5.0)
+
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
+        assert rc == -1  # returncode was None, so -1
+
+    async def test_wait_and_finalize_cancellation_terminates_process(self) -> None:
+        """CancelledError during wait should terminate the process."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+        mock_process = MagicMock()
+        mock_process.pid = 88892
+        mock_process.is_running = True
+        mock_process._proc = mock_proc
+        mock_process.wait = AsyncMock(side_effect=asyncio.CancelledError)
+
+        pa = MagicMock()
+        agent = SimpleNamespace(
+            run_id=999,
+            process=mock_process,
+            project_dir=None,
+            issue="test",
+            role="dev",
+            pr_number=None,
+            pre_run_sha=None,
+        )
+
+        from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
+
+        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        with patch(patch_target, side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await _wait_and_finalize(pa, agent)
+
+        mock_proc.terminate.assert_called_once()
+
+    async def test_wait_and_finalize_cancellation_escalates_to_kill(self) -> None:
+        """When terminate succeeds but process doesn't exit, escalate to kill."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.wait = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_process = MagicMock()
+        mock_process.pid = 88893
+        mock_process.is_running = True
+        mock_process._proc = mock_proc
+        mock_process.wait = AsyncMock(side_effect=asyncio.CancelledError)
+
+        pa = MagicMock()
+        agent = SimpleNamespace(
+            run_id=999,
+            process=mock_process,
+            project_dir=None,
+            issue="test",
+            role="dev",
+            pr_number=None,
+            pre_run_sha=None,
+        )
+
+        from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
+
+        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        with patch(patch_target, side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await _wait_and_finalize(pa, agent)
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+
+    async def test_wait_and_finalize_cancellation_terminate_process_gone(self) -> None:
+        """When terminate raises OSError (ProcessLookupError, PermissionError), skip gracefully."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.terminate.side_effect = ProcessLookupError
+        mock_process = MagicMock()
+        mock_process.pid = 88894
+        mock_process.is_running = True
+        mock_process._proc = mock_proc
+
+        pa = MagicMock()
+        agent = SimpleNamespace(
+            run_id=999,
+            process=mock_process,
+            project_dir=None,
+            issue="test",
+            role="dev",
+            pr_number=None,
+            pre_run_sha=None,
+        )
+
+        from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
+
+        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        with patch(patch_target, side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await _wait_and_finalize(pa, agent)
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_not_called()
+
+    async def test_wait_and_finalize_cancellation_terminate_permission_error(self) -> None:
+        """PermissionError on terminate (PID recycled to another user) skips gracefully."""
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.terminate.side_effect = PermissionError("Operation not permitted")
+        mock_process = MagicMock()
+        mock_process.pid = 88895
+        mock_process.is_running = True
+        mock_process._proc = mock_proc
+
+        pa = MagicMock()
+        agent = SimpleNamespace(
+            run_id=999,
+            process=mock_process,
+            project_dir=None,
+            issue="test",
+            role="dev",
+            pr_number=None,
+            pre_run_sha=None,
+        )
+
+        from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
+
+        patch_target = "sova.dashboard.services.agent_lifecycle._wait_with_terminal_check"
+        with patch(patch_target, side_effect=asyncio.CancelledError):
+            with pytest.raises(asyncio.CancelledError):
+                await _wait_and_finalize(pa, agent)
+
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
