@@ -346,6 +346,8 @@ class TestDependencyGraph:
             _task(3, state=TaskState.IN_REVIEW),
             _task(4, state=TaskState.IN_PROGRESS),
             _task(5, state=TaskState.DONE),
+            _task(6, state=TaskState.NEEDS_SPEC),
+            _task(7, state=TaskState.ON_QA),
         ]
         d = DependencyGraph(tasks).to_dict()
         by_id = {n["id"]: n["available_actions"] for n in d["nodes"]}
@@ -355,6 +357,8 @@ class TestDependencyGraph:
         assert any(a["role"] == "integrate-pr" for a in by_id[3])
         assert by_id[4] == []
         assert by_id[5] == []
+        assert any(a["role"] == "researcher" for a in by_id[6])
+        assert by_id[7] == []
 
     def test_backlog_node_has_triage_action(self) -> None:
         """BACKLOG nodes should expose a Triage action."""
