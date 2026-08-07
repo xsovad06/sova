@@ -1035,6 +1035,12 @@ _REGISTRY: list[SettingMeta] = [
         "number",
     ),
     SettingMeta(
+        "supervisor.persona_path",
+        "Persona path",
+        "Override path for the supervisor persona file (default: ~/.config/sova/supervisor_persona.md)",
+        "supervisor",
+    ),
+    SettingMeta(
         "supervisor.task_queue",
         "Task queue",
         "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",
