@@ -951,10 +951,12 @@ class TaskProgressionEngine:
         try:
             if cfg is None:
                 cfg = load_config(self._project_dir)
+            if not cfg.memory_guard.enabled:
+                return None
             mem = psutil.virtual_memory()
             available_gb = mem.available / (1024**3)
-            block_threshold = cfg.resources.memory_block_threshold_gb
-            warn_threshold = cfg.resources.memory_warn_threshold_gb
+            block_threshold = cfg.memory_guard.block_threshold_gb
+            warn_threshold = cfg.memory_guard.warn_threshold_gb
 
             if available_gb < block_threshold:
                 return BlockReason(

@@ -993,59 +993,85 @@ class TestConfigIntegration:
 
 
 # ---------------------------------------------------------------------------
-# ResourcesConfig
+# MemoryGuardConfig (consolidated from Resources + MemoryGuard)
 # ---------------------------------------------------------------------------
 
 
-class TestResourcesConfig:
+class TestMemoryGuardConfig:
     def test_defaults(self) -> None:
-        from sova.config.models import ResourcesConfig
+        from sova.config.models import MemoryGuardConfig
 
-        cfg = ResourcesConfig()
-        assert cfg.memory_block_threshold_gb == 1.0
-        assert cfg.memory_warn_threshold_gb == 2.0
+        cfg = MemoryGuardConfig()
+        assert cfg.enabled is True
+        assert cfg.block_threshold_gb == 1.5
+        assert cfg.warn_threshold_gb == 3.0
 
     def test_custom_values(self) -> None:
-        from sova.config.models import ResourcesConfig
+        from sova.config.models import MemoryGuardConfig
 
-        cfg = ResourcesConfig(memory_block_threshold_gb=0.5, memory_warn_threshold_gb=1.5)
-        assert cfg.memory_block_threshold_gb == 0.5
-        assert cfg.memory_warn_threshold_gb == 1.5
+        cfg = MemoryGuardConfig(block_threshold_gb=0.5, warn_threshold_gb=1.5)
+        assert cfg.block_threshold_gb == 0.5
+        assert cfg.warn_threshold_gb == 1.5
 
     def test_field_on_project_config(self) -> None:
-        from sova.config.models import ProjectConfig, ResourcesConfig
+        from sova.config.models import MemoryGuardConfig, ProjectConfig
 
         cfg = ProjectConfig()
-        assert isinstance(cfg.resources, ResourcesConfig)
+        assert isinstance(cfg.memory_guard, MemoryGuardConfig)
 
     def test_toml_loading(self, tmp_path: Path) -> None:
         from sova.config.loader import load_config
 
         toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[memory_guard]\nblock_threshold_gb = 0.5\nwarn_threshold_gb = 3.0\n")
+        cfg = load_config(tmp_path)
+        assert cfg.memory_guard.block_threshold_gb == 0.5
+        assert cfg.memory_guard.warn_threshold_gb == 3.0
+
+    def test_deprecated_resources_toml_migrates(self, tmp_path: Path) -> None:
+        """[resources] section in sova.toml migrates to memory_guard."""
+        from sova.config.loader import load_config
+
+        toml_file = tmp_path / "sova.toml"
         toml_file.write_text("[resources]\nmemory_block_threshold_gb = 0.5\nmemory_warn_threshold_gb = 3.0\n")
         cfg = load_config(tmp_path)
-        assert cfg.resources.memory_block_threshold_gb == 0.5
-        assert cfg.resources.memory_warn_threshold_gb == 3.0
+        assert cfg.memory_guard.block_threshold_gb == 0.5
+        assert cfg.memory_guard.warn_threshold_gb == 3.0
+
+    def test_deprecated_resources_does_not_override_memory_guard(self, tmp_path: Path) -> None:
+        """[memory_guard] values take priority when both TOML sections exist."""
+        from sova.config.loader import load_config
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text(
+            "[memory_guard]\nblock_threshold_gb = 2.0\nwarn_threshold_gb = 4.0\n\n"
+            "[resources]\nmemory_block_threshold_gb = 0.5\nmemory_warn_threshold_gb = 1.0\n"
+        )
+        cfg = load_config(tmp_path)
+        assert cfg.memory_guard.block_threshold_gb == 2.0
+        assert cfg.memory_guard.warn_threshold_gb == 4.0
 
     def test_settings_metadata(self) -> None:
         from sova.dashboard.settings_meta import GROUP_ORDER, GROUPS, get_meta
 
-        assert "resources" in GROUPS
-        assert "resources" in GROUP_ORDER
+        assert "agent_health" in GROUPS
+        assert "agent_health" in GROUP_ORDER
 
         expected_keys = [
-            "resources.memory_block_threshold_gb",
-            "resources.memory_warn_threshold_gb",
+            "memory_guard.enabled",
+            "memory_guard.warn_threshold_gb",
+            "memory_guard.block_threshold_gb",
         ]
         for key in expected_keys:
             meta = get_meta(key)
             assert meta is not None, f"Missing settings metadata for {key}"
-            assert meta.group == "resources"
+            assert meta.group == "agent_health"
 
-    def test_env_prefix(self) -> None:
-        from sova.config.models import ResourcesConfig
+    def test_block_below_warn_validation(self) -> None:
+        from sova.config.models import MemoryGuardConfig
 
-        assert ResourcesConfig.model_config["env_prefix"] == "SOVA_RESOURCES_"
+        with pytest.raises(ValueError, match="block_threshold_gb"):
+            MemoryGuardConfig(block_threshold_gb=5.0, warn_threshold_gb=3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1060,7 +1086,7 @@ class TestMemoryPressureGate:
         engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(0.5 * 1024**3)  # 0.5 GB
-        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
         with patch("psutil.virtual_memory", return_value=mem_mock):
             result = engine._check_memory_pressure_gate(cfg)
         assert result is not None
@@ -1073,7 +1099,7 @@ class TestMemoryPressureGate:
         engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(4.0 * 1024**3)  # 4 GB
-        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
         with patch("psutil.virtual_memory", return_value=mem_mock):
             result = engine._check_memory_pressure_gate(cfg)
         assert result is None
@@ -1084,7 +1110,7 @@ class TestMemoryPressureGate:
         engine = _make_engine()
         mem_mock = MagicMock()
         mem_mock.available = int(1.5 * 1024**3)  # 1.5 GB (between 1.0 block and 2.0 warn)
-        cfg = ProjectConfig(resources={"memory_block_threshold_gb": 1.0, "memory_warn_threshold_gb": 2.0})
+        cfg = ProjectConfig(memory_guard={"block_threshold_gb": 1.0, "warn_threshold_gb": 2.0})
         with (
             patch("psutil.virtual_memory", return_value=mem_mock),
             patch("sova.supervisor.progression.log") as mock_log,
@@ -1096,6 +1122,15 @@ class TestMemoryPressureGate:
             available_gb=round(1.5, 2),
             warn_threshold_gb=2.0,
         )
+
+    def test_disabled_memory_guard_skips_check(self) -> None:
+        """When memory_guard.enabled is False, the gate is skipped entirely."""
+        from sova.config.models import ProjectConfig
+
+        engine = _make_engine()
+        cfg = ProjectConfig(memory_guard={"enabled": False, "block_threshold_gb": 10.0, "warn_threshold_gb": 20.0})
+        result = engine._check_memory_pressure_gate(cfg)
+        assert result is None
 
     def test_psutil_unavailable_fails_open(self) -> None:
         """When psutil is not installed, the gate fails open (no block)."""
@@ -1111,8 +1146,8 @@ class TestMemoryPressureGate:
             result = engine._check_memory_pressure_gate()
         assert result is None
 
-    def test_missing_resources_attr_fails_open(self) -> None:
-        """When cfg.resources raises AttributeError (pre-#356), the gate fails open."""
+    def test_missing_memory_guard_attr_fails_open(self) -> None:
+        """When cfg.memory_guard raises AttributeError, the gate fails open."""
         engine = _make_engine()
         cfg_mock = MagicMock(spec=[])  # spec=[] means no attributes at all
         with patch("sova.supervisor.progression.load_config", return_value=cfg_mock):
@@ -1148,10 +1183,10 @@ class TestMemoryPressureGate:
     @patch("sova.supervisor.progression.load_config")
     async def test_memory_gate_integrated_in_evaluate_all(self, mock_cfg: MagicMock) -> None:
         """Verify that memory pressure blocks all tasks and is precomputed once per cycle."""
-        from sova.config.models import ResourcesConfig
+        from sova.config.models import MemoryGuardConfig
 
         mock_cfg.return_value.max_parallel_agents = 5
-        mock_cfg.return_value.resources = ResourcesConfig(memory_block_threshold_gb=2.0)
+        mock_cfg.return_value.memory_guard = MemoryGuardConfig(block_threshold_gb=2.0, warn_threshold_gb=4.0)
         tasks = [_task(i, state=TaskState.TRIAGED) for i in range(1, 4)]
         adapter = AsyncMock()
         adapter.list_tasks = AsyncMock(return_value=tasks)
@@ -1984,8 +2019,8 @@ class TestEvaluateAllRebase:
 
         mock_cfg.return_value.max_parallel_agents = 1
         mock_cfg.return_value.coderabbit_quota.enabled = False
-        mock_cfg.return_value.resources.memory_block_threshold_gb = 0.0
-        mock_cfg.return_value.resources.memory_warn_threshold_gb = 0.0
+        mock_cfg.return_value.memory_guard.block_threshold_gb = 0.0
+        mock_cfg.return_value.memory_guard.warn_threshold_gb = 0.0
 
         # Two tasks, both IN_REVIEW with conflicts
         tasks = [
