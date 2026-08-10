@@ -631,8 +631,8 @@ class TestMonitoringConfig:
     def test_settings_meta_registered(self) -> None:
         from sova.dashboard.settings_meta import GROUP_ORDER, GROUPS, get_meta
 
-        assert "monitoring" in GROUPS
-        assert "monitoring" in GROUP_ORDER
+        assert "agent_health" in GROUPS
+        assert "agent_health" in GROUP_ORDER
         assert get_meta("monitoring.enabled") is not None
         assert get_meta("monitoring.interval") is not None
 

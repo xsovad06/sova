@@ -82,7 +82,6 @@ _NESTED_SECTIONS = (
     "rtk",
     "coderabbit_quota",
     "pr_monitor",
-    "resources",
     "supervisor",
     "memory_guard",
     "watchdog",
@@ -110,6 +109,18 @@ def _flatten_toml(data: dict[str, Any]) -> dict[str, Any]:
     for section in _NESTED_SECTIONS:
         if section in data:
             result[section] = data[section]
+
+    # Migrate deprecated [resources] section into [memory_guard]
+    if "resources" in data and isinstance(data["resources"], dict):
+        guard = result.setdefault("memory_guard", {})
+        if isinstance(guard, dict):
+            key_map = {
+                "memory_block_threshold_gb": "block_threshold_gb",
+                "memory_warn_threshold_gb": "warn_threshold_gb",
+            }
+            for old_key, new_key in key_map.items():
+                if old_key in data["resources"] and new_key not in guard:
+                    guard[new_key] = data["resources"][old_key]
 
     # For the telemetry section, allow SOVA_TELEMETRY_* env vars to override TOML values.
     # Pydantic Settings treats init kwargs as highest priority, so TOML values passed via
