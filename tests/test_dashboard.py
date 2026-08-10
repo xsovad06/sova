@@ -9926,6 +9926,200 @@ class TestPipelineOutcomeValidation:
         assert result is None
 
 
+class TestOrphanedStepFinalization:
+    """_finalize_task_run must mark running steps as interrupted."""
+
+    async def test_running_step_marked_interrupted(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="628", role="developer", status="running")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="running"))
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0
+        mock_agent.project_dir = None
+        mock_agent.issue = None
+
+        await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        async with await get_session() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(
+                select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.id)
+            )
+            steps = result.scalars().all()
+            assert steps[0].status == "done"
+            assert steps[1].status == "interrupted"
+            assert steps[1].ended_at is not None
+
+    async def test_no_running_steps_is_noop(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="629", role="developer", status="running")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0
+        mock_agent.project_dir = None
+        mock_agent.issue = None
+
+        await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+
+        async with await get_session() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(
+                select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.id)
+            )
+            steps = result.scalars().all()
+            assert steps[0].status == "done"
+            assert steps[1].status == "done"
+
+    async def test_already_terminal_run_still_finalizes_steps(self) -> None:
+        """Regression: already-terminal early-return path must also finalize orphaned steps."""
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _finalize_task_run
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(issue_number="628b", role="developer", status="done")
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="running"))
+
+        mock_agent = MagicMock(spec=AgentState)
+        mock_agent.last_result_cost = 0
+        mock_agent.project_dir = None
+        mock_agent.issue = None
+
+        result = await _finalize_task_run(run_id, exit_code=0, agent=mock_agent)
+        assert result is False
+
+        async with await get_session() as session:
+            from sqlalchemy import select
+
+            result = await session.execute(
+                select(StepExecution).where(StepExecution.task_run_id == run_id).order_by(StepExecution.id)
+            )
+            steps = result.scalars().all()
+            assert steps[1].status == "interrupted"
+            assert steps[1].ended_at is not None
+
+
+class TestInterruptedStepValidation:
+    """_validate_pipeline_outcome catches runs with interrupted last step."""
+
+    async def test_interrupted_last_step_detected(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="630",
+                    role="developer",
+                    status="done",
+                    current_step="develop",
+                    pr_number=None,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="sync", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="assess", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="interrupted"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "interrupted" in result
+        assert "develop" in result
+
+    async def test_completed_last_step_passes(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="631",
+                    role="developer",
+                    status="done",
+                    current_step="handoff_to_reviewer",
+                    pr_number=100,
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="develop", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="commit", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="push", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="create_pr", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="handoff_to_reviewer", status="done"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "developer"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is None
+
+    async def test_researcher_interrupted_detected(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.services.agent_db import _validate_pipeline_outcome
+        from sova.dashboard.services.agent_pool import AgentState
+
+        async with await get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="632",
+                    role="researcher",
+                    status="done",
+                    current_step="research",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+                session.add(StepExecution(task_run_id=run_id, step_name="fetch_task", status="done"))
+                session.add(StepExecution(task_run_id=run_id, step_name="research", status="interrupted"))
+
+        agent = MagicMock(spec=AgentState)
+        agent.role = "researcher"
+        agent.project_dir = None
+        result = await _validate_pipeline_outcome(run_id, agent)
+        assert result is not None
+        assert "research" in result
+
+
 class TestReadFileHandoff:
     def test_returns_none_when_no_file(self, tmp_path: Path) -> None:
         from sova.dashboard.services.agent_db import _read_file_handoff
