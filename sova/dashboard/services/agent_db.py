@@ -178,6 +178,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     # get_sova_review_verdict() can always find the real verdict.
                     if not task_run.handoff_json:
                         _apply_file_handoff(task_run, file_handoff, run_id)
+                    await _finalize_orphaned_steps(session, run_id)
                     return False
 
                 task_run.status = status
@@ -209,12 +210,39 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 except Exception:
                     log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
 
+                await _finalize_orphaned_steps(session, run_id)
+
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
         _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
         return True
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
         return False
+
+
+async def _finalize_orphaned_steps(session: object, run_id: int) -> None:
+    """Mark any StepExecution records still in 'running' as 'interrupted'.
+
+    Called inside the _finalize_task_run transaction so the step status
+    is consistent with the terminal TaskRun status. Without this, the
+    dashboard step progress bar shows "running" for a step in a "done"
+    or "failed" run.
+    """
+    try:
+        from sqlalchemy import update
+
+        from sova.db.models import StepExecution
+
+        result = await session.execute(
+            update(StepExecution)
+            .where(StepExecution.task_run_id == run_id)
+            .where(StepExecution.status == "running")
+            .values(status="interrupted", ended_at=datetime.now(timezone.utc))
+        )
+        if result.rowcount:
+            log.info("task_run.orphaned_steps_finalized", run_id=run_id, count=result.rowcount)
+    except Exception:
+        log.debug("task_run.orphaned_steps_finalize_failed", run_id=run_id, exc_info=True)
 
 
 async def _fetch_output_lines(run_id: int, project_dir: Path | None) -> list[str] | None:
@@ -544,6 +572,31 @@ async def _check_incomplete_pr(run_id: int, session: object) -> str | None:
     return None
 
 
+async def _check_interrupted_step(run_id: int, session: object) -> str | None:
+    """Check if a pipeline step was interrupted (died mid-execution).
+
+    After _finalize_orphaned_steps runs, steps that were still 'running' when
+    the process exited are marked 'interrupted'. If the last step in the
+    pipeline is interrupted and no subsequent steps ran, the pipeline crashed
+    silently during that step.
+    """
+    from sqlalchemy import select
+
+    from sova.db.models import StepExecution
+
+    stmt = (
+        select(StepExecution.step_name, StepExecution.status)
+        .where(StepExecution.task_run_id == run_id)
+        .order_by(StepExecution.id.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    row = result.first()
+    if row and row[1] == "interrupted":
+        return f"Pipeline incomplete: '{row[0]}' step was interrupted (process exited mid-step)"
+    return None
+
+
 async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | None:
     """Validate that a pipeline-based role actually executed its workflow steps.
 
@@ -575,7 +628,13 @@ async def _validate_pipeline_outcome(run_id: int, agent: AgentState) -> str | No
                     return _build_bypass_message(agent.role, task_run.pr_number, agent.prompt, run_id)
 
                 if agent.role == "developer" and step_count > 0 and task_run.pr_number is None:
-                    return await _check_incomplete_pr(run_id, session)
+                    incomplete = await _check_incomplete_pr(run_id, session)
+                    if incomplete:
+                        return incomplete
+
+                interrupted = await _check_interrupted_step(run_id, session)
+                if interrupted:
+                    return interrupted
 
         return None
     except Exception:
