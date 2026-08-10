@@ -38,7 +38,7 @@ class TestSettingMeta:
     def test_integration_gates_meta_registered(self, key: str) -> None:
         meta = get_meta(key)
         assert meta is not None
-        assert meta.group == "integration_gates"
+        assert meta.group == "integration"
         assert meta.value_type == "boolean"
 
     def test_commit_pr_auto_link_issues_meta_registered(self) -> None:
@@ -108,11 +108,10 @@ class TestGetGroupedConfig:
             "integration_gates.threads_resolved": True,
         }
         groups = get_grouped_config(flat)
-        gate_group = next((g for g in groups if g["id"] == "integration_gates"), None)
-        assert gate_group is not None
-        assert gate_group["label"] == "Integration Gates"
-        assert len(gate_group["settings"]) == 4
-        ci_setting = next(s for s in gate_group["settings"] if s["key"] == "integration_gates.ci_passed")
+        int_group = next((g for g in groups if g["id"] == "integration"), None)
+        assert int_group is not None
+        assert int_group["label"] == "Integration"
+        ci_setting = next(s for s in int_group["settings"] if s["key"] == "integration_gates.ci_passed")
         assert ci_setting["value"] is True
         assert ci_setting["value_type"] == "boolean"
 

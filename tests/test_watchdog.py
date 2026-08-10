@@ -599,8 +599,8 @@ class TestConfigRegistration:
     def test_watchdog_in_settings_meta(self) -> None:
         from sova.dashboard.settings_meta import _META_BY_KEY, GROUP_ORDER, GROUPS
 
-        assert "watchdog" in GROUPS
-        assert "watchdog" in GROUP_ORDER
+        assert "agent_health" in GROUPS
+        assert "agent_health" in GROUP_ORDER
         assert "watchdog.enabled" in _META_BY_KEY
 
     def test_all_config_fields_have_meta(self) -> None:
