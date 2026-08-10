@@ -51,15 +51,31 @@ if [ -z "$issue" ]; then
     fi
 fi
 
-# Warn if no issue could be determined, but continue logging with null
-if [ -z "$issue" ]; then
-    echo "Warning: No issue number provided or detected from branch" >&2
-fi
-
 # Resolve log directory to primary checkout (survives worktree cleanup).
 # LOG_DIR env var overrides for test isolation.
 LOG_DIR="$(resolve_log_dir)"
 mkdir -p "$LOG_DIR"
+
+# Sticky issue file: persists the issue number across branch switches within a
+# session. Written on first successful detection, read back as fallback when
+# branch detection fails (e.g., after integrate-pr switches to main).
+# Cleared on session_start to prevent stale carryover between sessions.
+_STICKY_FILE="${LOG_DIR}/.current_issue"
+
+if [ "$event" = "session_start" ] && [ -f "$_STICKY_FILE" ]; then
+    rm -f "$_STICKY_FILE"
+fi
+
+if [ -n "$issue" ]; then
+    echo "$issue" > "$_STICKY_FILE"
+elif [ -f "$_STICKY_FILE" ]; then
+    issue=$(cat "$_STICKY_FILE")
+fi
+
+# Warn if no issue could be determined, but continue logging with null
+if [ -z "$issue" ]; then
+    echo "Warning: No issue number provided or detected from branch" >&2
+fi
 if [ -n "$issue" ]; then
     log_file="${LOG_DIR}/issue-${issue}.jsonl"
 else
