@@ -77,6 +77,9 @@ def _get_spec_meta(issue_id: int, project_dir: Path | None = None) -> dict | Non
     ``.claude/specs/{issue_id}-*.md``.  Lazy-imports spec_service to avoid a
     hard dependency on the dashboard layer at module load time.
     """
+    if project_dir is None:
+        return None
+
     from sova.dashboard.services import spec_service  # lazy import -- dashboard layer
 
     spec = spec_service.read_spec(str(issue_id), project_dir)
