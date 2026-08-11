@@ -42,17 +42,20 @@ ai_coauthor = false
 enabled = true
 interval = 5.0
 
-[dashboard]
-pr_author_filter = "all"
-
 [supervisor]
-enabled = false
+enabled = true
 poll_interval_seconds = 30
 log_retention_days = 14
 auto_rebase = true
 auto_develop = true
 auto_address_review = true
 auto_integrate = true
+llm_planning = true
+require_approval = true
+task_queue = [606, 605, 564]
+
+[server]
+scheduler_enabled = false
 
 [llm]
 routing = {triage = "haiku", extraction = "haiku", pr_body = "haiku"}

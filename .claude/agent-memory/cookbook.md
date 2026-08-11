@@ -300,6 +300,8 @@ These entries are fully documented in `.claude/rules/architecture.md` or `.claud
 - **SonarCloud outages block all PRs when it's a required status check** -- SonarCloud can fail with HTTP 500/504 server-side errors (`sonarcloud.io/batch/project.protobuf` or `api.sonarcloud.io/analysis/analyses`), which is not a code issue. All PRs show `mergeStateStatus: BLOCKED`. Fix: re-run the failed workflow (`gh run rerun <id> --failed`). If the outage persists, temporarily remove `SonarCloud Analysis` from the branch protection ruleset via `gh api repos/{owner}/{repo}/rulesets/{id} -X PUT`, merge, re-add. [confirmed: 1]
 - **`mergeStateStatus: UNSTABLE` is mergeable when only non-required checks fail** -- GitHub reports UNSTABLE (not BLOCKED) when optional status contexts like CodeRabbit fail but all required checks pass. The PR is still mergeable via `gh pr merge`. Check required checks via `gh api repos/{owner}/{repo}/rulesets/{id} --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context'`. [confirmed: 1]
 
+- **`money-decimal` invariant matches variable names containing `total`, `value`, `rate`, etc.** -- the pre-push invariant greps for `float()` near monetary-sounding variable names. Non-monetary variables like `total_used` (CI minutes) trigger false positives. Fix: rename to avoid the pattern (e.g., `used_minutes`), or use `isinstance()` checks instead of `float()` conversion. PR #634. [confirmed: 1]
+
 ## Resource Monitoring
 
 - **`pa.agents.values()` iteration is only safe on the event loop thread** -- split shared-state reads (event loop) from disk I/O (executor). PR #365. [confirmed: 1]
