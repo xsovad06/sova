@@ -636,18 +636,18 @@ _REGISTRY: list[SettingMeta] = [
         "string",
     ),
     SettingMeta(
-        "dashboard.pr_author_filter",
-        "PR author filter",
-        "Filter PRs on the Agents page: mine (only your PRs) or all (entire repo)",
-        "dashboard",
-        "string",
-    ),
-    SettingMeta(
         "dashboard.gc_on_startup",
         "GC on startup",
         "Run issue-aware GC (worktree and branch cleanup) on dashboard startup (single-project mode only)",
         "dashboard",
         "boolean",
+    ),
+    SettingMeta(
+        "dashboard.port",
+        "Dashboard port",
+        "TCP port the dashboard server listens on",
+        "dashboard",
+        "number",
     ),
     # -- Testing (in Development group) --
     SettingMeta(

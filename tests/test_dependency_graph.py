@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -578,10 +579,17 @@ class TestDependencyGraph:
 
 
 class TestGetSpecMeta:
+    _dummy_dir = Path("/tmp/project")
+
     def test_returns_none_when_no_spec_file(self) -> None:
         """Returns None when read_spec finds no file for the issue."""
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
-            result = _get_spec_meta(42)
+            result = _get_spec_meta(42, project_dir=self._dummy_dir)
+        assert result is None
+
+    def test_returns_none_when_project_dir_is_none(self) -> None:
+        """Returns None when project_dir is None (multi-project mode)."""
+        result = _get_spec_meta(42, project_dir=None)
         assert result is None
 
     def test_returns_meta_dict_when_spec_exists(self) -> None:
@@ -592,7 +600,7 @@ class TestGetSpecMeta:
             "open_questions": [{"id": 0, "text": "Q1", "answer": ""}],
         }
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            result = _get_spec_meta(42)
+            result = _get_spec_meta(42, project_dir=self._dummy_dir)
         assert result is not None
         assert result["url"] == "/spec/42"
         assert result["status"] == "draft"
@@ -603,14 +611,12 @@ class TestGetSpecMeta:
         """open_questions is 0 when spec has no open questions."""
         spec = {"status": "approved", "complexity": "low", "open_questions": []}
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            result = _get_spec_meta(7)
+            result = _get_spec_meta(7, project_dir=self._dummy_dir)
         assert result is not None
         assert result["open_questions"] == 0
 
     def test_passes_project_dir_to_read_spec(self) -> None:
         """project_dir is forwarded to spec_service.read_spec."""
-        from pathlib import Path
-
         sentinel = Path("/custom/project")
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=None) as mock_read:
             _get_spec_meta(10, project_dir=sentinel)
@@ -620,7 +626,7 @@ class TestGetSpecMeta:
         """Status defaults to 'draft' when spec dict has no status key."""
         spec = {"complexity": "high", "open_questions": []}
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            result = _get_spec_meta(1)
+            result = _get_spec_meta(1, project_dir=self._dummy_dir)
         assert result is not None
         assert result["status"] == "draft"
 
@@ -631,11 +637,13 @@ class TestGetSpecMeta:
 
 
 class TestToDict_SpecEnrichment:
+    _dummy_dir = Path("/tmp/project")
+
     def test_researched_without_spec_keeps_developer_action(self) -> None:
         """RESEARCHED node with no spec file keeps the default 'Run Developer' action."""
         tasks = [_task(1, state=TaskState.RESEARCHED)]
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
-            d = DependencyGraph(tasks).to_dict()
+            d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         assert any(a.get("role") == "developer" for a in node["available_actions"])
         assert "spec_meta" not in node
@@ -645,13 +653,12 @@ class TestToDict_SpecEnrichment:
         tasks = [_task(1, state=TaskState.RESEARCHED)]
         spec = {"status": "draft", "complexity": "medium", "open_questions": []}
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            d = DependencyGraph(tasks).to_dict()
+            d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         action_ids = [a["id"] for a in node["available_actions"]]
         assert "view-spec" in action_ids
         assert "approve-spec" in action_ids
         assert "revise-spec" in action_ids
-        # Original developer action must be gone
         assert not any(a.get("role") == "developer" for a in node["available_actions"])
 
     def test_researched_with_spec_adds_spec_meta_to_node(self) -> None:
@@ -663,7 +670,7 @@ class TestToDict_SpecEnrichment:
             "open_questions": [{"id": 0, "text": "something?", "answer": ""}],
         }
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            d = DependencyGraph(tasks).to_dict()
+            d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         assert "spec_meta" in node
         assert node["spec_meta"]["status"] == "approved"
@@ -677,7 +684,7 @@ class TestToDict_SpecEnrichment:
             tasks = [_task(1, state=state)]
             spec = {"status": "draft", "complexity": "low", "open_questions": []}
             with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-                d = DependencyGraph(tasks).to_dict()
+                d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
             node = d["nodes"][0]
             assert "spec_meta" not in node, f"spec_meta should be absent for state {state}"
 
@@ -688,7 +695,7 @@ class TestToDict_SpecEnrichment:
             "sova.dashboard.services.spec_service.read_spec",
             side_effect=RuntimeError("disk error"),
         ):
-            d = DependencyGraph(tasks).to_dict()
+            d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         assert any(a.get("role") == "developer" for a in node["available_actions"])
         assert "spec_meta" not in node
@@ -698,7 +705,7 @@ class TestToDict_SpecEnrichment:
         tasks = [_task(99, state=TaskState.RESEARCHED)]
         spec = {"status": "draft", "complexity": "low", "open_questions": []}
         with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
-            d = DependencyGraph(tasks).to_dict()
+            d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         actions_by_id = {a["id"]: a for a in node["available_actions"]}
         assert actions_by_id["view-spec"]["url"] == "/spec/99"

@@ -64,7 +64,7 @@ async def _fetch_pr_map() -> dict[int, dict]:
     from sova.dashboard.services.pr_service import list_open_prs_with_state
 
     try:
-        prs = await list_open_prs_with_state(author_filter_override="all")
+        prs = await list_open_prs_with_state()
     except Exception:
         log.warning("dependency_graph.pr_fetch_failed", exc_info=True)
         return {}

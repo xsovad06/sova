@@ -346,8 +346,8 @@ class DashboardConfig(BaseSettings):
     """Dashboard UI configuration."""
 
     kanban_columns: Literal["step_based", "role_based"] = "step_based"
-    pr_author_filter: Literal["mine", "all"] = "mine"
     gc_on_startup: bool = False
+    port: int = 8111
 
     model_config = SettingsConfigDict(env_prefix="SOVA_DASHBOARD_")
 

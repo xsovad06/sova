@@ -23,13 +23,21 @@ def start(
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
     no_scheduler: Annotated[bool, typer.Option("--no-scheduler", help="Start dashboard only, no watch loop.")] = False,
+    multi: Annotated[
+        Optional[bool],
+        typer.Option("--multi/--no-multi", help="Multi-project mode. Auto-detected when omitted."),
+    ] = None,
 ) -> None:
     """Start the SOVA server (dashboard + scheduler)."""
     from sova.config.loader import load_config
+    from sova.config.registry import has_projects
     from sova.scheduler.server import SOVAServer, read_pid_file
 
     resolved_dir = project or Path.cwd()
     config = load_config(resolved_dir)
+
+    if multi is None:
+        multi = project is None and has_projects()
 
     # Check if already running
     existing_pid = read_pid_file(config)
@@ -44,12 +52,20 @@ def start(
     config.server.port = port
 
     console.print(f"[cyan]Starting SOVA server at http://{host}:{port}[/cyan]")
-    if config.server.scheduler_enabled:
+    if multi:
+        console.print("[cyan]Mode: multi-project[/cyan]")
+    if config.server.scheduler_enabled and not multi:
         console.print("[cyan]Scheduler: enabled[/cyan]")
-    else:
+    elif not multi:
         console.print("[dim]Scheduler: disabled[/dim]")
 
-    server = SOVAServer(config=config, project_dir=resolved_dir, host=host, port=port)
+    server = SOVAServer(
+        config=config,
+        project_dir=resolved_dir if not multi else None,
+        host=host,
+        port=port,
+        multi_project=multi,
+    )
     server.run()
 
 

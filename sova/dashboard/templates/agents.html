@@ -1988,10 +1988,10 @@ function togglePrTracker() {
 var _STALE_THRESHOLD_SECONDS = 7 * 86400;
 var _lastPrSummaryKey = null;
 
-function renderPrSummary() {
+function renderPrSummary(prs) {
   var strip = document.getElementById('pr-summary-strip');
   try {
-    var prs = window._prTrackerData;
+    prs = prs || window._prTrackerData;
     if (!prs.length) {
       strip.classList.add('hidden');
       _lastPrSummaryKey = null;
@@ -2340,29 +2340,49 @@ function setPrFilter(value) {
   _prFilter = value;
   localStorage.setItem('sova-pr-filter', value);
   _updateFilterToggleUI();
-  loadPrTracker();
+  _renderPrTracker();
 }
 
 async function loadPrTracker() {
   try {
-    var url = '/prs/open?author_filter=' + encodeURIComponent(_prFilter);
-    var res = await fetch(apiUrl(url));
-    if (!res.ok) return;
+    var res = await fetch(apiUrl('/prs/open'));
+    if (!res.ok) {
+      window._prTrackerData = [];
+      _renderPrTracker();
+      return;
+    }
     var data = await res.json();
     window._prTrackerData = data.prs || [];
-    var list = document.getElementById('pr-tracker-list');
-    var count = document.getElementById('pr-tracker-count');
-    count.textContent = window._prTrackerData.length ? '(' + window._prTrackerData.length + ')' : '';
-    if (!window._prTrackerData.length) {
-      list.innerHTML = '<p class="text-gray-500 text-sm py-4 text-center">No open PRs</p>';
-    } else {
-      var grouped = categorizePrs(window._prTrackerData);
-      list.innerHTML = renderPrGroups(grouped);
-    }
-    renderPrSummary();
+    _renderPrTracker();
   } catch (e) {
-    // silent
+    window._prTrackerData = [];
+    _renderPrTracker();
   }
+}
+
+function _renderPrTracker() {
+  var all = window._prTrackerData || [];
+  var visible = all;
+  if (_prFilter === 'mine') {
+    if (_githubUser) {
+      var user = _githubUser.toLowerCase();
+      visible = all.filter(function(pr) {
+        return (pr.author || '').toLowerCase() === user;
+      });
+    } else {
+      visible = [];
+    }
+  }
+  var list = document.getElementById('pr-tracker-list');
+  var count = document.getElementById('pr-tracker-count');
+  count.textContent = visible.length ? '(' + visible.length + ')' : '';
+  if (!visible.length) {
+    list.innerHTML = '<p class="text-gray-500 text-sm py-4 text-center">No open PRs</p>';
+  } else {
+    var grouped = categorizePrs(visible);
+    list.innerHTML = renderPrGroups(grouped);
+  }
+  renderPrSummary(visible);
 }
 
 // -- Init --

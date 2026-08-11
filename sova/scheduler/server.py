@@ -30,7 +30,10 @@ class SOVAServer:
     """Combined dashboard + scheduler daemon.
 
     ``sova server start`` creates an instance and calls ``run()``,
-    which starts the FastAPI dashboard and the watch loop together.
+    which starts the FastAPI dashboard and, when ``multi_project`` is
+    ``False``, the single-project watch loop.  In multi-project mode
+    the watch loop is skipped (supervisor daemons are started by the
+    dashboard lifespan instead).
     """
 
     def __init__(
@@ -40,9 +43,11 @@ class SOVAServer:
         project_dir: Path | None = None,
         host: str = "127.0.0.1",
         port: int = 8111,
+        multi_project: bool = False,
     ) -> None:
         self._config = config
         self._project_dir = project_dir
+        self._multi_project = multi_project
         self.host = host
         self.port = port
         self._running = False
@@ -58,7 +63,10 @@ class SOVAServer:
         from sova.dashboard.app import create_app as create_dashboard_app
 
         # Build the dashboard app
-        dashboard_app = create_dashboard_app(project_dir=self._project_dir)
+        if self._multi_project:
+            dashboard_app = create_dashboard_app(project_dir=None, multi_project=True)
+        else:
+            dashboard_app = create_dashboard_app(project_dir=self._project_dir, multi_project=False)
 
         # Replace lifespan to add scheduler startup/shutdown
         original_lifespan = dashboard_app.router.lifespan_context
@@ -69,8 +77,9 @@ class SOVAServer:
         async def combined_lifespan(app: FastAPI) -> AsyncIterator[None]:
             # Run original dashboard lifespan (DB init)
             async with original_lifespan(app):
-                # Start scheduler if enabled
-                if server._config.server.scheduler_enabled:
+                # Start single-project scheduler if enabled (multi-project
+                # supervisor daemons are started by the dashboard lifespan)
+                if server._config.server.scheduler_enabled and not server._multi_project:
                     server._start_scheduler()
                 try:
                     yield
