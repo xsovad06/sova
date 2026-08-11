@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from sova.utils.logging import get_logger
 
@@ -407,7 +407,7 @@ async def get_pr_mergeability_map() -> dict[int, str]:
     Returns an empty dict on any failure (fail-open).
     """
     try:
-        prs = await list_open_prs_with_state(author_filter_override="all")
+        prs = await list_open_prs_with_state()
     except Exception:
         log.debug("mergeability_map.fetch_failed", exc_info=True)
         return {}
@@ -423,12 +423,8 @@ async def get_pr_mergeability_map() -> dict[int, str]:
     return result
 
 
-async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"] | None = None) -> list[dict]:
-    """List all open PRs with computed state. Cached per-repo for 25s.
-
-    When *author_filter_override* is ``"mine"`` or ``"all"``, it takes
-    precedence over the ``dashboard.pr_author_filter`` config value.
-    """
+async def list_open_prs_with_state() -> list[dict]:
+    """List all open PRs with computed state. Cached per-repo for 25s."""
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
     from sova.git.pr import get_review_thread_counts, list_open_prs
@@ -445,14 +441,12 @@ async def list_open_prs_with_state(author_filter_override: Literal["mine", "all"
         return []
 
     repo = cfg.github_repo
-    effective_filter = author_filter_override or cfg.dashboard.pr_author_filter
-    author = cfg.github_user if effective_filter == "mine" else None
-    cache_key = f"{repo}:{author or ''}"
+    cache_key = repo
     now = time.monotonic()
     cached = _pr_cache.get(cache_key)
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
         return cached[1]
-    raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user, author=author)
+    raw_prs = await list_open_prs(repo=repo, github_user=cfg.github_user)
 
     pr_numbers = [p["number"] for p in raw_prs]
     try:

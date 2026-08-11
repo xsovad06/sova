@@ -42,13 +42,9 @@ class PRFeedbackRequest(BaseModel):
 
 
 @router.get("/open")
-async def get_open_prs(author_filter: str | None = Query(None, pattern="^(mine|all)$")) -> dict:
-    """List all open PRs with computed lifecycle state.
-
-    Pass ``author_filter=mine`` or ``author_filter=all`` to override the
-    configured ``dashboard.pr_author_filter`` for this request.
-    """
-    prs = await list_open_prs_with_state(author_filter_override=author_filter)
+async def get_open_prs() -> dict:
+    """List all open PRs with computed lifecycle state."""
+    prs = await list_open_prs_with_state()
     return {"prs": prs}
 
 
