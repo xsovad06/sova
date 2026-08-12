@@ -15,9 +15,20 @@ from sova.supervisor.dependency_graph import (
     DependencyGraph,
     _extract_priority,
     _get_spec_meta,
+    _graph_cache,
     build_dependency_graph,
+    invalidate_graph_cache,
     parse_dependencies,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_graph_cache():
+    """Prevent graph cache leaking between tests."""
+    _graph_cache.clear()
+    yield
+    _graph_cache.clear()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -761,6 +772,68 @@ class TestBuildDependencyGraph:
         filters = call_args[0][0] if call_args[0] else call_args[1].get("filters")
         assert filters is not None
         assert filters.milestone == "Phase 7"
+
+    @pytest.mark.asyncio
+    async def test_cache_returns_same_graph(self) -> None:
+        """Second call within TTL should return the cached graph."""
+        adapter = AsyncMock()
+        adapter.repo = "owner/repo"
+        adapter.list_tasks.return_value = [_task(1)]
+        adapter.get_task = AsyncMock()
+
+        g1 = await build_dependency_graph(adapter)
+        g2 = await build_dependency_graph(adapter)
+
+        assert g1 is g2
+        assert adapter.list_tasks.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cache_bypassed_for_milestone(self) -> None:
+        """Milestone-filtered builds should bypass the cache."""
+        adapter = AsyncMock()
+        adapter.repo = "owner/repo"
+        adapter.list_tasks.return_value = [_task(1)]
+        adapter.get_task = AsyncMock()
+
+        await build_dependency_graph(adapter)
+        await build_dependency_graph(adapter, milestone="P1")
+
+        assert adapter.list_tasks.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_invalidate_cache(self) -> None:
+        """invalidate_graph_cache should force a fresh build."""
+        adapter = AsyncMock()
+        adapter.repo = "owner/repo"
+        adapter.list_tasks.return_value = [_task(1)]
+        adapter.get_task = AsyncMock()
+
+        await build_dependency_graph(adapter)
+        invalidate_graph_cache("owner/repo")
+        await build_dependency_graph(adapter)
+
+        assert adapter.list_tasks.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cache_keyed_by_repo(self) -> None:
+        """Different repos should have independent cache entries."""
+        adapter1 = AsyncMock()
+        adapter1.repo = "org/repo-a"
+        adapter1.list_tasks.return_value = [_task(1)]
+        adapter1.get_task = AsyncMock()
+
+        adapter2 = AsyncMock()
+        adapter2.repo = "org/repo-b"
+        adapter2.list_tasks.return_value = [_task(2)]
+        adapter2.get_task = AsyncMock()
+
+        await build_dependency_graph(adapter1)
+        await build_dependency_graph(adapter2)
+
+        assert adapter1.list_tasks.call_count == 1
+        assert adapter2.list_tasks.call_count == 1
+        assert "org/repo-a" in _graph_cache
+        assert "org/repo-b" in _graph_cache
 
 
 # ---------------------------------------------------------------------------

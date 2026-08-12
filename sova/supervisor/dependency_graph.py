@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,9 @@ from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 
 log = get_logger(component="supervisor.dependency_graph")
+
+_GRAPH_CACHE_TTL = 120.0  # 2 minutes
+_graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
 
@@ -113,8 +117,9 @@ class ParallelGroup:
 class DependencyGraph:
     """DAG of issue dependencies with readiness checks and traversal.
 
-    Built on-the-fly from issue bodies via the adapter layer.  No DB tables --
-    the graph is ephemeral and rebuilt per API call.
+    Built from issue bodies via the adapter layer.  No DB tables. Graphs are
+    cached per-repo for ``_GRAPH_CACHE_TTL`` seconds (120s) and invalidated
+    on agent spawn or epic close. Milestone-filtered builds bypass the cache.
     """
 
     def __init__(self, tasks: list[Task]) -> None:
@@ -458,6 +463,14 @@ def parse_dependencies(body: str, *, exclude_self: int | None = None) -> set[int
     return deps
 
 
+def invalidate_graph_cache(repo: str = "") -> None:
+    """Force the next ``build_dependency_graph`` call to rebuild from the API."""
+    if repo:
+        _graph_cache.pop(repo, None)
+    else:
+        _graph_cache.clear()
+
+
 async def build_dependency_graph(
     adapter: TaskAdapter,
     *,
@@ -473,8 +486,19 @@ async def build_dependency_graph(
 
     When *milestone* is provided, only tasks in that milestone are fetched.
     Dependencies outside the filtered set are fetched individually.
+
+    Results are cached per-repo for ``_GRAPH_CACHE_TTL`` seconds. Milestone-
+    filtered builds bypass the cache (rare, manual-only path).
     """
     from sova.adapters.base import TaskFilters
+
+    repo_key = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
+    if not milestone and repo_key:
+        now = time.monotonic()
+        cached = _graph_cache.get(repo_key)
+        if cached is not None and (now - cached[0]) < _GRAPH_CACHE_TTL:
+            log.debug("build_dependency_graph.cached", repo=repo_key, age_s=round(now - cached[0], 1))
+            return cached[1]
 
     # Fetch up to 500 issues so the graph is not silently truncated on larger
     # repos.  gh CLI handles pagination automatically when --limit > 100.
@@ -527,4 +551,7 @@ async def build_dependency_graph(
             if dep_task is not None:
                 task_map[int(dep_task.id)] = dep_task
 
-    return DependencyGraph(list(task_map.values()))
+    graph = DependencyGraph(list(task_map.values()))
+    if not milestone and repo_key:
+        _graph_cache[repo_key] = (time.monotonic(), graph)
+    return graph
