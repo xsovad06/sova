@@ -17,11 +17,15 @@ from sova.utils.shell import ShellResult
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Initialize a fresh in-memory DB for each test."""
+    from sova.supervisor.coderabbit_quota import _sync_cache
+
+    _sync_cache.clear()
     os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
     await init_db(run_migrations=False)
     yield
     await close_db()
     os.environ.pop("SOVA_DATABASE_URL", None)
+    _sync_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +268,100 @@ class TestSyncFromGitHub:
         async with await get_session() as session:
             status = await get_quota_status(session, cfg)
         assert status.reviews_in_window == 2
+
+    async def test_sync_cache_skips_api_on_fresh_cache(self) -> None:
+        """sync_from_github should skip the API call when cache is fresh."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        now = datetime.now(timezone.utc)
+        mock_reviews = [{"pr_number": 1, "review_id": "r1", "submitted_at": now}]
+
+        mock_fetch = AsyncMock(return_value=mock_reviews)
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            mock_fetch,
+        ):
+            async with await get_session() as session:
+                first = await sync_from_github(session, "owner/repo", cfg)
+            assert first == 1
+            assert mock_fetch.call_count == 1
+
+            # Second call within TTL should skip the API entirely
+            async with await get_session() as session:
+                second = await sync_from_github(session, "owner/repo", cfg)
+            assert second == 0
+            assert mock_fetch.call_count == 1  # no additional call
+
+    async def test_sync_cache_force_bypasses_cache(self) -> None:
+        """force=True should ignore the cache and call the API."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        mock_fetch = AsyncMock(return_value=[])
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            mock_fetch,
+        ):
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg)
+            assert mock_fetch.call_count == 1
+
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg, force=True)
+            assert mock_fetch.call_count == 2
+
+    async def test_synced_at_populated_after_sync(self) -> None:
+        """get_quota_status should include synced_at after a successful sync."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import get_quota_status, sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg)
+
+        async with await get_session() as session:
+            status = await get_quota_status(session, cfg, repo="owner/repo")
+        assert status.synced_at is not None
+        assert status.synced_at.endswith("Z")
+
+    async def test_synced_at_none_before_sync(self) -> None:
+        """synced_at should be None when no sync has occurred."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import get_quota_status
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        async with await get_session() as session:
+            status = await get_quota_status(session, cfg, repo="fresh/repo")
+        assert status.synced_at is None
+
+    async def test_invalidate_sync_cache(self) -> None:
+        """invalidate_sync_cache should force the next sync to call the API."""
+        from sova.db.session import get_session
+        from sova.supervisor.coderabbit_quota import invalidate_sync_cache, sync_from_github
+
+        cfg = CodeRabbitQuotaConfig(enabled=True, plan="free")
+        mock_fetch = AsyncMock(return_value=[])
+        with patch(
+            "sova.supervisor.coderabbit_quota._fetch_coderabbit_reviews_from_github",
+            mock_fetch,
+        ):
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg)
+            assert mock_fetch.call_count == 1
+
+            invalidate_sync_cache("owner/repo")
+
+            async with await get_session() as session:
+                await sync_from_github(session, "owner/repo", cfg)
+            assert mock_fetch.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -579,7 +677,7 @@ class TestFetchCodeRabbitReviewsFromGitHub:
         with patch("sova.supervisor.coderabbit_quota.run", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = ShellResult(returncode=1, stdout="", stderr="gh error")
             reviews = await _fetch_coderabbit_reviews_from_github("owner/repo")
-        assert reviews == []
+        assert reviews is None
 
     async def test_no_pr_numbers(self) -> None:
         """Lines 246-247: stdout has no valid PR numbers."""

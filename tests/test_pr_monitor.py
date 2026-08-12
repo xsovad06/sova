@@ -18,8 +18,10 @@ from sova.utils.shell import ShellResult
 def _clear_rate_limit_trackers() -> None:
     """Ensure rate limit tracker state does not leak between tests."""
     from sova.supervisor import github_quota
+    from sova.supervisor.pr_monitor import _rate_check_cache
 
     github_quota._trackers.clear()
+    _rate_check_cache.clear()
 
 
 def _make_monitor(**overrides: object) -> PRMonitor:
@@ -874,3 +876,93 @@ class TestPRMonitorRateLimitGate:
             await monitor._poll_cycle()
 
         mock_list.assert_called_once()
+
+
+class TestRateCheckCache:
+    """Tests for the per-PR CodeRabbit rate-limit check cache."""
+
+    @pytest.mark.asyncio
+    async def test_cached_result_skips_api(self) -> None:
+        """Second call within TTL should return cached result without API call."""
+        import json as _json
+
+        rate_limited_comment = {
+            "author": {"login": "coderabbitai"},
+            "body": "rate limit exceeded",
+        }
+        gh_result = ShellResult(
+            stdout='{"comments": [' + _json.dumps(rate_limited_comment) + "]}",
+            stderr="",
+            returncode=0,
+        )
+
+        call_count = 0
+
+        async def mock_run(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return gh_result
+
+        with (
+            patch("sova.utils.shell.run", side_effect=mock_run),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            result1 = await _is_coderabbit_rate_limited(42, repo="o/r", github_user="u")
+            assert result1 is True
+            assert call_count == 1
+
+            result2 = await _is_coderabbit_rate_limited(42, repo="o/r", github_user="u")
+            assert result2 is True
+            assert call_count == 1  # no additional API call
+
+    @pytest.mark.asyncio
+    async def test_different_prs_cached_independently(self) -> None:
+        """Cache entries are per-PR, not global."""
+        from sova.supervisor.pr_monitor import _rate_check_cache
+
+        gh_result = ShellResult(stdout='{"comments": []}', stderr="", returncode=0)
+
+        with (
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=gh_result),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            await _is_coderabbit_rate_limited(10, repo="o/r")
+            await _is_coderabbit_rate_limited(20, repo="o/r")
+
+        assert ("o/r", 10) in _rate_check_cache
+        assert ("o/r", 20) in _rate_check_cache
+
+    @pytest.mark.asyncio
+    async def test_expired_cache_calls_api_again(self) -> None:
+        """Expired cache entries should trigger a fresh API call."""
+        import time
+
+        from sova.supervisor.pr_monitor import _rate_check_cache
+
+        _rate_check_cache[("o/r", 99)] = (time.monotonic() - 500, False)  # expired
+
+        gh_result = ShellResult(stdout='{"comments": []}', stderr="", returncode=0)
+        with (
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=gh_result),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            result = await _is_coderabbit_rate_limited(99, repo="o/r")
+        assert result is False
+        assert _rate_check_cache[("o/r", 99)][1] is False
+
+    @pytest.mark.asyncio
+    async def test_same_pr_different_repos_cached_independently(self) -> None:
+        """Same PR number in different repos should have independent cache entries."""
+        from sova.supervisor.pr_monitor import _rate_check_cache
+
+        gh_result = ShellResult(stdout='{"comments": []}', stderr="", returncode=0)
+
+        with (
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=gh_result),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+        ):
+            await _is_coderabbit_rate_limited(1, repo="org/repo-a")
+            await _is_coderabbit_rate_limited(1, repo="org/repo-b")
+
+        assert ("org/repo-a", 1) in _rate_check_cache
+        assert ("org/repo-b", 1) in _rate_check_cache

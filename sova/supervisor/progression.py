@@ -24,7 +24,7 @@ from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_r
 from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
 from sova.git.pr import PRInfo, find_pr_for_issue
-from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, is_epic
+from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, invalidate_graph_cache, is_epic
 from sova.supervisor.file_overlap import (
     BranchFileSet,
     check_file_overlap,
@@ -113,6 +113,7 @@ class TaskProgressionEngine:
         self._project_dir = project_dir
         self._session_factory = session_factory
         self._last_graph: DependencyGraph | None = None
+        self._repo_cache_key: str = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
 
     async def evaluate_all(self, *, plan: PlanResult | None = None) -> list[ProgressionDecision]:
         """Scan all active tasks, return next action for each.
@@ -432,7 +433,10 @@ class TaskProgressionEngine:
             action=decision.action.value,
             role=role,
         )
-        return await start_agent(**kwargs)
+        result = await start_agent(**kwargs)
+        if "error" not in result:
+            invalidate_graph_cache(self._repo_cache_key)
+        return result
 
     async def execute_decisions(self, decisions: list[ProgressionDecision]) -> list[dict]:
         """Execute all actionable decisions (filters out WAIT/BLOCKED/CHECKPOINT_NEEDED).
@@ -467,6 +471,7 @@ class TaskProgressionEngine:
         """Attempt to close an epic and return result dict."""
         try:
             await self._adapter.transition_state(str(node_id), TaskState.DONE)
+            invalidate_graph_cache(self._repo_cache_key)
             log.info(
                 "auto_close_epics.closed",
                 issue=node_id,

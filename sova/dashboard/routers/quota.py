@@ -26,6 +26,7 @@ async def coderabbit_quota() -> dict:
                 session,
                 cfg.coderabbit_quota,
                 project_slug=cfg.github_repo,
+                repo=cfg.github_repo,
             )
         return {
             "enabled": status.enabled,
@@ -34,6 +35,7 @@ async def coderabbit_quota() -> dict:
             "can_create_pr": status.can_create_pr,
             "next_available_minutes": status.next_available_minutes,
             "window_minutes": status.window_minutes,
+            "synced_at": status.synced_at,
         }
     except Exception:
         log.warning("quota.coderabbit.error", exc_info=True)
@@ -57,6 +59,7 @@ async def sync_coderabbit_quota() -> dict:
                 cfg.coderabbit_quota,
                 project_slug=cfg.github_repo,
                 github_user=cfg.github_user,
+                force=True,
             )
         return {"enabled": True, "synced": new_count}
     except Exception:

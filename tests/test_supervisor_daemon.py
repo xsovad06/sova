@@ -237,12 +237,18 @@ class TestSupervisorDaemon:
             daemon._running = False
             return {}
 
-        with patch.object(daemon, "_poll_once", side_effect=failing_poll):
-            with patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock):
-                daemon._running = True
-                with patch.object(daemon, "_config") as mock_cfg:
-                    mock_cfg.supervisor.poll_interval_seconds = 0
-                    await daemon._run_loop()
+        async def noop_sleep(_: float) -> None:
+            pass
+
+        with (
+            patch.object(daemon, "_poll_once", side_effect=failing_poll),
+            patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
+            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=noop_sleep),
+        ):
+            daemon._running = True
+            with patch.object(daemon, "_config") as mock_cfg:
+                mock_cfg.supervisor.poll_interval_seconds = 0
+                await daemon._run_loop()
         assert call_count >= 2
 
     async def test_poll_once_adapter_creation_failure(self, daemon: SupervisorDaemon) -> None:
@@ -492,3 +498,60 @@ class TestSupervisorDecisionModel:
             assert row.action == "spawn_developer"
             assert row.metadata_json == {"key": "value"}
             assert row.created_at is not None
+
+
+class TestPollIntervalFloor:
+    """The daemon enforces a minimum poll interval of 60 seconds."""
+
+    async def test_low_interval_clamped_to_60(self, session_factory: async_sessionmaker) -> None:
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=10),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        sleep_values: list[float] = []
+
+        async def capture_sleep(val: float) -> None:
+            sleep_values.append(val)
+            daemon._running = False
+
+        call_count = 0
+
+        async def mock_poll_once():
+            nonlocal call_count
+            call_count += 1
+            return {}
+
+        with (
+            patch.object(daemon, "_poll_once", side_effect=mock_poll_once),
+            patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
+            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=capture_sleep),
+        ):
+            daemon._running = True
+            await daemon._run_loop()
+
+        assert sleep_values[0] == 60
+
+    async def test_high_interval_unchanged(self, session_factory: async_sessionmaker) -> None:
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=180),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        sleep_values: list[float] = []
+
+        async def capture_sleep(val: float) -> None:
+            sleep_values.append(val)
+            daemon._running = False
+
+        with (
+            patch.object(daemon, "_poll_once", new_callable=AsyncMock, return_value={}),
+            patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
+            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=capture_sleep),
+        ):
+            daemon._running = True
+            await daemon._run_loop()
+
+        assert sleep_values[0] == 180
