@@ -21,6 +21,8 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="supervisor.daemon")
 
+_MIN_POLL_INTERVAL = 60
+
 
 class SupervisorDaemon:
     """Coordinated polling daemon for supervisor sub-components."""
@@ -79,7 +81,14 @@ class SupervisorDaemon:
         Applies exponential backoff on consecutive failures (capped at 600s).
         """
         await self._purge_old_logs()
-        base_interval = self._config.supervisor.poll_interval_seconds
+        configured = self._config.supervisor.poll_interval_seconds
+        base_interval = max(configured, _MIN_POLL_INTERVAL)
+        if configured < _MIN_POLL_INTERVAL:
+            log.warning(
+                "daemon.poll_interval_clamped",
+                configured=configured,
+                effective=base_interval,
+            )
         consecutive_failures = 0
         max_backoff = 600
         while self._running:
