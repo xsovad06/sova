@@ -29,7 +29,29 @@ finding must reference concrete code, files, or patterns in THIS codebase.
 
 ## Procedure
 
-### Step 1: Discover the project
+### Step 0: Benchmark start
+
+```bash
+bash .claude/benchmark/log.sh "health_audit_start" "" "" 2>/dev/null || true
+```
+
+### Step 1: Staleness check
+
+Before generating a new audit, check if `docs/HEALTH-AUDIT.md` already exists.
+If it does, read the `audit-tracker` comment and check issue status:
+
+```bash
+gh issue list --state open --json number --jq '.[].number'
+```
+
+Compare against the tracked issue numbers:
+- **All issues closed** -> delete the file, inform the user that the previous
+  audit cycle is complete, then proceed with the new audit.
+- **Some issues still open** -> warn the user that N issues from the previous
+  audit are still open, list them, and ask whether to proceed with a fresh
+  audit (which will overwrite) or abort.
+
+### Step 2: Discover the project
 
 Build a mental model of the project before analyzing it. Read these in order,
 skipping any that do not exist:
@@ -53,24 +75,141 @@ From this, note:
 - **Key domains** the code models
 - **Architecture patterns** in use (service layer, adapters, DDD, etc.)
 
-### Step 2: Walk the codebase
+Collect codebase stats in parallel:
 
-Systematically walk each top-level module, app, or package:
-- If a focus area was specified, go deeper on that area.
-- Otherwise, cover all modules proportionally to their size and complexity.
-- Cross-reference what is documented against what actually exists.
+```bash
+# Run these in parallel -- they are independent
+# LOC counts (adjust extensions for the project's language)
+find . -name "*.py" -not -path "./.venv/*" -not -path "*/__pycache__/*" -not -path "*/migrations/*" -not -path "./.claude/*" | xargs wc -l | tail -1
+find . -name "*.html" -not -path "./.venv/*" | xargs wc -l | tail -1
+# Module/app count
+ls -d apps/*/ 2>/dev/null | wc -l  # Django
+ls -d src/*/ 2>/dev/null | wc -l   # generic
+# Test count
+grep -rc "def test_" tests/ apps/*/tests/ 2>/dev/null | awk -F: '{s+=$2} END {print s}'
+```
 
 ### Step 3: Run checks
 
 Run the project's test and lint commands to verify current health:
-- `make test` for tests
-- `make lint` for linting
-- If neither is configured, look for `Makefile`, `package.json` scripts, or
-  CI config to find the right commands.
 
-### Step 4: Produce the report
+```bash
+{{ check_cmd }}
+```
 
-Use the output format below.
+If `{{ check_cmd }}` is not configured, look for `Makefile`, `package.json`
+scripts, or CI config to find the right commands. Common fallbacks:
+- `make test` + `make lint`
+- `npm test` + `npm run lint`
+- `cargo test` + `cargo clippy`
+
+### Step 4: Incremental mode check
+
+If a previous `docs/HEALTH-AUDIT.md` exists and the user chose to proceed
+(Step 1), determine which areas changed since the last audit:
+
+```bash
+# Find the commit closest to the last audit date (from the file header)
+git log --after="<last-audit-date>" --oneline --stat | head -100
+```
+
+For **incremental audits**:
+- Re-analyze only modules/apps with changes since the last audit date.
+- Preserve findings for unchanged areas from the previous report if they are
+  still open issues.
+- Still produce the full scorecard and executive summary (these reflect current state).
+
+For **full audits** (no previous audit, or user chose to overwrite):
+- Proceed with Step 5 as a full analysis.
+
+### Step 5: Parallel codebase walk
+
+This is the most expensive step. Use the **Agent tool to spawn 3 parallel
+analysis agents**, each covering a different dimension. This reduces wall-clock
+time by ~3x compared to sequential analysis.
+
+**If a focus area was specified** in `$ARGUMENTS`, skip the parallel fan-out.
+Instead, analyze only the specified area deeply in the main context. Still
+produce all 10 scorecard dimensions but score non-focus areas based on Step 2
+discovery only (no deep read). Mark non-focus scores as "(surface-level)" in
+the scorecard.
+
+**For full audits**, spawn these 3 agents in a single message (so they run
+concurrently):
+
+#### Agent A: Architecture and Security
+Prompt the agent with the project context from Step 2 (tech stack, scale, stage)
+and instruct it to analyze:
+- Dependency graph health (circular imports between modules)
+- Data model integrity (schema design, migration hygiene, index coverage)
+- Security architecture (auth, input validation, secret handling, injection
+  surfaces, file upload safety, CSP, CORS)
+- Infrastructure readiness (caching, task queues, connection management, rate
+  limiting, monitoring/observability gaps)
+- API design consistency (endpoint naming, error responses, versioning)
+- Configuration management (secrets handling, environment separation)
+
+Tell it to check concrete files: settings, middleware, models, Dockerfile,
+docker-compose, CI config, deployment scripts. Output format: severity
+(P0-P4), title, location, issue, evidence, recommendation. Maximum 20 findings.
+Also list 3-5 architectural strengths.
+
+#### Agent B: Module Quality and Patterns
+Prompt the agent with the project structure and instruct it to analyze:
+- Service layer consistency (for each module: is business logic in services or views?)
+- God files (files over 500 lines that do too much)
+- Dead code (unused imports, unreferenced templates/assets, views not in URLs)
+- Pattern consistency (factories in tests, README per module, form validation)
+- Type hint coverage (sample key service files)
+- Error handling (bare excepts, swallowed exceptions)
+- Template quality (business logic in templates, missing i18n)
+
+Tell it to run concrete commands (`wc -l`, `grep`, `find`) to gather evidence.
+Output format: same as Agent A. Maximum 20 findings. List 3-5 code quality
+strengths.
+
+#### Agent C: Testing, Dependencies, and Operations
+Prompt the agent with the project test infrastructure and instruct it to analyze:
+- Test quality and coverage gaps (tests per module vs code size, factory usage)
+- Dependency health (pinning strategy, known problematic packages, dev vs prod split)
+- CI/CD quality (workflow config, pre-commit hooks, coverage reporting)
+- Operational readiness (logging patterns, error monitoring, health endpoints,
+  backup strategy, management commands)
+- Deployment (Dockerfile quality, environment variable handling, migration state)
+
+Tell it to run concrete commands and read specific files. Output format: same
+as Agents A and B. Maximum 20 findings. List 3-5 operational strengths.
+
+### Step 6: Synthesize and verify
+
+After all 3 agents complete:
+
+1. **Collect** all findings from the 3 agents.
+2. **Deduplicate** -- findings may overlap (e.g., both Agent A and Agent B flag
+   the same god file). Merge duplicates, keeping the most detailed evidence.
+3. **Verify** -- spot-check 5-10 key findings with targeted `grep`, `wc -l`, or
+   `Read` commands. Confirm file sizes, line counts, missing indexes, etc.
+   Discard any finding that cannot be verified.
+4. **Score** the 10 dimensions based on verified findings and strengths.
+5. **Rank** findings by (severity * blast radius).
+
+### Step 7: Validate labels
+
+Before grouping findings into issues, validate that the labels you plan to use
+actually exist in the project:
+
+```bash
+gh label list --limit 100 --json name --jq '.[].name' | sort
+```
+
+Also check for milestones:
+
+```bash
+gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number)\t\(.title)"'
+```
+
+Only use labels and milestones that exist. If an appropriate label does not
+exist, either create it with `gh label create` or use the closest existing one.
 
 ## Analysis Levels
 
@@ -205,22 +344,6 @@ other commands (`/status`, `/standup`) can detect audit progress:
 The `issues=` field is a comma-separated list of all GitHub issue numbers
 created in Phase C. This enables automated staleness detection.
 
-### Staleness detection and auto-cleanup
-
-Before generating a new audit, check if `docs/HEALTH-AUDIT.md` already exists.
-If it does, read the `audit-tracker` comment and check issue status:
-
-```bash
-gh issue list --state open --json number --jq '.[].number'
-```
-
-Compare against the tracked issue numbers:
-- **All issues closed** -> delete the file, inform the user that the previous
-  audit cycle is complete, then proceed with the new audit.
-- **Some issues still open** -> warn the user that N issues from the previous
-  audit are still open, list them, and ask whether to proceed with a fresh
-  audit (which will overwrite) or abort.
-
 Format the file as standard Markdown. No frontmatter. No emojis.
 
 ## Phase B: Group Findings into Task Batches
@@ -236,7 +359,7 @@ For each group, define:
 - **Files touched**: concrete file paths
 - **Estimated effort**: hours
 - **Dependencies**: which groups must be completed first
-- **Labels**: GitHub labels from the project's label taxonomy
+- **Labels**: GitHub labels from the project's validated label taxonomy (Step 7)
 
 Target 5-10 groups. Do not over-fragment -- a group with 1 finding is too small
 unless it truly stands alone.
@@ -250,6 +373,8 @@ For each task group from Phase B, create a GitHub issue:
 
 ```bash
 gh issue create --title "<type>(scope): <group description>" \
+  --milestone "<milestone from Step 7>" \
+  --label "<label1>" --label "<label2>" \
   --body "$(cat <<'EOF'
 ## Objective
 
@@ -289,15 +414,20 @@ with the issue numbers and links.
 ### Pre-flight checks before creating issues
 
 1. Run `gh issue list --state open --limit 50` to check for duplicates
-2. Present the proposed issue list (titles + labels) to the user
+2. Present the proposed issue list (titles + labels + milestone) to the user
 3. Wait for explicit user confirmation before creating any issues
 4. After creation, report all issue numbers
 
-## Phase D: Verify Backlog
+## Phase D: Verify and Log
 
 After creating issues, verify the new issues appear on the project board and have
-correct labels, milestones, and dependencies. The supervisor dashboard (`/supervisor`)
-shows the live dependency graph.
+correct labels, milestones, and dependencies.
+
+Log completion and cost:
+
+```bash
+bash .claude/benchmark/log.sh "health_audit_complete" "" "" 2>/dev/null || true
+```
 
 ## Constraints
 - Do NOT fabricate findings. If you are unsure whether an issue exists, say so and
