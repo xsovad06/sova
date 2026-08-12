@@ -75,6 +75,11 @@ async def client(tmp_path):
 - **Session pattern**: always `async with await get_session() as session:`.
 - **DB fixture scope**: per-test only. Never `scope="module"`.
 - **No conftest.py**: copy helpers per-file, don't share.
+- **Module-level cache requires `setup_method` in ALL test classes**: when a service function has a module-level cache, add `setup_method: clear_cache()` to every test class in the file that calls it, not just new ones. Cache type changes (`tuple|None` -> `dict`) require updating all reset patterns (`= None` -> `.clear()`).
+- **Direct unit tests for mocked functions**: if a function is always mocked in integration tests, SonarCloud flags 0% coverage. Add a dedicated test class with direct calls to cover the implementation paths.
+- **`MagicMock(name="foo")` sets repr, not `.name`**: `name=` is a reserved constructor arg. Assign after construction: `mock = MagicMock(); mock.name = "foo"`.
+- **Spawn mock functions must use `**kwargs`**: `async def _capture_spawn(prompt, cwd, **kwargs)` absorbs new parameters without breaking when `spawn()` gains kwargs.
+- **`TaskRun` uses `started_at`, not `created_at`**: most ORM models use `created_at`, but `TaskRun` uses `started_at`/`ended_at`. Referencing `TaskRun.created_at` raises `AttributeError` silently swallowed by broad `except Exception`.
 
 ## Running
 
