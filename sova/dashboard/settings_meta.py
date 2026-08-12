@@ -879,6 +879,13 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.auto_triage",
+        "Auto-triage",
+        "Automatically spawn triage agent for new backlog issues",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
         "supervisor.auto_research",
         "Auto-research",
         "Automatically spawn researcher after triage when dependencies are met",

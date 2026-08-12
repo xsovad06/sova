@@ -35,6 +35,7 @@ def status(
             "enabled": cfg.supervisor.enabled,
             "poll_interval_seconds": cfg.supervisor.poll_interval_seconds,
             "log_retention_days": cfg.supervisor.log_retention_days,
+            "auto_triage": cfg.supervisor.auto_triage,
             "auto_research": cfg.supervisor.auto_research,
             "auto_develop": cfg.supervisor.auto_develop,
             "auto_integrate": cfg.supervisor.auto_integrate,
@@ -52,6 +53,7 @@ def status(
     console.print("[green]Supervisor is enabled[/green]")
     console.print(f"  Poll interval: {cfg.supervisor.poll_interval_seconds}s")
     console.print(f"  Log retention: {cfg.supervisor.log_retention_days}d")
+    console.print(f"  Auto-triage: {cfg.supervisor.auto_triage}")
     console.print(f"  Auto-research: {cfg.supervisor.auto_research}")
     console.print(f"  Auto-develop: {cfg.supervisor.auto_develop}")
     console.print(f"  Auto-integrate: {cfg.supervisor.auto_integrate}")

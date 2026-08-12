@@ -44,9 +44,10 @@ def _task(
 def _make_engine(
     config: SupervisorConfig | None = None,
     adapter: TaskAdapter | None = None,
+    **kwargs: object,
 ) -> TaskProgressionEngine:
     """Create a TaskProgressionEngine with mock dependencies."""
-    cfg = config or SupervisorConfig()
+    cfg = config or SupervisorConfig(**kwargs)
     mock_adapter = adapter or AsyncMock()
     mock_session_factory = MagicMock()
     return TaskProgressionEngine(
@@ -64,6 +65,7 @@ def _make_engine(
 
 class TestDataclasses:
     def test_progression_action_values(self) -> None:
+        assert ProgressionAction.SPAWN_TRIAGE == "spawn_triage"
         assert ProgressionAction.SPAWN_RESEARCHER == "spawn_researcher"
         assert ProgressionAction.SPAWN_DEVELOPER == "spawn_developer"
         assert ProgressionAction.SPAWN_INTEGRATE == "spawn_integrate"
@@ -149,9 +151,13 @@ class TestDetermineTransition:
         engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_address_review=True))
         assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
 
-    def test_backlog_returns_none(self) -> None:
+    def test_backlog_auto_triage_disabled(self) -> None:
         engine = _make_engine()
-        assert engine._determine_transition(TaskState.BACKLOG) is None
+        assert engine._determine_transition(TaskState.BACKLOG) == ProgressionAction.CHECKPOINT_NEEDED
+
+    def test_backlog_auto_triage_enabled(self) -> None:
+        engine = _make_engine(auto_triage=True)
+        assert engine._determine_transition(TaskState.BACKLOG) == ProgressionAction.SPAWN_TRIAGE
 
     def test_in_progress_returns_none(self) -> None:
         engine = _make_engine()
@@ -542,14 +548,24 @@ class TestRepeatedFailuresGate:
 
 class TestEvaluateTask:
     @pytest.mark.asyncio
-    async def test_backlog_returns_wait(self) -> None:
+    async def test_backlog_auto_triage_disabled_returns_checkpoint(self) -> None:
         adapter = AsyncMock()
         adapter.get_state = AsyncMock(return_value=TaskState.BACKLOG)
         adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.BACKLOG)])
         engine = _make_engine(adapter=adapter)
         decision = await engine.evaluate_task(1)
-        assert decision.action == ProgressionAction.WAIT
+        assert decision.action == ProgressionAction.CHECKPOINT_NEEDED
         assert decision.issue_number == 1
+
+    @pytest.mark.asyncio
+    async def test_backlog_auto_triage_enabled_spawns_triage(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.BACKLOG)
+        adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.BACKLOG)])
+        engine = _make_engine(adapter=adapter, auto_triage=True)
+        decision = await engine.evaluate_task(1)
+        assert decision.action == ProgressionAction.SPAWN_TRIAGE
+        assert decision.role == "triage"
 
     @pytest.mark.asyncio
     async def test_triaged_with_auto_research_spawns(self) -> None:
@@ -679,7 +695,7 @@ class TestEvaluateAll:
         assert len(decisions) == 2
         by_issue = {d.issue_number: d for d in decisions}
         assert by_issue[1].action == ProgressionAction.SPAWN_RESEARCHER
-        assert by_issue[3].action == ProgressionAction.WAIT
+        assert by_issue[3].action == ProgressionAction.CHECKPOINT_NEEDED
 
     @pytest.mark.asyncio
     @patch("sova.supervisor.progression.load_config")
@@ -977,6 +993,7 @@ class TestConfigIntegration:
 
         expected_keys = [
             "supervisor.enabled",
+            "supervisor.auto_triage",
             "supervisor.auto_research",
             "supervisor.auto_develop",
             "supervisor.auto_address_review",
