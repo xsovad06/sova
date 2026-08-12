@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +24,10 @@ from sova.utils.shell import run
 
 log = get_logger(component="supervisor.coderabbit_quota")
 
+_SYNC_CACHE_TTL = 300.0  # 5 minutes
+_sync_cache: dict[str, float] = {}  # repo -> last sync monotonic timestamp
+_sync_locks: dict[str, asyncio.Lock] = {}  # repo -> single-flight lock
+
 
 @dataclass(frozen=True, slots=True)
 class QuotaStatus:
@@ -34,6 +39,26 @@ class QuotaStatus:
     can_create_pr: bool
     next_available_minutes: float | None
     window_minutes: int
+    synced_at: str | None = None
+
+
+def get_last_sync_iso(repo: str = "") -> str | None:
+    """Return the wall-clock ISO timestamp of the last successful sync for *repo*.
+
+    Used by the API to let the client compute a live countdown without
+    re-fetching from the server.
+    """
+    ts = _sync_cache.get(repo)
+    if ts is None:
+        return None
+    age = time.monotonic() - ts
+    wall = datetime.now(timezone.utc) - timedelta(seconds=age)
+    return wall.isoformat().replace("+00:00", "Z")
+
+
+def invalidate_sync_cache(repo: str = "") -> None:
+    """Force the next ``sync_from_github`` call to hit the API."""
+    _sync_cache.pop(repo, None)
 
 
 async def get_quota_status(
@@ -41,8 +66,11 @@ async def get_quota_status(
     config: CodeRabbitQuotaConfig,
     *,
     project_slug: str = "",
+    repo: str = "",
 ) -> QuotaStatus:
     """Check current CodeRabbit quota availability."""
+    synced_at = get_last_sync_iso(repo)
+
     if not config.enabled:
         return QuotaStatus(
             enabled=False,
@@ -51,6 +79,7 @@ async def get_quota_status(
             can_create_pr=True,
             next_available_minutes=None,
             window_minutes=config.window_minutes,
+            synced_at=synced_at,
         )
 
     now = datetime.now(timezone.utc)
@@ -67,6 +96,7 @@ async def get_quota_status(
             can_create_pr=True,
             next_available_minutes=None,
             window_minutes=config.window_minutes,
+            synced_at=synced_at,
         )
 
     can_create = count < config.reviews_per_hour
@@ -87,6 +117,7 @@ async def get_quota_status(
         can_create_pr=can_create,
         next_available_minutes=next_available,
         window_minutes=config.window_minutes,
+        synced_at=synced_at,
     )
 
 
@@ -97,41 +128,63 @@ async def sync_from_github(
     *,
     project_slug: str = "",
     github_user: str = "",
+    force: bool = False,
 ) -> int:
     """Fetch recent CodeRabbit reviews from GitHub and cache in DB.
 
-    Returns the number of new events recorded.
+    Returns the number of new events recorded. Skips the API call when the
+    last successful sync was within ``_SYNC_CACHE_TTL`` seconds, unless
+    *force* is True.
     """
     if not config.enabled or not repo:
         return 0
 
-    try:
-        reviews = await _fetch_coderabbit_reviews_from_github(
-            repo, github_user=github_user, window_minutes=config.window_minutes
-        )
-    except Exception:
-        log.warning("sync_from_github.api_failed", repo=repo, exc_info=True)
+    now = time.monotonic()
+    last_sync = _sync_cache.get(repo)
+    if not force and last_sync is not None and (now - last_sync) < _SYNC_CACHE_TTL:
+        log.debug("sync_from_github.cached", repo=repo, age_s=round(now - last_sync, 1))
         return 0
 
-    if not reviews:
-        return 0
+    lock = _sync_locks.setdefault(repo, asyncio.Lock())
+    async with lock:
+        # Recheck after acquiring: another task may have synced while we waited
+        if not force:
+            last_sync = _sync_cache.get(repo)
+            if last_sync is not None and (time.monotonic() - last_sync) < _SYNC_CACHE_TTL:
+                return 0
 
-    new_count = 0
-    for review in reviews:
-        inserted = await _upsert_event(
-            session,
-            pr_number=review["pr_number"],
-            event_type="review",
-            review_id=review["review_id"],
-            recorded_at=review["submitted_at"],
-            project_slug=project_slug,
-        )
-        if inserted:
-            new_count += 1
+        try:
+            reviews = await _fetch_coderabbit_reviews_from_github(
+                repo, github_user=github_user, window_minutes=config.window_minutes
+            )
+        except Exception:
+            log.warning("sync_from_github.api_failed", repo=repo, exc_info=True)
+            return 0
 
-    await session.commit()
-    log.info("sync_from_github.done", repo=repo, new_events=new_count, total_fetched=len(reviews))
-    return new_count
+        if reviews is None:
+            return 0
+
+        if not reviews:
+            _sync_cache[repo] = time.monotonic()
+            return 0
+
+        new_count = 0
+        for review in reviews:
+            inserted = await _upsert_event(
+                session,
+                pr_number=review["pr_number"],
+                event_type="review",
+                review_id=review["review_id"],
+                recorded_at=review["submitted_at"],
+                project_slug=project_slug,
+            )
+            if inserted:
+                new_count += 1
+
+        await session.commit()
+        _sync_cache[repo] = time.monotonic()
+        log.info("sync_from_github.done", repo=repo, new_events=new_count, total_fetched=len(reviews))
+        return new_count
 
 
 async def record_event(
@@ -209,11 +262,12 @@ async def _fetch_coderabbit_reviews_from_github(
     *,
     github_user: str = "",
     window_minutes: int = 60,
-) -> list[dict]:
+) -> list[dict] | None:
     """Fetch recent PRs and their CodeRabbit reviews from GitHub API.
 
     Only fetches PRs updated within ``window_minutes`` (default 60) to
     minimise API calls.  Returns dicts with: pr_number, review_id, submitted_at.
+    Returns None on API failure (distinct from [] which means no reviews found).
     """
     from sova.utils.gh import resolve_gh_env
 
@@ -242,7 +296,7 @@ async def _fetch_coderabbit_reviews_from_github(
     )
     if not pr_result.success:
         log.warning("fetch_prs.failed", repo=repo, stderr=pr_result.stderr[:200])
-        return []
+        return None
 
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
     pr_numbers: list[int] = []
