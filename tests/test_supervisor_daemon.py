@@ -165,7 +165,7 @@ class TestSupervisorDaemon:
         # Test _poll_progression with a broken adapter
         adapter = AsyncMock()
         with patch("sova.supervisor.progression.TaskProgressionEngine", side_effect=Exception("engine failed")):
-            result, engine = await daemon._poll_progression(adapter)
+            result, engine = await daemon._poll_progression(adapter, daemon._config)
             assert "error" in result
             assert engine is None
 
@@ -179,7 +179,7 @@ class TestSupervisorDaemon:
         daemon._config = ProjectConfig(
             supervisor=SupervisorConfig(enabled=True),
         )
-        result = await daemon._poll_quota()
+        result = await daemon._poll_quota(daemon._config)
         assert result == {"enabled": False}
 
     async def test_stop_handles_failed_task(self, daemon: SupervisorDaemon) -> None:
@@ -243,7 +243,7 @@ class TestSupervisorDaemon:
         with (
             patch.object(daemon, "_poll_once", side_effect=failing_poll),
             patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
-            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=noop_sleep),
+            patch.object(daemon, "_interruptible_sleep", side_effect=noop_sleep),
         ):
             daemon._running = True
             with patch.object(daemon, "_config") as mock_cfg:
@@ -287,7 +287,7 @@ class TestSupervisorDaemon:
         adapter = AsyncMock()
 
         with patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine):
-            result, engine = await daemon._poll_progression(adapter)
+            result, engine = await daemon._poll_progression(adapter, daemon._config)
 
         assert result["decisions"] == 1
         assert result["executed"] == 1
@@ -323,7 +323,7 @@ class TestSupervisorDaemon:
         adapter = AsyncMock()
 
         with patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine):
-            result, _engine = await daemon._poll_progression(adapter)
+            result, _engine = await daemon._poll_progression(adapter, daemon._config)
 
         assert result["decisions"] == 1
 
@@ -362,7 +362,7 @@ class TestSupervisorDaemon:
             patch("sova.supervisor.planner.SupervisorPlanner", return_value=mock_planner),
             patch("sova.supervisor.progression.TaskProgressionEngine", return_value=mock_engine),
         ):
-            result, engine = await daemon._poll_progression(adapter)
+            result, engine = await daemon._poll_progression(adapter, daemon._config)
 
         mock_planner.plan.assert_awaited_once_with(adapter)
         mock_engine.evaluate_all.assert_awaited_once_with(plan=mock_plan)
@@ -411,7 +411,7 @@ class TestSupervisorDaemon:
                 new_callable=AsyncMock,
                 return_value=mock_status,
             ):
-                result = await daemon._poll_quota()
+                result = await daemon._poll_quota(daemon._config)
 
         assert result["can_create_pr"] is True
         assert result["reviews_in_window"] == 2
@@ -426,7 +426,7 @@ class TestSupervisorDaemon:
         daemon._config.coderabbit_quota = CodeRabbitQuotaConfig(enabled=True, reviews_per_hour=4)
 
         with patch("sova.supervisor.coderabbit_quota.sync_from_github", side_effect=Exception("api error")):
-            result = await daemon._poll_quota()
+            result = await daemon._poll_quota(daemon._config)
 
         assert "error" in result
         assert "api error" in result["error"]
@@ -453,11 +453,11 @@ class TestSupervisorDaemon:
         """Quota sync must complete before the progression engine evaluates tasks."""
         call_order: list[str] = []
 
-        async def mock_quota():
+        async def mock_quota(_cfg):
             call_order.append("quota")
             return {"enabled": True, "can_create_pr": True, "reviews_in_window": 0}
 
-        async def mock_progression(_adapter):
+        async def mock_progression(_adapter, _cfg):
             call_order.append("progression")
             return {"decisions": 0, "executed": 0}, None
 
@@ -526,7 +526,7 @@ class TestPollIntervalFloor:
         with (
             patch.object(daemon, "_poll_once", side_effect=mock_poll_once),
             patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
-            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=capture_sleep),
+            patch.object(daemon, "_interruptible_sleep", side_effect=capture_sleep),
         ):
             daemon._running = True
             await daemon._run_loop()
@@ -549,9 +549,31 @@ class TestPollIntervalFloor:
         with (
             patch.object(daemon, "_poll_once", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_purge_old_logs", new_callable=AsyncMock),
-            patch("sova.supervisor.daemon.asyncio.sleep", side_effect=capture_sleep),
+            patch.object(daemon, "_interruptible_sleep", side_effect=capture_sleep),
         ):
             daemon._running = True
             await daemon._run_loop()
 
         assert sleep_values[0] == 180
+
+    async def test_reload_config_interrupts_sleep(self, session_factory: async_sessionmaker) -> None:
+        """reload_config() wakes _interruptible_sleep and the event is cleared afterward."""
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=300),
+            github_repo="test/repo",
+        )
+        daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        async def reload_after_short_delay() -> None:
+            await asyncio.sleep(0.05)
+            new_cfg = ProjectConfig(
+                supervisor=SupervisorConfig(enabled=True, poll_interval_seconds=60),
+                github_repo="test/repo",
+            )
+            daemon.reload_config(new_cfg)
+
+        asyncio.create_task(reload_after_short_delay())
+        await asyncio.wait_for(daemon._interruptible_sleep(300), timeout=2.0)
+
+        assert not daemon._config_reloaded.is_set()
+        assert daemon._config.supervisor.poll_interval_seconds == 60

@@ -40,6 +40,12 @@ class SupervisorDaemon:
         self._task: asyncio.Task | None = None
         self._running = False
         self._last_poll_at: datetime | None = None
+        self._config_reloaded = asyncio.Event()
+
+    def reload_config(self, config: ProjectConfig) -> None:
+        """Hot-reload config (called by settings router after TOML update)."""
+        self._config = config
+        self._config_reloaded.set()
 
     @property
     def running(self) -> bool:
@@ -58,6 +64,15 @@ class SupervisorDaemon:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+
+    async def _interruptible_sleep(self, delay: float) -> None:
+        """Sleep for *delay* seconds, but wake early if config is reloaded."""
+        try:
+            await asyncio.wait_for(self._config_reloaded.wait(), timeout=delay)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            self._config_reloaded.clear()
 
     async def poll_once(self) -> dict:
         """Execute a single poll cycle (used by manual trigger and loop)."""
@@ -81,14 +96,6 @@ class SupervisorDaemon:
         Applies exponential backoff on consecutive failures (capped at 600s).
         """
         await self._purge_old_logs()
-        configured = self._config.supervisor.poll_interval_seconds
-        base_interval = max(configured, _MIN_POLL_INTERVAL)
-        if configured < _MIN_POLL_INTERVAL:
-            log.warning(
-                "daemon.poll_interval_clamped",
-                configured=configured,
-                effective=base_interval,
-            )
         consecutive_failures = 0
         max_backoff = 600
         while self._running:
@@ -105,19 +112,26 @@ class SupervisorDaemon:
             except Exception:
                 consecutive_failures += 1
                 log.warning("daemon.poll_error", consecutive=consecutive_failures, exc_info=True)
+            base_interval = max(self._config.supervisor.poll_interval_seconds, _MIN_POLL_INTERVAL)
             if consecutive_failures > 0:
                 backoff = min(base_interval * (2**consecutive_failures), max_backoff)
                 log.info("daemon.backoff", sleep_s=backoff, consecutive=consecutive_failures)
-                await asyncio.sleep(backoff)
+                await self._interruptible_sleep(backoff)
             else:
-                await asyncio.sleep(base_interval)
+                await self._interruptible_sleep(base_interval)
 
     async def _poll_once(self) -> dict:
-        """Single ordered poll: quota -> progression -> health."""
+        """Single ordered poll: quota -> progression -> health.
+
+        Snapshots config at entry so a mid-poll reload_config() call
+        cannot mix old and new settings within one cycle.
+        """
         from sova.adapters import create_adapter
 
+        cfg = self._config
+
         try:
-            adapter = create_adapter(self._config)
+            adapter = create_adapter(cfg)
         except Exception as exc:
             log.warning("poll.adapter_creation_failed", exc_info=True)
             err = str(exc)
@@ -127,14 +141,14 @@ class SupervisorDaemon:
 
         # Phase 1: CodeRabbit quota sync (must run before progression so the
         # progression engine reads fresh data, not last cycle's cached counts).
-        results["quota"] = await self._poll_quota()
+        results["quota"] = await self._poll_quota(cfg)
 
         # Phase 2: Progression engine (evaluates against freshly synced quota)
         progression_engine = None
-        results["progression"], progression_engine = await self._poll_progression(adapter)
+        results["progression"], progression_engine = await self._poll_progression(adapter, cfg)
 
         # Phase 2.5: Epic auto-close (reuses the graph from progression to avoid a redundant API call)
-        results["epic_close"] = await self._poll_epic_close(adapter, engine=progression_engine)
+        results["epic_close"] = await self._poll_epic_close(adapter, cfg, engine=progression_engine)
 
         # Phase 3: Health check
         results["health"] = await self._poll_health()
@@ -142,7 +156,7 @@ class SupervisorDaemon:
         self._last_poll_at = datetime.now(timezone.utc)
         return results
 
-    async def _poll_progression(self, adapter: TaskAdapter) -> tuple[dict, object]:
+    async def _poll_progression(self, adapter: TaskAdapter, cfg: ProjectConfig) -> tuple[dict, object]:
         """Run the task progression engine and log decisions.
 
         Returns (result_dict, engine) so the caller can reuse the engine's
@@ -157,18 +171,18 @@ class SupervisorDaemon:
             from sova.supervisor.progression import NON_ACTIONABLE_ACTIONS, TaskProgressionEngine
 
             plan = None
-            if self._config.supervisor.llm_planning:
+            if cfg.supervisor.llm_planning:
                 from sova.supervisor.planner import SupervisorPlanner
 
                 planner = SupervisorPlanner(
-                    config=self._config,
+                    config=cfg,
                     project_dir=self._project_dir,
                     session_factory=self._session_factory,
                 )
                 plan = await planner.plan(adapter)
 
             engine = TaskProgressionEngine(
-                config=self._config.supervisor,
+                config=cfg.supervisor,
                 adapter=adapter,
                 project_dir=self._project_dir,
                 session_factory=self._session_factory,
@@ -177,7 +191,7 @@ class SupervisorDaemon:
 
             records = [
                 SupervisorDecision(
-                    project_slug=self._config.github_repo,
+                    project_slug=cfg.github_repo,
                     component="progression",
                     event_type="decision",
                     issue_number=str(d.issue_number),
@@ -194,7 +208,7 @@ class SupervisorDaemon:
 
             actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
-            if self._config.supervisor.require_approval:
+            if cfg.supervisor.require_approval:
                 from sova.dashboard.services.supervisor_service import set_pending_plan
 
                 reasoning = plan.reasoning if plan else None
@@ -219,14 +233,14 @@ class SupervisorDaemon:
             log.warning("poll.progression_error", exc_info=True)
             return {"error": str(exc)}, None
 
-    async def _poll_epic_close(self, adapter: TaskAdapter, *, engine: object = None) -> dict:
+    async def _poll_epic_close(self, adapter: TaskAdapter, cfg: ProjectConfig, *, engine: object = None) -> dict:
         """Auto-close epic issues when all children are DONE."""
         try:
             from sova.supervisor.progression import TaskProgressionEngine
 
             if engine is None or not isinstance(engine, TaskProgressionEngine):
                 engine = TaskProgressionEngine(
-                    config=self._config.supervisor,
+                    config=cfg.supervisor,
                     adapter=adapter,
                     project_dir=self._project_dir,
                     session_factory=self._session_factory,
@@ -255,9 +269,9 @@ class SupervisorDaemon:
             log.warning("poll.epic_close_error", exc_info=True)
             return {"error": str(exc)}
 
-    async def _poll_quota(self) -> dict:
+    async def _poll_quota(self, cfg: ProjectConfig) -> dict:
         """Sync CodeRabbit quota from GitHub and log status."""
-        if not self._config.coderabbit_quota.enabled:
+        if not cfg.coderabbit_quota.enabled:
             return {"enabled": False}
 
         try:
@@ -267,12 +281,17 @@ class SupervisorDaemon:
                 async with session.begin():
                     await sync_from_github(
                         session,
-                        repo=self._config.github_repo,
-                        config=self._config.coderabbit_quota,
+                        repo=cfg.github_repo,
+                        config=cfg.coderabbit_quota,
+                        project_slug=cfg.github_repo,
                     )
 
             async with self._session_factory() as session:
-                status = await get_quota_status(session, self._config.coderabbit_quota)
+                status = await get_quota_status(
+                    session,
+                    cfg.coderabbit_quota,
+                    project_slug=cfg.github_repo,
+                )
 
             await self._log_decision(
                 component="quota",
