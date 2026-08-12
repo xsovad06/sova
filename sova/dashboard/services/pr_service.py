@@ -25,7 +25,7 @@ _TITLE_JIRA_KEY_RE = re.compile(r"\[[A-Z]+-(\d+)\]")
 _BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
 _BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
 
-_PR_CACHE_TTL = 25  # seconds
+_PR_CACHE_TTL = 60  # seconds (shared across supervisor, PR monitor, dashboard)
 _pr_cache: dict[str, tuple[float, list[dict]]] = {}
 
 _last_known_states: dict[int, str] = {}
@@ -424,7 +424,7 @@ async def get_pr_mergeability_map() -> dict[int, str]:
 
 
 async def list_open_prs_with_state() -> list[dict]:
-    """List all open PRs with computed state. Cached per-repo for 25s."""
+    """List all open PRs with computed state. Cached per-repo for 60s."""
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
     from sova.git.pr import get_review_thread_counts, list_open_prs
