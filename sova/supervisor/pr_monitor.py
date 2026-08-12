@@ -11,6 +11,7 @@ PR throttle loops.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
 log = get_logger(component="supervisor.pr_monitor")
 
 _RATE_LIMIT_KEYWORDS = frozenset({"rate limit", "hourly quota", "usage limit"})
+_RATE_CHECK_CACHE_TTL = 300.0  # 5 minutes
+_rate_check_cache: dict[tuple[str, int], tuple[float, bool]] = {}  # (repo, pr_number) -> (monotonic_ts, is_limited)
 
 
 def _track_gh_rate_limit_pr_monitor(result: "ShellResult", github_user: str = "") -> None:
@@ -265,8 +268,22 @@ async def _is_coderabbit_rate_limited(
     repo: str,
     github_user: str = "",
 ) -> bool:
-    """Check if CodeRabbit's most recent comment on the PR indicates rate limiting."""
+    """Check if CodeRabbit's most recent comment on the PR indicates rate limiting.
+
+    Results are cached per-PR for ``_RATE_CHECK_CACHE_TTL`` seconds to avoid
+    fetching all comments on every poll cycle. A rate-limited result is
+    cached for half the TTL so recovery is detected faster.
+    """
     import json
+
+    now = time.monotonic()
+    cache_key = (repo, pr_number)
+    cached = _rate_check_cache.get(cache_key)
+    if cached is not None:
+        ts, was_limited = cached
+        ttl = _RATE_CHECK_CACHE_TTL / 2 if was_limited else _RATE_CHECK_CACHE_TTL
+        if (now - ts) < ttl:
+            return was_limited
 
     from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
@@ -293,15 +310,21 @@ async def _is_coderabbit_rate_limited(
         return False
 
     comments = data.get("comments") or []
-    # GitHub API returns comments oldest-first; reverse to check newest first
+    is_limited = False
     for comment in reversed(comments):
         author = (comment.get("author") or {}).get("login", "").lower()
         if author not in _CODERABBIT_LOGINS:
             continue
         body = (comment.get("body") or "").lower()
         if any(kw in body for kw in _RATE_LIMIT_KEYWORDS):
-            return True
-        # Only check the most recent CodeRabbit comment
+            is_limited = True
         break
 
-    return False
+    _rate_check_cache[cache_key] = (now, is_limited)
+
+    if len(_rate_check_cache) > 200:
+        expired = [k for k, (ts, _) in _rate_check_cache.items() if (now - ts) > _RATE_CHECK_CACHE_TTL]
+        for k in expired:
+            del _rate_check_cache[k]
+
+    return is_limited
