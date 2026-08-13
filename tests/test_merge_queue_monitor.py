@@ -1177,9 +1177,7 @@ class TestEntryEdgeCases:
 
     @pytest.mark.asyncio
     async def test_update_sets_resolved_at(self, project_dir: Path) -> None:
-        entry_id = await create_merge_queue_entry(
-            pr_number=42, repo="owner/repo", project_dir=project_dir
-        )
+        entry_id = await create_merge_queue_entry(pr_number=42, repo="owner/repo", project_dir=project_dir)
         assert entry_id is not None
 
         await _update_entry_status(entry_id, "ejected", project_dir)
