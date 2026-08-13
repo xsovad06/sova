@@ -53,8 +53,12 @@ class RearrangeCommitsStep(BaseStep):
         if not has_commits:
             return GateCheckResult(passed=False, reason="No commits ahead of base after rearranging")
 
-        diff_result = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
-        staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+        diff_result = await run(
+            "git", "diff", "--stat", "HEAD", "--", ".", ":(exclude).claude/agent-memory/", cwd=ctx.working_dir
+        )
+        staged = await run(
+            "git", "diff", "--cached", "--stat", "--", ".", ":(exclude).claude/agent-memory/", cwd=ctx.working_dir
+        )
         has_uncommitted = bool(
             (diff_result.success and diff_result.stdout.strip()) or (staged.success and staged.stdout.strip())
         )
