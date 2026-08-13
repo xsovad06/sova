@@ -1079,6 +1079,52 @@ class TestClaudeCodeRuntime:
         assert "context" in preamble_lower
 
 
+class TestSpawnDirect:
+    async def test_spawn_direct_creates_subprocess(self) -> None:
+        from sova.ipc.runtime import spawn_direct
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 77
+        mock_proc.returncode = None
+        mock_proc.stdout = AsyncMock()
+        mock_proc.stderr = AsyncMock()
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            ap = await spawn_direct(["sova", "run", "42", "--run-id", "7"], Path("/tmp"))
+
+        assert ap.pid == 77
+        call_args = mock_exec.call_args
+        assert call_args[0] == ("sova", "run", "42", "--run-id", "7")
+
+    async def test_spawn_direct_with_file_output(self, tmp_path: Path) -> None:
+        from sova.ipc.runtime import spawn_direct
+
+        mock_proc = AsyncMock()
+        mock_proc.pid = 78
+        mock_proc.returncode = None
+
+        with patch("sova.ipc.runtime.asyncio.create_subprocess_exec", return_value=mock_proc):
+            fp = await spawn_direct(
+                ["sova", "run", "42"],
+                tmp_path,
+                output_dir=tmp_path,
+                run_label="100",
+            )
+
+        from sova.ipc.control import FileAgentProcess
+
+        assert isinstance(fp, FileAgentProcess)
+        assert fp.pid == 78
+
+    def test_pipeline_roles_set(self) -> None:
+        from sova.ipc.runtime import _PIPELINE_ROLES
+
+        assert "developer" in _PIPELINE_ROLES
+        assert "researcher" in _PIPELINE_ROLES
+        assert "planner" in _PIPELINE_ROLES
+        assert "reviewer" not in _PIPELINE_ROLES
+
+
 class TestAiderRuntime:
     async def test_spawn_builds_correct_args(self) -> None:
         from sova.ipc.runtime import AiderRuntime

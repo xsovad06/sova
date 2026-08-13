@@ -380,6 +380,44 @@ class AiderRuntime(AgentRuntime):
 
 
 # ---------------------------------------------------------------------------
+# Direct subprocess spawn (bypasses Claude Code intermediary)
+# ---------------------------------------------------------------------------
+
+_PIPELINE_ROLES = frozenset({"developer", "researcher", "planner"})
+
+
+async def spawn_direct(
+    cmd_parts: list[str],
+    cwd: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+    output_dir: Path | None = None,
+    run_label: str | None = None,
+) -> AgentProcess | FileAgentProcess:
+    """Spawn a CLI command directly as a subprocess.
+
+    Used for pipeline roles (developer, researcher, planner) where the
+    dashboard previously spawned Claude Code as an intermediary just to
+    run ``sova run``. Direct spawning eliminates the 600s Bash tool
+    timeout and saves the ~$0.50 wrapper agent cost.
+    """
+    log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
+
+    if output_dir is not None:
+        return await _spawn_with_file_output(cmd_parts, cwd, env, output_dir, run_label)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd_parts,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        limit=_SUBPROCESS_LINE_LIMIT,
+    )
+    return AgentProcess(proc)
+
+
+# ---------------------------------------------------------------------------
 # File-based output helper
 # ---------------------------------------------------------------------------
 
