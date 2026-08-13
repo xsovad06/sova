@@ -1107,7 +1107,7 @@ class TestRecoveryMergeCheck:
 
     async def test_recover_merge_role_not_merged_stays_interrupted(self) -> None:
         """Merge-role runs where PR was NOT merged stay interrupted."""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services.control_service import recover_stale_runs
 
@@ -1124,14 +1124,27 @@ class TestRecoveryMergeCheck:
             await session.flush()
             run_id = run.id
 
-        with patch(
-            "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
-            new_callable=AsyncMock,
-            return_value=False,
+        mock_queue_status = MagicMock()
+        mock_queue_status.in_queue = False
+        mock_queue_status.is_merged = False
+        mock_queue_status.state = "NOT_QUEUED"
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "sova.git.merge.get_merge_queue_status",
+                new_callable=AsyncMock,
+                return_value=mock_queue_status,
+            ) as mock_queue_check,
         ):
             interrupted = await recover_stale_runs()
 
         assert len(interrupted) == 1
+        mock_queue_check.assert_awaited_once()
 
         session2 = await get_session()
         async with session2.begin():
