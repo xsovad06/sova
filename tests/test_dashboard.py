@@ -2260,11 +2260,7 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=5),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_resolve_branch_name", new_callable=AsyncMock, return_value="feat/test"),
@@ -2284,7 +2280,47 @@ class TestDuplicateAgentPrevention:
         mock_transition.assert_not_called()
 
     async def test_start_agent_includes_run_id_in_prompt(self) -> None:
-        """Prompt must include --run-id so the subprocess reuses the dashboard TaskRun."""
+        """Developer role uses spawn_direct with --run-id in cmd_parts."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services import agent_lifecycle
+        from sova.dashboard.services.control_service import ProjectAgents, start_agent
+
+        pa = ProjectAgents()
+
+        mock_process = MagicMock()
+        mock_process.pid = 12345
+
+        async def _empty_async_iter():
+            return
+            yield
+
+        mock_process.stdout_lines = _empty_async_iter
+        mock_process.stderr_lines = _empty_async_iter
+        mock_process.wait = AsyncMock(return_value=0)
+
+        mock_spawn_direct = AsyncMock(return_value=mock_process)
+
+        with (
+            patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
+            patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
+            patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
+        ):
+            result = await start_agent("99")
+
+        assert result["status"] == "started"
+        assert mock_spawn_direct.call_args is not None, "spawn_direct() was never called"
+        cmd_parts = mock_spawn_direct.call_args[0][0]
+        assert "--run-id" in cmd_parts
+        assert "7" in cmd_parts
+
+    async def test_start_agent_uses_runtime_for_non_pipeline_roles(self) -> None:
+        """Non-pipeline roles (reviewer) still go through Claude runtime."""
         from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.dashboard.services import agent_lifecycle
@@ -2305,28 +2341,27 @@ class TestDuplicateAgentPrevention:
 
         mock_spawn = AsyncMock(return_value=mock_process)
         mock_rt = MagicMock(spawn=mock_spawn)
+        mock_spawn_direct = AsyncMock()
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(agent_lifecycle, "get_runtime", return_value=mock_rt),
+            patch.object(agent_lifecycle, "spawn_direct", mock_spawn_direct),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=7),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
-            patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch("sova.dashboard.services.agent_lifecycle.OutputWriter"),
         ):
-            result = await start_agent("99")
+            result = await start_agent("99", role="reviewer")
 
         assert result["status"] == "started"
-        assert mock_spawn.call_args is not None, "spawn() was never called"
-        # spawn is called with positional args: (prompt, cwd, ...)
-        prompt_arg = mock_spawn.call_args[0][0] if mock_spawn.call_args[0] else ""
-        assert "--run-id 7" in prompt_arg
+        mock_spawn_direct.assert_not_awaited()
+        assert mock_spawn.call_args is not None, "runtime.spawn() was never called"
 
     async def test_start_agent_cleans_up_on_spawn_failure(self) -> None:
         """If process spawn fails, the pre-created TaskRun should be marked failed."""
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services import agent_lifecycle
         from sova.dashboard.services.control_service import ProjectAgents, start_agent
@@ -2337,8 +2372,9 @@ class TestDuplicateAgentPrevention:
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(
                 agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(side_effect=OSError("spawn failed"))),
+                "spawn_direct",
+                new_callable=AsyncMock,
+                side_effect=OSError("spawn failed"),
             ),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=8),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
@@ -2371,11 +2407,7 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=10) as mock_create,
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2428,11 +2460,7 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=11),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
@@ -2484,10 +2512,8 @@ class TestDuplicateAgentPrevention:
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
             patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ) as mock_runtime_factory,
+                agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process
+            ) as mock_spawn_direct,
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=10),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
@@ -2514,8 +2540,7 @@ class TestDuplicateAgentPrevention:
         assert result["status"] == "started"
         mock_branch.assert_awaited_once_with(332, pa.project_dir)
         mock_wt.assert_awaited_once_with("55", pa.project_dir, branch_name="fix/issue-55", pr_number=332)
-        spawn_call = mock_runtime_factory.return_value.spawn
-        actual_cwd = spawn_call.call_args[0][1]
+        actual_cwd = mock_spawn_direct.call_args[0][1]
         assert actual_cwd == worktree_path
 
     async def test_start_agent_recovers_pr_number_from_db_history(self) -> None:
@@ -2552,10 +2577,10 @@ class TestDuplicateAgentPrevention:
         mock_process.stderr_lines = _empty_async_iter
         mock_process.wait = AsyncMock(return_value=0)
 
-        spawned_prompt: list[str] = []
+        spawned_cmd: list[list[str]] = []
 
-        async def _capture_spawn(prompt, cwd, **kwargs):
-            spawned_prompt.append(prompt)
+        async def _capture_spawn(cmd_parts, cwd, **kwargs):
+            spawned_cmd.append(cmd_parts)
             return mock_process
 
         original = get_session
@@ -2565,11 +2590,7 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=_capture_spawn),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", side_effect=_capture_spawn),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=99),
             patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_update_task_run_output_path", new_callable=AsyncMock),
@@ -2589,9 +2610,9 @@ class TestDuplicateAgentPrevention:
             result = await start_agent("344", role="developer")  # no pr_number passed
 
         assert result.get("status") == "started", f"Expected started, got: {result}"
-        assert spawned_prompt, "spawn was never called"
-        prompt_text = spawned_prompt[0]
-        assert "--pr 372" in prompt_text, f"Expected '--pr 372' in prompt, got: {prompt_text}"
+        assert spawned_cmd, "spawn_direct was never called"
+        cmd = spawned_cmd[0]
+        assert "--pr" in cmd and "372" in cmd, f"Expected '--pr 372' in cmd, got: {cmd}"
 
     async def test_start_agent_does_not_recover_pr_number_for_reviewer(self) -> None:
         """PR number recovery from DB history should only apply to 'developer' role.
@@ -7272,13 +7293,11 @@ class TestMemoryPressureGate:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents") as mock_gpa,
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=1),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
+            patch.object(agent_lifecycle, "_update_task_run_pid", new_callable=AsyncMock),
+            patch.object(agent_lifecycle, "_update_task_run_output_path", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_wait_and_finalize", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "_link_run_to_lifecycle", new_callable=AsyncMock),
             patch.object(agent_lifecycle, "check_memory_pressure") as mock_mem,
@@ -7287,7 +7306,7 @@ class TestMemoryPressureGate:
             from sova.dashboard.services.agent_pool import ProjectAgents
 
             pa = ProjectAgents()
-            pa.project_dir = MagicMock()
+            pa.project_dir = Path("/tmp/fake-project")
             mock_gpa.return_value = pa
 
             result = await agent_lifecycle.start_agent("42", force=True)
