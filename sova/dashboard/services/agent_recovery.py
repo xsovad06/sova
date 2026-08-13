@@ -383,10 +383,114 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
 
         if interrupted:
             log.info("recovery.complete", interrupted_count=len(interrupted))
+
+        # Rollback issue states for interrupted runs (outside DB transaction)
+        for rec in interrupted:
+            try:
+                await rollback_issue_state(rec["run_id"], project_dir)
+            except Exception:
+                log.debug("recovery.rollback_failed", run_id=rec["run_id"], exc_info=True)
+
         return interrupted
     except Exception:
         log.warning("recovery.failed", exc_info=True)
         return []
+
+
+async def rollback_issue_state(run_id: int, project_dir: Path | None = None) -> None:
+    """Roll back issue state on agent failure.
+
+    Maps the failed agent's role to the appropriate prior state and calls
+    adapter.transition_state(). Skips rollback when:
+    - issue_number is missing (logs and returns)
+    - Another non-terminal run exists for the same issue (concurrent work)
+    - GitHub API fails (logs warning, non-fatal)
+
+    Special cases:
+    - Triage role: removes all agent: labels instead of transitioning
+    - Command roles: extracts base role from command:X format
+    - Developer with PR: rolls back to in_review (not in_progress)
+    """
+    try:
+        from sqlalchemy import select
+
+        from sova.adapters import create_adapter
+        from sova.adapters.base import TaskState
+        from sova.config.loader import load_config
+        from sova.dashboard.services.work_service import _TERMINAL
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session:
+            task_run = await session.get(TaskRun, run_id)
+            if task_run is None:
+                return
+
+            issue_number = task_run.issue_number
+            if not issue_number:
+                log.debug("rollback.no_issue", run_id=run_id)
+                return
+
+            role = task_run.role or ""
+            pr_number = task_run.pr_number
+
+            # Check for concurrent runs on the same issue
+            stmt = (
+                select(TaskRun.id)
+                .where(
+                    TaskRun.issue_number == issue_number,
+                    TaskRun.id != run_id,
+                    TaskRun.status.notin_(_TERMINAL),
+                )
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            if result.scalar_one_or_none() is not None:
+                log.info("rollback.skipped_concurrent_run", run_id=run_id, issue=issue_number)
+                return
+
+        # Load adapter outside DB session (GitHub API calls)
+        config = load_config(project_dir)
+        adapter = create_adapter(config)
+
+        # Parse role for command variants
+        role_clean = role.removeprefix("command:").removeprefix("/").split()[0]
+
+        # Special case: triage role removes all agent: labels
+        if role_clean == "triage":
+            try:
+                task = await adapter.get_task(issue_number)
+                agent_labels = [label for label in task.labels if label.startswith("agent:")]
+                for label in agent_labels:
+                    await adapter.remove_label(issue_number, label)
+                log.info("rollback.triage_labels_removed", issue=issue_number, count=len(agent_labels))
+            except Exception:
+                log.warning("rollback.triage_failed", issue=issue_number, exc_info=True)
+            return
+
+        # Map role to rollback state
+        rollback_state_map = {
+            "researcher": TaskState.TRIAGED,
+            "reviewer": TaskState.IN_REVIEW,
+            "integrate-pr": TaskState.IN_REVIEW,
+            "approve-merge": TaskState.IN_REVIEW,
+            "address-pr": TaskState.IN_REVIEW,
+        }
+
+        # Developer maps to different states based on PR existence
+        if role_clean == "developer":
+            target_state = TaskState.IN_REVIEW if pr_number else TaskState.RESEARCHED
+        else:
+            target_state = rollback_state_map.get(role_clean)
+
+        if target_state is None:
+            log.debug("rollback.unknown_role", role=role, issue=issue_number)
+            return
+
+        await adapter.transition_state(issue_number, target_state)
+        log.info("rollback.completed", run_id=run_id, issue=issue_number, target_state=target_state.value)
+    except Exception:
+        log.warning("rollback.failed", run_id=run_id, exc_info=True)
 
 
 async def get_interrupted_runs(limit: int = 5) -> list[dict]:

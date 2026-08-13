@@ -143,6 +143,44 @@ def _emit_finalize_event(run_id: int, *, status: str, exit_code: int, agent: Age
     )
 
 
+async def _handle_terminal_status(task_run: object, file_handoff: dict | None, session: object, run_id: int) -> None:
+    """Handle already-terminal TaskRun status (apply handoff and finalize steps)."""
+    log.info("task_run.already_terminal", run_id=run_id, status=task_run.status)
+    # Apply file handoff even for already-terminal runs. WorkflowEngine
+    # finalizes status in the subprocess before exiting, but write_handoff()
+    # there may target the wrong DB when CWD is a linked worktree. Persisting
+    # here (dashboard context, correct project_dir) ensures
+    # get_sova_review_verdict() can always find the real verdict.
+    if not task_run.handoff_json:
+        _apply_file_handoff(task_run, file_handoff, run_id)
+    await _finalize_orphaned_steps(session, run_id)
+
+
+async def _record_cost(task_run: object, run_id: int, cost: Decimal, agent: AgentState, session: object) -> None:
+    """Record cost for a completed task run."""
+    from sova.db.models import CostRecord
+
+    if agent.last_result_cost and agent.last_result_cost > 0:
+        cost_record = CostRecord(
+            task_run_id=run_id,
+            phase="agent",
+            issue=task_run.issue_number or "",
+            model="claude",
+            cost_usd=cost,
+        )
+        session.add(cost_record)
+
+
+async def _dequeue_pr_entry(session: object, run_id: int) -> None:
+    """Cancel pending PR queue entry on terminal transition."""
+    try:
+        from sova.supervisor.pr_throttle import dequeue as pr_dequeue
+
+        await pr_dequeue(session, task_run_id=run_id)
+    except Exception:
+        log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
+
+
 async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) -> bool:
     """Update the TaskRun with final status and cost.
 
@@ -153,7 +191,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
     Returns True if the status was actually transitioned (not already terminal).
     """
     try:
-        from sova.db.models import CostRecord, TaskRun
+        from sova.db.models import TaskRun
         from sova.db.session import get_session
 
         status = "done" if exit_code == 0 else "failed"
@@ -170,15 +208,7 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                     task_run.total_cost_usd = cost
 
                 if task_run.status in _TERMINAL_STATUSES:
-                    log.info("task_run.already_terminal", run_id=run_id, status=task_run.status)
-                    # Apply file handoff even for already-terminal runs. WorkflowEngine
-                    # finalizes status in the subprocess before exiting, but write_handoff()
-                    # there may target the wrong DB when CWD is a linked worktree. Persisting
-                    # here (dashboard context, correct project_dir) ensures
-                    # get_sova_review_verdict() can always find the real verdict.
-                    if not task_run.handoff_json:
-                        _apply_file_handoff(task_run, file_handoff, run_id)
-                    await _finalize_orphaned_steps(session, run_id)
+                    await _handle_terminal_status(task_run, file_handoff, session, run_id)
                     return False
 
                 task_run.status = status
@@ -186,34 +216,25 @@ async def _finalize_task_run(run_id: int, *, exit_code: int, agent: AgentState) 
                 if exit_code != 0:
                     task_run.error_message = f"Process exited with code {exit_code}"
 
-                if agent.last_result_cost and agent.last_result_cost > 0:
-                    cost_record = CostRecord(
-                        task_run_id=run_id,
-                        phase="agent",
-                        issue=task_run.issue_number or "",
-                        model="claude",
-                        cost_usd=cost,
-                    )
-                    session.add(cost_record)
+                await _record_cost(task_run, run_id, cost, agent, session)
 
                 if not task_run.handoff_json:
                     _apply_file_handoff(task_run, file_handoff, run_id)
 
-                # Cancel pending PR queue entry on any terminal transition.
-                # A "done" run may still have a PENDING entry if the queue
-                # processor hasn't reached it yet; leaving it would cause
-                # a duplicate PR creation attempt.
-                try:
-                    from sova.supervisor.pr_throttle import dequeue as pr_dequeue
-
-                    await pr_dequeue(session, task_run_id=run_id)
-                except Exception:
-                    log.debug("task_run.pr_dequeue_failed", run_id=run_id, exc_info=True)
-
+                await _dequeue_pr_entry(session, run_id)
                 await _finalize_orphaned_steps(session, run_id)
 
         log.info("task_run.finalized", run_id=run_id, status=status, cost=float(cost))
         _emit_finalize_event(run_id, status=status, exit_code=exit_code, agent=agent, cost=cost)
+
+        if status in ("failed", "interrupted"):
+            from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+            try:
+                await rollback_issue_state(run_id, agent.project_dir)
+            except Exception:
+                log.debug("task_run.rollback_on_finalize_failed", run_id=run_id, exc_info=True)
+
         return True
     except Exception:
         log.warning("task_run.finalize_failed", exc_info=True)
@@ -655,6 +676,13 @@ async def _downgrade_to_failed(run_id: int, reason: str, project_dir: Path) -> N
                     task_run.status = "failed"
                     task_run.error_message = reason
                     log.warning("task_run.downgraded", run_id=run_id, reason=reason)
+
+        from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+        try:
+            await rollback_issue_state(run_id, project_dir)
+        except Exception:
+            log.debug("task_run.rollback_on_downgrade_failed", run_id=run_id, exc_info=True)
     except Exception:
         log.warning("task_run.downgrade_failed", run_id=run_id, exc_info=True)
 

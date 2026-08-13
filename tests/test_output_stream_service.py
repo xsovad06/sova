@@ -143,10 +143,17 @@ async def test_output_stream_sends_connected_event(setup_db) -> None:
 
     mock_request.is_disconnected = is_disconnected
 
-    response = await stream_agent_output(run_id=999, request=mock_request)
-    chunks = []
-    async for chunk in response.body_iterator:
-        chunks.append(chunk)
+    # Patch asyncio.wait_for to use shorter timeout (0.1s instead of 15s)
+    original_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(coro, timeout):
+        return await original_wait_for(coro, timeout=min(timeout, 0.1))
+
+    with patch("sova.dashboard.routers.agents.asyncio.wait_for", fast_wait_for):
+        response = await stream_agent_output(run_id=999, request=mock_request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
 
     assert any("event: connected" in c for c in chunks)
 
@@ -184,10 +191,17 @@ async def test_output_stream_delivers_published_lines(setup_db) -> None:
 
     task = asyncio.create_task(publish_after_delay())
 
-    response = await stream_agent_output(run_id=42, request=mock_request)
-    chunks = []
-    async for chunk in response.body_iterator:
-        chunks.append(chunk)
+    # Patch asyncio.wait_for to use shorter timeout (0.1s instead of 15s)
+    original_wait_for = asyncio.wait_for
+
+    async def fast_wait_for(coro, timeout):
+        return await original_wait_for(coro, timeout=min(timeout, 0.1))
+
+    with patch("sova.dashboard.routers.agents.asyncio.wait_for", fast_wait_for):
+        response = await stream_agent_output(run_id=42, request=mock_request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk)
 
     await task
     combined = "".join(chunks)
