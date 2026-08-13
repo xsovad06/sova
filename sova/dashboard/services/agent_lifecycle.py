@@ -107,7 +107,7 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
-from sova.ipc.runtime import get_runtime
+from sova.ipc.runtime import _PIPELINE_ROLES, get_runtime, spawn_direct
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
 
@@ -610,29 +610,46 @@ async def start_agent(
             cmd_parts.append("--force")
         if pr_number:
             cmd_parts.extend(["--pr", str(pr_number)])
-        cmd = " ".join(cmd_parts)
-        prompt = (
-            "Run the following command in your bash shell. This is a CLI "
-            "command, not a task description -- do not implement the work "
-            "yourself. Execute it exactly as written and let it complete:\n\n"
-            f"```bash\n{cmd}\n```"
-        )
 
-        if not model:
-            model = _resolve_config_model(project_dir)
-
+        effective_role = role or "developer"
         gh_env = await _resolve_project_gh_env(project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
+
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            process = await get_runtime().spawn(
-                prompt,
-                cwd,
-                env=gh_env,
-                model=model,
-                output_dir=output_dir,
-                run_label=str(run_id),
-            )
+
+            if effective_role in _PIPELINE_ROLES:
+                log.info(
+                    "agent.spawn_direct",
+                    run_id=run_id,
+                    role=effective_role,
+                    cmd=cmd_parts[:4],
+                )
+                process = await spawn_direct(
+                    cmd_parts,
+                    cwd,
+                    env=gh_env,
+                    output_dir=output_dir,
+                    run_label=str(run_id),
+                )
+            else:
+                cmd = " ".join(cmd_parts)
+                prompt = (
+                    "Run the following command in your bash shell. This is a CLI "
+                    "command, not a task description -- do not implement the work "
+                    "yourself. Execute it exactly as written and let it complete:\n\n"
+                    f"```bash\n{cmd}\n```"
+                )
+                if not model:
+                    model = _resolve_config_model(project_dir)
+                process = await get_runtime().spawn(
+                    prompt,
+                    cwd,
+                    env=gh_env,
+                    model=model,
+                    output_dir=output_dir,
+                    run_label=str(run_id),
+                )
         except Exception:
             log.error("agent.spawn_failed", run_id=run_id, exc_info=True)
             await _finalize_orphaned_run(run_id, project_dir)
@@ -655,7 +672,7 @@ async def start_agent(
             output_writer=writer,
             pr_number=pr_number,
             pre_run_sha=pre_run_sha,
-            prompt=prompt,
+            prompt=" ".join(cmd_parts),
             project_dir=project_dir,
         )
         pa.agents[run_id] = agent
@@ -843,8 +860,8 @@ _DB_TERMINAL_POLL_INTERVAL = 30.0
 async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
     """Check if a TaskRun has reached terminal status in the database.
 
-    Used by _wait_and_finalize to detect when the inner subprocess (sova run)
-    has finalized the DB record but the outer claude -p process is still alive.
+    Safety net: detects when the subprocess has finalized the DB record
+    but the process is still alive (e.g., cleanup hang, stuck I/O).
     """
     from sova.dashboard.services.agent_db import _TERMINAL_STATUSES
     from sova.db.models import TaskRun
@@ -864,11 +881,10 @@ async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
 async def _wait_with_terminal_check(agent: AgentState) -> int:
     """Wait for process exit, killing the process if its DB record becomes terminal.
 
-    The inner subprocess (sova run) may finalize the TaskRun to a terminal
-    status while the outer claude -p process is stuck (context exhaustion,
-    tool hang, retry loop). Without this check, _wait_and_finalize blocks
-    forever, and on dashboard restart the process becomes an invisible zombie
-    (terminal DB status means no recovery mechanism will ever find it).
+    For direct-spawn pipeline runs, this is a safety net: if the process
+    hangs after finalizing the DB record, it gets killed. For Claude-based
+    spawns (reviewer, commands), it also catches the case where sova run
+    finalizes but the outer claude -p wrapper is stuck.
     """
     while True:
         try:
