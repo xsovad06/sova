@@ -394,12 +394,17 @@ async def spawn_direct(
     output_dir: Path | None = None,
     run_label: str | None = None,
 ) -> AgentProcess | FileAgentProcess:
-    """Spawn a CLI command directly as a subprocess.
+    """Spawn a CLI command directly as a subprocess (approved ``shell.py`` exception).
 
     Used for pipeline roles (developer, researcher, planner) where the
     dashboard previously spawned Claude Code as an intermediary just to
     run ``sova run``. Direct spawning eliminates the 600s Bash tool
     timeout and saves the ~$0.50 wrapper agent cost.
+
+    This intentionally bypasses ``sova/utils/shell.py`` because it returns
+    a live process handle for streaming output, which the shared runner's
+    fire-and-wait model cannot support. Timeout and lifecycle management
+    are handled by ``_wait_and_finalize()`` in ``agent_lifecycle.py``.
     """
     log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
 

@@ -71,7 +71,7 @@ class TaskSourceConfig(BaseSettings):
                 )
         return v
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_TASK_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_TASK_")
 
 
 class LLMConfig(BaseSettings):
@@ -88,7 +88,7 @@ class LLMConfig(BaseSettings):
     batch_poll_interval: int = Field(60, gt=0)
     batch_timeout: int = Field(86400, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_LLM_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LLM_")
 
     @model_validator(mode="after")
     def _default_model_for_litellm(self) -> LLMConfig:
@@ -110,7 +110,7 @@ class AgentConfig(BaseSettings):
     skip_manual_test: bool = True
     auto_approve_fixes: bool = False
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_AGENT_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_AGENT_")
 
 
 class ReviewPanelConfig(BaseSettings):
@@ -127,7 +127,7 @@ class ReviewPanelConfig(BaseSettings):
     dimension_models: dict[str, str] = Field(default_factory=dict)
     line_proximity: int = Field(3, ge=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_PANEL_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_PANEL_")
 
     @model_validator(mode="after")
     def _validate_dimensions(self) -> ReviewPanelConfig:
@@ -152,7 +152,7 @@ class ReviewConfig(BaseSettings):
     max_rounds: int = Field(2, gt=0)
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_REVIEW_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")
 
 
 class DevelopConfig(BaseSettings):
@@ -162,7 +162,7 @@ class DevelopConfig(BaseSettings):
     check_timeout: int = Field(300, gt=0)
     guard_test_weakening: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_DEVELOP_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEVELOP_")
 
 
 class CIConfig(BaseSettings):
@@ -175,7 +175,7 @@ class CIConfig(BaseSettings):
     flaky_checks: list[str] = Field(default_factory=list)
     exclude_checks: list[str] = Field(default_factory=list)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_CI_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CI_")
 
 
 class WatchConfig(BaseSettings):
@@ -186,7 +186,7 @@ class WatchConfig(BaseSettings):
     auto_select_issues: bool = True
     veto_seconds: int = Field(30, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_WATCH_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_WATCH_")
 
 
 class WorktreeConfig(BaseSettings):
@@ -196,7 +196,7 @@ class WorktreeConfig(BaseSettings):
     ttl_done_days: int = Field(3, gt=0)
     ttl_paused_days: int = Field(7, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_WORKTREE_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_WORKTREE_")
 
 
 class CommitConfig(BaseSettings):
@@ -209,7 +209,7 @@ class CommitConfig(BaseSettings):
     branch_naming: Literal["conventional", "freeform"] = "conventional"
     pr_auto_link_issues: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_COMMIT_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_COMMIT_")
 
 
 class TriageConfig(BaseSettings):
@@ -229,7 +229,7 @@ class TriageConfig(BaseSettings):
     min_quality_score: int = Field(4, ge=0, le=8)
     auto_enrich: bool = False
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_TRIAGE_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_TRIAGE_")
 
 
 class ServerConfig(BaseSettings):
@@ -240,7 +240,7 @@ class ServerConfig(BaseSettings):
     pid_file: str = ""
     scheduler_enabled: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_SERVER_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SERVER_")
 
 
 class NotificationConfig(BaseSettings):
@@ -249,7 +249,7 @@ class NotificationConfig(BaseSettings):
     desktop: bool = False
     slack_webhook_url: str = Field("", repr=False)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_NOTIFICATION_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_NOTIFICATION_")
 
 
 class RolesConfig(BaseSettings):
@@ -260,7 +260,7 @@ class RolesConfig(BaseSettings):
     triage_model: str = "sonnet"
     nicknames: dict[str, str] = Field(default_factory=dict)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_ROLES_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_ROLES_")
 
 
 class SpecConfig(BaseSettings):
@@ -269,7 +269,7 @@ class SpecConfig(BaseSettings):
     threshold: Literal["always", "trivial", "simple", "moderate", "complex", "never"] = "moderate"
     auto_approve_simple: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_SPEC_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SPEC_")
 
 
 class PipelineConfig(BaseSettings):
@@ -284,7 +284,7 @@ class PipelineConfig(BaseSettings):
     max_retries: int = Field(0, ge=0)
     retry_delay_seconds: int = Field(0, ge=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_PIPELINE_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_PIPELINE_")
 
 
 class SonarCloudConfig(BaseSettings):
@@ -293,13 +293,13 @@ class SonarCloudConfig(BaseSettings):
     project_key: str = ""
     coverage_threshold: Decimal = Decimal("80.0")
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_SONARCLOUD_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SONARCLOUD_")
 
 
 class CodeRabbitConfig(BaseSettings):
     """CodeRabbit-specific configuration (uses gh CLI auth)."""
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_CODERABBIT_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODERABBIT_")
 
 
 class ExternalReviewsConfig(BaseSettings):
@@ -313,7 +313,7 @@ class ExternalReviewsConfig(BaseSettings):
     sonarcloud: SonarCloudConfig = Field(default_factory=SonarCloudConfig)
     coderabbit: CodeRabbitConfig = Field(default_factory=CodeRabbitConfig)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_EXTERNAL_REVIEWS_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_EXTERNAL_REVIEWS_")
 
 
 class EgressConfig(BaseSettings):
@@ -321,7 +321,7 @@ class EgressConfig(BaseSettings):
 
     mode: Literal["off", "warn", "block"] = "warn"
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_EGRESS_")
+    model_config = SettingsConfigDict(extra="forbid", env_prefix="SOVA_EGRESS_")
 
 
 class SecurityConfig(BaseSettings):
@@ -331,7 +331,7 @@ class SecurityConfig(BaseSettings):
     prompt_guard_threshold: float = Field(0.7, ge=0, le=1)
     custom_deny_patterns: list[str] = Field(default_factory=list)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_SECURITY_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SECURITY_")
 
 
 class KnowledgeConfig(BaseSettings):
@@ -339,7 +339,7 @@ class KnowledgeConfig(BaseSettings):
 
     max_context_tokens: int = Field(2000, ge=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_KNOWLEDGE_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_KNOWLEDGE_")
 
 
 class DashboardConfig(BaseSettings):
@@ -349,7 +349,7 @@ class DashboardConfig(BaseSettings):
     gc_on_startup: bool = False
     port: int = 8111
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_DASHBOARD_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 
 
 class OutputConfig(BaseSettings):
@@ -357,7 +357,7 @@ class OutputConfig(BaseSettings):
 
     retention_days: int = Field(30, ge=1)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_OUTPUT_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OUTPUT_")
 
 
 class TestingConfig(BaseSettings):
@@ -366,7 +366,7 @@ class TestingConfig(BaseSettings):
     baseline_enabled: bool = True
     baseline_timeout: int = Field(300, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_TESTING_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_TESTING_")
 
 
 class MonitoringConfig(BaseSettings):
@@ -380,7 +380,7 @@ class MonitoringConfig(BaseSettings):
         436.0, ge=0.0, description="Grid carbon intensity (g CO2/kWh) for emissions estimation"
     )
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_MONITORING_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MONITORING_")
 
 
 class CodeRabbitQuotaConfig(BaseSettings):
@@ -391,7 +391,7 @@ class CodeRabbitQuotaConfig(BaseSettings):
     reviews_per_hour: int | None = Field(None, ge=0)
     window_minutes: int = Field(60, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_CODERABBIT_QUOTA_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODERABBIT_QUOTA_")
 
     @model_validator(mode="after")
     def _apply_plan_defaults(self) -> CodeRabbitQuotaConfig:
@@ -413,7 +413,7 @@ class IntegrationGatesConfig(BaseSettings):
     coderabbit_reviewed: bool = False
     threads_resolved: bool = False
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_GATES_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_INTEGRATION_GATES_")
 
 
 class IntegrationConfig(BaseSettings):
@@ -426,7 +426,7 @@ class IntegrationConfig(BaseSettings):
     merge_queue_timeout: int = Field(1800, gt=0)
     post_merge_state: str = "done"
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_INTEGRATION_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_INTEGRATION_")
 
 
 class PRMonitorConfig(BaseSettings):
@@ -440,7 +440,7 @@ class PRMonitorConfig(BaseSettings):
     notify_on_ready_to_merge: bool = True
     auto_retry_coderabbit: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_PR_MONITOR_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_PR_MONITOR_")
 
 
 class RTKConfig(BaseSettings):
@@ -448,7 +448,7 @@ class RTKConfig(BaseSettings):
 
     enabled: bool = True
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_RTK_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_RTK_")
 
 
 class MemoryGuardConfig(BaseSettings):
@@ -458,7 +458,7 @@ class MemoryGuardConfig(BaseSettings):
     warn_threshold_gb: float = Field(3.0, ge=1.0)
     block_threshold_gb: float = Field(1.5, ge=0.5)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_MEMORY_GUARD_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_MEMORY_GUARD_")
 
     @model_validator(mode="after")
     def _block_below_warn(self) -> MemoryGuardConfig:
@@ -483,7 +483,7 @@ class WatchdogConfig(BaseSettings):
     step_kill_minutes: int = Field(60, gt=0)
     cooldown_minutes: int = Field(10, gt=0)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_WATCHDOG_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_WATCHDOG_")
 
     @model_validator(mode="after")
     def _validate_thresholds(self) -> WatchdogConfig:
@@ -538,7 +538,7 @@ class SupervisorConfig(BaseSettings):
                 raise ValueError(msg)
         return v
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_SUPERVISOR_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SUPERVISOR_")
 
 
 class OversightConfig(BaseSettings):
@@ -554,7 +554,7 @@ class OversightConfig(BaseSettings):
     dedup_window_days: int = Field(14, ge=1)
     analysis_timeout_seconds: int = Field(120, ge=10)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_OVERSIGHT_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OVERSIGHT_")
 
 
 class TelemetryConfig(BaseSettings):
@@ -564,7 +564,7 @@ class TelemetryConfig(BaseSettings):
     hub_token: str = Field("", repr=False)
     machine_id: str = ""
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_TELEMETRY_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_TELEMETRY_")
 
 
 class FleetConfig(BaseSettings):
@@ -575,7 +575,7 @@ class FleetConfig(BaseSettings):
     telemetry_window_days: int = Field(90, gt=0)
     sova_repo: str = "xsovad06/sova"
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_FLEET_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_FLEET_")
 
 
 class AwarenessConfig(BaseSettings):
@@ -599,7 +599,7 @@ class AwarenessConfig(BaseSettings):
     # PR status (cross-project)
     pr_github_user: str = ""
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_AWARENESS_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_AWARENESS_")
 
 
 class ProjectConfig(BaseSettings):
@@ -672,7 +672,7 @@ class ProjectConfig(BaseSettings):
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
 
-    model_config = SettingsConfigDict(env_prefix="SOVA_")
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
 
     @property
     def shared_knowledge_path(self) -> Path:

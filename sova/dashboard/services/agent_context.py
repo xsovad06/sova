@@ -79,6 +79,7 @@ async def _resolve_issue_worktree(
 
         # No existing worktree found -- create one for this branch so the agent
         # doesn't run in the main project directory and pollute its working tree.
+        stashed = False
         try:
             from sova.git.worktree import create_worktree
 
@@ -98,14 +99,34 @@ async def _resolve_issue_worktree(
 
             # If the branch is checked out in the main repo, switch the main
             # repo to the default branch so git allows creating a worktree for
-            # that branch.
+            # that branch. Stash uncommitted changes first (mirrors sync_branch
+            # pattern in sova/git/branch.py).
             if branch_on_main:
+                dirty_check = await run_shell(
+                    "git",
+                    "status",
+                    "--porcelain",
+                    cwd=project_dir,
+                    timeout=10,
+                )
+                is_dirty = dirty_check.success and dirty_check.stdout.strip()
+                if is_dirty:
+                    stash_result = await run_shell(
+                        "git",
+                        "stash",
+                        "--include-untracked",
+                        cwd=project_dir,
+                        timeout=10,
+                    )
+                    stashed = stash_result.success
+
                 default_branch = await _get_default_branch(project_dir)
                 switch = await run_shell("git", "checkout", default_branch, cwd=project_dir, timeout=10)
                 if switch.success:
                     log.info("command.freed_branch_for_worktree", branch=branch_name, target=default_branch)
                 else:
                     log.warning("command.branch_switch_failed", branch=branch_name, stderr=switch.stderr[:200])
+                    await _pop_stash(stashed, project_dir)
                     return project_dir
 
             wt_info = await create_worktree(
@@ -115,11 +136,22 @@ async def _resolve_issue_worktree(
                 project_dir=project_dir,
             )
             log.info("command.created_worktree", branch=branch_name, wt_id=wt_id, path=str(wt_info.path))
+            await _pop_stash(stashed, project_dir)
             return wt_info.path
         except Exception:
             log.warning("command.create_worktree_failed", branch=branch_name, exc_info=True)
+            await _pop_stash(stashed, project_dir)
 
     return project_dir
+
+
+async def _pop_stash(stashed: bool, project_dir: Path) -> None:
+    """Pop the stash if we stashed earlier; log a warning on failure."""
+    if not stashed:
+        return
+    pop = await run_shell("git", "stash", "pop", cwd=project_dir, timeout=10)
+    if not pop.success:
+        log.warning("command.stash_pop_failed", stderr=(pop.stderr or "")[:200])
 
 
 async def _get_default_branch(project_dir: Path) -> str:

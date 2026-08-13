@@ -341,6 +341,7 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 ## Egress / Security
 
 - **Egress patterns must cover all GitHub token formats** -- `gh[pousr]_` missed PATs (`github_pat_`) and Bearer headers. Place specific before generic. File: `sova/llm/egress.py`. [confirmed: 1]
+- **Security-critical config models must keep `extra="forbid"`** -- bulk `extra="ignore"` for forward compat silently weakens security when applied to `EgressConfig` (typo `mdoe="block"` falls back to `mode="warn"`). Carve out `extra="forbid"` for models where unknown-key tolerance has security consequences. PR #654. [confirmed: 1]
 - **DB-backed writers must seed sequence from existing records on re-adoption** -- `OutputWriter._next_line_number` starts at 0; query `MAX(line_number)` on first flush. PR #243. [confirmed: 1]
 ## Awareness Subsystem
 

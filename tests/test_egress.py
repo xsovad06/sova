@@ -379,6 +379,15 @@ class TestEgressConfig:
             cfg = EgressConfig(mode=valid)
             assert cfg.mode == valid
 
+    def test_unknown_key_rejected(self) -> None:
+        """EgressConfig uses extra='forbid' to catch typos that would silently weaken the filter."""
+        from pydantic import ValidationError
+
+        from sova.config.models import EgressConfig
+
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            EgressConfig(mdoe="block")
+
     def test_project_config_has_egress(self) -> None:
         from sova.config.models import ProjectConfig
 

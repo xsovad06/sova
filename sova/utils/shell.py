@@ -1,4 +1,9 @@
-"""Safe subprocess execution helpers for SOVA."""
+"""Safe subprocess execution helpers for SOVA.
+
+Approved exception: ``spawn_direct()`` in ``sova/ipc/runtime.py`` creates
+long-lived subprocesses that return a live process handle for streaming.
+It bypasses this module intentionally; see its docstring for rationale.
+"""
 
 from __future__ import annotations
 
