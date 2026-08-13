@@ -51,6 +51,7 @@ _NOT_COMPUTED = object()  # sentinel: distinguish "not precomputed" from "checke
 
 
 class ProgressionAction(StrEnum):
+    SPAWN_TRIAGE = "spawn_triage"
     SPAWN_RESEARCHER = "spawn_researcher"
     SPAWN_DEVELOPER = "spawn_developer"
     SPAWN_INTEGRATE = "spawn_integrate"
@@ -79,6 +80,7 @@ class ProgressionDecision:
 
 # Map ProgressionAction to the role string used by start_agent()
 _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
+    ProgressionAction.SPAWN_TRIAGE: "triage",
     ProgressionAction.SPAWN_RESEARCHER: "researcher",
     ProgressionAction.SPAWN_DEVELOPER: "developer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
@@ -86,7 +88,13 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
 }
 
 # Actions that should trigger issue assignment on spawn (development work, not post-work).
-_ASSIGN_ACTIONS = frozenset({ProgressionAction.SPAWN_RESEARCHER, ProgressionAction.SPAWN_DEVELOPER})
+_ASSIGN_ACTIONS = frozenset(
+    {
+        ProgressionAction.SPAWN_TRIAGE,
+        ProgressionAction.SPAWN_RESEARCHER,
+        ProgressionAction.SPAWN_DEVELOPER,
+    }
+)
 
 # Actions that do not trigger agent spawning (used by daemon to filter before approval/execution).
 NON_ACTIONABLE_ACTIONS = frozenset(
@@ -800,7 +808,8 @@ class TaskProgressionEngine:
             if self._config.auto_integrate or self._config.auto_address_review:
                 return ProgressionAction.SPAWN_INTEGRATE
             return ProgressionAction.CHECKPOINT_NEEDED
-        # BACKLOG: triage is manual per spec
+        if state == TaskState.BACKLOG:
+            return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
         # NEEDS_SPEC: human approves spec externally
         # IN_PROGRESS: handled by existing role chaining
         # DONE, HUMAN_ONLY: no action

@@ -506,6 +506,7 @@ class SupervisorConfig(BaseSettings):
     """Supervisor: dependency-aware task progression engine."""
 
     enabled: bool = False
+    auto_triage: bool = False
     auto_research: bool = False
     auto_develop: bool = False
     auto_address_review: bool = False

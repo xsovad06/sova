@@ -18,6 +18,21 @@ from sova.utils.logging import get_logger
 router = APIRouter(tags=["settings"])
 log = get_logger(component="dashboard.settings.router")
 
+
+def _reload_daemon_config(project_dir: Path | None) -> None:
+    """Hot-reload supervisor daemon config after settings update."""
+    try:
+        from sova.config.loader import load_config
+        from sova.dashboard.routers.supervisor import _get_daemon
+
+        cfg = load_config(project_dir)
+        daemon = _get_daemon()
+        if daemon is not None:
+            daemon.reload_config(cfg)
+    except Exception:
+        log.warning("settings.daemon_reload_failed", exc_info=True)
+
+
 # Maximum number of errors to include in label creation response
 _MAX_LABEL_ERRORS = 10
 
@@ -142,10 +157,13 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
         else:
             value_str = str(raw)
         result = settings_service.update_config(project_dir, key=req.key, value=value_str)
-        if result.get("status") == "ok" and req.key == "max_parallel_agents":
-            from sova.dashboard.services.agent_pool import sync_max_concurrent
+        if result.get("status") == "ok":
+            if req.key == "max_parallel_agents":
+                from sova.dashboard.services.agent_pool import sync_max_concurrent
 
-            sync_max_concurrent(project_dir)
+                sync_max_concurrent(project_dir)
+            if req.key.startswith("supervisor."):
+                _reload_daemon_config(project_dir)
         return result
     except Exception as exc:
         log.warning("settings.config.update.error", exc_info=True)
