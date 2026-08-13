@@ -857,6 +857,92 @@ _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 _DB_TERMINAL_POLL_INTERVAL = 30.0
 
 
+async def _check_merge_queue_on_failure(
+    agent: AgentState,
+    run_id: int | None,
+    status: str,
+    exit_code: int,
+) -> tuple[str, int]:
+    """Check if the PR is in a merge queue after a merge-role agent fails.
+
+    If the PR is queued, creates a MergeQueueEntry for the background
+    monitor and marks the run as "done" (the agent's work succeeded;
+    the merge is tracked). Returns the updated (status, exit_code).
+    """
+    try:
+        from sova.config.loader import load_config
+        from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
+        from sova.git.merge import get_merge_queue_status
+
+        cfg = load_config(agent.project_dir)
+        repo = cfg.github_repo
+        if not repo:
+            return status, exit_code
+
+        queue_status = await get_merge_queue_status(
+            agent.pr_number,
+            repo=repo,
+            github_user=cfg.github_user,
+        )
+        if not queue_status.in_queue:
+            return status, exit_code
+
+        branch = ""
+        try:
+            from sova.utils.gh import resolve_gh_env
+            from sova.utils.shell import run
+
+            env = await resolve_gh_env(cfg.github_user)
+            result = await run(
+                "gh",
+                "pr",
+                "view",
+                str(agent.pr_number),
+                "--repo",
+                repo,
+                "--json",
+                "headRefName",
+                "--jq",
+                ".headRefName",
+                env=env,
+            )
+            if result.success and result.stdout.strip():
+                branch = result.stdout.strip()
+        except Exception:
+            pass
+
+        await create_merge_queue_entry(
+            pr_number=agent.pr_number,
+            repo=repo,
+            project_dir=agent.project_dir or Path.cwd(),
+            issue_number=agent.issue,
+            task_run_id=run_id,
+            github_user=cfg.github_user,
+            branch_name=branch,
+        )
+
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        emit_safe(
+            f"PR #{agent.pr_number} enqueued in merge queue (monitored)",
+            severity=FeedEventSeverity.info,
+            detail=f"Agent exited but merge queue monitor is tracking PR #{agent.pr_number}",
+            category="merge_queue",
+            metadata={"pr_number": agent.pr_number, "repo": repo},
+        )
+
+        log.info(
+            "finalize.pr_in_merge_queue",
+            run_id=run_id,
+            pr=agent.pr_number,
+            queue_state=queue_status.state,
+        )
+        return "done", 0
+    except Exception:
+        log.debug("finalize.merge_queue_check_failed", run_id=run_id, exc_info=True)
+        return status, exit_code
+
+
 async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
     """Check if a TaskRun has reached terminal status in the database.
 
@@ -876,6 +962,61 @@ async def _is_run_terminal_in_db(run_id: int, project_dir: Path | None) -> bool:
     except Exception:
         log.debug("finalize.terminal_check_failed", run_id=run_id, exc_info=True)
         return False
+
+
+async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) -> None:
+    """Check for a merge-queue.json marker written by the agent command.
+
+    When an agent writes .claude/agent-control/merge-queue.json after
+    enqueuing a PR, create a MergeQueueEntry proactively so the monitor
+    tracks it even if the agent exits cleanly.
+    """
+    import json
+
+    project_dir = agent.project_dir
+    if project_dir is None:
+        return
+
+    marker_path = Path(project_dir) / ".claude" / "agent-control" / "merge-queue.json"
+    if not marker_path.exists():
+        return
+
+    try:
+        data = json.loads(marker_path.read_text())
+        pr_number = data.get("pr_number")
+        repo = data.get("repo", "")
+        issue_number = data.get("issue_number")
+        branch_name = data.get("branch_name", "")
+
+        if not pr_number or not repo:
+            return
+
+        from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
+
+        await create_merge_queue_entry(
+            pr_number=int(pr_number),
+            repo=repo,
+            project_dir=project_dir,
+            issue_number=str(issue_number) if issue_number else None,
+            task_run_id=run_id,
+            github_user=data.get("github_user", ""),
+            branch_name=branch_name,
+        )
+
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        emit_safe(
+            f"PR #{pr_number} enqueued in merge queue (monitored)",
+            severity=FeedEventSeverity.info,
+            category="merge_queue",
+            metadata={"pr_number": pr_number, "repo": repo},
+        )
+
+        log.info("finalize.merge_queue_marker_processed", pr=pr_number, repo=repo)
+
+        marker_path.unlink(missing_ok=True)
+    except Exception:
+        log.debug("finalize.merge_queue_marker_failed", exc_info=True)
 
 
 async def _wait_with_terminal_check(agent: AgentState) -> int:
@@ -954,6 +1095,16 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 )
                 status = "done"
                 exit_code = 0
+            else:
+                status, exit_code = await _check_merge_queue_on_failure(
+                    agent,
+                    run_id,
+                    status,
+                    exit_code,
+                )
+
+    if exit_code == 0 and agent.pr_number is not None:
+        await _check_merge_queue_marker_file(agent, run_id)
 
     cost = agent.last_result_cost or 0.0
 
