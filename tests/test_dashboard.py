@@ -2143,11 +2143,7 @@ class TestDuplicateAgentPrevention:
 
         with (
             patch.object(agent_lifecycle, "_get_project_agents", return_value=pa),
-            patch.object(
-                agent_lifecycle,
-                "get_runtime",
-                return_value=MagicMock(spawn=AsyncMock(return_value=mock_process)),
-            ),
+            patch.object(agent_lifecycle, "spawn_direct", new_callable=AsyncMock, return_value=mock_process),
             patch.object(agent_lifecycle, "_create_task_run", new_callable=AsyncMock, return_value=2),
             patch.object(agent_lifecycle, "_resolve_project_gh_env", new_callable=AsyncMock, return_value=None),
             patch.object(agent_lifecycle, "_transition_to_in_progress", new_callable=AsyncMock),
@@ -2945,7 +2941,7 @@ class TestStartCommandWorktreeResolution:
         assert result == tmp_path
 
     async def test_resolve_issue_worktree_frees_branch_from_main(self, tmp_path: Path) -> None:
-        """When branch is checked out in main repo, switch main to default branch and create worktree."""
+        """When branch is checked out in main repo, stash, switch to default branch, create worktree, pop stash."""
         from dataclasses import dataclass
         from unittest.mock import AsyncMock, call, patch
 
@@ -2961,17 +2957,29 @@ class TestStartCommandWorktreeResolution:
         fake_info = FakeWorktreeInfo(path=wt_path, branch="fix/stuff", issue_id="pr-99")
         mock_shell = AsyncMock()
 
-        # First call (git checkout main) succeeds
+        dirty_result = AsyncMock()
+        dirty_result.success = True
+        dirty_result.stdout = "M  some_file.py\n"
+
         success_result = AsyncMock()
         success_result.success = True
         success_result.stdout = "origin/main\n"
-        mock_shell.return_value = success_result
+
+        stash_result = AsyncMock()
+        stash_result.success = True
+        stash_result.stdout = "Saved working directory and index state"
+
+        pop_result = AsyncMock()
+        pop_result.success = True
+        pop_result.stdout = ""
+
+        mock_shell.side_effect = [dirty_result, stash_result, success_result, success_result, pop_result]
 
         with (
             patch(
                 "sova.dashboard.services.agent_context.find_worktree_by_branch",
                 new_callable=AsyncMock,
-                return_value=tmp_path,  # branch found in main repo
+                return_value=tmp_path,
             ),
             patch(
                 "sova.dashboard.services.agent_context.run_shell",
@@ -2987,6 +2995,8 @@ class TestStartCommandWorktreeResolution:
 
         assert result == wt_path
         assert mock_shell.await_args_list == [
+            call("git", "status", "--porcelain", cwd=tmp_path, timeout=10),
+            call("git", "stash", "--include-untracked", cwd=tmp_path, timeout=10),
             call(
                 "git",
                 "symbolic-ref",
@@ -2996,15 +3006,24 @@ class TestStartCommandWorktreeResolution:
                 timeout=5,
             ),
             call("git", "checkout", "main", cwd=tmp_path, timeout=10),
+            call("git", "stash", "pop", cwd=tmp_path, timeout=10),
         ]
 
     async def test_resolve_issue_worktree_returns_project_dir_on_switch_failure(self, tmp_path: Path) -> None:
-        """When git checkout fails (e.g. uncommitted changes), return project_dir without attempting create_worktree."""
+        """When git checkout fails, stash is popped and project_dir returned without attempting create_worktree."""
         from unittest.mock import AsyncMock, patch
 
         from sova.dashboard.services.agent_context import _resolve_issue_worktree
 
         mock_shell = AsyncMock()
+        dirty_result = AsyncMock()
+        dirty_result.success = True
+        dirty_result.stdout = "M  file.py\n"
+
+        stash_result = AsyncMock()
+        stash_result.success = True
+        stash_result.stdout = "Saved working directory and index state"
+
         symbolic_ref_result = AsyncMock()
         symbolic_ref_result.success = True
         symbolic_ref_result.stdout = "origin/main\n"
@@ -3013,7 +3032,11 @@ class TestStartCommandWorktreeResolution:
         checkout_result.success = False
         checkout_result.stderr = "error: Your local changes would be overwritten"
 
-        mock_shell.side_effect = [symbolic_ref_result, checkout_result]
+        pop_result = AsyncMock()
+        pop_result.success = True
+        pop_result.stdout = ""
+
+        mock_shell.side_effect = [dirty_result, stash_result, symbolic_ref_result, checkout_result, pop_result]
 
         mock_create = AsyncMock()
         with (
@@ -3029,6 +3052,48 @@ class TestStartCommandWorktreeResolution:
 
         assert result == tmp_path
         mock_create.assert_not_awaited()
+        assert mock_shell.await_count == 5
+
+    async def test_resolve_issue_worktree_clean_tree_skips_stash(self, tmp_path: Path) -> None:
+        """Clean working tree: git status --porcelain returns empty, so stash is skipped entirely."""
+        from dataclasses import dataclass
+        from unittest.mock import AsyncMock, patch
+
+        from sova.dashboard.services.agent_context import _resolve_issue_worktree
+
+        @dataclass
+        class FakeWorktreeInfo:
+            path: Path
+            branch: str
+            issue_id: str
+
+        wt_path = tmp_path / ".claude" / "worktrees" / "pr-50"
+        fake_info = FakeWorktreeInfo(path=wt_path, branch="fix/clean", issue_id="pr-50")
+        mock_shell = AsyncMock()
+
+        clean_status = AsyncMock()
+        clean_status.success = True
+        clean_status.stdout = ""
+
+        success_result = AsyncMock()
+        success_result.success = True
+        success_result.stdout = "origin/main\n"
+
+        mock_shell.side_effect = [clean_status, success_result, success_result]
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_context.find_worktree_by_branch",
+                new_callable=AsyncMock,
+                return_value=tmp_path,
+            ),
+            patch("sova.dashboard.services.agent_context.run_shell", mock_shell),
+            patch("sova.git.worktree.create_worktree", new_callable=AsyncMock, return_value=fake_info),
+        ):
+            result = await _resolve_issue_worktree("", tmp_path, branch_name="fix/clean", pr_number=50)
+
+        assert result == wt_path
+        assert mock_shell.await_count == 3
 
     async def test_non_issue_command_uses_project_dir(self, tmp_path: Path) -> None:
         """Commands without an issue number should always use project dir."""
