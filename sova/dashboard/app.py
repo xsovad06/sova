@@ -307,6 +307,7 @@ async def _shutdown_tasks(
     oversight_agent: OversightAgent | None = None,
     supervisor_daemons: list[SupervisorDaemon] | None = None,
     gc_task: asyncio.Task | None = None,
+    merge_queue_tasks: list[asyncio.Task] | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -326,7 +327,7 @@ async def _shutdown_tasks(
         await watchdog.stop()
     for daemon in supervisor_daemons or []:
         await daemon.stop()
-    bg_tasks = pr_throttle_tasks + pr_monitor_tasks
+    bg_tasks = pr_throttle_tasks + pr_monitor_tasks + (merge_queue_tasks or [])
     for t in bg_tasks:
         t.cancel()
     if bg_tasks:
@@ -494,6 +495,25 @@ def create_app(
             )
             pr_monitor_tasks.append(asyncio.create_task(monitor.run_loop()))
 
+        # Merge queue monitor background loop
+        merge_queue_tasks: list[asyncio.Task] = []
+        if is_multi:
+            from sova.dashboard.services.merge_queue_monitor import create_monitors_for_merge_queue
+
+            for mq_monitor in create_monitors_for_merge_queue():
+                merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
+        elif cfg.integration.merge_queue_enabled != "false" and cfg.github_repo:
+            from sova.dashboard.services.merge_queue_monitor import MergeQueueMonitor
+
+            mq_monitor = MergeQueueMonitor(
+                project_dir=resolved,
+                repo=cfg.github_repo,
+                github_user=cfg.github_user,
+                integration_config=cfg.integration,
+                notification_config=cfg.notification,
+            )
+            merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
+
         # Start agent watchdog
         from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
 
@@ -569,6 +589,7 @@ def create_app(
                         oversight_agent=oversight_agent,
                         supervisor_daemons=supervisor_daemons,
                         gc_task=gc_task,
+                        merge_queue_tasks=merge_queue_tasks,
                     ),
                     timeout=5.0,
                 )
