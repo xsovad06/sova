@@ -201,6 +201,47 @@ async def _kill_terminal_zombies(project_dir: Path | None = None) -> int:
     return killed
 
 
+def _get_recovery_config(project_dir: Path | None) -> tuple[str, str]:
+    """Load (repo, github_user) for merge queue checks during recovery."""
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        return cfg.github_repo or "", cfg.github_user or ""
+    except Exception:
+        return "", ""
+
+
+async def _get_pr_branch_for_recovery(pr_number: int, repo: str, project_dir: Path | None) -> str:
+    """Fetch the head branch name for a PR (for worktree cleanup later)."""
+    if not repo:
+        return ""
+    try:
+        from sova.utils.gh import resolve_gh_env
+        from sova.utils.shell import run
+
+        _, github_user = _get_recovery_config(project_dir)
+        env = await resolve_gh_env(github_user)
+        result = await run(
+            "gh",
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo,
+            "--json",
+            "headRefName",
+            "--jq",
+            ".headRefName",
+            env=env,
+        )
+        if result.success and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        log.debug("recovery.pr_branch_lookup_failed", pr=pr_number, exc_info=True)
+    return ""
+
+
 async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
     """Detect and mark stale non-terminal TaskRuns on dashboard startup.
 
@@ -312,19 +353,47 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
             return []
 
         # Phase 2: merge checks concurrently, bounded by the total timeout.
+        # Also checks merge queue status for non-merged PRs so we can create
+        # MergeQueueEntry records instead of marking runs "interrupted".
         merge_candidates = [r for r in dead_runs if r["needs_merge_check"]]
         if merge_candidates:
 
-            async def _check_one(rec: dict) -> tuple[int, bool]:
+            async def _check_one(rec: dict) -> tuple[int, str, dict | None]:
+                """Returns (run_id, result_type, extra_data).
+
+                result_type: "merged", "in_queue", or "unknown".
+                """
                 try:
                     merged = await asyncio.wait_for(
                         _check_pr_merged_on_failure(rec["pr_number"], project_dir),
                         timeout=_MERGE_CHECK_TIMEOUT,
                     )
-                    return rec["run_id"], merged
+                    if merged:
+                        return rec["run_id"], "merged", None
                 except (asyncio.TimeoutError, Exception):
                     log.debug("recovery.merge_check_skipped", run_id=rec["run_id"], exc_info=True)
-                    return rec["run_id"], False
+                    return rec["run_id"], "unknown", None
+
+                try:
+                    from sova.git.merge import get_merge_queue_status
+
+                    _repo, _user = _get_recovery_config(project_dir)
+                    queue_status = await asyncio.wait_for(
+                        get_merge_queue_status(
+                            rec["pr_number"],
+                            repo=_repo,
+                            github_user=_user,
+                        ),
+                        timeout=_MERGE_CHECK_TIMEOUT,
+                    )
+                    if queue_status.in_queue:
+                        return rec["run_id"], "in_queue", {"state": queue_status.state}
+                    if queue_status.is_merged:
+                        return rec["run_id"], "merged", None
+                except (asyncio.TimeoutError, Exception):
+                    log.debug("recovery.queue_check_skipped", run_id=rec["run_id"], exc_info=True)
+
+                return rec["run_id"], "unknown", None
 
             dead_by_id = {r["run_id"]: r for r in dead_runs}
             try:
@@ -332,12 +401,17 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                     asyncio.gather(*(_check_one(r) for r in merge_candidates)),
                     timeout=_RECOVERY_TOTAL_TIMEOUT,
                 )
-                for run_id, merged in results:
-                    if merged:
-                        rec = dead_by_id[run_id]
+                for run_id, result_type, _extra in results:
+                    rec = dead_by_id[run_id]
+                    if result_type == "merged":
                         rec["final_status"] = "done"
                         rec["error_msg"] = f"Agent process died but PR #{rec['pr_number']} was merged successfully"
                         log.info("recovery.merge_succeeded_despite_crash", run_id=run_id, pr=rec["pr_number"])
+                    elif result_type == "in_queue":
+                        rec["final_status"] = "done"
+                        rec["error_msg"] = f"PR #{rec['pr_number']} is in merge queue, tracked for post-merge cleanup"
+                        rec["needs_queue_entry"] = True
+                        log.info("recovery.pr_in_merge_queue", run_id=run_id, pr=rec["pr_number"])
             except asyncio.TimeoutError:
                 log.warning("recovery.merge_checks_timed_out", total_timeout=_RECOVERY_TOTAL_TIMEOUT)
 
@@ -380,6 +454,28 @@ async def recover_stale_runs(project_dir: Path | None = None) -> list[dict]:
                         was_status=rec["was_status"],
                         final_status=final_status,
                     )
+
+        # Phase 4: create MergeQueueEntry records for PRs still in the queue.
+        # Done outside the write transaction to avoid blocking on API calls.
+        queue_candidates = [r for r in dead_runs if r.get("needs_queue_entry")]
+        if queue_candidates:
+            from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
+
+            repo, github_user = _get_recovery_config(project_dir)
+            for rec in queue_candidates:
+                try:
+                    branch = await _get_pr_branch_for_recovery(rec["pr_number"], repo, project_dir)
+                    await create_merge_queue_entry(
+                        pr_number=rec["pr_number"],
+                        repo=repo,
+                        project_dir=project_dir or Path.cwd(),
+                        issue_number=rec.get("issue"),
+                        task_run_id=rec["run_id"],
+                        github_user=github_user,
+                        branch_name=branch,
+                    )
+                except Exception:
+                    log.warning("recovery.queue_entry_failed", run_id=rec["run_id"], exc_info=True)
 
         if interrupted:
             log.info("recovery.complete", interrupted_count=len(interrupted))
