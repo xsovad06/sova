@@ -615,3 +615,31 @@ class PREvent(Base):
         Index("ix_pr_events_timestamp", "timestamp"),
         Index("ix_pr_events_project", "project_slug"),
     )
+
+
+class MergeQueueEntry(Base):
+    """Tracks PRs enqueued in GitHub merge queues for post-merge cleanup.
+
+    Created when a merge-role agent exits while the PR is still in the queue.
+    The MergeQueueMonitor background service polls these entries and triggers
+    cleanup (branch deletion, issue state transition) when the PR merges.
+    """
+
+    __tablename__ = "merge_queue_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    repo: Mapped[str] = mapped_column(String(200), nullable=False)
+    issue_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    project_dir: Mapped[str] = mapped_column(String(500), nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    task_run_id: Mapped[int | None] = mapped_column(Integer, ForeignKey(_FK_TASK_RUNS_ID), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    github_user: Mapped[str] = mapped_column(String(100), default="")
+    branch_name: Mapped[str] = mapped_column(String(300), default="")
+
+    __table_args__ = (
+        Index("ix_merge_queue_status", "status"),
+        Index("ix_merge_queue_pr_repo", "pr_number", "repo"),
+    )
