@@ -112,7 +112,13 @@ If merge queue is detected (or forced via config):
 - Omit merge strategy flags, GitHub merge queues control the strategy
 - Omit `--delete-branch` (branch deletion handled separately after queue processing)
 - Run: `gh pr merge <PR_NUMBER> --repo <OWNER/REPO>`
-- If output contains "already queued" or "added to merge queue", proceed to queue polling (step 3b)
+- If output contains "already queued" or "added to merge queue":
+  - Write a merge queue marker file so the dashboard can track the PR:
+    ```bash
+    mkdir -p .claude/agent-control
+    python3 -c "import json; print(json.dumps({'pr_number': <PR_NUMBER>, 'repo': '<OWNER/REPO>', 'issue_number': '<ISSUE_NUMBER>', 'branch_name': '<HEAD_BRANCH>'}))" > .claude/agent-control/merge-queue.json
+    ```
+  - Proceed to queue polling (step 3b)
 
 If merge queue is NOT detected:
 - Apply the configured merge method flag (or omit for "auto" to use repo default)
