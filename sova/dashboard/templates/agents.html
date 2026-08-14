@@ -482,14 +482,6 @@ function collapseTasks() {
   renderTaskCards();
 }
 
-function _extractPriority(labels) {
-  for (var i = 0; i < (labels || []).length; i++) {
-    var l = labels[i];
-    if (l.indexOf('priority:') === 0) return l.replace('priority: ', '').replace('priority:', '').trim();
-  }
-  return '';
-}
-
 var _priorityOrder = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function _renderHandoffBtn(ha, issueNumber) {
@@ -552,8 +544,7 @@ function renderTaskCard(item) {
   var issueKey = item.issue_number || ('pr:' + item.pr_number);
   var isRunning = item.state === 'agent_running';
   var p = _extractPriority(item.labels);
-  var pDots = { critical: 'bg-accent-red', high: 'bg-accent-yellow', medium: 'bg-gray-500', low: 'bg-gray-600' };
-  var pDot = p ? '<span class="w-1.5 h-1.5 rounded-full shrink-0 ' + (pDots[p] || 'bg-gray-600') + '"></span>' : '';
+  var priorityIcon = p ? '<img src="' + priorityIconUrl(p) + '" alt="' + escapeHtml(p) + ' priority" width="16" height="16" class="inline-block align-middle shrink-0">' : '';
 
   var handoffActions = item.handoff_actions || [];
   var isSpecReview = item.state === 'spec_review';
@@ -694,7 +685,7 @@ function renderTaskCard(item) {
     : '';
 
   var mainRow = '<div class="flex items-center gap-3 px-4 py-2.5">' +
-    (needsAttention ? attentionDot : pDot) +
+    (needsAttention ? attentionDot : priorityIcon) +
     issueRef +
     '<span class="text-sm text-gray-300 truncate flex-1">' + escapeHtml(item.title) + '</span>' +
     metaStrip +
@@ -1543,14 +1534,10 @@ async function enhancePlannerCards(completed) {
         }
 
         var taskListHtml = tasks.map(function(t, i) {
-          var priorityColors = {
-            critical: 'text-accent-red', high: 'text-accent-yellow',
-            medium: 'text-accent', low: 'text-gray-400'
-          };
-          var pColor = priorityColors[t.priority] || 'text-gray-400';
+          var iconUrl = priorityIconUrl(t.priority);
           return '<label class="flex items-start gap-2 py-1 text-xs cursor-pointer" onclick="event.stopPropagation()">' +
             '<input type="checkbox" checked class="mt-0.5 planner-task-check" data-idx="' + i + '">' +
-            '<span class="flex-1"><span class="' + pColor + ' font-medium">[' + escapeHtml(t.priority) + ']</span> ' + escapeHtml(t.title) + '</span>' +
+            '<span class="flex-1"><img src="' + iconUrl + '" alt="' + escapeHtml(t.priority || 'undefined') + ' priority" width="12" height="12" class="inline-block align-middle mr-1"> ' + escapeHtml(t.title) + '</span>' +
           '</label>';
         }).join('');
 

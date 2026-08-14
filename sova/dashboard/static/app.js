@@ -895,7 +895,33 @@ if (document.getElementById('activity-dot')) {
 initGlobalBatch();
 
 /* ============================================================
-   12. ROLE COLORS
+   12. PRIORITY ICONS
+   ============================================================ */
+
+// Keep in sync with priority_map in _components.html
+var _PRIORITY_ICON_MAP = {
+  critical: 'blocker',
+  high: 'high',
+  medium: 'medium',
+  low: 'low'
+};
+
+function priorityIconUrl(priority) {
+  var p = (priority || '').toString().toLowerCase().trim();
+  var iconName = _PRIORITY_ICON_MAP[p] || 'undefined';
+  return '/static/priority/' + iconName + '.svg';
+}
+
+function _extractPriority(labels) {
+  for (var i = 0; i < (labels || []).length; i++) {
+    var l = labels[i];
+    if (l.indexOf('priority:') === 0) return l.replace('priority: ', '').replace('priority:', '').trim();
+  }
+  return '';
+}
+
+/* ============================================================
+   13. ROLE COLORS
    ============================================================ */
 
 function _roleHex(key) {
