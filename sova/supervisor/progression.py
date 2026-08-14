@@ -24,7 +24,14 @@ from sova.dashboard.services.agent_recovery import _is_process_alive, get_sova_r
 from sova.dashboard.services.agent_validation import _check_issue_budget
 from sova.db.models import TaskRun
 from sova.git.pr import PRInfo, find_pr_for_issue
-from sova.supervisor.dependency_graph import DependencyGraph, build_dependency_graph, invalidate_graph_cache, is_epic
+from sova.supervisor.dependency_graph import (
+    DependencyGraph,
+    build_dependency_graph,
+    invalidate_graph_cache,
+    is_epic,
+    is_human_only,
+    is_interactive_recommended,
+)
 from sova.supervisor.file_overlap import (
     BranchFileSet,
     check_file_overlap,
@@ -124,6 +131,75 @@ class TaskProgressionEngine:
         self._last_graph: DependencyGraph | None = None
         self._repo_cache_key: str = getattr(adapter, "repo", "") or getattr(adapter, "project_key", "") or ""
 
+    async def _fetch_mergeability_map(self) -> dict:
+        """Fetch merge conflict state for all open PRs (fail-open)."""
+        try:
+            from sova.dashboard.services.pr_service import get_pr_mergeability_map
+
+            return await get_pr_mergeability_map()
+        except Exception:
+            log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
+            return {}
+
+    async def _fetch_file_overlap_sets(self) -> list[BranchFileSet] | None:
+        """Fetch active branch file sets for the file overlap gate (fail-open)."""
+        if not self._config.file_overlap_gate:
+            return None
+        try:
+            return await get_active_branch_file_sets(
+                self._session_factory,
+                self._project_dir,
+            )
+        except Exception:
+            log.debug("evaluate_all.file_overlap_fetch_failed", exc_info=True)
+            return None
+
+    def _resolve_task_ids(self, graph: DependencyGraph) -> list[int]:
+        """Resolve which task IDs to evaluate, respecting task_queue order."""
+        task_queue = self._config.task_queue
+        if not task_queue:
+            return list(graph.nodes)
+
+        node_set = set(graph.nodes)
+        task_ids: list[int] = []
+        skipped: list[int] = []
+        for qid in task_queue:
+            (task_ids if qid in node_set else skipped).append(qid)
+        if skipped:
+            log.warning("evaluate_all.queue_items_not_in_graph", skipped=skipped)
+        return task_ids
+
+    @staticmethod
+    def _effective_gate(
+        global_blocker: BlockReason | None,
+        exhausted: bool,
+        gate: str,
+        detail_prefix: str,
+    ) -> BlockReason | None:
+        """Return global blocker, or a batch-exhaustion blocker if capacity is spent."""
+        if global_blocker is not None:
+            return global_blocker
+        if exhausted:
+            return BlockReason(gate=gate, detail=f"{detail_prefix} ({gate} capacity exhausted)")
+        return None
+
+    @staticmethod
+    def _update_remaining_capacity(
+        decision: ProgressionDecision,
+        remaining_slots: int,
+        remaining_quota: bool,
+    ) -> tuple[int, bool]:
+        """Decrement capacity counters for actionable decisions."""
+        if decision.action in NON_ACTIONABLE_ACTIONS or decision.action in (
+            ProgressionAction.SPAWN_REBASE,
+            ProgressionAction.RESET_STALE_STATE,
+        ):
+            return remaining_slots, remaining_quota
+        remaining_slots -= 1
+        if decision.action == ProgressionAction.SPAWN_DEVELOPER:
+            remaining_quota = False
+        return remaining_slots, remaining_quota
+
     async def evaluate_all(self, *, plan: PlanResult | None = None) -> list[ProgressionDecision]:
         """Scan all active tasks, return next action for each.
 
@@ -131,7 +207,6 @@ class TaskProgressionEngine:
         pair is not in the plan's approved list are converted to WAIT.
         Deterministic gates still hard-block regardless of the plan.
         """
-        # Check rate limit before making any API calls (graph build calls list_tasks)
         global_rate_limit = self._check_github_rate_limit_gate()
         if global_rate_limit is not None:
             log.info("evaluate_all.skipped_rate_limited")
@@ -144,36 +219,14 @@ class TaskProgressionEngine:
             return []
 
         self._last_graph = graph
-
-        # Load config once for the whole evaluation cycle
         cfg = load_config(self._project_dir)
 
-        # Pre-compute global gates once, then decrement as slots/quota are consumed
         global_memory = self._check_memory_pressure_gate(cfg)
         global_quota = await self._check_quota_gate(ProgressionAction.SPAWN_DEVELOPER, cfg=cfg)
         global_ci_budget = await self._check_ci_budget_gate(cfg=cfg)
+        precomputed_conflicts = await self._fetch_mergeability_map()
+        precomputed_file_sets = await self._fetch_file_overlap_sets()
 
-        # Pre-fetch merge conflict state for all open PRs (fail-open)
-        try:
-            from sova.dashboard.services.pr_service import get_pr_mergeability_map
-
-            precomputed_conflicts = await get_pr_mergeability_map()
-        except Exception:
-            log.debug("evaluate_all.mergeability_fetch_failed", exc_info=True)
-            precomputed_conflicts = {}
-
-        # Pre-fetch active branch file sets for file overlap gate (fail-open)
-        precomputed_file_sets: list[BranchFileSet] | None = None
-        if self._config.file_overlap_gate:
-            try:
-                precomputed_file_sets = await get_active_branch_file_sets(
-                    self._session_factory,
-                    self._project_dir,
-                )
-            except Exception:
-                log.debug("evaluate_all.file_overlap_fetch_failed", exc_info=True)
-
-        # Compute alive count once: used for both the slot gate and remaining capacity
         alive_count = await self._get_alive_count()
         global_slots: BlockReason | None = None
         if alive_count >= cfg.max_parallel_agents:
@@ -182,57 +235,35 @@ class TaskProgressionEngine:
                 detail=f"All agent slots occupied ({alive_count}/{cfg.max_parallel_agents})",
             )
         remaining_slots = cfg.max_parallel_agents - alive_count
-        remaining_quota = not bool(global_quota)  # True if quota is available
+        remaining_quota = not bool(global_quota)
 
-        # When a task queue is configured, evaluate only queued issues (in order),
-        # skipping blocked items without removing them. Read from self._config
-        # (SupervisorConfig) which the daemon creates fresh each poll cycle.
-        task_queue = self._config.task_queue
-        if task_queue:
-            node_set = set(graph.nodes)
-            task_ids: list[int] = []
-            skipped: list[int] = []
-            for qid in task_queue:
-                (task_ids if qid in node_set else skipped).append(qid)
-            if skipped:
-                log.warning("evaluate_all.queue_items_not_in_graph", skipped=skipped)
-        else:
-            task_ids = list(graph.nodes)
-
+        task_ids = self._resolve_task_ids(graph)
         tasks = [graph.get_task(nid) for nid in task_ids]
         decisions: list[ProgressionDecision] = []
         for task in tasks:
             if task is None:
                 continue
-            issue = int(task.id)
 
-            # Re-check rate limit each iteration: if a GitHub API call during
-            # a prior task's evaluation triggered the tracker, stop making
-            # further API calls. The precomputed None from line 119 is stale
-            # once the tracker transitions mid-loop.
             mid_loop_rate_limit = self._check_github_rate_limit_gate()
             if mid_loop_rate_limit is not None:
-                log.info("evaluate_all.mid_loop_rate_limited", issue=issue)
+                log.info("evaluate_all.mid_loop_rate_limited", issue=int(task.id))
                 break
 
-            # Recompute slot blocker based on remaining capacity
-            effective_slots = global_slots
-            if effective_slots is None and remaining_slots <= 0:
-                effective_slots = BlockReason(
-                    gate="slots",
-                    detail="All agent slots would be occupied (batch capacity exhausted)",
-                )
-
-            # Recompute quota blocker based on remaining capacity
-            effective_quota = global_quota
-            if effective_quota is None and not remaining_quota:
-                effective_quota = BlockReason(
-                    gate="quota",
-                    detail="CodeRabbit quota would be exhausted (batch capacity exhausted)",
-                )
+            effective_slots = self._effective_gate(
+                global_slots,
+                remaining_slots <= 0,
+                "slots",
+                "All agent slots would be occupied",
+            )
+            effective_quota = self._effective_gate(
+                global_quota,
+                not remaining_quota,
+                "quota",
+                "CodeRabbit quota would be exhausted",
+            )
 
             decision = await self._evaluate_single(
-                issue,
+                int(task.id),
                 task.state,
                 graph,
                 precomputed_memory=global_memory,
@@ -248,14 +279,11 @@ class TaskProgressionEngine:
             )
             decisions.append(decision)
 
-            # Decrement capacity for actionable decisions
-            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action not in (
-                ProgressionAction.SPAWN_REBASE,
-                ProgressionAction.RESET_STALE_STATE,
-            ):
-                remaining_slots -= 1
-                if decision.action == ProgressionAction.SPAWN_DEVELOPER:
-                    remaining_quota = False
+            remaining_slots, remaining_quota = self._update_remaining_capacity(
+                decision,
+                remaining_slots,
+                remaining_quota,
+            )
 
         if plan is not None:
             approved_set = {(a.action, a.issue) for a in plan.actions}
@@ -334,15 +362,8 @@ class TaskProgressionEngine:
                 blocked_by=(BlockReason(gate="adapter", detail="build_dependency_graph() failed"),),
             )
 
-        try:
-            from sova.dashboard.services.pr_service import get_pr_mergeability_map
+        precomputed_conflicts = await self._fetch_mergeability_map()
 
-            precomputed_conflicts = await get_pr_mergeability_map()
-        except Exception:
-            log.debug("evaluate_task.mergeability_fetch_failed", issue=issue_number, exc_info=True)
-            precomputed_conflicts = {}
-
-        # Fetch task info and file sets for file overlap gate
         precomputed_file_sets: list[BranchFileSet] | None = None
         task_labels: list[str] = []
         task_body: str = ""
@@ -754,6 +775,16 @@ class TaskProgressionEngine:
             if dep_block:
                 blockers.append(dep_block)
 
+        # Human involvement gate: pure in-memory label check, before API-calling gates.
+        # Extract labels from graph when caller didn't provide them (fail-closed).
+        effective_labels = task_labels
+        if effective_labels is None and graph is not None:
+            task_node = graph.get_task(issue_number)
+            effective_labels = task_node.labels if task_node else []
+        human_block = self._check_human_involvement_gate(issue_number, effective_labels or [])
+        if human_block:
+            blockers.append(human_block)
+
         # Run async per-task gates concurrently (ownership gate returns a tuple)
         running_result, budget_result, ownership_result = await asyncio.gather(
             self._check_already_running(issue_number),
@@ -921,6 +952,27 @@ class TaskProgressionEngine:
                     detail=f"Blocked by #{dep_id} (state: {dep_task.state.value})",
                 )
 
+        return None
+
+    def _check_human_involvement_gate(self, issue: int, labels: list[str]) -> BlockReason | None:
+        """Block issues labeled agent:human-only or agent:interactive-recommended.
+
+        human-only is a hard block (defense-in-depth alongside state-based HUMAN_ONLY).
+        interactive-recommended blocks autonomous scheduling; manual dashboard starts
+        bypass the progression engine entirely.
+        """
+        if is_human_only(labels):
+            log.info("human_involvement_gate.blocked_human_only", issue=issue)
+            return BlockReason(
+                gate="human_involvement",
+                detail=f"Issue #{issue} is labeled agent:human-only",
+            )
+        if is_interactive_recommended(labels):
+            log.info("human_involvement_gate.blocked_interactive_recommended", issue=issue)
+            return BlockReason(
+                gate="human_involvement",
+                detail=f"Issue #{issue} is labeled agent:interactive-recommended (manual start only)",
+            )
         return None
 
     async def _check_quota_gate(
