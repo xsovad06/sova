@@ -116,7 +116,7 @@ If merge queue is detected (or forced via config):
   - Write a merge queue marker file so the dashboard can track the PR:
     ```bash
     mkdir -p .claude/agent-control
-    python3 -c "import json; print(json.dumps({'pr_number': <PR_NUMBER>, 'repo': '<OWNER/REPO>', 'issue_number': '<ISSUE_NUMBER>', 'branch_name': '<HEAD_BRANCH>'}))" > .claude/agent-control/merge-queue.json
+    python3 -c "import json; print(json.dumps({'pr_number': <PR_NUMBER>, 'repo': '<OWNER/REPO>', 'issue_number': '<ISSUE_NUMBER>', 'branch_name': '<HEAD_BRANCH>'}))" > .claude/agent-control/merge-queue-<PR_NUMBER>.json
     ```
   - Proceed to queue polling (step 3b)
 
