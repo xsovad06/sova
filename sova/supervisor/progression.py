@@ -60,6 +60,7 @@ class ProgressionAction(StrEnum):
     BLOCKED = "blocked"
     SPAWN_REBASE = "spawn_rebase"
     CHECKPOINT_NEEDED = "checkpoint_needed"
+    RESET_STALE_STATE = "reset_stale_state"
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +249,10 @@ class TaskProgressionEngine:
             decisions.append(decision)
 
             # Decrement capacity for actionable decisions
-            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action != ProgressionAction.SPAWN_REBASE:
+            if decision.action not in NON_ACTIONABLE_ACTIONS and decision.action not in (
+                ProgressionAction.SPAWN_REBASE,
+                ProgressionAction.RESET_STALE_STATE,
+            ):
                 remaining_slots -= 1
                 if decision.action == ProgressionAction.SPAWN_DEVELOPER:
                     remaining_quota = False
@@ -375,6 +379,9 @@ class TaskProgressionEngine:
         if decision.action in {ProgressionAction.WAIT, ProgressionAction.BLOCKED, ProgressionAction.CHECKPOINT_NEEDED}:
             return {"skipped": True, "action": decision.action.value, "reason": decision.reason}
 
+        if decision.action == ProgressionAction.RESET_STALE_STATE:
+            return await self._execute_stale_reset(decision.issue_number)
+
         if decision.action == ProgressionAction.SPAWN_REBASE:
             from sova.supervisor.rebase import attempt_auto_rebase
 
@@ -466,6 +473,53 @@ class TaskProgressionEngine:
             result = await self.execute_decision(decision)
             results.append(result)
         return results
+
+    async def _execute_stale_reset(self, issue_number: int) -> dict:
+        """Execute a RESET_STALE_STATE decision: roll back the issue to the appropriate prior state."""
+        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+
+        try:
+            async with self._session_factory() as session:
+                stmt = (
+                    select(TaskRun)
+                    .where(
+                        TaskRun.issue_number == str(issue_number),
+                        TaskRun.status.in_(TASK_RUN_TERMINAL),
+                    )
+                    .order_by(TaskRun.id.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                last_run = result.scalar_one_or_none()
+
+            if last_run is not None:
+                from sova.dashboard.services.agent_recovery import rollback_issue_state
+
+                await rollback_issue_state(last_run.id, self._project_dir)
+                target_desc = f"run {last_run.id} (role: {last_run.role or 'unknown'})"
+            else:
+                # Re-check liveness: an agent may have started between evaluation and execution.
+                # rollback_issue_state has its own concurrent-run guard, but this direct path does not.
+                alive_block = await self._check_already_running(issue_number)
+                if alive_block:
+                    log.info("stale_reset.skipped_agent_alive", issue=issue_number, detail=alive_block.detail)
+                    return {"skipped": True, "issue": issue_number, "reason": alive_block.detail}
+                await self._adapter.transition_state(str(issue_number), TaskState.TRIAGED)
+                target_desc = "TRIAGED (no prior run)"
+
+            invalidate_graph_cache(self._repo_cache_key)
+            emit_safe(
+                f"Stale IN_PROGRESS reset: #{issue_number}",
+                severity=FeedEventSeverity.warning,
+                detail=f"No agent alive, rolled back via {target_desc}",
+                category="supervisor",
+                metadata={"issue": issue_number},
+            )
+            log.info("stale_reset.completed", issue=issue_number, via=target_desc)
+            return {"reset": True, "issue": issue_number}
+        except Exception:
+            log.warning("stale_reset.failed", issue=issue_number, exc_info=True)
+            return {"error": f"Failed to reset stale state for #{issue_number}"}
 
     def _all_children_done(self, children: list[int], graph: DependencyGraph) -> bool:
         """Check if all child issues are in DONE state."""
@@ -570,6 +624,32 @@ class TaskProgressionEngine:
                 issue_number=issue_number,
                 action=ProgressionAction.CHECKPOINT_NEEDED,
                 reason=f"Automation disabled for state '{state.value}': requires human approval",
+            )
+
+        # Short-circuit: RESET_STALE_STATE only needs liveness + rate limit check
+        if candidate == ProgressionAction.RESET_STALE_STATE:
+            alive_block = await self._check_already_running(issue_number)
+            if alive_block:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.WAIT,
+                    reason=f"Agent still active for IN_PROGRESS #{issue_number}: {alive_block.detail}",
+                )
+            if precomputed_rate_limit is _NOT_COMPUTED:
+                rate_limit_block = self._check_github_rate_limit_gate()
+            else:
+                rate_limit_block = precomputed_rate_limit
+            if rate_limit_block:
+                return ProgressionDecision(
+                    issue_number=issue_number,
+                    action=ProgressionAction.BLOCKED,
+                    reason=f"Rate limited: {rate_limit_block.detail}",
+                    blocked_by=(rate_limit_block,),
+                )
+            return ProgressionDecision(
+                issue_number=issue_number,
+                action=ProgressionAction.RESET_STALE_STATE,
+                reason=f"Stale IN_PROGRESS: no agent running for #{issue_number}",
             )
 
         # Refine IN_REVIEW: check SOVA verdict to decide between address-review and integrate.
@@ -810,8 +890,9 @@ class TaskProgressionEngine:
             return ProgressionAction.CHECKPOINT_NEEDED
         if state == TaskState.BACKLOG:
             return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
+        if state == TaskState.IN_PROGRESS:
+            return ProgressionAction.RESET_STALE_STATE
         # NEEDS_SPEC: human approves spec externally
-        # IN_PROGRESS: handled by existing role chaining
         # DONE, HUMAN_ONLY: no action
         return None
 

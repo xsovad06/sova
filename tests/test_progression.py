@@ -74,6 +74,7 @@ class TestDataclasses:
         assert ProgressionAction.BLOCKED == "blocked"
         assert ProgressionAction.SPAWN_REBASE == "spawn_rebase"
         assert ProgressionAction.CHECKPOINT_NEEDED == "checkpoint_needed"
+        assert ProgressionAction.RESET_STALE_STATE == "reset_stale_state"
 
     def test_block_reason_frozen(self) -> None:
         br = BlockReason(gate="dependency", detail="blocked by #10")
@@ -159,9 +160,9 @@ class TestDetermineTransition:
         engine = _make_engine(auto_triage=True)
         assert engine._determine_transition(TaskState.BACKLOG) == ProgressionAction.SPAWN_TRIAGE
 
-    def test_in_progress_returns_none(self) -> None:
+    def test_in_progress_returns_reset_stale_state(self) -> None:
         engine = _make_engine()
-        assert engine._determine_transition(TaskState.IN_PROGRESS) is None
+        assert engine._determine_transition(TaskState.IN_PROGRESS) == ProgressionAction.RESET_STALE_STATE
 
     def test_done_returns_none(self) -> None:
         engine = _make_engine()
@@ -3053,3 +3054,216 @@ class TestExecuteDecisionsCap:
         with patch.object(engine, "execute_decision", new_callable=AsyncMock, return_value={"ok": True}):
             results = await engine.execute_decisions([d1, d2])
         assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# Stale IN_PROGRESS detection and reset
+# ---------------------------------------------------------------------------
+
+
+class TestStaleInProgressReset:
+    @pytest.mark.asyncio
+    async def test_alive_agent_returns_wait(self) -> None:
+        """IN_PROGRESS with a live agent should return WAIT, not reset."""
+        engine = _make_engine()
+        block = BlockReason(gate="already_running", detail="Agent alive (PID 123)")
+        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=block):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph)
+        assert decision.action == ProgressionAction.WAIT
+        assert "Agent still active" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_no_agent_returns_reset(self) -> None:
+        """IN_PROGRESS with no alive agent should return RESET_STALE_STATE."""
+        engine = _make_engine()
+        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph)
+        assert decision.action == ProgressionAction.RESET_STALE_STATE
+        assert "Stale IN_PROGRESS" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_blocks_reset(self) -> None:
+        """RESET_STALE_STATE should be blocked when rate limited."""
+        engine = _make_engine()
+        rate_block = BlockReason(gate="rate_limit", detail="GitHub API throttled")
+        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None):
+            from sova.supervisor.dependency_graph import DependencyGraph
+
+            graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+            decision = await engine._evaluate_single(1, TaskState.IN_PROGRESS, graph, precomputed_rate_limit=rate_block)
+        assert decision.action == ProgressionAction.BLOCKED
+        assert "Rate limited" in decision.reason
+
+    @pytest.mark.asyncio
+    async def test_execute_stale_reset_with_task_run(self) -> None:
+        """execute_decision for RESET_STALE_STATE calls rollback_issue_state when a TaskRun exists."""
+        engine = _make_engine()
+        mock_run = MagicMock()
+        mock_run.id = 42
+        mock_run.role = "developer"
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_run
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        engine._session_factory = MagicMock(return_value=mock_session)
+
+        decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        import sova.dashboard.services.agent_recovery as _recovery_mod
+
+        with (
+            patch.object(_recovery_mod, "rollback_issue_state", new_callable=AsyncMock) as mock_rollback,
+            patch("sova.dashboard.services.feed_service.emit_safe"),
+        ):
+            result = await engine.execute_decision(decision)
+        assert result["reset"] is True
+        mock_rollback.assert_awaited_once_with(42, engine._project_dir)
+
+    @pytest.mark.asyncio
+    async def test_execute_stale_reset_no_task_run_falls_back_to_triaged(self) -> None:
+        """Without a TaskRun, reset should transition directly to TRIAGED."""
+        engine = _make_engine()
+        engine._adapter = AsyncMock()
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        engine._session_factory = MagicMock(return_value=mock_session)
+
+        decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch("sova.dashboard.services.feed_service.emit_safe"),
+        ):
+            result = await engine.execute_decision(decision)
+        assert result["reset"] is True
+        engine._adapter.transition_state.assert_awaited_once_with("10", TaskState.TRIAGED)
+
+    @pytest.mark.asyncio
+    async def test_execute_stale_reset_no_task_run_skips_when_agent_started(self) -> None:
+        """No-TaskRun fallback path should skip reset if an agent started between evaluation and execution."""
+        engine = _make_engine()
+        engine._adapter = AsyncMock()
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        engine._session_factory = MagicMock(return_value=mock_session)
+
+        alive_block = BlockReason(gate="already_running", detail="Agent started (PID 999)")
+        decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        with patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=alive_block):
+            result = await engine.execute_decision(decision)
+        assert result["skipped"] is True
+        assert "PID 999" in result["reason"]
+        engine._adapter.transition_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reset_counts_against_max_spawns_per_cycle(self) -> None:
+        """RESET_STALE_STATE is actionable and capped by max_spawns_per_cycle."""
+        engine = _make_engine(SupervisorConfig(max_spawns_per_cycle=1))
+        d1 = ProgressionDecision(issue_number=1, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        d2 = ProgressionDecision(issue_number=2, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        with patch.object(engine, "execute_decision", new_callable=AsyncMock, return_value={"reset": True}):
+            results = await engine.execute_decisions([d1, d2])
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_reset_does_not_decrement_agent_slots(self) -> None:
+        """RESET_STALE_STATE should not consume agent slot capacity in evaluate_all.
+
+        With max_parallel_agents=1 and 0 alive, if RESET_STALE_STATE decremented
+        remaining_slots, the second task would be BLOCKED. Both should pass through.
+        """
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        tasks = [
+            _task(1, state=TaskState.IN_PROGRESS),
+            _task(2, state=TaskState.TRIAGED),
+        ]
+        graph = DependencyGraph(tasks)
+
+        captured_slots: list = []
+
+        async def mock_evaluate(issue, state, graph, **kwargs):
+            captured_slots.append(kwargs.get("precomputed_slots"))
+            if state == TaskState.IN_PROGRESS:
+                return ProgressionDecision(
+                    issue_number=issue, action=ProgressionAction.RESET_STALE_STATE, reason="stale"
+                )
+            return ProgressionDecision(issue_number=issue, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")
+
+        with (
+            patch.object(engine, "_check_github_rate_limit_gate", return_value=None),
+            patch(
+                "sova.supervisor.progression.build_dependency_graph",
+                new_callable=AsyncMock,
+                return_value=graph,
+            ),
+            patch(
+                "sova.supervisor.progression.load_config",
+                return_value=MagicMock(max_parallel_agents=1, coderabbit_quota=MagicMock(enabled=False)),
+            ),
+            patch.object(engine, "_check_memory_pressure_gate", return_value=None),
+            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ci_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_get_alive_count", new_callable=AsyncMock, return_value=0),
+            patch(
+                "sova.dashboard.services.pr_service.get_pr_mergeability_map",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch.object(engine, "_evaluate_single", side_effect=mock_evaluate),
+        ):
+            decisions = await engine.evaluate_all()
+
+        actions = [d.action for d in decisions]
+        assert ProgressionAction.RESET_STALE_STATE in actions
+        assert ProgressionAction.SPAWN_RESEARCHER in actions
+        assert len(captured_slots) == 2
+        assert captured_slots[1] is None, "RESET_STALE_STATE must not consume the slot"
+
+    @pytest.mark.asyncio
+    async def test_execute_stale_reset_handles_failure(self) -> None:
+        """execute_decision should return error dict on failure, not raise."""
+        engine = _make_engine()
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(side_effect=RuntimeError("DB error"))
+        engine._session_factory = MagicMock(return_value=mock_session)
+
+        decision = ProgressionDecision(issue_number=10, action=ProgressionAction.RESET_STALE_STATE, reason="stale")
+        result = await engine.execute_decision(decision)
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_evaluate_task_in_progress_returns_reset(self) -> None:
+        """evaluate_task should return RESET_STALE_STATE for IN_PROGRESS with no alive agent."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        engine = _make_engine()
+        graph = DependencyGraph([_task(1, state=TaskState.IN_PROGRESS)])
+
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine._adapter, "get_state", new_callable=AsyncMock, return_value=TaskState.IN_PROGRESS),
+            patch(
+                "sova.supervisor.progression.build_dependency_graph",
+                new_callable=AsyncMock,
+                return_value=graph,
+            ),
+        ):
+            decision = await engine.evaluate_task(1)
+        assert decision.action == ProgressionAction.RESET_STALE_STATE
+        assert "Stale IN_PROGRESS" in decision.reason
