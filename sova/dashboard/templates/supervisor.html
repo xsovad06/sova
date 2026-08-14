@@ -1412,8 +1412,11 @@ _connectSupervisorWs();
 
 // -- Task Queue --
 let _queueData = [];
+let _queueSaveInFlight = false;
+let _queueLastSaved = 0;
 
 async function loadQueue() {
+  if (_queueSaveInFlight || Date.now() - _queueLastSaved < 5000) return;
   try {
     const res = await fetch(`${apiBase}/supervisor/queue`);
     if (!res.ok) return;
@@ -1455,6 +1458,7 @@ function renderQueue() {
 }
 
 let _dragIdx = null;
+let _dropPosition = 'above';
 
 function queueDragStart(e) {
   _dragIdx = parseInt(e.currentTarget.dataset.queueIdx, 10);
@@ -1465,27 +1469,40 @@ function queueDragStart(e) {
 function queueDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  e.currentTarget.style.borderTopColor = '#89b4fa';
+  const rect = e.currentTarget.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  const above = e.clientY < midY;
+  _dropPosition = above ? 'above' : 'below';
+  e.currentTarget.style.borderTopColor = above ? '#89b4fa' : '';
+  e.currentTarget.style.borderBottomColor = above ? '' : '#89b4fa';
 }
 
 function queueDragLeave(e) {
   e.currentTarget.style.borderTopColor = '';
+  e.currentTarget.style.borderBottomColor = '';
 }
 
 function queueDrop(e) {
   e.preventDefault();
   const targetIdx = parseInt(e.currentTarget.dataset.queueIdx, 10);
   e.currentTarget.style.borderTopColor = '';
+  e.currentTarget.style.borderBottomColor = '';
   if (_dragIdx == null || _dragIdx === targetIdx) return;
   const reordered = [..._queueData];
   const item = reordered.splice(_dragIdx, 1)[0];
-  reordered.splice(targetIdx, 0, item);
+  let insertIdx = _dropPosition === 'below' ? targetIdx + 1 : targetIdx;
+  if (_dragIdx < targetIdx) insertIdx--;
+  if (insertIdx < 0) insertIdx = 0;
+  reordered.splice(insertIdx, 0, item);
   saveQueue(reordered);
 }
 
 function queueDragEnd(e) {
   e.currentTarget.style.opacity = '';
-  document.querySelectorAll('#queue-list li').forEach(li => { li.style.borderTopColor = ''; });
+  document.querySelectorAll('#queue-list li').forEach(li => {
+    li.style.borderTopColor = '';
+    li.style.borderBottomColor = '';
+  });
   _dragIdx = null;
 }
 
@@ -1499,6 +1516,7 @@ function moveQueueItem(idx, direction) {
 }
 
 async function saveQueue(queue) {
+  _queueSaveInFlight = true;
   try {
     const res = await fetch(`${apiBase}/supervisor/queue`, {
       method: 'PUT',
@@ -1508,6 +1526,7 @@ async function saveQueue(queue) {
     if (res.ok) {
       const data = await res.json();
       _queueData = data.queue;
+      _queueLastSaved = Date.now();
       renderQueue();
     } else {
       showToast('Failed to save queue order', 'error');
@@ -1517,6 +1536,8 @@ async function saveQueue(queue) {
     console.error('saveQueue failed:', e);
     showToast('Failed to save queue order', 'error');
     renderQueue();
+  } finally {
+    _queueSaveInFlight = false;
   }
 }
 
@@ -1541,6 +1562,7 @@ async function addToQueue(e) {
     }
     const data = await res.json();
     _queueData = data.queue;
+    _queueLastSaved = Date.now();
     renderQueue();
     input.value = '';
   } catch (e) {
@@ -1555,6 +1577,7 @@ async function removeFromQueue(num) {
     if (res.ok) {
       const data = await res.json();
       _queueData = data.queue;
+      _queueLastSaved = Date.now();
       renderQueue();
     }
   } catch (e) { console.error('removeFromQueue failed:', e); }
@@ -1565,6 +1588,7 @@ async function clearQueue() {
     const res = await fetch(`${apiBase}/supervisor/queue`, { method: 'DELETE' });
     if (res.ok) {
       _queueData = [];
+      _queueLastSaved = Date.now();
       renderQueue();
     }
   } catch (e) { console.error('clearQueue failed:', e); }

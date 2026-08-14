@@ -12,9 +12,11 @@ from sova.utils.markdown import extract_section as _extract_section
 log = get_logger(component="dashboard.service.spec")
 
 
-def _specs_dir(project_dir: Path | None = None) -> Path:
-    """Return the .claude/specs directory for the project."""
+def _specs_dir(project_dir: Path | None = None) -> Path | None:
+    """Return the .claude/specs directory for the project, or None if unavailable."""
     d = project_dir or get_project_dir()
+    if d is None:
+        return None
     return d / ".claude" / "specs"
 
 
@@ -25,7 +27,7 @@ def find_spec_file(issue_number: str, project_dir: Path | None = None) -> Path |
     ``{PROJECT}-{issue_number}-slug.md`` (Jira key prefix).
     """
     specs = _specs_dir(project_dir)
-    if not specs.exists():
+    if specs is None or not specs.exists():
         return None
     for f in specs.iterdir():
         if f.suffix != ".md":
@@ -174,7 +176,7 @@ def reject_spec(issue_number: str, project_dir: Path | None = None) -> dict:
 def _iter_all_specs(project_dir: Path | None = None) -> list[dict]:
     """Parse all spec files in the specs directory into structured dicts."""
     specs = _specs_dir(project_dir)
-    if not specs.exists():
+    if specs is None or not specs.exists():
         return []
 
     results = []

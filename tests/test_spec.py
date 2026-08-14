@@ -1478,3 +1478,35 @@ class TestSpecRouter:
 
         assert result["status"] == "rejected"
         mock_clear.assert_called_once_with(issue="42")
+
+
+class TestSpecsDirNoneGuard:
+    """_specs_dir returns None when no project dir is available."""
+
+    def test_specs_dir_returns_none_when_project_dir_none(self) -> None:
+        from sova.dashboard.services.spec_service import _specs_dir
+
+        with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
+            assert _specs_dir(None) is None
+
+    def test_find_spec_file_none_project_dir(self) -> None:
+        with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
+            assert find_spec_file("42", project_dir=None) is None
+
+    def test_read_spec_none_project_dir(self) -> None:
+        from sova.dashboard.services.spec_service import read_spec
+
+        with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
+            assert read_spec("42", project_dir=None) is None
+
+    def test_list_all_specs_none_project_dir(self) -> None:
+        from sova.dashboard.services.spec_service import list_all_specs
+
+        with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
+            assert list_all_specs(project_dir=None) == []
+
+    def test_list_pending_specs_none_project_dir(self) -> None:
+        from sova.dashboard.services.spec_service import list_pending_specs
+
+        with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
+            assert list_pending_specs(project_dir=None) == []
