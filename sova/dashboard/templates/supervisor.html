@@ -42,6 +42,8 @@
         <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#6c7086"></span> Low</span>
       </div>
       <div class="flex items-center gap-1">
+        <button type="button" id="hide-done-btn" onclick="toggleHideDone()" title="Toggle visibility of completed milestone groups"
+                class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Hide Done</button>
         <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
         <button type="button" onclick="zoomOut()" title="Zoom out" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">&minus;</button>
         <button type="button" onclick="zoomFit()" title="Fit to view" class="text-xs text-gray-400 hover:text-gray-200 px-2 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">Fit</button>
@@ -200,6 +202,17 @@ let _svgSel = null;
 let _selectedNodeId = null;
 let _fitTransform = null;
 let _savedTransform = null;  // user's current pan/zoom, preserved across re-renders
+let _lastGraphData = null;
+
+function _lsGet(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function _lsSet(key, val) {
+  try { localStorage.setItem(key, val); } catch { /* noop */ }
+}
+
+let _hideDone = _lsGet('sova-graph-hide-done') === '1';
 
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
@@ -250,6 +263,21 @@ const _PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
 function zoomIn()  { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 1.35); }
 function zoomOut() { if (_svgSel && _zoomBehavior) _svgSel.transition().duration(300).call(_zoomBehavior.scaleBy, 0.74); }
 function zoomFit() { if (_svgSel && _zoomBehavior && _fitTransform) _svgSel.transition().duration(350).call(_zoomBehavior.transform, _fitTransform); }
+
+function toggleHideDone() {
+  _hideDone = !_hideDone;
+  _lsSet('sova-graph-hide-done', _hideDone ? '1' : '0');
+  _updateHideDoneBtn();
+  if (_lastGraphData) {
+    if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
+    renderGraph(_lastGraphData);
+  }
+}
+
+function _updateHideDoneBtn() {
+  const btn = document.getElementById('hide-done-btn');
+  if (btn) btn.textContent = _hideDone ? 'Show Done' : 'Hide Done';
+}
 
 // -- Toggle / enable / disable --
 let _toggleBusy = false;
@@ -497,6 +525,7 @@ async function loadGraph() {
     if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
 
     errorEl.classList.add('hidden');
+    _lastGraphData = data;
     renderGraph(data);
   } catch (e) {
     loading.classList.add('hidden');
@@ -702,22 +731,42 @@ function renderGraph(data) {
     }
   });
 
+  // Determine completed groups and visibility
+  const TOMBSTONE_H = 28;
+
+  function isGroupCompleted(m) {
+    const nodes = msMap.get(m);
+    return !nodes.length || nodes.every(n => n.state === 'done' || n.state === 'closed');
+  }
+
+  const visibleMs = _hideDone
+    ? sortedMs.filter(m => !isGroupCompleted(m))
+    : [...sortedMs];
+
+  const collapsedGroups = new Set();
+  visibleMs.forEach(m => {
+    if (isGroupCompleted(m) && _lsGet(`sova-graph-expanded:${m}`) !== '1') {
+      collapsedGroups.add(m);
+    }
+  });
+
   // Arrange groups in a 2-column grid (even-index groups = left column, odd = right)
-  const col0MaxW = Math.max(...sortedMs.filter((_, i) => i % 2 === 0).map(m => groupLayouts.get(m).boxW), NW + GP * 2);
+  const col0MaxW = Math.max(...visibleMs.filter((_, i) => i % 2 === 0).map(m => groupLayouts.get(m).boxW), NW + GP * 2);
   const col0X = MARGIN;
   const col1X = col0X + col0MaxW + GGX;
 
   const groupPos = new Map();
   let curY0 = MARGIN, curY1 = MARGIN;
-  sortedMs.forEach((m, i) => {
-    const { boxH } = groupLayouts.get(m);
-    if (i % 2 === 0) { groupPos.set(m, { x: col0X, y: curY0 }); curY0 += boxH + GGY; }
-    else             { groupPos.set(m, { x: col1X, y: curY1 }); curY1 += boxH + GGY; }
+  visibleMs.forEach((m, i) => {
+    const h = collapsedGroups.has(m) ? TOMBSTONE_H : groupLayouts.get(m).boxH;
+    if (i % 2 === 0) { groupPos.set(m, { x: col0X, y: curY0 }); curY0 += h + GGY; }
+    else             { groupPos.set(m, { x: col1X, y: curY1 }); curY1 += h + GGY; }
   });
 
-  // Build global nodePos from group origin + local position
+  // Build global nodePos from group origin + local position (skip collapsed groups)
   const nodePos = {};
-  sortedMs.forEach(m => {
+  visibleMs.forEach(m => {
+    if (collapsedGroups.has(m)) return;
     const { x: gx, y: gy } = groupPos.get(m);
     groupLayouts.get(m).nodeLPos.forEach((lp, id) => {
       const nx = gx + lp.lx, ny = gy + lp.ly;
@@ -727,6 +776,11 @@ function renderGraph(data) {
 
   const allX = Object.values(nodePos).map(p => p.x + NW);
   const allY = Object.values(nodePos).map(p => p.y + NH);
+  collapsedGroups.forEach(m => {
+    const { x, y } = groupPos.get(m);
+    allX.push(x + groupLayouts.get(m).boxW);
+    allY.push(y + TOMBSTONE_H);
+  });
   const contentW = (allX.length ? Math.max(...allX) + GP : 600) + MARGIN;
   const contentH = (allY.length ? Math.max(...allY) + GP : 400) + MARGIN;
 
@@ -824,11 +878,50 @@ function renderGraph(data) {
   }
 
   // --- draw group boxes (behind edges and nodes) ---
-  sortedMs.forEach(m => {
+  visibleMs.forEach(m => {
     const { x, y } = groupPos.get(m);
     const { boxW, boxH, nodeLPos, subgroupMeta } = groupLayouts.get(m);
     const { bg, border, head } = groupPal.get(m);
     const memberIds = JSON.stringify([...nodeLPos.keys()]);
+    const completed = isGroupCompleted(m);
+
+    if (collapsedGroups.has(m)) {
+      const grp = mainG.append('g')
+        .attr('class', 'group-box group-tombstone')
+        .attr('data-members', memberIds)
+        .style('cursor', 'pointer');
+
+      grp.append('rect')
+        .attr('x', x).attr('y', y).attr('width', boxW).attr('height', TOMBSTONE_H)
+        .attr('rx', 6)
+        .attr('fill', bg).attr('fill-opacity', 0.6)
+        .attr('stroke', border).attr('stroke-width', 1).attr('stroke-opacity', 0.4);
+
+      const label = m.replace(/^Phase \d+:\s*/i, '');
+      const tDisplay = label.length > 40 ? label.slice(0, 39) + '…' : label;
+      grp.append('text')
+        .attr('x', x + 10).attr('y', y + 18)
+        .attr('fill', head).attr('font-size', '9px').attr('font-weight', '600')
+        .attr('font-family', 'system-ui, sans-serif').attr('letter-spacing', '0.04em')
+        .attr('opacity', 0.7)
+        .text(tDisplay.toUpperCase());
+
+      const nodeCount = msMap.get(m).length;
+      grp.append('text')
+        .attr('x', x + boxW - 10).attr('y', y + 18)
+        .attr('text-anchor', 'end')
+        .attr('fill', '#a6e3a1').attr('font-size', '9px').attr('font-weight', '500')
+        .attr('font-family', 'system-ui, sans-serif')
+        .attr('opacity', 0.6)
+        .text(`${nodeCount} done`);
+
+      grp.on('click', () => {
+        _lsSet(`sova-graph-expanded:${m}`, '1');
+        if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
+        renderGraph(_lastGraphData);
+      });
+      return;
+    }
 
     const grp = mainG.append('g').attr('class', 'group-box').attr('data-members', memberIds);
 
@@ -853,6 +946,23 @@ function renderGraph(data) {
       .attr('fill', head).attr('font-size', '10.5px').attr('font-weight', '700')
       .attr('font-family', 'system-ui, sans-serif').attr('letter-spacing', '0.04em')
       .text(display.toUpperCase());
+
+    if (completed) {
+      grp.append('text')
+        .attr('x', x + boxW - GP).attr('y', y + GH - 8)
+        .attr('text-anchor', 'end')
+        .attr('fill', head).attr('font-size', '8.5px').attr('font-weight', '500')
+        .attr('font-family', 'system-ui, sans-serif')
+        .attr('opacity', 0.5)
+        .style('cursor', 'pointer')
+        .text('collapse')
+        .on('click', (event) => {
+          event.stopPropagation();
+          _lsSet(`sova-graph-expanded:${m}`, '0');
+          if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
+          renderGraph(_lastGraphData);
+        });
+    }
 
     // Subgroup dividers and labels (for large groups only)
     subgroupMeta.forEach(sg => {
@@ -1620,6 +1730,7 @@ async function openSupervisorPersona() {
 }
 
 // -- Init --
+_updateHideDoneBtn();
 loadStatus(); loadQuota(); loadCIBudget(); loadGraph(); loadDecisions(); loadPlan(); loadQueue(); loadSupervisorPersona();
 
 // Poll every 30s as fallback; loadGraph re-renders only when data changes

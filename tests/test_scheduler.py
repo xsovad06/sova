@@ -421,12 +421,15 @@ class TestServerCLI:
         assert "host" in result.output.lower() or "port" in result.output.lower()
 
     def test_server_status_shows_not_running(self) -> None:
+        from unittest.mock import patch
+
         from typer.testing import CliRunner
 
         from sova.cli.app import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["server", "status"])
+        with patch("sova.scheduler.server.read_pid_file", return_value=None):
+            result = runner.invoke(app, ["server", "status"])
         assert result.exit_code == 0
         assert "not running" in result.output.lower() or "stopped" in result.output.lower()
 
