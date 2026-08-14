@@ -94,6 +94,10 @@ def _get_project_agents(slug: str | None = None) -> ProjectAgents:
         pa = _projects.get(slug)
         if pa is None:
             project_dir = get_project_dir()
+            if project_dir is None and slug != _DEFAULT_SLUG:
+                from sova.config.registry import get_project_path
+
+                project_dir = get_project_path(slug)
             if project_dir is None:
                 project_dir = _default_project_dir or Path.cwd()
             resolved = project_dir.resolve()
