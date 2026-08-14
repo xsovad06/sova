@@ -575,6 +575,20 @@ class TestGetPlanIncludedMinutes:
 
         assert minutes == 2000
 
+    @pytest.mark.asyncio
+    async def test_resolve_gh_env_exception_continues(self) -> None:
+        tracker = CIBudgetTracker()
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.stdout = '{"total_minutes_used": 200, "included_minutes": 3000}'
+
+        with patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=mock_result):
+            with patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, side_effect=RuntimeError("auth failed")):
+                budget = await tracker.get_budget("owner/repo", "user")
+
+        assert budget.total == 3000
+        assert budget.used == 200
+
 
 class TestCIBudgetTrackerFactory:
     def test_same_identity_returns_same_instance(self) -> None:
