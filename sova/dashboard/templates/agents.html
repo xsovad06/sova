@@ -294,6 +294,7 @@ var _cardMenuOpen = false;
 var _completedCleanupTimer = null;
 var _workItems = [];
 var _githubUser = '';
+var _jiraDisplayName = '';
 var _taskAssigneeFilter = localStorage.getItem('sova-task-assignee-filter') || 'all';
 var _taskStateFilter = localStorage.getItem('sova-task-state-filter') || '';
 
@@ -330,6 +331,7 @@ async function loadWorkItems() {
     var data = await res.json();
     _workItems = data.items || [];
     if (data.github_user) _githubUser = data.github_user;
+    _jiraDisplayName = data.jira_display_name || '';
     _updateApiHealthBanner(data.api_health);
 
     var slotsInfo = document.getElementById('slots-info');
@@ -419,10 +421,12 @@ function _applyTaskFilters(items) {
 
   if (_taskAssigneeFilter === 'mine' && _githubUser) {
     var user = _githubUser.toLowerCase();
+    var jiraUser = _jiraDisplayName ? _jiraDisplayName.toLowerCase() : '';
     filtered = filtered.filter(function(t) {
       var assignees = (t.assignees || []).map(function(a) { return a.toLowerCase(); });
       var author = ((t.pr_details || {}).author || '').toLowerCase();
-      return assignees.indexOf(user) !== -1 || author === user;
+      return assignees.indexOf(user) !== -1 || author === user ||
+        (jiraUser && assignees.indexOf(jiraUser) !== -1);
     });
   }
 
