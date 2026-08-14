@@ -619,7 +619,7 @@ async def _attach_integration_gates(
 async def get_work_items(project_dir: Path | None = None) -> dict:
     """Assemble unified work items from all state sources.
 
-    Returns: {items, running_count, slots_available, max_concurrent, github_user, api_health}
+    Returns: {items, running_count, slots_available, max_concurrent, github_user, jira_display_name, api_health}
     api_health: {status: "ok"} or {status: "rate_limited", detail, cooldown_seconds, hits}
     """
     from sova.dashboard.services.agent_pool import _get_project_agents
@@ -717,12 +717,15 @@ async def get_work_items(project_dir: Path | None = None) -> dict:
     except Exception:
         log.debug("work_items.quota_status_failed", exc_info=True)
 
+    jira_display_name = cfg.task_source.jira_display_name if cfg else ""
+
     return {
         "items": items,
         "running_count": running_count,
         "slots_available": max(0, max_concurrent - running_count),
         "max_concurrent": max_concurrent,
         "github_user": github_user,
+        "jira_display_name": jira_display_name,
         "api_health": api_health,
     }
 

@@ -2009,3 +2009,69 @@ class TestApiHealth:
 
         result = await get_work_items(project_dir=tmp_path)
         assert result["api_health"]["status"] == "ok"
+
+
+class TestJiraDisplayName:
+    """Tests for jira_display_name config field and API exposure."""
+
+    def test_task_source_config_accepts_jira_display_name(self) -> None:
+        from sova.config.models import TaskSourceConfig
+
+        cfg = TaskSourceConfig(jira_display_name="Damian Sova")
+        assert cfg.jira_display_name == "Damian Sova"
+
+    def test_task_source_config_defaults_empty(self) -> None:
+        from sova.config.models import TaskSourceConfig
+
+        cfg = TaskSourceConfig()
+        assert cfg.jira_display_name == ""
+
+    def test_settings_meta_registered(self) -> None:
+        from sova.dashboard.settings_meta import get_meta
+
+        meta = get_meta("task_source.jira_display_name")
+        assert meta is not None
+        assert meta.group == "task_source"
+        assert "JIRA display name" in meta.label
+
+    @pytest.mark.asyncio
+    async def test_get_work_items_returns_jira_display_name(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        mock_cfg = MagicMock()
+        mock_cfg.external_reviews.enabled = False
+        mock_cfg.github_user = "dsova06"
+        mock_cfg.task_source.jira_display_name = "Damian Sova"
+        mock_cfg.integration_gates.ci_passed = False
+        mock_cfg.integration_gates.sova_reviewed = False
+        mock_cfg.integration_gates.coderabbit_reviewed = False
+        mock_cfg.integration_gates.threads_resolved = False
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _path: mock_cfg)
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["jira_display_name"] == "Damian Sova"
+        assert result["github_user"] == "dsova06"
+
+    @pytest.mark.asyncio
+    async def test_get_work_items_empty_when_config_fails(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setattr(
+            "sova.dashboard.services.work_item_service._fetch_all_sources",
+            AsyncMock(return_value=([], [], [], {"agents": [], "completed": []})),
+        )
+        monkeypatch.setattr(
+            "sova.dashboard.services.agent_pool._get_project_agents",
+            MagicMock(return_value=MagicMock(max_concurrent=3)),
+        )
+        monkeypatch.setattr(
+            "sova.config.loader.load_config",
+            MagicMock(side_effect=RuntimeError("config broken")),
+        )
+
+        result = await get_work_items(project_dir=tmp_path)
+        assert result["jira_display_name"] == ""

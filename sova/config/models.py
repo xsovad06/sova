@@ -47,6 +47,7 @@ class TaskSourceConfig(BaseSettings):
     jira_state_transitions: dict[str, str] = Field(default_factory=dict)
     jira_status_mapping: dict[str, str] = Field(default_factory=dict)
     jira_track_agent_work: bool = False
+    jira_display_name: str = ""
 
     @property
     def is_jira(self) -> bool:

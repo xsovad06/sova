@@ -298,6 +298,12 @@ _REGISTRY: list[SettingMeta] = [
         "task_source",
         "boolean",
     ),
+    SettingMeta(
+        "task_source.jira_display_name",
+        "JIRA display name",
+        "Your JIRA display name for Mine filter matching (e.g. Damian Sova)",
+        "task_source",
+    ),
     # -- Review --
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
