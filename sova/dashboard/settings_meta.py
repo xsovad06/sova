@@ -642,6 +642,13 @@ _REGISTRY: list[SettingMeta] = [
         "string",
     ),
     SettingMeta(
+        "dashboard.confirm_model",
+        "Model confirmation",
+        "When to show the model selection modal: complex_only (prompt for complex/epic), always, or never",
+        "dashboard",
+        "string",
+    ),
+    SettingMeta(
         "dashboard.gc_on_startup",
         "GC on startup",
         "Run issue-aware GC (worktree and branch cleanup) on dashboard startup (single-project mode only)",
