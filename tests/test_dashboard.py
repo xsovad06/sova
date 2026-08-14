@@ -16269,6 +16269,54 @@ class TestComplexityEndpoint:
         assert data["complexity"] == "moderate"
         assert data["suggested_model"] == "sonnet"
 
+    async def test_complexity_response_includes_confirm_model(self, client: AsyncClient, session: AsyncSession) -> None:
+        from sova.db.models import TaskAssessmentRecord
+
+        record = TaskAssessmentRecord(
+            issue_number="200",
+            suitability="suitable",
+            confidence=Decimal("0.8"),
+            reasoning="test",
+            estimated_complexity="moderate",
+        )
+        session.add(record)
+        await session.commit()
+
+        resp = await client.get("/api/agents/issue/200/complexity")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "confirm_model" in data
+        assert data["confirm_model"] == "complex_only"
+
+    async def test_complexity_confirm_model_reflects_config(self, client: AsyncClient) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.config.models import DashboardConfig, ProjectConfig
+
+        mock_task = MagicMock()
+        mock_task.title = "Simple fix"
+        mock_task.description = "A simple change"
+        mock_task.labels = []
+
+        mock_adapter = AsyncMock()
+        mock_adapter.get_task = AsyncMock(return_value=mock_task)
+
+        cfg = ProjectConfig()
+        cfg.dashboard = DashboardConfig(confirm_model="always")
+
+        with (
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch(
+                "sova.config.loader.load_config",
+                return_value=cfg,
+            ),
+        ):
+            resp = await client.get("/api/agents/issue/202/complexity")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["confirm_model"] == "always"
+
 
 # ---------------------------------------------------------------------------
 # Start agent model parameter

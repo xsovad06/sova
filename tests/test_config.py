@@ -257,6 +257,48 @@ def test_dashboard_rejects_invalid_kanban_mode(tmp_path: Path) -> None:
         DashboardConfig(kanban_columns="invalid_mode")
 
 
+def test_dashboard_confirm_model_default() -> None:
+    """Default confirm_model is 'complex_only'."""
+    from sova.config.models import DashboardConfig
+
+    cfg = DashboardConfig()
+    assert cfg.confirm_model == "complex_only"
+
+
+def test_dashboard_confirm_model_from_toml(tmp_path: Path) -> None:
+    """confirm_model is loaded from sova.toml [dashboard] section."""
+    toml_content = """
+[dashboard]
+confirm_model = "always"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.dashboard.confirm_model == "always"
+
+
+def test_dashboard_confirm_model_never(tmp_path: Path) -> None:
+    """confirm_model accepts 'never' value."""
+    toml_content = """
+[dashboard]
+confirm_model = "never"
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.dashboard.confirm_model == "never"
+
+
+def test_dashboard_confirm_model_rejects_invalid() -> None:
+    """Invalid confirm_model value is rejected."""
+    from sova.config.models import DashboardConfig
+
+    with pytest.raises(ValidationError):
+        DashboardConfig(confirm_model="sometimes")
+
+
 def test_legacy_conf_ignored_without_toml(tmp_path: Path) -> None:
     """Legacy .conf files are no longer loaded; defaults are returned instead."""
     conf_dir = tmp_path / ".claude" / "scripts"
