@@ -12,6 +12,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sova.dashboard.app import create_app
 from sova.db.models import CostRecord, Memory, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 
@@ -150,7 +151,6 @@ async def seed_data(session: AsyncSession):
 
 @pytest.fixture
 async def client():
-    from sova.dashboard.app import create_app
 
     app = create_app(multi_project=False)
     transport = ASGITransport(app=app)
@@ -3734,8 +3734,6 @@ class TestMultiProject:
 
         registry.register_project(p1, slug="alpha")
         registry.register_project(p2, slug="beta")
-
-        from sova.dashboard.app import create_app
 
         app = create_app(multi_project=True)
         transport = ASGITransport(app=app)
@@ -13859,8 +13857,6 @@ class TestWebSocketAgentStatus:
         """WebSocket endpoint accepts connection and sends status_update with runs."""
         from starlette.testclient import TestClient
 
-        from sova.dashboard.app import create_app
-
         app = create_app(multi_project=False)
         client = TestClient(app)
         with client.websocket_connect("/api/ws/agents/status") as ws:
@@ -13872,7 +13868,6 @@ class TestWebSocketAgentStatus:
         """Verify connection is removed from manager after client disconnects."""
         from starlette.testclient import TestClient
 
-        from sova.dashboard.app import create_app
         from sova.dashboard.routers.agents import _ws_manager
 
         app = create_app(multi_project=False)
@@ -13886,8 +13881,6 @@ class TestWebSocketAgentStatus:
     def test_websocket_sequential_clients(self) -> None:
         """Sequential clients can each connect and receive updates."""
         from starlette.testclient import TestClient
-
-        from sova.dashboard.app import create_app
 
         app = create_app(multi_project=False)
         # Use separate TestClient instances to avoid threading deadlock
@@ -13906,8 +13899,6 @@ class TestWebSocketAgentStatus:
         from unittest.mock import AsyncMock, patch
 
         from starlette.testclient import TestClient
-
-        from sova.dashboard.app import create_app
 
         app = create_app(multi_project=False)
         client = TestClient(app)
@@ -14012,8 +14003,6 @@ class TestInstallationAPI:
             "sova.dashboard.routers.setup.get_project_dir",
             lambda: project_dir,
         )
-
-        from sova.dashboard.app import create_app
 
         app = create_app(project_dir=project_dir)
         transport = ASGITransport(app=app)
@@ -14776,7 +14765,6 @@ class TestResumeFromApproval:
 
     async def test_resume_endpoint_404(self) -> None:
         """The router endpoint returns 404 for missing run."""
-        from sova.dashboard.app import create_app
 
         app = create_app()
         transport = ASGITransport(app=app)
@@ -14786,7 +14774,6 @@ class TestResumeFromApproval:
 
     async def test_resume_endpoint_409(self) -> None:
         """The router endpoint returns 409 for wrong status."""
-        from sova.dashboard.app import create_app
 
         async with await get_session() as session:
             async with session.begin():
@@ -14872,8 +14859,6 @@ class TestResumeFromApproval:
     async def test_resume_endpoint_500_on_spawn_error(self) -> None:
         """The router returns 500 for generic spawn errors (not 404/409)."""
         from unittest.mock import AsyncMock, patch
-
-        from sova.dashboard.app import create_app
 
         async with await get_session() as session:
             async with session.begin():
