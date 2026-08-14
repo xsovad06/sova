@@ -275,6 +275,7 @@ async def get_issue_complexity(issue_number: str) -> dict:
         "suggested_model": model_alias,
         "reason": reason,
         "model_options": model_options,
+        "confirm_model": cfg.dashboard.confirm_model,
     }
 
 

@@ -3191,20 +3191,35 @@ function _setComplexityBadge(el, tier) {
   el.className = _BADGE_BASE + (_COMPLEXITY_COLORS[tier] || _BADGE_DEFAULT);
 }
 
+var _CONFIRM_TIERS = { complex: true, epic: true };
+
+function _populateModelDropdown(sel, modelOptions) {
+  sel.innerHTML = '';
+  var seen = {};
+  if (modelOptions && modelOptions.length) {
+    modelOptions.forEach(function(opt) {
+      if (seen[opt.model]) return;
+      seen[opt.model] = true;
+      var o = document.createElement('option');
+      o.value = opt.model;
+      o.textContent = opt.model;
+      sel.appendChild(o);
+    });
+  } else {
+    ['haiku', 'sonnet', 'opus'].forEach(function(m) {
+      var o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      sel.appendChild(o);
+    });
+  }
+}
+
 function showLaunchModal(issue, role, force, prNumber) {
   _launchModalState = { issue: issue, role: role, force: force || false, prNumber: prNumber || null };
   _launchModalTrigger = document.activeElement;
-  var modal = document.getElementById('launch-modal');
-  var loading = document.getElementById('launch-modal-loading');
-  var body = document.getElementById('launch-modal-body');
 
-  loading.classList.remove('hidden');
-  body.classList.add('hidden');
-  modal.classList.remove('hidden');
-  document.addEventListener('keydown', _launchModalKeydown);
-
-  // If no issue number, skip complexity fetch and show defaults
   if (!issue) {
+    _showModalChrome();
     _populateLaunchDefaults();
     return;
   }
@@ -3216,42 +3231,48 @@ function showLaunchModal(issue, role, force, prNumber) {
       return res.json();
     })
     .then(function(data) {
-      if (requestId !== _launchRequestId) return; // discard stale response
-      _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
-      // Populate model dropdown from config-aware options
-      var sel = document.getElementById('launch-model');
-      sel.innerHTML = '';
-      var seen = {};
-      if (data.model_options && data.model_options.length) {
-        data.model_options.forEach(function(opt) {
-          if (seen[opt.model]) return;
-          seen[opt.model] = true;
-          var o = document.createElement('option');
-          o.value = opt.model;
-          o.textContent = opt.model;
-          sel.appendChild(o);
-        });
-      } else {
-        ['haiku', 'sonnet', 'opus'].forEach(function(m) {
-          var o = document.createElement('option');
-          o.value = m; o.textContent = m;
-          sel.appendChild(o);
-        });
+      if (requestId !== _launchRequestId) return;
+      var confirmMode = data.confirm_model || 'always';
+      var shouldPrompt = confirmMode === 'always'
+        || (confirmMode === 'complex_only' && _CONFIRM_TIERS[data.complexity]);
+
+      if (!shouldPrompt) {
+        _launchModalState = null;
+        _doStartAgent(issue, role, force || false, prNumber || null, data.suggested_model);
+        return;
       }
+
+      _showModalChrome();
+      _setComplexityBadge(document.getElementById('launch-complexity'), data.complexity);
+      var sel = document.getElementById('launch-model');
+      _populateModelDropdown(sel, data.model_options);
       sel.value = data.suggested_model;
       document.getElementById('launch-reason').textContent = data.reason;
-      loading.classList.add('hidden');
-      body.classList.remove('hidden');
+      document.getElementById('launch-modal-loading').classList.add('hidden');
+      document.getElementById('launch-modal-body').classList.remove('hidden');
     })
     .catch(function() {
       if (requestId !== _launchRequestId) return;
+      _showModalChrome();
       _populateLaunchDefaults();
     });
 }
 
+function _showModalChrome() {
+  var modal = document.getElementById('launch-modal');
+  var loading = document.getElementById('launch-modal-loading');
+  var body = document.getElementById('launch-modal-body');
+  loading.classList.remove('hidden');
+  body.classList.add('hidden');
+  modal.classList.remove('hidden');
+  document.addEventListener('keydown', _launchModalKeydown);
+}
+
 function _populateLaunchDefaults() {
   _setComplexityBadge(document.getElementById('launch-complexity'), 'unknown');
-  document.getElementById('launch-model').value = 'sonnet';
+  var sel = document.getElementById('launch-model');
+  _populateModelDropdown(sel, null);
+  sel.value = 'sonnet';
   document.getElementById('launch-reason').textContent = 'default (no complexity data)';
   document.getElementById('launch-modal-loading').classList.add('hidden');
   document.getElementById('launch-modal-body').classList.remove('hidden');
