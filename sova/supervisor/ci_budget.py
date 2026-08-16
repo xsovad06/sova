@@ -95,8 +95,7 @@ class CIBudgetTracker:
         try:
             data = json.loads(result.stdout)
         except (json.JSONDecodeError, TypeError):
-            log.warning("ci_budget.bad_json", repo=repo)
-            return _zero_budget()
+            data = None
 
         if not isinstance(data, dict):
             log.warning("ci_budget.bad_json", repo=repo)

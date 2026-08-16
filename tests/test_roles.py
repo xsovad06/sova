@@ -6,7 +6,7 @@ import json
 import os
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -751,7 +751,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -782,7 +782,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -816,7 +816,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -852,7 +852,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             await role.execute(ctx)
 
@@ -907,7 +907,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -934,7 +934,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             patch(
                 "sova.knowledge.extraction.extract_memories",
                 new_callable=AsyncMock,
@@ -971,7 +971,7 @@ class TestReviewerRole:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("DB write failed"),
             ),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -1029,7 +1029,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             patch(
                 "sova.core.steps._spec_helpers.append_spec_section",
                 side_effect=OSError("spec write failed"),
@@ -1083,7 +1083,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -1119,7 +1119,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -1170,7 +1170,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -1216,7 +1216,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             result = await role.execute(ctx)
 
@@ -1281,7 +1281,7 @@ class TestReviewerRole:
                 patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
                 patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
                 patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-                patch("sova.roles.reviewer.write_handoff_file"),
+                patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             ):
                 role = ReviewerRole()
                 result = await role.execute(ctx)
@@ -1324,7 +1324,7 @@ class TestReviewerRole:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=_capture_invoke),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -2998,7 +2998,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["foo.py", "bar.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -3027,7 +3027,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -3052,7 +3052,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=RuntimeError("LLM unavailable")),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -3095,7 +3095,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py", "b.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, side_effect=side) as mock_invoke,
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -3124,7 +3124,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             role = ReviewerRole()
             await role.execute(ctx)
@@ -3158,7 +3158,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             role = ReviewerRole()
             await role.execute(ctx)
@@ -3193,7 +3193,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             role = ReviewerRole()
             await role.execute(ctx)
@@ -3221,7 +3221,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["x.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             role = ReviewerRole()
             await role.execute(ctx)
@@ -3294,7 +3294,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             role = ReviewerRole()
             result = await role.execute(ctx)
@@ -3334,7 +3334,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             patch("sova.roles.reviewer.get_session", side_effect=OSError("DB connection refused")),
         ):
             role = ReviewerRole()
@@ -3372,7 +3372,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             patch("sova.roles.reviewer.read_handoff_file", return_value=None),
             patch("sova.roles.reviewer.get_session", new_callable=AsyncMock),
             patch.object(ReviewerRole, "_clear_current_step", mock_clear_step),
@@ -3924,7 +3924,7 @@ class TestReviewerExceptionPaths:
 
     async def test_write_handoff_db_exception_non_fatal(self) -> None:
         """_write_handoff handles DB write failure gracefully (lines 733-734)."""
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.reviewer import ReviewerRole, ReviewResult
 
@@ -3935,7 +3935,7 @@ class TestReviewerExceptionPaths:
 
         with (
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock, side_effect=RuntimeError("DB down")),
-            patch("sova.roles.reviewer.write_handoff_file"),
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
         ):
             # Should not raise
             await role._write_handoff(ctx, review)
@@ -3962,7 +3962,7 @@ class TestReviewerExceptionPaths:
         """
         import json
         from decimal import Decimal
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.llm.models import LLMResult
         from sova.roles.reviewer import ReviewerRole
@@ -3983,7 +3983,7 @@ class TestReviewerExceptionPaths:
             patch("sova.roles.reviewer.get_pr_files", new_callable=AsyncMock, return_value=["a.py"]),
             patch("sova.roles.reviewer.invoke", new_callable=AsyncMock, return_value=llm_result),
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock) as mock_db_handoff,
-            patch("sova.roles.reviewer.write_handoff_file") as mock_file_handoff,
+            patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock) as mock_file_handoff,
         ):
             result = await role.execute(ctx)
 
@@ -4578,7 +4578,7 @@ class TestPlannerRole:
         assert result == ""
 
     async def test_write_handoff_file_exception_non_fatal(self) -> None:
-        from unittest.mock import patch
+        from unittest.mock import MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
@@ -4594,12 +4594,12 @@ class TestPlannerRole:
                 rationale="r",
             ),
         ]
-        with patch("sova.roles.planner.write_handoff_file", side_effect=OSError("disk full")):
+        with patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock, side_effect=OSError("disk full")):
             # Should not raise
             await role._write_handoff(ctx, tasks)
 
     async def test_write_handoff_db_path(self) -> None:
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
@@ -4616,7 +4616,7 @@ class TestPlannerRole:
                 rationale="r",
             ),
         ]
-        mock_write_file = AsyncMock()
+        mock_write_file = MagicMock()
         mock_write_handoff = AsyncMock()
         with (
             patch("sova.roles.planner.write_handoff_file", mock_write_file),
@@ -4629,7 +4629,7 @@ class TestPlannerRole:
         assert call_args[0][0] == 99
 
     async def test_write_handoff_db_exception_non_fatal(self) -> None:
-        from unittest.mock import patch
+        from unittest.mock import AsyncMock, MagicMock, patch
 
         from sova.roles.planner import PlannedTask, PlannerRole
 
@@ -4647,7 +4647,7 @@ class TestPlannerRole:
             ),
         ]
         with (
-            patch("sova.roles.planner.write_handoff_file"),
+            patch("sova.roles.planner.write_handoff_file", new_callable=MagicMock),
             patch("sova.roles.planner.write_handoff", new=AsyncMock(side_effect=RuntimeError("DB down"))),
         ):
             # Should not raise

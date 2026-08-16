@@ -284,6 +284,9 @@ function renderQueueCard(item) {
 
   var typeBadge = issueTypeBadge(item.issue_type);
 
+  var priority = _extractPriority(item.labels || []);
+  var priorityIcon = '<img src="' + priorityIconUrl(priority) + '" alt="' + escapeHtml(priority || 'undefined') + ' priority" width="14" height="14" class="inline-block align-middle shrink-0">';
+
   var displayLabels = (item.labels || []).filter(function(l) {
     return l.indexOf('agent:') !== 0 && l.indexOf('priority:') !== 0 && l.indexOf('role:') !== 0;
   });
@@ -314,6 +317,7 @@ function renderQueueCard(item) {
     '<input type="checkbox" id="cb-' + escapeHtml(item.issue) + '" ' + (isSelected ? 'checked ' : '') +
       'onchange="toggleSelection(\'' + escapeHtml(item.issue) + '\', \'' + escapeHtml(item.state) + '\')" ' +
       'class="rounded border-gray-600 bg-surface text-accent focus:ring-accent/50 cursor-pointer shrink-0">' +
+    priorityIcon +
     '<span class="px-2 py-1 rounded text-xs font-bold ' + style.badge + '">' + item.priority_label + '</span>' +
     '<div class="flex-1 min-w-0">' +
       '<div class="flex items-center gap-2">' +

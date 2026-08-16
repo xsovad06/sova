@@ -5,8 +5,8 @@ Periodically scans active TaskRun records, detects four anomaly types
 (pipeline not adopted, no output, step timeout, zombie process), and
 takes corrective action (warn via feed event, kill via stop_agent).
 
-Killed agents flow through the existing _wait_and_finalize path.
-The watchdog never independently retries.
+Killed agents flow through the existing _wait_and_finalize -> _schedule_retry()
+path for auto-retry. The watchdog never independently retries.
 """
 
 from __future__ import annotations

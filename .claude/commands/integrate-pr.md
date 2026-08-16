@@ -171,7 +171,7 @@ If merge queue is detected:
 - If enqueued, write a merge queue marker file so the dashboard can track the PR:
   ```bash
   mkdir -p .claude/agent-control
-  python3 -c "import json; print(json.dumps({'pr_number': <PR_NUMBER>, 'repo': '<OWNER/REPO>', 'issue_number': '<ISSUE_NUMBER>', 'branch_name': '<HEAD_BRANCH>'}))" > .claude/agent-control/merge-queue-<PR_NUMBER>.json
+  python3 -c "import json; print(json.dumps({'pr_number': <PR_NUMBER>, 'repo': '<OWNER/REPO>', 'issue_number': <ISSUE_NUMBER>, 'branch_name': '<HEAD_BRANCH>'}))" > .claude/agent-control/merge-queue-<PR_NUMBER>.json
   ```
 - Then poll merge queue status via GraphQL every `merge_queue_poll_interval` seconds (default 30)
 - On MERGED: proceed to Phase 6. If `delete_branch = true`, delete remote branch via GitHub API

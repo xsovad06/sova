@@ -18,3 +18,17 @@
   {%- endif %}
 </div>
 {%- endmacro -%}
+
+{%- macro priority_icon(priority, size="16") -%}
+{#- Keep in sync with _PRIORITY_ICON_MAP in app.js -#}
+{%- set priority_map = {
+  'critical': 'blocker',
+  'high': 'high',
+  'medium': 'medium',
+  'low': 'low'
+} -%}
+{%- set priority_lower = (priority|string|lower).strip() if priority else '' -%}
+{%- set icon_name = priority_map.get(priority_lower, 'undefined') -%}
+{%- set alt_text = priority_lower.capitalize() if priority_lower else 'Undefined' -%}
+<img src="/static/priority/{{ icon_name }}.svg" alt="{{ alt_text }} priority" width="{{ size }}" height="{{ size }}" class="inline-block align-middle" loading="lazy">
+{%- endmacro -%}

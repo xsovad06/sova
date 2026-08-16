@@ -14,7 +14,7 @@ SOVA has four main components:
 - `core/state.py` -- 19-state TaskStatus StrEnum with transition validation
 - `core/context.py` -- ExecutionContext dataclass threading state through steps
 - `core/output.py` -- OutputWriter for per-run DB-backed output persistence, read_lines, retention cleanup
-- `core/steps/` -- 29 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:
+- `core/steps/` -- 31 BaseStep implementations with execute/validate_output/can_skip. Four pipeline variants:
   - **Developer pipeline** (16 steps): sync -> assess -> create_worktree -> capture_baseline -> develop -> simplify -> self_review -> commit -> validate -> push -> create_pr -> wait_for_external_reviews -> address_external_findings -> monitor_ci -> extract_memory -> handoff_to_reviewer
   - **Address-review pipeline** (10 steps): ensure_worktree -> rebase -> address_review -> rearrange_commits -> validate -> push -> monitor_ci -> resolve_external_reviews -> extract_memory -> handoff_to_user
   - **Researcher pipeline** (4 steps): fetch_task -> research -> spec -> extract_memory

@@ -33,7 +33,7 @@ test-bash: lint-bash ## Validate bash scripts (shellcheck + --help)
 	done
 
 test-py: ## Run pytest suite (excludes runtime/stress/chaos)
-	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos"
+	$(PYTEST) tests/ -v -m "not runtime and not stress and not chaos" -n auto
 
 test-runtime: ## Run runtime, stress, and chaos tests (manual)
 	$(PYTEST) tests/ -v -m "runtime or stress or chaos" --timeout=120

@@ -55,6 +55,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "pytest-timeout>=2.3",
+    "pytest-xdist>=3.0",
     "ruff>=0.4",
     "respx>=0.22",
 ]

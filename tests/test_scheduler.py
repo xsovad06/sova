@@ -421,8 +421,6 @@ class TestServerCLI:
         assert "host" in result.output.lower() or "port" in result.output.lower()
 
     def test_server_status_shows_not_running(self) -> None:
-        from unittest.mock import patch
-
         from typer.testing import CliRunner
 
         from sova.cli.app import app
