@@ -1510,3 +1510,272 @@ class TestSpecsDirNoneGuard:
 
         with patch("sova.dashboard.services.spec_service.get_project_dir", return_value=None):
             assert list_pending_specs(project_dir=None) == []
+
+
+# ---------------------------------------------------------------------------
+# complete_awaiting_approval_by_issue
+# ---------------------------------------------------------------------------
+
+
+class TestCompleteAwaitingApprovalByIssue:
+    """Tests for the function that transitions awaiting_approval TaskRuns."""
+
+    async def _create_awaiting_run(self, issue: str, role: str = "researcher") -> int:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number=issue, role=role, status="awaiting_approval", current_step="spec")
+            session.add(run)
+            await session.flush()
+            return run.id
+
+    async def test_transitions_to_done(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        result = await complete_awaiting_approval_by_issue("42", "done")
+
+        assert result == run_id
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "done"
+            assert run.ended_at is not None
+
+    async def test_transitions_to_rejected(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        result = await complete_awaiting_approval_by_issue("42", "rejected")
+
+        assert result == run_id
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "rejected"
+            assert run.ended_at is not None
+
+    async def test_returns_none_when_no_matching_run(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+
+        result = await complete_awaiting_approval_by_issue("999", "done")
+
+        assert result is None
+
+    async def test_strips_hash_prefix(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        result = await complete_awaiting_approval_by_issue("#42", "done")
+
+        assert result == run_id
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "done"
+
+    async def test_picks_most_recent_run(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        old_id = await self._create_awaiting_run("42")
+        new_id = await self._create_awaiting_run("42")
+        assert new_id > old_id
+
+        result = await complete_awaiting_approval_by_issue("42", "done")
+
+        assert result == new_id
+        async with await get_session() as session:
+            new_run = await session.get(TaskRun, new_id)
+            old_run = await session.get(TaskRun, old_id)
+            assert new_run.status == "done"
+            assert old_run.status == "awaiting_approval"
+
+    async def test_ignores_non_awaiting_runs(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number="42", role="researcher", status="done", current_step="spec")
+            session.add(run)
+
+        result = await complete_awaiting_approval_by_issue("42", "done")
+        assert result is None
+
+    async def test_ignores_non_researcher_awaiting_runs(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        researcher_id = await self._create_awaiting_run("42", role="researcher")
+        developer_id = await self._create_awaiting_run("42", role="developer")
+        assert developer_id > researcher_id
+
+        result = await complete_awaiting_approval_by_issue("42", "done")
+
+        assert result == researcher_id
+        async with await get_session() as session:
+            researcher = await session.get(TaskRun, researcher_id)
+            developer = await session.get(TaskRun, developer_id)
+            assert researcher.status == "done"
+            assert developer.status == "awaiting_approval"
+
+    async def test_picks_highest_id_on_equal_started_at(self) -> None:
+        from datetime import datetime, timezone
+
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        fixed_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        async with await get_session() as session, session.begin():
+            r1 = TaskRun(
+                issue_number="42",
+                role="researcher",
+                status="awaiting_approval",
+                current_step="spec",
+                started_at=fixed_ts,
+            )
+            r2 = TaskRun(
+                issue_number="42",
+                role="researcher",
+                status="awaiting_approval",
+                current_step="spec",
+                started_at=fixed_ts,
+            )
+            session.add_all([r1, r2])
+            await session.flush()
+            old_id, new_id = r1.id, r2.id
+        assert new_id > old_id
+
+        result = await complete_awaiting_approval_by_issue("42", "done")
+
+        assert result == new_id
+        async with await get_session() as session:
+            assert (await session.get(TaskRun, new_id)).status == "done"
+            assert (await session.get(TaskRun, old_id)).status == "awaiting_approval"
+
+    async def test_nonfatal_on_db_error(self) -> None:
+        from sova.dashboard.services.agent_lifecycle import complete_awaiting_approval_by_issue
+
+        with patch("sova.db.session.get_session", side_effect=RuntimeError("DB down")):
+            result = await complete_awaiting_approval_by_issue("42", "done")
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Spec router -- TaskRun transition on approve/reject/skip
+# ---------------------------------------------------------------------------
+
+
+class TestSpecRouterTaskRunTransition:
+    """Tests that spec router endpoints transition the awaiting_approval TaskRun."""
+
+    async def _create_awaiting_run(self, issue: str) -> int:
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        async with await get_session() as session, session.begin():
+            run = TaskRun(issue_number=issue, role="researcher", status="awaiting_approval", current_step="spec")
+            session.add(run)
+            await session.flush()
+            return run.id
+
+    async def test_approve_transitions_taskrun_to_done(self) -> None:
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await approve_spec("42")
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "done"
+
+    async def test_reject_transitions_taskrun_to_rejected(self) -> None:
+        from sova.dashboard.routers.spec import reject_spec
+        from sova.dashboard.services import handoff_service, spec_service
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        with (
+            patch.object(spec_service, "reject_spec", return_value={"status": "rejected", "issue_number": "42"}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await reject_spec("42")
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "rejected"
+
+    async def test_skip_transitions_taskrun_to_done(self) -> None:
+        from sova.dashboard.routers.spec import skip_spec
+        from sova.dashboard.services import control_service, handoff_service
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        with (
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 456}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await skip_spec("42")
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "done"
+
+    async def test_revise_transitions_taskrun_to_rejected(self) -> None:
+        from sova.dashboard.routers.spec import revise_spec
+        from sova.dashboard.services import control_service, handoff_service
+        from sova.db.models import TaskRun
+        from sova.db.session import get_session
+
+        run_id = await self._create_awaiting_run("42")
+
+        with (
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 789}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await revise_spec("42")
+
+        async with await get_session() as session:
+            run = await session.get(TaskRun, run_id)
+            assert run.status == "rejected"
+
+    async def test_approve_succeeds_without_awaiting_run(self) -> None:
+        """Approve works even if no awaiting_approval TaskRun exists (non-fatal)."""
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            result = await approve_spec("42")
+
+        assert result["status"] == "approved"

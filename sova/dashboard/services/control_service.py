@@ -50,6 +50,9 @@ from sova.dashboard.services.agent_lifecycle import (
     _wait_and_finalize as _wait_and_finalize,
 )
 from sova.dashboard.services.agent_lifecycle import (
+    complete_awaiting_approval_by_issue as complete_awaiting_approval_by_issue,
+)
+from sova.dashboard.services.agent_lifecycle import (
     get_all_agents as get_all_agents,
 )
 from sova.dashboard.services.agent_lifecycle import (

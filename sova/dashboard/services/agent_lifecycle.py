@@ -14,7 +14,7 @@ import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from sova.monitoring.models import ResourceSummary
@@ -1325,6 +1325,57 @@ async def resume_from_approval(run_id: int) -> dict:
         "issue": issue,
         "role": role,
     }
+
+
+async def complete_awaiting_approval_by_issue(
+    issue_number: str, target_status: Literal["done", "rejected"] = "done"
+) -> int | None:
+    """Find and transition the most recent awaiting_approval TaskRun for an issue.
+
+    Returns the run ID that was updated, or None if no matching run was found.
+    Non-fatal: logs warnings on errors but never raises.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from sova.core.state import TaskStatus
+    from sova.db.models import TaskRun
+    from sova.db.session import get_session
+
+    try:
+        async with await get_session() as session, session.begin():
+            stmt = (
+                select(TaskRun.id)
+                .where(
+                    TaskRun.issue_number == issue_number.lstrip("#").strip(),
+                    TaskRun.role == "researcher",
+                    TaskRun.status == TaskStatus.AWAITING_APPROVAL,
+                )
+                .order_by(TaskRun.started_at.desc(), TaskRun.id.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            run_id = result.scalar_one_or_none()
+
+        if run_id is None:
+            return None
+
+        async with await get_session() as session, session.begin():
+            cas = await session.execute(
+                update(TaskRun)
+                .where(TaskRun.id == run_id, TaskRun.status == TaskStatus.AWAITING_APPROVAL)
+                .values(status=target_status, ended_at=datetime.now(timezone.utc))
+            )
+            if cas.rowcount == 0:
+                log.debug("complete_awaiting_approval.cas_failed", run_id=run_id, issue=issue_number)
+                return None
+
+        log.info("complete_awaiting_approval.done", run_id=run_id, issue=issue_number, target=target_status)
+        return run_id
+    except Exception:
+        log.warning("complete_awaiting_approval.failed", issue=issue_number, exc_info=True)
+        return None
 
 
 async def reject_spec(run_id: int) -> dict:

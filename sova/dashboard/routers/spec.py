@@ -58,6 +58,11 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
 
+    # Transition the researcher's TaskRun from awaiting_approval to done
+    updated_run_id = await control_service.complete_awaiting_approval_by_issue(issue_number, "done")
+    if updated_run_id:
+        log.info("spec.approve.taskrun_completed", issue=issue_number, run_id=updated_run_id)
+
     # Spawn developer agent, then clear handoff only on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="developer")
@@ -75,6 +80,11 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
 @router.post("/{issue_number}/revise")
 async def revise_spec(issue_number: str) -> dict:
     """Re-run spec generation. Respawns researcher to run /spec from scratch."""
+    # Transition the researcher's TaskRun from awaiting_approval to rejected (spec sent back)
+    updated_run_id = await control_service.complete_awaiting_approval_by_issue(issue_number, "rejected")
+    if updated_run_id:
+        log.info("spec.revise.taskrun_rejected", issue=issue_number, run_id=updated_run_id)
+
     # Respawn researcher to re-run /spec, then clear handoff on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="researcher")
@@ -91,6 +101,11 @@ async def revise_spec(issue_number: str) -> dict:
 @router.post("/{issue_number}/skip")
 async def skip_spec(issue_number: str) -> dict:
     """Skip spec review and proceed to development."""
+    # Transition the researcher's TaskRun from awaiting_approval to done
+    updated_run_id = await control_service.complete_awaiting_approval_by_issue(issue_number, "done")
+    if updated_run_id:
+        log.info("spec.skip.taskrun_completed", issue=issue_number, run_id=updated_run_id)
+
     # Spawn developer without spec, then clear handoff on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="developer")
@@ -110,6 +125,11 @@ async def reject_spec(issue_number: str) -> dict:
     result = spec_service.reject_spec(issue_number)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
+
+    # Transition the researcher's TaskRun from awaiting_approval to rejected
+    updated_run_id = await control_service.complete_awaiting_approval_by_issue(issue_number, "rejected")
+    if updated_run_id:
+        log.info("spec.reject.taskrun_rejected", issue=issue_number, run_id=updated_run_id)
 
     handoff_service.clear_handoff(issue=issue_number)
     return result
