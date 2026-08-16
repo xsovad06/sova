@@ -49,6 +49,16 @@ def is_epic(labels: list[str]) -> bool:
     return any(label.lower().strip() == "type: epic" for label in labels)
 
 
+def is_human_only(labels: list[str]) -> bool:
+    """Return True if labels include 'agent:human-only' (case-insensitive)."""
+    return any(label.lower().strip() == "agent:human-only" for label in labels)
+
+
+def is_interactive_recommended(labels: list[str]) -> bool:
+    """Return True if labels include 'agent:interactive-recommended' (case-insensitive)."""
+    return any(label.lower().strip() == "agent:interactive-recommended" for label in labels)
+
+
 # States that should be excluded from "ready to work on" -- either already
 # being worked on, already completed, or explicitly rejected/blocked.
 _EXCLUDED_FROM_READY: frozenset[TaskState] = frozenset(
@@ -382,6 +392,8 @@ class DependencyGraph:
                         },
                     ]
 
+            task_is_human_only = is_human_only(task.labels)
+            task_is_interactive = is_interactive_recommended(task.labels)
             node: dict = {
                 "id": tid,
                 "title": task.title,
@@ -392,6 +404,8 @@ class DependencyGraph:
                 "available_actions": actions,
                 "priority": _extract_priority(task.labels),
                 "is_epic": is_epic(task.labels),
+                "is_human_only": task_is_human_only,
+                "is_interactive_recommended": task_is_interactive and not task_is_human_only,
             }
             if pr_info:
                 node["pr_number"] = pr_info.get("pr_number")

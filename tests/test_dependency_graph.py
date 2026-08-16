@@ -18,6 +18,8 @@ from sova.supervisor.dependency_graph import (
     _graph_cache,
     build_dependency_graph,
     invalidate_graph_cache,
+    is_human_only,
+    is_interactive_recommended,
     parse_dependencies,
 )
 
@@ -1444,3 +1446,83 @@ class TestNodePriorityField:
     def test_mixed_labels_extracts_correct_priority(self) -> None:
         task = self._task_with_labels(6, ["area: dashboard", "priority: low", "type: feature"])
         assert DependencyGraph([task]).to_dict()["nodes"][0]["priority"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# is_human_only / is_interactive_recommended label helpers
+# ---------------------------------------------------------------------------
+
+
+class TestIsHumanOnly:
+    def test_no_labels(self) -> None:
+        assert is_human_only([]) is False
+
+    def test_exact_match(self) -> None:
+        assert is_human_only(["agent:human-only"]) is True
+
+    def test_case_insensitive(self) -> None:
+        assert is_human_only(["Agent:Human-Only"]) is True
+
+    def test_with_spaces(self) -> None:
+        assert is_human_only(["  agent:human-only  "]) is True
+
+    def test_unrelated_labels(self) -> None:
+        assert is_human_only(["area: dashboard", "priority: high"]) is False
+
+    def test_among_other_labels(self) -> None:
+        assert is_human_only(["type: feature", "agent:human-only", "priority: low"]) is True
+
+
+class TestIsInteractiveRecommended:
+    def test_no_labels(self) -> None:
+        assert is_interactive_recommended([]) is False
+
+    def test_exact_match(self) -> None:
+        assert is_interactive_recommended(["agent:interactive-recommended"]) is True
+
+    def test_case_insensitive(self) -> None:
+        assert is_interactive_recommended(["Agent:Interactive-Recommended"]) is True
+
+    def test_with_spaces(self) -> None:
+        assert is_interactive_recommended(["  agent:interactive-recommended  "]) is True
+
+    def test_unrelated_labels(self) -> None:
+        assert is_interactive_recommended(["area: dashboard", "agent:human-only"]) is False
+
+
+# ---------------------------------------------------------------------------
+# to_dict -- is_human_only / is_interactive_recommended fields
+# ---------------------------------------------------------------------------
+
+
+class TestToDictHumanInvolvementFlags:
+    def test_no_labels_both_false(self) -> None:
+        tasks = [_task(1)]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["is_human_only"] is False
+        assert node["is_interactive_recommended"] is False
+
+    def test_human_only_label_sets_flag(self) -> None:
+        tasks = [_task(1, labels=["agent:human-only"])]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["is_human_only"] is True
+        assert node["is_interactive_recommended"] is False
+
+    def test_interactive_recommended_label_sets_flag(self) -> None:
+        tasks = [_task(1, labels=["agent:interactive-recommended"])]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["is_human_only"] is False
+        assert node["is_interactive_recommended"] is True
+
+    def test_both_labels_human_only_takes_precedence(self) -> None:
+        tasks = [_task(1, labels=["agent:human-only", "agent:interactive-recommended"])]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["is_human_only"] is True
+        assert node["is_interactive_recommended"] is False
+
+    def test_flags_present_alongside_existing_fields(self) -> None:
+        tasks = [_task(1, labels=["type: epic", "agent:human-only", "priority: high"])]
+        node = DependencyGraph(tasks).to_dict()["nodes"][0]
+        assert node["is_epic"] is True
+        assert node["is_human_only"] is True
+        assert node["priority"] == "high"

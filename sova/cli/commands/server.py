@@ -40,7 +40,7 @@ def start(
         multi = project is None and has_projects()
 
     # Check if already running
-    existing_pid = read_pid_file(config)
+    existing_pid = read_pid_file(config, project_dir=resolved_dir)
     if existing_pid is not None:
         console.print(f"[yellow]Server already running (PID {existing_pid}).[/yellow]")
         raise typer.Exit(code=1)
@@ -77,9 +77,10 @@ def stop(
     from sova.config.loader import load_config
     from sova.scheduler.server import stop_server
 
-    config = load_config(project) if project else None
+    resolved_dir = project or Path.cwd()
+    config = load_config(resolved_dir)
 
-    if stop_server(config):
+    if stop_server(config, project_dir=resolved_dir):
         console.print("[green]Server stopped.[/green]")
     else:
         console.print("[yellow]Server is not running.[/yellow]")
@@ -93,8 +94,9 @@ def status(
     from sova.config.loader import load_config
     from sova.scheduler.server import read_pid_file
 
-    config = load_config(project) if project else None
-    pid = read_pid_file(config)
+    resolved_dir = project or Path.cwd()
+    config = load_config(resolved_dir)
+    pid = read_pid_file(config, project_dir=resolved_dir)
 
     if pid is not None:
         console.print(f"[green]Server is running (PID {pid}).[/green]")

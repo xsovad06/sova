@@ -191,8 +191,7 @@ class SOVAServer:
         """Resolve the PID file path."""
         if self._config.server.pid_file:
             return Path(self._config.server.pid_file)
-        _DEFAULT_PID_DIR.mkdir(parents=True, exist_ok=True)
-        return _DEFAULT_PID_DIR / "sova-server.pid"
+        return _resolve_default_pid_path(self._project_dir)
 
     def _write_pid_file(self) -> None:
         """Write the current PID to the PID file."""
@@ -209,7 +208,21 @@ class SOVAServer:
             log.warning("pid.remove_failed", path=str(pid_path), exc_info=True)
 
 
-def read_pid_file(config: ProjectConfig | None = None) -> int | None:
+def _resolve_default_pid_path(project_dir: Path | None = None) -> Path:
+    """Derive the default PID file path, scoped to project_dir when available."""
+    if project_dir is not None:
+        claude_dir = project_dir / ".claude"
+        if claude_dir.is_dir():
+            return claude_dir / "sova-server.pid"
+    _DEFAULT_PID_DIR.mkdir(parents=True, exist_ok=True)
+    return _DEFAULT_PID_DIR / "sova-server.pid"
+
+
+def read_pid_file(
+    config: ProjectConfig | None = None,
+    *,
+    project_dir: Path | None = None,
+) -> int | None:
     """Read the server PID from the PID file.
 
     Returns the PID if the file exists and the process is alive, else None.
@@ -217,7 +230,7 @@ def read_pid_file(config: ProjectConfig | None = None) -> int | None:
     if config and config.server.pid_file:
         pid_path = Path(config.server.pid_file)
     else:
-        pid_path = _DEFAULT_PID_DIR / "sova-server.pid"
+        pid_path = _resolve_default_pid_path(project_dir)
 
     if not pid_path.exists():
         return None
@@ -240,12 +253,16 @@ def read_pid_file(config: ProjectConfig | None = None) -> int | None:
         return None
 
 
-def stop_server(config: ProjectConfig | None = None) -> bool:
+def stop_server(
+    config: ProjectConfig | None = None,
+    *,
+    project_dir: Path | None = None,
+) -> bool:
     """Send SIGTERM to the running server process.
 
     Returns True if a signal was sent, False if no server was running.
     """
-    pid = read_pid_file(config)
+    pid = read_pid_file(config, project_dir=project_dir)
     if pid is None:
         return False
 

@@ -40,6 +40,9 @@
         <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#fab387"></span> High</span>
         <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#f9e2af"></span> Med</span>
         <span class="flex items-center gap-1"><span class="inline-block w-1 h-3 rounded" style="background:#6c7086"></span> Low</span>
+        <span class="text-gray-700 mx-0.5">|</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#f38ba8;background:#f38ba830"></span> Human</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border border-dashed" style="border-color:#fab387;background:#fab38720"></span> Interactive</span>
       </div>
       <div class="flex items-center gap-1">
         <button type="button" id="hide-done-btn" onclick="toggleHideDone()" title="Toggle visibility of completed milestone groups"
@@ -217,7 +220,7 @@ let _hideDone = _lsGet('sova-graph-hide-done') === '1';
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
   // and would cause a full re-render (and position reset) on every poll cycle.
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -1009,18 +1012,28 @@ function renderGraph(data) {
     const prc = n.pr_state ? prStateColor(n.pr_state) : null;
     const borderColor = prc || (color + '66');
 
+    const isEpic = n.is_epic === true;
+    const isHumanOnly = n.is_human_only === true;
+    const isInteractive = n.is_interactive_recommended === true;
+
+    const humanBorder = isHumanOnly ? '#f38ba8' : (isInteractive ? '#fab387' : null);
+    const effectiveBorder = humanBorder || borderColor;
+
     const g = mainG.append('g')
       .attr('class', 'dep-node')
-      .attr('data-nid', n.id).attr('data-color', color).attr('data-border', borderColor).attr('data-done', isDone ? '1' : '0')
+      .attr('data-nid', n.id).attr('data-color', color).attr('data-border', effectiveBorder).attr('data-done', isDone ? '1' : '0')
       .attr('opacity', isDone ? 0.35 : 1)
       .style('cursor', 'pointer');
-
-    const isEpic = n.is_epic === true;
     const bgRect = g.append('rect').attr('class', 'node-bg')
       .attr('x', pos.x).attr('y', pos.y).attr('width', NW).attr('height', NH).attr('rx', 5)
-      .attr('fill', color + '18').attr('stroke', borderColor).attr('stroke-width', prc ? 1.5 : (isEpic ? 1.5 : 1));
-    if (isEpic) {
+      .attr('fill', isHumanOnly ? '#f38ba810' : (isInteractive ? '#fab38710' : color + '18'))
+      .attr('stroke', effectiveBorder).attr('stroke-width', (humanBorder || prc) ? 1.5 : (isEpic ? 1.5 : 1));
+    if (isEpic && isInteractive) {
+      bgRect.attr('stroke-dasharray', '5,2,2,2');
+    } else if (isEpic) {
       bgRect.attr('stroke-dasharray', '4,3');
+    } else if (isInteractive) {
+      bgRect.attr('stroke-dasharray', '6,3');
     }
 
     // Priority left-border stripe (3px, clipped to node corner radius) + arrow icon
@@ -1060,6 +1073,35 @@ function renderGraph(data) {
         .attr('text-anchor', 'middle')
         .attr('fill', EPIC_BADGE_COLOR).attr('font-size', '7.5px').attr('font-weight', '600').attr('font-family', 'monospace')
         .text('EPIC');
+    }
+
+    // Human-only / interactive-recommended badge at bottom-left (after epic badge if present)
+    if (isHumanOnly) {
+      const HUMAN_BADGE_COLOR = '#f38ba8';
+      const HUMAN_BADGE_W = 42;
+      const hbX = isEpic ? pos.x + 4 + EPIC_BADGE_WIDTH + 4 : pos.x + 4;
+      const hbY = pos.y + NH - 18;
+      g.append('rect')
+        .attr('x', hbX).attr('y', hbY).attr('width', HUMAN_BADGE_W).attr('height', EPIC_BADGE_HEIGHT).attr('rx', 7)
+        .attr('fill', HUMAN_BADGE_COLOR).attr('fill-opacity', 0.25).attr('stroke', HUMAN_BADGE_COLOR).attr('stroke-width', 0.5);
+      g.append('text')
+        .attr('x', hbX + HUMAN_BADGE_W/2).attr('y', hbY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', HUMAN_BADGE_COLOR).attr('font-size', '7px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text('HUMAN');
+    } else if (isInteractive) {
+      const INTER_BADGE_COLOR = '#fab387';
+      const INTER_BADGE_W = 60;
+      const ibX = isEpic ? pos.x + 4 + EPIC_BADGE_WIDTH + 4 : pos.x + 4;
+      const ibY = pos.y + NH - 18;
+      g.append('rect')
+        .attr('x', ibX).attr('y', ibY).attr('width', INTER_BADGE_W).attr('height', EPIC_BADGE_HEIGHT).attr('rx', 7)
+        .attr('fill', INTER_BADGE_COLOR).attr('fill-opacity', 0.2).attr('stroke', INTER_BADGE_COLOR).attr('stroke-width', 0.5).attr('stroke-dasharray', '3,2');
+      g.append('text')
+        .attr('x', ibX + INTER_BADGE_W/2).attr('y', ibY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', INTER_BADGE_COLOR).attr('font-size', '7px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text('INTERACTIVE');
     }
 
     g.append('circle').attr('cx', pos.x + 12).attr('cy', pos.y + 17).attr('r', 4).attr('fill', color);
@@ -1119,11 +1161,11 @@ function renderGraph(data) {
 
     g.on('mouseenter', function() {
       if (+this.dataset.nid !== _selectedNodeId)
-        d3.select(this).select('rect.node-bg').attr('stroke', prc || (color + 'bb'));
+        d3.select(this).select('rect.node-bg').attr('stroke', humanBorder || prc || (color + 'bb'));
     })
     .on('mouseleave', function() {
       if (+this.dataset.nid !== _selectedNodeId)
-        d3.select(this).select('rect.node-bg').attr('stroke', borderColor);
+        d3.select(this).select('rect.node-bg').attr('stroke', effectiveBorder);
     })
     .on('click', event => {
       event.stopPropagation();
@@ -1175,6 +1217,11 @@ function showDrawer(node) {
   const existingBadges = document.getElementById('drawer-status-badges');
   if (existingBadges) existingBadges.remove();
   let statusBadges = '';
+  if (node.is_human_only) {
+    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/30 text-accent-red border border-red-700/30">Human Only</span>`;
+  } else if (node.is_interactive_recommended) {
+    statusBadges += `<span class="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-orange-900/30 text-orange-300 border border-orange-700/30 border-dashed">Interactive Recommended</span>`;
+  }
   if (node.agent_running) {
     const agentLink = node.agent_run_id != null ? `<a href="${esc(`${prefix}/work/${encodeURIComponent(node.agent_run_id)}`)}" class="hover:underline">` : '';
     const agentLinkEnd = node.agent_run_id != null ? '</a>' : '';

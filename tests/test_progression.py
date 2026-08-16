@@ -658,6 +658,71 @@ class TestEvaluateTask:
         assert decision.action == ProgressionAction.BLOCKED
         assert "Failed to fetch" in decision.reason
 
+    @pytest.mark.asyncio
+    async def test_human_only_label_blocks_progression(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.TRIAGED)
+        adapter.list_tasks = AsyncMock(return_value=[_task(1, state=TaskState.TRIAGED, labels=["agent:human-only"])])
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True),
+            adapter=adapter,
+        )
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+        ):
+            decision = await engine.evaluate_task(1)
+        assert decision.action == ProgressionAction.BLOCKED
+        assert any(b.gate == "human_involvement" for b in decision.blocked_by)
+
+    @pytest.mark.asyncio
+    async def test_interactive_recommended_label_blocks_autonomous(self) -> None:
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.RESEARCHED)
+        adapter.list_tasks = AsyncMock(
+            return_value=[_task(1, state=TaskState.RESEARCHED, labels=["agent:interactive-recommended"])]
+        )
+        engine = _make_engine(
+            config=SupervisorConfig(auto_develop=True),
+            adapter=adapter,
+        )
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_quota_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_slot_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+        ):
+            decision = await engine.evaluate_task(1)
+        assert decision.action == ProgressionAction.BLOCKED
+        assert any(b.gate == "human_involvement" for b in decision.blocked_by)
+
+    @pytest.mark.asyncio
+    async def test_human_only_gate_extracts_labels_from_graph_when_none(self) -> None:
+        """When task_labels=None, _collect_gate_blockers extracts labels from the graph."""
+        from sova.supervisor.dependency_graph import DependencyGraph
+
+        tasks = [_task(1, state=TaskState.TRIAGED, labels=["agent:human-only"])]
+        graph = DependencyGraph(tasks)
+        engine = _make_engine(
+            config=SupervisorConfig(auto_research=True, respect_dependencies=False),
+        )
+        with (
+            patch.object(engine, "_check_already_running", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_budget_gate", new_callable=AsyncMock, return_value=None),
+            patch.object(engine, "_check_ownership_gate", new_callable=AsyncMock, return_value=(None, None)),
+        ):
+            blockers, _ = await engine._collect_gate_blockers(
+                1,
+                ProgressionAction.SPAWN_RESEARCHER,
+                graph,
+                task_labels=None,
+            )
+        assert any(b.gate == "human_involvement" for b in blockers)
+
 
 # ---------------------------------------------------------------------------
 # evaluate_all
@@ -3044,6 +3109,50 @@ class TestCIBudgetGate:
         assert result is None
 
 
+# ---------------------------------------------------------------------------
+# _check_human_involvement_gate
+# ---------------------------------------------------------------------------
+
+
+class TestHumanInvolvementGate:
+    def test_no_labels_passes(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, [])
+        assert result is None
+
+    def test_unrelated_labels_pass(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, ["area: dashboard", "priority: high"])
+        assert result is None
+
+    def test_human_only_label_blocks(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, ["agent:human-only"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "human-only" in result.detail
+
+    def test_interactive_recommended_label_blocks(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, ["agent:interactive-recommended"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+        assert "interactive-recommended" in result.detail
+        assert "manual start only" in result.detail
+
+    def test_both_labels_blocks_human_only(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, ["agent:human-only", "agent:interactive-recommended"])
+        assert result is not None
+        assert "human-only" in result.detail
+
+    def test_case_insensitive(self) -> None:
+        engine = _make_engine()
+        result = engine._check_human_involvement_gate(1, ["Agent:Human-Only"])
+        assert result is not None
+        assert result.gate == "human_involvement"
+
+
 class TestExecuteDecisionsCap:
     @pytest.mark.asyncio
     async def test_cap_limits_spawns(self) -> None:
@@ -3267,3 +3376,138 @@ class TestStaleInProgressReset:
             decision = await engine.evaluate_task(1)
         assert decision.action == ProgressionAction.RESET_STALE_STATE
         assert "Stale IN_PROGRESS" in decision.reason
+
+
+# ---------------------------------------------------------------------------
+# Extracted helpers from evaluate_all refactoring
+# ---------------------------------------------------------------------------
+
+
+_MERGEABILITY_PATH = "sova.dashboard.services.pr_service.get_pr_mergeability_map"
+
+
+class TestFetchMergeabilityMap:
+    @pytest.mark.asyncio
+    async def test_returns_map_on_success(self) -> None:
+        engine = _make_engine()
+        expected = {42: "CONFLICTING"}
+        with patch(_MERGEABILITY_PATH, new_callable=AsyncMock, return_value=expected):
+            result = await engine._fetch_mergeability_map()
+        assert result == expected
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_dict_on_exception(self) -> None:
+        engine = _make_engine()
+        with patch(_MERGEABILITY_PATH, new_callable=AsyncMock, side_effect=RuntimeError("API down")):
+            result = await engine._fetch_mergeability_map()
+        assert result == {}
+
+
+_FILE_OVERLAP_PATH = "sova.supervisor.progression.get_active_branch_file_sets"
+
+
+class TestFetchFileOverlapSets:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_gate_disabled(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(file_overlap_gate=False))
+        result = await engine._fetch_file_overlap_sets()
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_sets_when_gate_enabled(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(file_overlap_gate=True))
+        sentinel = [MagicMock()]
+        with patch(_FILE_OVERLAP_PATH, new_callable=AsyncMock, return_value=sentinel):
+            result = await engine._fetch_file_overlap_sets()
+        assert result is sentinel
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_exception(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(file_overlap_gate=True))
+        with patch(_FILE_OVERLAP_PATH, new_callable=AsyncMock, side_effect=RuntimeError("fail")):
+            result = await engine._fetch_file_overlap_sets()
+        assert result is None
+
+
+class TestResolveTaskIds:
+    def test_no_queue_returns_all_nodes(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(task_queue=[]))
+        graph = MagicMock()
+        graph.nodes = {1: None, 2: None, 3: None}
+        result = engine._resolve_task_ids(graph)
+        assert set(result) == {1, 2, 3}
+
+    def test_queue_filters_to_graph_nodes(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(task_queue=[10, 20, 30]))
+        graph = MagicMock()
+        graph.nodes = {10: None, 30: None}
+        result = engine._resolve_task_ids(graph)
+        assert result == [10, 30]
+
+    def test_queue_preserves_order(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(task_queue=[30, 10, 20]))
+        graph = MagicMock()
+        graph.nodes = {10: None, 20: None, 30: None}
+        result = engine._resolve_task_ids(graph)
+        assert result == [30, 10, 20]
+
+
+class TestEffectiveGate:
+    def test_returns_global_blocker_when_present(self) -> None:
+        blocker = BlockReason(gate="slots", detail="full")
+        result = TaskProgressionEngine._effective_gate(blocker, True, "slots", "msg")
+        assert result is blocker
+
+    def test_returns_exhaustion_blocker_when_capacity_spent(self) -> None:
+        result = TaskProgressionEngine._effective_gate(None, True, "quota", "CodeRabbit quota would be exhausted")
+        assert result is not None
+        assert result.gate == "quota"
+        assert "capacity exhausted" in result.detail
+
+    def test_returns_none_when_capacity_available(self) -> None:
+        result = TaskProgressionEngine._effective_gate(None, False, "slots", "msg")
+        assert result is None
+
+
+class TestUpdateRemainingCapacity:
+    def test_actionable_decrements_slots(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.SPAWN_RESEARCHER)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 2
+        assert quota is True
+
+    def test_developer_decrements_quota(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.SPAWN_DEVELOPER)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 2
+        assert quota is False
+
+    def test_wait_does_not_decrement(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.WAIT)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 3
+        assert quota is True
+
+    def test_blocked_does_not_decrement(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.BLOCKED)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 3
+        assert quota is True
+
+    def test_rebase_does_not_decrement(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.SPAWN_REBASE)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 3
+        assert quota is True
+
+    def test_checkpoint_does_not_decrement(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.CHECKPOINT_NEEDED)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 3
+        assert quota is True
+
+    def test_reset_stale_state_does_not_decrement(self) -> None:
+        decision = ProgressionDecision(issue_number=1, action=ProgressionAction.RESET_STALE_STATE)
+        slots, quota = TaskProgressionEngine._update_remaining_capacity(decision, 3, True)
+        assert slots == 3
+        assert quota is True

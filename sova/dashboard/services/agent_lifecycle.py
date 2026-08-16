@@ -977,46 +977,57 @@ async def _check_merge_queue_marker_file(agent: AgentState, run_id: int | None) 
     if project_dir is None:
         return
 
-    marker_path = Path(project_dir) / ".claude" / "agent-control" / "merge-queue.json"
-    if not marker_path.exists():
+    control_dir = Path(project_dir) / ".claude" / "agent-control"
+    if not control_dir.exists():
         return
 
-    try:
-        data = json.loads(marker_path.read_text())
-        pr_number = data.get("pr_number")
-        repo = data.get("repo", "")
-        issue_number = data.get("issue_number")
-        branch_name = data.get("branch_name", "")
+    # Support both per-PR naming (merge-queue-{N}.json) and legacy shared file
+    marker_paths = list(control_dir.glob("merge-queue-*.json"))
+    legacy_path = control_dir / "merge-queue.json"
+    if legacy_path.exists():
+        marker_paths.append(legacy_path)
 
-        if not pr_number or not repo:
-            return
+    if not marker_paths:
+        return
 
-        from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
+    for marker_path in marker_paths:
+        try:
+            data = json.loads(marker_path.read_text())
+            pr_number = data.get("pr_number")
+            repo = data.get("repo", "")
+            issue_number = data.get("issue_number")
+            branch_name = data.get("branch_name", "")
 
-        await create_merge_queue_entry(
-            pr_number=int(pr_number),
-            repo=repo,
-            project_dir=project_dir,
-            issue_number=str(issue_number) if issue_number else None,
-            task_run_id=run_id,
-            github_user=data.get("github_user", ""),
-            branch_name=branch_name,
-        )
+            if not pr_number or not repo:
+                marker_path.unlink(missing_ok=True)
+                continue
 
-        from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
+            from sova.dashboard.services.merge_queue_monitor import create_merge_queue_entry
 
-        emit_safe(
-            f"PR #{pr_number} enqueued in merge queue (monitored)",
-            severity=FeedEventSeverity.info,
-            category="merge_queue",
-            metadata={"pr_number": pr_number, "repo": repo},
-        )
+            await create_merge_queue_entry(
+                pr_number=int(pr_number),
+                repo=repo,
+                project_dir=project_dir,
+                issue_number=str(issue_number) if issue_number else None,
+                task_run_id=run_id,
+                github_user=data.get("github_user", ""),
+                branch_name=branch_name,
+            )
 
-        log.info("finalize.merge_queue_marker_processed", pr=pr_number, repo=repo)
+            from sova.dashboard.services.feed_service import FeedEventSeverity, emit_safe
 
-        marker_path.unlink(missing_ok=True)
-    except Exception:
-        log.debug("finalize.merge_queue_marker_failed", exc_info=True)
+            emit_safe(
+                f"PR #{pr_number} enqueued in merge queue (monitored)",
+                severity=FeedEventSeverity.info,
+                category="merge_queue",
+                metadata={"pr_number": pr_number, "repo": repo},
+            )
+
+            log.info("finalize.merge_queue_marker_processed", pr=pr_number, repo=repo)
+
+            marker_path.unlink(missing_ok=True)
+        except Exception:
+            log.debug("finalize.merge_queue_marker_failed", path=str(marker_path), exc_info=True)
 
 
 async def _wait_with_terminal_check(agent: AgentState) -> int:

@@ -91,17 +91,12 @@ grep -rc "def test_" tests/ apps/*/tests/ 2>/dev/null | awk -F: '{s+=$2} END {pr
 
 ### Step 3: Run checks
 
-Run the project's test and lint commands to verify current health:
-
-```bash
-{{ check_cmd }}
-```
-
-If `{{ check_cmd }}` is not configured, look for `Makefile`, `package.json`
-scripts, or CI config to find the right commands. Common fallbacks:
-- `make test` + `make lint`
-- `npm test` + `npm run lint`
-- `cargo test` + `cargo clippy`
+Run the project's test and lint commands to verify current health. Discover
+the right commands by checking `Makefile`, `package.json` scripts, or CI
+config. Common commands by project type:
+- Python: `make check`, or `make test` + `make lint`
+- Node: `npm test` + `npm run lint`
+- Rust: `cargo test` + `cargo clippy`
 
 ### Step 4: Incremental mode check
 
@@ -134,12 +129,17 @@ produce all 10 scorecard dimensions but score non-focus areas based on Step 2
 discovery only (no deep read). Mark non-focus scores as "(surface-level)" in
 the scorecard.
 
-**For full audits**, spawn these 3 agents in a single message (so they run
-concurrently):
+**For full audits**, call the Agent tool 3 times in a single message (so they
+run concurrently). Use `subagent_type="general-purpose"` for all three. Include
+the project context from Step 2 (name, tech stack, scale, stage) in each prompt.
+
+If any agent fails or times out, proceed with the available results. Mark the
+report as partial and note which dimension(s) were not analyzed. Score missing
+dimensions as "(not analyzed)" in the scorecard.
 
 #### Agent A: Architecture and Security
-Prompt the agent with the project context from Step 2 (tech stack, scale, stage)
-and instruct it to analyze:
+Include the project context from Step 2 (tech stack, scale, stage)
+and instruct the agent to analyze:
 - Dependency graph health (circular imports between modules)
 - Data model integrity (schema design, migration hygiene, index coverage)
 - Security architecture (auth, input validation, secret handling, injection
@@ -182,9 +182,10 @@ as Agents A and B. Maximum 20 findings. List 3-5 operational strengths.
 
 ### Step 6: Synthesize and verify
 
-After all 3 agents complete:
+After the agents complete (or partially fail):
 
-1. **Collect** all findings from the 3 agents.
+1. **Collect** all findings from the completed agents. If any agent failed,
+   note the gap and continue with available results.
 2. **Deduplicate** -- findings may overlap (e.g., both Agent A and Agent B flag
    the same god file). Merge duplicates, keeping the most detailed evidence.
 3. **Verify** -- spot-check 5-10 key findings with targeted `grep`, `wc -l`, or
@@ -210,6 +211,9 @@ gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number)\t\(.title)"'
 
 Only use labels and milestones that exist. If an appropriate label does not
 exist, either create it with `gh label create` or use the closest existing one.
+If the target milestone for issue creation does not exist in the list, create it
+with `gh api repos/:owner/:repo/milestones -X POST -f title="<name>"` before
+Phase C. Verify the milestone number is valid before using `--milestone`.
 
 ## Analysis Levels
 
@@ -427,6 +431,13 @@ Log completion and cost:
 
 ```bash
 bash .claude/benchmark/log.sh "health_audit_complete" "" "" 2>/dev/null || true
+```
+
+On any unrecoverable error at any step (agent spawn failure, `gh` command error,
+etc.), log the failure before stopping:
+
+```bash
+bash .claude/benchmark/log.sh "health_audit_failed" "" "" 2>/dev/null || true
 ```
 
 ## Constraints
