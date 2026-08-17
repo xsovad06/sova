@@ -819,6 +819,10 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_oversight(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "oversight.html", "oversight")
 
+    @app.get("/p/{slug}/pr-metrics")
+    async def project_pr_metrics(request: Request, slug: str) -> Response:
+        return _project_page(request, templates, slug, "pr_metrics.html", "pr-metrics")
+
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")

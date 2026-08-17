@@ -84,7 +84,7 @@ class TestPriorityIconMacro:
 
         assert "macro priority_icon" in content
         assert "/static/priority/" in content
-        assert "blocker" in content
+        assert "critical" in content
 
     @pytest.mark.parametrize("template", ["supervisor.html", "agents.html", "queue.html"])
     def test_template_uses_shared_priorityIconUrl(self, template: str) -> None:
@@ -117,7 +117,7 @@ class TestPriorityIconMacroRendering:
         [
             (None, "undefined.svg", "Undefined"),
             ("", "undefined.svg", "Undefined"),
-            ("critical", "blocker.svg", "Critical"),
+            ("critical", "critical.svg", "Critical"),
             ("high", "high.svg", "High"),
             ("medium", "medium.svg", "Medium"),
             ("low", "low.svg", "Low"),

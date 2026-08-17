@@ -52,7 +52,7 @@ auto_address_review = true
 auto_integrate = true
 llm_planning = true
 require_approval = true
-task_queue = [606, 605, 564]
+task_queue = [592, 639, 641, 642, 644, 627, 643]
 auto_research = true
 auto_triage = false
 
