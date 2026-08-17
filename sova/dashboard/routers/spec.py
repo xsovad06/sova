@@ -14,8 +14,11 @@ log = get_logger(component="dashboard.api.spec")
 router = APIRouter(prefix="/spec", tags=["spec"])
 
 
-async def _transition_to_researched(issue_number: str) -> None:
-    """Transition issue to RESEARCHED so the developer Gate 3 check passes."""
+async def _transition_to_researched(issue_number: str) -> bool:
+    """Transition issue to RESEARCHED so the developer Gate 3 check passes.
+
+    Returns True on success, False on failure.
+    """
     try:
         from sova.adapters import create_adapter
         from sova.adapters.base import TaskState
@@ -26,8 +29,10 @@ async def _transition_to_researched(issue_number: str) -> None:
         adapter = create_adapter(cfg)
         await adapter.transition_state(issue_number, TaskState.RESEARCHED)
         log.info("spec.transition_researched", issue=issue_number)
+        return True
     except Exception:
         log.warning("spec.transition_researched_failed", issue=issue_number, exc_info=True)
+        return False
 
 
 class ApproveRequest(BaseModel):
@@ -80,7 +85,8 @@ async def approve_spec(issue_number: str, req: ApproveRequest | None = None) -> 
     if updated_run_id:
         log.info("spec.approve.taskrun_completed", issue=issue_number, run_id=updated_run_id)
 
-    await _transition_to_researched(issue_number)
+    if not await _transition_to_researched(issue_number):
+        raise HTTPException(status_code=500, detail=f"Failed to transition issue #{issue_number} to RESEARCHED")
 
     # Spawn developer agent, then clear handoff only on success
     try:
@@ -125,7 +131,8 @@ async def skip_spec(issue_number: str) -> dict:
     if updated_run_id:
         log.info("spec.skip.taskrun_completed", issue=issue_number, run_id=updated_run_id)
 
-    await _transition_to_researched(issue_number)
+    if not await _transition_to_researched(issue_number):
+        raise HTTPException(status_code=500, detail=f"Failed to transition issue #{issue_number} to RESEARCHED")
     # Spawn developer without spec, then clear handoff on success
     try:
         agent_result = await control_service.start_agent(issue_number, role="developer")
