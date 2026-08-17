@@ -3539,7 +3539,7 @@ class TestReviewerParsing:
 
         from sova.roles.reviewer import _parse_findings
 
-        with patch("sova.roles.reviewer.log") as mock_log:
+        with patch("sova.roles._review_comments.log") as mock_log:
             _parse_findings("not json at all")
             mock_log.warning.assert_called_once()
             assert mock_log.warning.call_args[0][0] == "parse_findings.failed"
@@ -3550,7 +3550,7 @@ class TestReviewerParsing:
 
         from sova.roles.reviewer import _parse_findings
 
-        with patch("sova.roles.reviewer.log") as mock_log:
+        with patch("sova.roles._review_comments.log") as mock_log:
             _parse_findings("prefix {invalid json} suffix")
             mock_log.warning.assert_called_once()
             assert mock_log.warning.call_args[0][0] == "parse_findings.failed"

@@ -14,7 +14,14 @@ from typing import TYPE_CHECKING
 from sova.adapters.base import Task
 from sova.config.models import ReviewPanelConfig
 from sova.llm.client import invoke
-from sova.roles.reviewer import ReviewFinding, ReviewResult, _chunk_diff, _compact_spec_ref, _parse_findings
+from sova.roles._review_comments import (
+    ReviewFinding,
+    ReviewResult,
+    _chunk_diff,
+    _compact_spec_ref,
+    _format_addressed_findings,
+    _parse_findings,
+)
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -89,8 +96,6 @@ def _build_dimension_prompt(
     addressed_findings: list[dict] | None = None,
 ) -> str:
     """Build a focused review prompt for a single dimension."""
-    from sova.roles.reviewer import _format_addressed_findings
-
     preamble = _DIMENSION_PROMPTS.get(dimension, f"Review the code for {dimension} issues.")
     file_list = "\n".join(f"- {f}" for f in files)
 
