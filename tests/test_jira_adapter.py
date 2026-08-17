@@ -1192,3 +1192,113 @@ class TestSetMilestone:
         )
         with pytest.raises(RuntimeError, match="Failed to set milestone"):
             await adapter.set_milestone("42", "Phase 1: Now")
+
+
+class TestTransitionWithAutoDerivedNames:
+    @respx.mock
+    async def test_auto_derived_transition_from_status_mapping(self) -> None:
+        """Test that transitions auto-derived from _JIRA_STATUS_TO_STATE are tried."""
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={"transitions": [{"id": "51", "name": "Refinement", "to": {"name": "Refinement"}}]},
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.NEEDS_SPEC)
+        assert route.called
+        body = route.calls[0].request.content
+        assert b'"51"' in body
+
+    @respx.mock
+    async def test_case_insensitive_transition_matching(self) -> None:
+        """Test that case-insensitive matching works for transition names."""
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        # JIRA API returns "on qa" (all lowercase) but default mapping has "On QA"
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={"transitions": [{"id": "61", "name": "on qa", "to": {"name": "QA"}}]},
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.ON_QA)
+        assert route.called
+        body = route.calls[0].request.content
+        assert b'"61"' in body
+
+    @respx.mock
+    async def test_config_override_takes_precedence(self) -> None:
+        """Test that config overrides still take precedence over auto-derived names."""
+        adapter = _adapter(state_transitions={"needs_spec": "Custom Refinement"})
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "transitions": [
+                        {"id": "99", "name": "Custom Refinement", "to": {"name": "Needs Spec"}},
+                        {"id": "51", "name": "Refinement", "to": {"name": "Refinement"}},
+                    ]
+                },
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.NEEDS_SPEC)
+        assert route.called
+        body = route.calls[0].request.content
+        assert b'"99"' in body
+
+    @respx.mock
+    async def test_duplicate_cased_transitions_select_first_match(self) -> None:
+        """When JIRA offers transitions with the same name in different casing, the first match wins."""
+        adapter = _adapter()
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(200, json=_issue_json(key="TEST-1")),
+        )
+        respx.put("https://test.atlassian.net/rest/api/3/issue/TEST-1").mock(
+            return_value=Response(204),
+        )
+        respx.get("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "transitions": [
+                        {"id": "1", "name": "Done", "to": {"name": "Done"}},
+                        {"id": "2", "name": "done", "to": {"name": "Done"}},
+                    ]
+                },
+            ),
+        )
+        route = respx.post("https://test.atlassian.net/rest/api/3/issue/TEST-1/transitions").mock(
+            return_value=Response(204),
+        )
+        await adapter.transition_state("1", TaskState.DONE)
+        assert route.called
+        body = route.calls[0].request.content
+        # First match (id "1") is selected consistently
+        assert b'"1"' in body
