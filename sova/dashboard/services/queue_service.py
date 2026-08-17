@@ -48,7 +48,7 @@ _RECOMMENDED_ACTION: dict[TaskState, str] = {
     TaskState.RESEARCHED: "review_spec",
     TaskState.IN_PROGRESS: "resume",
     TaskState.IN_REVIEW: "review",
-    TaskState.NEEDS_SPEC: "spec",
+    TaskState.NEEDS_SPEC: "research",
     TaskState.HUMAN_ONLY: "triage",
 }
 
