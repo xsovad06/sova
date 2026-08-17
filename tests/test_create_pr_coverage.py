@@ -441,3 +441,104 @@ class TestCreatePRStepJiraFallbackBody:
         body = CreatePRStep._build_fallback_body(ctx, "Fix parity", "abc123 feat", "x.py | 3 +++")
         assert "JIRA: https://issues.redhat.com/browse/RHCLOUD-48928" in body
         assert "Closes" not in body
+
+
+class TestCreatePRStepCodeRabbitTrigger:
+    """Test CodeRabbit review trigger after PR creation."""
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_trigger_review_posts_comment_when_enabled(
+        self, mock_create_pr, mock_run, mock_invoke, _find
+    ) -> None:
+        """When trigger_review is enabled, should post @coderabbitai review comment."""
+        from decimal import Decimal
+
+        from sova.config.models import CodeRabbitConfig, ExternalReviewsConfig
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        ctx.config = ProjectConfig(
+            external_reviews=ExternalReviewsConfig(
+                coderabbit=CodeRabbitConfig(trigger_review=True),
+            ),
+        )
+
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        ctx.adapter.post_pr_comment.assert_called_once_with(10, "@coderabbitai review")
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_trigger_review_skipped_when_disabled(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """When trigger_review is disabled (default), should NOT post comment."""
+        from decimal import Decimal
+
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        ctx = _make_ctx(branch_name="feat/issue-42")
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        ctx.adapter.post_pr_comment.assert_not_called()
+
+    @patch("sova.core.steps.create_pr.git_ops.find_pr_for_issue", new_callable=AsyncMock, return_value=None)
+    @patch("sova.core.steps.create_pr.invoke")
+    @patch("sova.core.steps.create_pr.run")
+    @patch("sova.core.steps.create_pr.git_ops.create_pr")
+    async def test_trigger_review_failure_is_non_fatal(self, mock_create_pr, mock_run, mock_invoke, _find) -> None:
+        """When posting the trigger comment fails, step should still succeed."""
+        from decimal import Decimal
+
+        from sova.config.models import CodeRabbitConfig, ExternalReviewsConfig
+        from sova.core.steps.create_pr import CreatePRStep
+        from sova.llm.models import LLMResult
+
+        mock_run.side_effect = [
+            MagicMock(success=True, stdout="abc123 feat\n"),
+            MagicMock(success=True, stdout=" src/app.py | 1 +\n"),
+            MagicMock(success=True, stdout="diff --git a/src/app.py\n+change\n"),
+        ]
+        mock_invoke.return_value = LLMResult(text="## Summary\n- stuff", model="sonnet", cost_usd=Decimal("0.01"))
+        mock_create_pr.return_value = MagicMock(number=10, url="https://github.com/x/y/pull/10")
+
+        adapter = _mock_adapter()
+        adapter.post_pr_comment.side_effect = RuntimeError("API error")
+
+        ctx = _make_ctx(adapter=adapter, branch_name="feat/issue-42")
+        ctx.config = ProjectConfig(
+            external_reviews=ExternalReviewsConfig(
+                coderabbit=CodeRabbitConfig(trigger_review=True),
+            ),
+        )
+
+        step = CreatePRStep()
+        result = await step.execute(ctx)
+
+        assert result.success
+        assert ctx.pr_number == 10
