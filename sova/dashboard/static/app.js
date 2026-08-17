@@ -900,7 +900,7 @@ initGlobalBatch();
 
 // Keep in sync with priority_map in _components.html
 var _PRIORITY_ICON_MAP = {
-  critical: 'blocker',
+  critical: 'critical',
   high: 'high',
   medium: 'medium',
   low: 'low'
