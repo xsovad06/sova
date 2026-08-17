@@ -104,9 +104,10 @@ async def invoke_command(
 ) -> LLMResult:
     """Run a slash command via the active LLM provider."""
     if args:
-        from sova.llm.guard import sanitize_external_input
+        from sova.llm.guard import guard_prompt
 
-        sanitize_external_input(args, source="invoke_command_args")
+        assembled = f"{command} {args}".strip()
+        guard_prompt(assembled)
     return await get_provider().invoke_command(
         command, args, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
     )
@@ -124,6 +125,11 @@ async def invoke_batch(
     otherwise falls back to the global provider's sequential default."""
     if not requests:
         return []
+
+    from sova.llm.guard import guard_prompt
+
+    for req in requests:
+        guard_prompt(req.prompt)
 
     from sova.llm.providers.anthropic_batch import create_batch_provider
 
