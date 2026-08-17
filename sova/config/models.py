@@ -300,6 +300,8 @@ class SonarCloudConfig(BaseSettings):
 class CodeRabbitConfig(BaseSettings):
     """CodeRabbit-specific configuration (uses gh CLI auth)."""
 
+    trigger_review: bool = False
+
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CODERABBIT_")
 
 
