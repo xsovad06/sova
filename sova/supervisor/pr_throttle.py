@@ -305,6 +305,49 @@ async def run_post_create_side_effects(
         except Exception:
             log.warning("pr_throttle.tracker_update_failed", pr=pr_number, exc_info=True)
 
+    await _trigger_coderabbit_review(pr_number=pr_number, repo=repo, github_user=github_user, project_dir=project_dir)
+
+
+async def _trigger_coderabbit_review(
+    *,
+    pr_number: int,
+    repo: str,
+    github_user: str,
+    project_dir: Path | None = None,
+) -> None:
+    """Post @coderabbitai review comment when trigger_review is enabled."""
+    from sova.config.loader import load_config
+
+    cfg = load_config(project_dir)
+    if not cfg.external_reviews.coderabbit.trigger_review:
+        return
+
+    from sova.utils.gh import resolve_gh_env
+    from sova.utils.shell import run
+
+    log.info("pr_throttle.trigger_coderabbit", pr=pr_number)
+    try:
+        env = await resolve_gh_env(github_user) if github_user else None
+    except Exception:
+        log.warning("pr_throttle.trigger_coderabbit_gh_env_failed", pr=pr_number, exc_info=True)
+        return
+    result = await run(
+        "gh",
+        "pr",
+        "comment",
+        str(pr_number),
+        "--repo",
+        repo,
+        "--body",
+        "@coderabbitai review",
+        env=env,
+    )
+    from sova.supervisor.github_quota import track_rate_limit
+
+    track_rate_limit(result, github_user or "")
+    if not result.success:
+        log.warning("pr_throttle.trigger_coderabbit_failed", pr=pr_number, stderr=result.stderr[:200])
+
 
 async def recover_creating_entries(session: AsyncSession) -> int:
     """Reset entries stuck in 'creating' status back to 'pending'.

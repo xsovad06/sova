@@ -131,45 +131,51 @@ bash .claude/benchmark/log.sh "pr_start" "" "" 2>/dev/null || true
     bash .claude/benchmark/log.sh "pr_created" "" "pr_number=${PR_NUM}" 2>/dev/null || true
     ```
 
-11. **Return the PR URL** to the user.
+11. **Trigger CodeRabbit review** (if configured):
+    Check `sova.toml` for `[external_reviews.coderabbit] trigger_review = true`. If enabled and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
+    ```bash
+    gh pr comment "$PR_NUM" --body "@coderabbitai review"
+    ```
+
+12. **Return the PR URL** to the user.
 
 ### Post-Push: CI + Self-Review
 
 These phases run after the PR is created/updated. They enable autonomous operation (push-to-ready-to-merge in one command).
 
-12. **Visual verification** (if applicable):
+13. **Visual verification** (if applicable):
     If the project has a `/verify-local` command AND changes affect UI (templates, CSS, JS, views -- not test-only or migration-only), follow the `/verify-local` procedure. If verification reveals issues, fix them, re-run CI, and retry. Skip if no `/verify-local` command exists.
 
-13. **Wait for CI pipeline**:
+14. **Wait for CI pipeline**:
     Poll CI status until it completes:
     ```bash
     gh run list --branch $(git branch --show-current) --limit 1 --json databaseId,status,conclusion
     ```
     If `gh run watch` is available, use it. Otherwise poll every 30 seconds. Max wait: 15 minutes.
 
-14. **Handle CI result**:
-    - **CI passes**: continue to step 15.
-    - **CI fails**: fetch logs (`gh run view <run_id> --log-failed`), analyze, fix, amend to the relevant commit, force push (`--force-with-lease`), go back to step 13 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
+15. **Handle CI result**:
+    - **CI passes**: continue to step 16.
+    - **CI fails**: fetch logs (`gh run view <run_id> --log-failed`), analyze, fix, amend to the relevant commit, force push (`--force-with-lease`), go back to step 14 (max 3 CI retry cycles total). If still failing after 3 attempts, stop and ask the user.
     - **CI still pending after max wait**: report current status and the PR URL. Suggest the user check back later.
 
-15. **Self-review the PR diff**:
+16. **Self-review the PR diff**:
     Run the `/review-pr` workflow against this PR to review the actual diff that will be merged:
     1. Fetch the PR number from the branch
     2. Execute the full `/review-pr` analysis (fetch diff, read files, deep analysis)
     3. Post the review on GitHub
-    4. If the verdict has no findings >= 3/10: skip step 16, go to step 17
-    5. If there are findings >= 3/10: continue to step 16
+    4. If the verdict has no findings >= 3/10: skip step 17, go to step 18
+    5. If there are findings >= 3/10: continue to step 17
 
-16. **Address review findings**:
+17. **Address review findings**:
     Run the `/address-pr` workflow to fix the findings:
     1. Score and address each finding (fix or acknowledge)
     2. Commit fixes
     3. Reply to review comments on GitHub
     4. Resolve threads
     5. Force push: `git push --force-with-lease`
-    6. Wait for CI again (go back to step 13 logic, max 3 total CI cycles across the entire run)
+    6. Wait for CI again (go back to step 14 logic, max 3 total CI cycles across the entire run)
 
-17. **Report**:
+18. **Report**:
     ```
     ## PR Summary
 
