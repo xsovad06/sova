@@ -300,6 +300,17 @@ class CreatePRStep(BaseStep):
                 await ctx.adapter.transition_state(ctx.issue_number, TaskState.IN_REVIEW)
             except Exception:
                 log.warning("step.create_pr.tracker_update_failed", exc_info=True)
+        await self._trigger_coderabbit_review(ctx, pr_number)
+
+    @staticmethod
+    async def _trigger_coderabbit_review(ctx: ExecutionContext, pr_number: int) -> None:
+        if not ctx.config.external_reviews.coderabbit.trigger_review:
+            return
+        log.info("step.create_pr.trigger_coderabbit", pr=pr_number)
+        try:
+            await ctx.adapter.post_pr_comment(pr_number, "@coderabbitai review")
+        except Exception:
+            log.warning("step.create_pr.trigger_coderabbit_failed", pr=pr_number, exc_info=True)
 
     async def _generate_pr_body(self, ctx: ExecutionContext, task_title: str) -> str:
         diff_range = f"{ctx.base_branch}..HEAD"

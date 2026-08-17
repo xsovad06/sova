@@ -605,6 +605,13 @@ _REGISTRY: list[SettingMeta] = [
         "external_reviews",
         "number",
     ),
+    SettingMeta(
+        "external_reviews.coderabbit.trigger_review",
+        "Trigger review",
+        "Post @coderabbitai review comment after PR creation to trigger reviews on repos with <10 stars",
+        "external_reviews",
+        "boolean",
+    ),
     # -- Security --
     SettingMeta(
         "egress.mode",

@@ -866,6 +866,71 @@ class TestRunPostCreateSideEffects:
         mock_assign.assert_not_called()
 
 
+class TestTriggerCodeRabbitReview:
+    """Test the _trigger_coderabbit_review function in pr_throttle."""
+
+    async def test_trigger_posts_comment_when_enabled(self) -> None:
+        from sova.supervisor.pr_throttle import _trigger_coderabbit_review
+
+        mock_run_result = AsyncMock()
+        mock_run_result.success = True
+        with (
+            patch(
+                "sova.config.loader.load_config",
+                return_value=_make_config_with_trigger(True),
+            ),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=mock_run_result) as mock_run,
+            patch("sova.supervisor.github_quota.track_rate_limit") as mock_track,
+        ):
+            await _trigger_coderabbit_review(pr_number=10, repo="o/r", github_user="u")
+        mock_run.assert_called_once()
+        args = mock_run.call_args.args
+        assert "@coderabbitai review" in args
+        mock_track.assert_called_once_with(mock_run_result, "u")
+
+    async def test_trigger_skipped_when_disabled(self) -> None:
+        from sova.supervisor.pr_throttle import _trigger_coderabbit_review
+
+        with (
+            patch(
+                "sova.config.loader.load_config",
+                return_value=_make_config_with_trigger(False),
+            ),
+            patch("sova.utils.shell.run", new_callable=AsyncMock) as mock_run,
+        ):
+            await _trigger_coderabbit_review(pr_number=10, repo="o/r", github_user="u")
+        mock_run.assert_not_called()
+
+    async def test_trigger_failure_is_non_fatal(self) -> None:
+        from sova.supervisor.pr_throttle import _trigger_coderabbit_review
+
+        mock_run_result = AsyncMock()
+        mock_run_result.success = False
+        mock_run_result.stderr = "error"
+        with (
+            patch(
+                "sova.config.loader.load_config",
+                return_value=_make_config_with_trigger(True),
+            ),
+            patch("sova.utils.gh.resolve_gh_env", new_callable=AsyncMock, return_value=None),
+            patch("sova.utils.shell.run", new_callable=AsyncMock, return_value=mock_run_result),
+            patch("sova.supervisor.github_quota.track_rate_limit") as mock_track,
+        ):
+            await _trigger_coderabbit_review(pr_number=10, repo="o/r", github_user="u")
+        mock_track.assert_called_once_with(mock_run_result, "u")
+
+
+def _make_config_with_trigger(enabled: bool):
+    from sova.config.models import CodeRabbitConfig, ExternalReviewsConfig, ProjectConfig
+
+    return ProjectConfig(
+        external_reviews=ExternalReviewsConfig(
+            coderabbit=CodeRabbitConfig(trigger_review=enabled),
+        ),
+    )
+
+
 class TestProcessQueueLoop:
     async def test_loop_stops_on_cancel(self) -> None:
         from sova.supervisor.pr_throttle import process_queue_loop

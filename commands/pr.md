@@ -121,7 +121,13 @@ Create a pull request for the current branch using the project's standard PR tem
     )"
     ```
 
-11. **Return the PR URL** to the user.
+11. **Trigger CodeRabbit review** (if configured):
+    Check `sova.toml` for `[external_reviews.coderabbit] trigger_review = true`. If enabled and the PR was newly created (not an update), post a comment to trigger CodeRabbit:
+    ```bash
+    gh pr comment "$PR_NUM" --body "@coderabbitai review"
+    ```
+
+12. **Return the PR URL** to the user.
 
 ## Cross-References
 
