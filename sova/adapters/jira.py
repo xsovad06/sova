@@ -619,8 +619,19 @@ class JiraAdapter(TaskAdapter):
         if config_name:
             target_names.insert(0, config_name)
 
+        # Auto-derive additional candidates from read-side status mapping
+        existing_lower = {name.lower() for name in target_names}
+        for jira_status, state in _JIRA_STATUS_TO_STATE.items():
+            if state == target_state and jira_status.lower() not in existing_lower:
+                target_names.append(jira_status)
+                existing_lower.add(jira_status.lower())
+
+        # Case-insensitive matching with set for O(1) lookup
+        target_names_lower = {name.lower() for name in target_names}
+
         for transition in transitions:
-            if transition["name"] in target_names:
+            transition_name = transition["name"]
+            if transition_name.lower() in target_names_lower:
                 resp = await self._http.post(
                     f"{self._issue_path(issue_key)}/transitions",
                     json={"transition": {"id": transition["id"]}},
@@ -629,11 +640,11 @@ class JiraAdapter(TaskAdapter):
                     log.warning(
                         "transition.post_failed",
                         issue=issue_key,
-                        transition=transition["name"],
+                        transition=transition_name,
                         status=resp.status_code,
                     )
                     return False
-                log.info("transition.triggered", issue=issue_key, transition=transition["name"])
+                log.info("transition.triggered", issue=issue_key, transition=transition_name)
                 return True
 
         log.warning(
