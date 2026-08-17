@@ -107,6 +107,8 @@ from sova.dashboard.services.agent_validation import (
 )
 from sova.dashboard.services.feed_service import emit_safe
 from sova.dashboard.services.output_service import OutputWriter
+from sova.git.merge import delete_remote_branch, handle_post_merge_state
+from sova.git.pr import get_pr_branch
 from sova.ipc.runtime import _PIPELINE_ROLES, get_runtime, spawn_direct
 from sova.utils.formatting import decimal_to_json
 from sova.utils.logging import get_logger
@@ -854,6 +856,78 @@ async def start_command(
 
 _MERGE_ROLES = frozenset({"integrate-pr", "approve-merge"})
 
+
+async def _crash_recovery_cleanup(agent: AgentState) -> None:
+    """Clean up branch and issue state when merge succeeded but agent crashed."""
+    from sova.adapters import create_adapter
+    from sova.config.loader import load_config
+
+    if not agent.pr_number:
+        log.warning("finalize.crash_recovery_no_pr", issue=agent.issue)
+        return
+
+    cfg = load_config(agent.project_dir)
+    repo = cfg.github_repo
+    github_user = cfg.github_user
+
+    if not repo:
+        log.warning("finalize.crash_recovery_no_github_repo", pr=agent.pr_number)
+        return
+
+    branch_name = await get_pr_branch(
+        agent.pr_number,
+        repo=repo,
+        github_user=github_user,
+    )
+
+    if branch_name:
+        deleted = await delete_remote_branch(
+            branch_name,
+            repo=repo,
+            github_user=github_user,
+        )
+        if deleted:
+            log.info(
+                "finalize.crash_recovery_branch_deleted",
+                pr=agent.pr_number,
+                branch=branch_name,
+            )
+    else:
+        log.warning(
+            "finalize.crash_recovery_branch_lookup_failed",
+            pr=agent.pr_number,
+        )
+
+    issue_number = agent.issue or await _resolve_issue_from_pr(
+        agent.pr_number,
+        agent.project_dir,
+    )
+
+    if not issue_number:
+        log.warning(
+            "finalize.crash_recovery_no_issue_number",
+            pr=agent.pr_number,
+            had_agent_issue=bool(agent.issue),
+        )
+        return
+
+    if issue_number:
+        adapter = create_adapter(cfg)
+        await handle_post_merge_state(
+            issue_number,
+            post_merge_state=cfg.integration.post_merge_state,
+            repo=repo,
+            github_user=github_user,
+            adapter=adapter,
+        )
+        log.info(
+            "finalize.crash_recovery_state_transitioned",
+            pr=agent.pr_number,
+            issue=issue_number,
+            state=cfg.integration.post_merge_state,
+        )
+
+
 _DB_TERMINAL_POLL_INTERVAL = 30.0
 
 
@@ -1106,6 +1180,15 @@ async def _wait_and_finalize(pa: ProjectAgents, agent: AgentState) -> None:
                 )
                 status = "done"
                 exit_code = 0
+
+                try:
+                    await _crash_recovery_cleanup(agent)
+                except Exception:
+                    log.warning(
+                        "finalize.crash_recovery_cleanup_failed",
+                        pr=agent.pr_number,
+                        exc_info=True,
+                    )
             else:
                 status, exit_code = await _check_merge_queue_on_failure(
                     agent,

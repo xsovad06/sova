@@ -16344,3 +16344,359 @@ class TestStartAgentModelParam:
             mock_start.assert_called_once()
             _, kwargs = mock_start.call_args
             assert kwargs["model"] is None
+
+
+class TestCrashRecoveryCleanup:
+    """Test _crash_recovery_cleanup: branch deletion and state transition after merge succeeds despite agent crash."""
+
+    @staticmethod
+    def _make_agent(issue: str = "42", pr_number: int = 100):
+        from pathlib import Path
+        from unittest.mock import AsyncMock
+
+        from sova.dashboard.services.agent_pool import AgentState
+        from sova.ipc.control import FileAgentProcess
+
+        mock_process = AsyncMock(spec=FileAgentProcess)
+        return AgentState(
+            run_id=1,
+            project_dir=Path("/fake/project"),
+            issue=issue,
+            role="command:integrate-pr",
+            process=mock_process,
+            pr_number=pr_number,
+            last_result_cost=0.0,
+            output_writer=None,
+        )
+
+    async def test_deletes_branch_and_transitions_state(self) -> None:
+        """Branch is deleted and issue state transitioned on successful merge."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.adapters.create_adapter"),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-42",
+            ) as mock_get_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = "owner/repo"
+            mock_cfg.github_user = "testuser"
+            mock_cfg.integration.post_merge_state = "done"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_get_branch.assert_awaited_once_with(100, repo="owner/repo", github_user="testuser")
+        mock_delete_branch.assert_awaited_once_with("feat/issue-42", repo="owner/repo", github_user="testuser")
+        mock_post_merge.assert_awaited_once()
+        args, kwargs = mock_post_merge.call_args
+        assert args[0] == "42"
+        assert kwargs["post_merge_state"] == "done"
+        assert kwargs["repo"] == "owner/repo"
+        assert kwargs["github_user"] == "testuser"
+
+    async def test_continues_when_branch_deletion_fails(self) -> None:
+        """State transition still runs even when branch deletion returns False."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.adapters.create_adapter"),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="feat/issue-42",
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                new_callable=AsyncMock,
+                return_value=False,
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = "owner/repo"
+            mock_cfg.github_user = "testuser"
+            mock_cfg.integration.post_merge_state = "done"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_delete_branch.assert_awaited_once()
+        mock_post_merge.assert_awaited_once()
+
+    async def test_skips_deletion_when_branch_lookup_fails(self) -> None:
+        """When get_pr_branch returns empty string, deletion is skipped but state transition runs."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch("sova.adapters.create_adapter"),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                new_callable=AsyncMock,
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+            patch(
+                "sova.dashboard.services.agent_lifecycle._resolve_issue_from_pr",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = "owner/repo"
+            mock_cfg.github_user = "testuser"
+            mock_cfg.integration.post_merge_state = "done"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_delete_branch.assert_not_awaited()
+        mock_post_merge.assert_awaited_once()
+
+    async def test_returns_early_when_pr_number_is_none(self) -> None:
+        """When agent.pr_number is None, no git operations are attempted."""
+        from unittest.mock import patch
+
+        agent = self._make_agent(pr_number=None)
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+            ) as mock_get_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+            ) as mock_post_merge,
+        ):
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_load_config.assert_not_called()
+        mock_get_branch.assert_not_called()
+        mock_delete_branch.assert_not_called()
+        mock_post_merge.assert_not_called()
+
+    async def test_skips_when_no_github_repo_configured(self) -> None:
+        """When cfg.github_repo is None (JIRA-only project), returns early without git operations."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+            ) as mock_get_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+            ) as mock_post_merge,
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = None
+            mock_cfg.github_user = "testuser"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_get_branch.assert_not_called()
+        mock_delete_branch.assert_not_called()
+        mock_post_merge.assert_not_called()
+
+    async def test_exception_in_cleanup_is_logged_and_suppressed_in_finalize(self, session) -> None:
+        """Exception in _crash_recovery_cleanup is caught in _wait_and_finalize, logged, but finalization completes."""
+        from pathlib import Path
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sova.dashboard.services.agent_pool import AgentState, ProjectAgents
+        from sova.db.models import TaskRun
+        from sova.ipc.control import FileAgentProcess
+
+        # Create a TaskRun in the database
+        run = TaskRun(
+            issue_number="42",
+            role="command:integrate-pr",
+            status="running",
+            project_slug="test-project",
+        )
+        session.add(run)
+        await session.commit()
+        await session.refresh(run)
+
+        # Create an agent with the run_id
+        mock_process = AsyncMock(spec=FileAgentProcess)
+        mock_process.wait.return_value = 1  # Non-zero exit
+        mock_process.returncode = 1
+        mock_process.stop = AsyncMock()
+
+        project_dir = Path("/fake/project")
+        agent = AgentState(
+            run_id=run.id,
+            project_dir=project_dir,
+            issue="42",
+            role="command:integrate-pr",
+            process=mock_process,
+            pr_number=100,
+            last_result_cost=0.0,
+            output_writer=None,
+        )
+
+        pa = ProjectAgents(project_dir=project_dir)
+        pa.agents[run.id] = agent
+
+        with (
+            patch(
+                "sova.dashboard.services.agent_lifecycle._check_pr_merged_on_failure",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._crash_recovery_cleanup",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("GitHub API timeout"),
+            ) as mock_cleanup,
+            patch("sova.dashboard.services.agent_lifecycle._finalize_resource_monitoring", new_callable=AsyncMock),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._validate_command_outcome",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "sova.dashboard.services.agent_lifecycle._validate_pipeline_outcome",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("sova.dashboard.services.agent_lifecycle._check_merge_queue_marker_file", new_callable=AsyncMock),
+            patch("sova.dashboard.services.agent_handoff._process_auto_handoff", new_callable=AsyncMock),
+            patch("sova.dashboard.routers.agents._ws_manager", MagicMock()),
+        ):
+            from sova.dashboard.services.agent_lifecycle import _wait_and_finalize
+
+            # Should not raise even though _crash_recovery_cleanup raises
+            await _wait_and_finalize(pa, agent)
+
+            # Verify cleanup was called
+            mock_cleanup.assert_awaited_once()
+
+            # Verify the run was marked done (merge succeeded)
+            await session.refresh(run)
+            assert run.status == "done"
+
+    async def test_returns_early_when_pr_number_is_none(self) -> None:
+        """When agent.pr_number is None, cleanup returns immediately without git operations."""
+        from unittest.mock import AsyncMock, patch
+
+        agent = self._make_agent(pr_number=None)
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                new_callable=AsyncMock,
+            ) as mock_get_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                new_callable=AsyncMock,
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+        ):
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_load_config.assert_not_called()
+        mock_get_branch.assert_not_awaited()
+        mock_delete_branch.assert_not_awaited()
+        mock_post_merge.assert_not_awaited()
+
+    async def test_skips_when_no_github_repo_configured(self) -> None:
+        """When cfg.github_repo is None (JIRA-only project), cleanup returns early."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = self._make_agent()
+
+        with (
+            patch("sova.config.loader.load_config") as mock_load_config,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.get_pr_branch",
+                new_callable=AsyncMock,
+            ) as mock_get_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.delete_remote_branch",
+                new_callable=AsyncMock,
+            ) as mock_delete_branch,
+            patch(
+                "sova.dashboard.services.agent_lifecycle.handle_post_merge_state",
+                new_callable=AsyncMock,
+            ) as mock_post_merge,
+        ):
+            mock_cfg = MagicMock()
+            mock_cfg.github_repo = None
+            mock_cfg.github_user = "testuser"
+            mock_load_config.return_value = mock_cfg
+
+            from sova.dashboard.services.agent_lifecycle import _crash_recovery_cleanup
+
+            await _crash_recovery_cleanup(agent)
+
+        mock_get_branch.assert_not_awaited()
+        mock_delete_branch.assert_not_awaited()
+        mock_post_merge.assert_not_awaited()
