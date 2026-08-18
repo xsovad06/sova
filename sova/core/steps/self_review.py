@@ -19,7 +19,8 @@ class SelfReviewStep(BaseStep):
         try:
             result = await invoke_command(
                 "/review",
-                model=ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.agent.model,
+                fallback_model=ctx.get_cli_fallback_model(),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
                 timeout=ctx.config.agent.step_timeout,

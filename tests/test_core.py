@@ -17,7 +17,7 @@ from sova.config.models import ProjectConfig, TaskSourceConfig
 from sova.core.context import ExecutionContext
 from sova.core.state import InvalidTransitionError, TaskStatus, get_valid_transitions
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.core.workflow import WorkflowEngine
+from sova.core.workflow import WorkflowEngine, _is_billing_failure
 from sova.db.models import CostRecord, FailureRecord, StepExecution, TaskRun
 from sova.db.session import close_db, get_session, init_db
 
@@ -678,6 +678,158 @@ class TestWorkflowEngine:
         assert not result.success
         assert result.steps_failed == 1
         assert result.error == "step_hard_timeout"
+
+    async def test_billing_failure_triggers_model_fallback(self) -> None:
+        """A billing failure should switch to the next fallback model and retry."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        ctx = _make_ctx(config=config)
+
+        call_models: list[str | None] = []
+
+        async def billing_then_succeed(ctx_inner: ExecutionContext) -> StepResult:
+            call_models.append(ctx_inner.resolved_model)
+            if ctx_inner.resolved_model != "sonnet":
+                return StepResult(success=False, summary="Billing fail", error="budget_exhausted")
+            return StepResult(success=True, summary="Passed with fallback")
+
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.max_retries = 0
+        step.execute = billing_then_succeed
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert "sonnet" in call_models
+
+    async def test_all_fallback_models_exhausted(self) -> None:
+        """When all fallback models fail with billing errors, step fails."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet", "haiku"]})
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False, gate_pass=True)
+        step.max_retries = 0
+        step.execute = AsyncMock(
+            return_value=StepResult(success=False, summary="Billing fail", error="rate_limit exceeded")
+        )
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert step.execute.await_count == 3  # opus + sonnet + haiku
+
+    async def test_non_billing_failure_does_not_trigger_fallback(self) -> None:
+        """A regular code error should not trigger model fallback."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False, gate_pass=True)
+        step.max_retries = 0
+        step.execute = AsyncMock(
+            return_value=StepResult(success=False, summary="Code error", error="test assertion failed")
+        )
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert step.execute.await_count == 1
+
+    async def test_fallback_skips_duplicate_model(self) -> None:
+        """If fallback_models contains the same model as primary, skip it."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["opus", "sonnet"]})
+        ctx = _make_ctx(config=config)
+
+        models_tried: list[str | None] = []
+
+        async def track_and_fail(ctx_inner: ExecutionContext) -> StepResult:
+            models_tried.append(ctx_inner.resolved_model)
+            if ctx_inner.resolved_model == "sonnet":
+                return StepResult(success=True, summary="ok")
+            return StepResult(success=False, summary="fail", error="budget_exhausted")
+
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.max_retries = 0
+        step.execute = track_and_fail
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert "sonnet" in models_tried
+        assert models_tried.count(None) <= 1  # opus might show as None (unresolved)
+
+    async def test_empty_fallback_models_no_change(self) -> None:
+        """Empty fallback_models means billing failure just fails the step."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": []})
+        ctx = _make_ctx(config=config)
+
+        step = DummyStep(should_pass=False, gate_pass=True)
+        step.max_retries = 0
+        step.execute = AsyncMock(return_value=StepResult(success=False, summary="fail", error="budget_exhausted"))
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert step.execute.await_count == 1
+
+    async def test_fallback_model_persists_for_subsequent_steps(self) -> None:
+        """After a successful fallback, subsequent steps use the fallback model."""
+        config = ProjectConfig(agent={"model": "opus", "fallback_models": ["sonnet"]})
+        ctx = _make_ctx(config=config)
+
+        step2_model: list[str | None] = []
+
+        async def billing_fail(ctx_inner: ExecutionContext) -> StepResult:
+            if ctx_inner.resolved_model != "sonnet":
+                return StepResult(success=False, summary="fail", error="billing error")
+            return StepResult(success=True, summary="ok")
+
+        async def capture_model(ctx_inner: ExecutionContext) -> StepResult:
+            step2_model.append(ctx_inner.resolved_model)
+            return StepResult(success=True, summary="ok")
+
+        s1 = DummyStep(should_pass=True, gate_pass=True, name="step1")
+        s1.max_retries = 0
+        s1.execute = billing_fail
+        s2 = DummyStep(should_pass=True, gate_pass=True, name="step2")
+        s2.max_retries = 0
+        s2.execute = capture_model
+
+        engine = WorkflowEngine(steps=[s1, s2], ctx=ctx)
+        result = await engine.run()
+
+        assert result.success
+        assert step2_model == ["sonnet"]
+
+
+class TestBillingFailureDetection:
+    def test_budget_exhausted(self) -> None:
+        assert _is_billing_failure("terminal_reason=budget_exhausted")
+
+    def test_rate_limit(self) -> None:
+        assert _is_billing_failure("rate_limit exceeded for model")
+
+    def test_overloaded(self) -> None:
+        assert _is_billing_failure("API overloaded, try again")
+
+    def test_billing_error(self) -> None:
+        assert _is_billing_failure("billing account suspended")
+
+    def test_insufficient_quota(self) -> None:
+        assert _is_billing_failure("insufficient_quota for this org")
+
+    def test_http_429(self) -> None:
+        assert _is_billing_failure("HTTP 429 Too Many Requests")
+
+    def test_regular_error(self) -> None:
+        assert not _is_billing_failure("test assertion failed: expected 3 got 4")
+
+    def test_none_error(self) -> None:
+        assert not _is_billing_failure(None)
+
+    def test_empty_error(self) -> None:
+        assert not _is_billing_failure("")
+
+    def test_timeout_error(self) -> None:
+        assert not _is_billing_failure("step_hard_timeout")
 
 
 # ---------------------------------------------------------------------------
@@ -2338,6 +2490,7 @@ class TestRearrangeCommitsStep:
         mock_invoke.assert_awaited_once_with(
             "/rearrange-commits",
             model=ctx.config.agent.model,
+            fallback_model=None,
             cwd=ctx.working_dir,
             max_budget_usd=ANY,
             timeout=ANY,

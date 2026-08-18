@@ -84,6 +84,7 @@ class LLMProvider(ABC):
         prompt: str,
         *,
         model: str | None = None,
+        fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = 600,
@@ -110,6 +111,7 @@ class LLMProvider(ABC):
         args: str = "",
         *,
         model: str | None = None,
+        fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = 600,
@@ -123,7 +125,9 @@ class LLMProvider(ABC):
             _assert_command_exists(command, Path(cwd))
         prompt = f"{command} {args}".strip() if args else command
         log.info("llm.invoke_command", command=command, args_len=len(args), model=model)
-        return await self.invoke(prompt, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
+        return await self.invoke(
+            prompt, model=model, fallback_model=fallback_model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
+        )
 
     async def invoke_batch(
         self,

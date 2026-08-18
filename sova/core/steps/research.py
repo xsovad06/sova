@@ -24,7 +24,8 @@ class ResearchStep(BaseStep):
             result = await invoke_command(
                 "/research",
                 args=ctx.issue_number,
-                model=ctx.config.agent.model,
+                model=ctx.resolved_model or ctx.config.agent.model,
+                fallback_model=ctx.get_cli_fallback_model(),
                 cwd=ctx.project_dir,
                 max_budget_usd=ctx.config.agent.max_budget / 5,
                 timeout=ctx.config.agent.step_timeout,

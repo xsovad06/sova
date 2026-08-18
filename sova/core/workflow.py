@@ -31,6 +31,24 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="workflow")
 
+_BILLING_FAILURE_PATTERNS: tuple[str, ...] = (
+    "budget_exhausted",
+    "billing",
+    "rate_limit",
+    "overloaded",
+    "insufficient_quota",
+    " 429",
+)
+
+
+def _is_billing_failure(error: str | None) -> bool:
+    """Return True if the error string indicates a billing or rate-limit failure."""
+    if not error:
+        return False
+    lower = error.lower()
+    return any(p in lower for p in _BILLING_FAILURE_PATTERNS)
+
+
 # Maps step names to the TaskStatus they represent while executing
 _STEP_STATUS_MAP: dict[str, TaskStatus] = {
     "sync": TaskStatus.PENDING,
@@ -278,10 +296,49 @@ class WorkflowEngine:
         log.info("workflow.done", label=label, cost=str(result.total_cost_usd))
 
     async def _execute_with_retries(self, step: BaseStep) -> StepRecord:
-        """Execute a step, retrying on failure up to max_retries."""
+        """Execute a step, retrying on failure up to max_retries.
+
+        When all retries are exhausted with a billing/rate-limit failure,
+        advances to the next model in the configured fallback chain and
+        resets the retry counter.
+        """
         record = StepRecord(step_name=step.name, status="pending")
+        fallback_chain = self._ctx.config.agent.fallback_models
+
+        while True:
+            result = await self._try_step_with_retries(step, record)
+            if result != "billing_exhausted":
+                return record
+
+            next_model = self._advance_fallback(fallback_chain)
+            if next_model is None:
+                log.warning(
+                    "workflow.fallback.exhausted",
+                    step=step.name,
+                    chain=[self._ctx.config.agent.model, *fallback_chain],
+                )
+                record.status = "failed"
+                return record
+
+            log.info(
+                "workflow.fallback.switch",
+                step=step.name,
+                from_model=self._ctx.resolved_model,
+                to_model=next_model,
+            )
+            self._ctx.resolved_model = next_model
+            self._ctx.model_selection_reason = f"fallback (billing failure) -> {next_model}"
+
+    async def _try_step_with_retries(self, step: BaseStep, record: StepRecord) -> str:
+        """Run the step retry loop for the current model.
+
+        Returns:
+            "done" if step succeeded, "failed" for non-billing failure,
+            "billing_exhausted" if all retries failed with billing errors.
+        """
         attempts = 0
         max_attempts = step.max_retries + 1
+        last_was_billing = False
 
         while attempts < max_attempts:
             start = time.monotonic()
@@ -299,10 +356,11 @@ class WorkflowEngine:
                 attempts += 1
                 record.retries = attempts - 1
                 record.result = step_result
+                last_was_billing = False
                 if attempts < max_attempts:
                     continue
                 record.status = "failed"
-                return record
+                return "failed"
 
             timeout_seconds = self._step_timeout(step.name)
             try:
@@ -330,11 +388,17 @@ class WorkflowEngine:
                 log.warning("workflow.step_exec.update_failed", step=step.name, error=str(exc), exc_info=True)
 
             if not step_result.success:
+                is_billing = _is_billing_failure(step_result.error)
+                last_was_billing = is_billing
+
+                if is_billing and self._has_fallback_models():
+                    return "billing_exhausted"
+
                 if attempts < max_attempts:
                     log.info("workflow.step.retry", step=step.name, attempt=attempts)
                     continue
                 record.status = "failed"
-                return record
+                return "billing_exhausted" if last_was_billing and self._has_fallback_models() else "failed"
 
             # Step succeeded -- run gate check
             gate = await step.validate_output(self._ctx)
@@ -344,14 +408,32 @@ class WorkflowEngine:
                 log.warning("workflow.gate.failed", step=step.name, reason=gate.reason)
                 await self._update_step_execution_gate(step_exec_id, gate)
                 record.status = "failed"
-                return record
+                return "failed"
 
             record.status = "done"
             log.info("workflow.step.done", step=step.name, duration_ms=record.duration_ms)
-            return record
+            return "done"
 
         record.status = "failed"
-        return record
+        return "billing_exhausted" if last_was_billing and self._has_fallback_models() else "failed"
+
+    def _has_fallback_models(self) -> bool:
+        """Check if there are remaining fallback models to try."""
+        chain = self._ctx.config.agent.fallback_models
+        return self._ctx.fallback_model_index < len(chain)
+
+    def _advance_fallback(self, chain: list[str]) -> str | None:
+        """Advance to the next fallback model, skipping duplicates.
+
+        Returns the next model name or None if exhausted.
+        """
+        current = self._ctx.resolved_model or self._ctx.config.agent.model
+        while self._ctx.fallback_model_index < len(chain):
+            candidate = chain[self._ctx.fallback_model_index]
+            self._ctx.fallback_model_index += 1
+            if candidate != current:
+                return candidate
+        return None
 
     def _step_timeout(self, step_name: str) -> int:
         """Return the hard timeout in seconds for a given step.
