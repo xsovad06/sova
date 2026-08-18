@@ -341,81 +341,111 @@ class WorkflowEngine:
         last_was_billing = False
 
         while attempts < max_attempts:
-            start = time.monotonic()
-
-            try:
-                step_exec_id = await self._create_step_execution(step.name, retry_count=attempts)
-                record.step_exec_id = step_exec_id
-            except Exception as exc:
-                log.warning("workflow.step_exec.create_failed", step=step.name, error=str(exc), exc_info=True)
-                step_result = StepResult(
-                    success=False,
-                    summary=f"DB error creating step execution for {step.name}",
-                    error=str(exc),
-                )
-                attempts += 1
-                record.retries = attempts - 1
-                record.result = step_result
-                last_was_billing = False
-                if attempts < max_attempts:
-                    continue
-                record.status = "failed"
-                return "failed"
-
-            timeout_seconds = self._step_timeout(step.name)
-            try:
-                async with asyncio.timeout(timeout_seconds):
-                    step_result = await step.execute(self._ctx)
-            except TimeoutError:
-                step_result = StepResult(
-                    success=False,
-                    summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
-                    error="step_hard_timeout",
-                )
-            except Exception as exc:
-                log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
-                step_result = StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
-
-            elapsed_ms = int((time.monotonic() - start) * 1000)
-            record.duration_ms = elapsed_ms
-            record.result = step_result
+            attempt_result = await self._execute_single_attempt(step, record, attempts)
             attempts += 1
             record.retries = attempts - 1
 
-            try:
-                await self._update_step_execution(step_exec_id, step_result, elapsed_ms)
-            except Exception as exc:
-                log.warning("workflow.step_exec.update_failed", step=step.name, error=str(exc), exc_info=True)
-
-            if not step_result.success:
-                is_billing = _is_billing_failure(step_result.error)
-                last_was_billing = is_billing
-
-                if is_billing and self._has_fallback_models():
-                    return "billing_exhausted"
-
-                if attempts < max_attempts:
+            if attempt_result == "continue":
+                continue
+            if attempt_result == "done":
+                record.status = "done"
+                log.info("workflow.step.done", step=step.name, duration_ms=record.duration_ms)
+                return "done"
+            if attempt_result in ("failed", "billing_exhausted"):
+                last_was_billing = attempt_result == "billing_exhausted"
+                if attempts < max_attempts and attempt_result != "billing_exhausted":
                     log.info("workflow.step.retry", step=step.name, attempt=attempts)
                     continue
                 record.status = "failed"
-                return "billing_exhausted" if last_was_billing and self._has_fallback_models() else "failed"
-
-            # Step succeeded -- run gate check
-            gate = await step.validate_output(self._ctx)
-            record.gate = gate
-
-            if not gate.passed:
-                log.warning("workflow.gate.failed", step=step.name, reason=gate.reason)
-                await self._update_step_execution_gate(step_exec_id, gate)
-                record.status = "failed"
-                return "failed"
-
-            record.status = "done"
-            log.info("workflow.step.done", step=step.name, duration_ms=record.duration_ms)
-            return "done"
+                return attempt_result
 
         record.status = "failed"
         return "billing_exhausted" if last_was_billing and self._has_fallback_models() else "failed"
+
+    async def _execute_single_attempt(self, step: BaseStep, record: StepRecord, attempt: int) -> str:
+        """Execute a single attempt of a step.
+
+        Returns:
+            "done" if succeeded, "failed" for non-billing failure,
+            "billing_exhausted" for billing failure with fallbacks available,
+            "continue" to retry with same model.
+        """
+        step_exec_id = await self._prepare_step_execution(step, record, attempt)
+        if step_exec_id is None:
+            return "continue"
+
+        start = time.monotonic()
+        step_result = await self._run_step_with_timeout(step)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+
+        record.duration_ms = elapsed_ms
+        record.result = step_result
+
+        await self._persist_step_result(step_exec_id, step_result, elapsed_ms, step.name)
+
+        if not step_result.success:
+            return self._handle_step_failure_result(step_result)
+
+        return await self._validate_step_gate(step, step_exec_id, record)
+
+    async def _prepare_step_execution(self, step: BaseStep, record: StepRecord, attempt: int) -> int | None:
+        """Create StepExecution record. Returns None on failure (caller should continue retry loop)."""
+        try:
+            step_exec_id = await self._create_step_execution(step.name, retry_count=attempt)
+            record.step_exec_id = step_exec_id
+            return step_exec_id
+        except Exception as exc:
+            log.warning("workflow.step_exec.create_failed", step=step.name, error=str(exc), exc_info=True)
+            record.result = StepResult(
+                success=False,
+                summary=f"DB error creating step execution for {step.name}",
+                error=str(exc),
+            )
+            return None
+
+    async def _run_step_with_timeout(self, step: BaseStep) -> StepResult:
+        """Execute step with timeout and exception handling."""
+        timeout_seconds = self._step_timeout(step.name)
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                return await step.execute(self._ctx)
+        except TimeoutError:
+            return StepResult(
+                success=False,
+                summary=f"Step '{step.name}' exceeded hard timeout ({timeout_seconds}s)",
+                error="step_hard_timeout",
+            )
+        except Exception as exc:
+            log.exception("workflow.step.unhandled_exception", step=step.name, error=str(exc))
+            return StepResult(success=False, summary=f"Exception in {step.name}", error=str(exc))
+
+    async def _persist_step_result(
+        self, step_exec_id: int, result: StepResult, elapsed_ms: int, step_name: str
+    ) -> None:
+        """Update StepExecution record with result (non-fatal on failure)."""
+        try:
+            await self._update_step_execution(step_exec_id, result, elapsed_ms)
+        except Exception as exc:
+            log.warning("workflow.step_exec.update_failed", step=step_name, error=str(exc), exc_info=True)
+
+    def _handle_step_failure_result(self, step_result: StepResult) -> str:
+        """Classify step failure and determine retry strategy."""
+        is_billing = _is_billing_failure(step_result.error)
+        if is_billing and self._has_fallback_models():
+            return "billing_exhausted"
+        return "failed"
+
+    async def _validate_step_gate(self, step: BaseStep, step_exec_id: int, record: StepRecord) -> str:
+        """Run gate check on successful step. Returns "done" or "failed"."""
+        gate = await step.validate_output(self._ctx)
+        record.gate = gate
+
+        if not gate.passed:
+            log.warning("workflow.gate.failed", step=step.name, reason=gate.reason)
+            await self._update_step_execution_gate(step_exec_id, gate)
+            return "failed"
+
+        return "done"
 
     def _has_fallback_models(self) -> bool:
         """Check if there are remaining fallback models to try."""
