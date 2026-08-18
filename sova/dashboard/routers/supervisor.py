@@ -228,11 +228,25 @@ async def get_plan() -> dict:
     decisions here instead of executing them immediately.  The frontend polls
     this endpoint to render the "Pending Actions" panel.
     """
-    from sova.dashboard.services.supervisor_service import get_pending_plan, get_plan_deferred, get_plan_reasoning
+    from sova.config.loader import load_config
+    from sova.dashboard.services.supervisor_service import (
+        get_pending_plan,
+        get_plan_deferred,
+        get_plan_reasoning,
+        resolve_project_slug,
+    )
 
-    plan = get_pending_plan()
+    project_dir = get_project_dir()
+    try:
+        cfg = load_config(project_dir)
+        project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+    except (FileNotFoundError, PermissionError, ValueError):
+        log.exception("Config load failed for project dir %s", project_dir)
+        return {"reasoning": None, "pending": [], "deferred": []}
+
+    plan = get_pending_plan(project_slug)
     return {
-        "reasoning": get_plan_reasoning(),
+        "reasoning": get_plan_reasoning(project_slug),
         "pending": [
             {
                 "issue_number": d.issue_number,
@@ -242,11 +256,11 @@ async def get_plan() -> dict:
             }
             for d in plan
         ],
-        "deferred": get_plan_deferred(),
+        "deferred": get_plan_deferred(project_slug),
     }
 
 
-async def _execute_plan_decisions(decisions: list[ProgressionDecision]) -> list[dict]:
+async def _execute_plan_decisions(decisions: list[ProgressionDecision], project_dir: Path) -> list[dict]:
     """Execute a list of ProgressionDecision objects via the engine.
 
     Isolated into its own function so tests can patch it without touching
@@ -257,7 +271,6 @@ async def _execute_plan_decisions(decisions: list[ProgressionDecision]) -> list[
     from sova.db.session import get_session_factory
     from sova.supervisor.progression import TaskProgressionEngine
 
-    project_dir = get_project_dir()
     cfg = load_config(project_dir)
     adapter = create_adapter(cfg)
     session_factory = await get_session_factory(project_dir)
@@ -286,19 +299,29 @@ async def approve_plan(body: ApproveRequest) -> dict:
     executed; the rest remain in the plan.  When omitted or empty, all pending
     decisions are approved and the plan is cleared.
     """
-    from sova.dashboard.services.supervisor_service import get_pending_plan, remove_plan_items, set_pending_plan
+    from sova.config.loader import load_config
+    from sova.dashboard.services.supervisor_service import (
+        get_pending_plan,
+        remove_plan_items,
+        resolve_project_slug,
+        set_pending_plan,
+    )
 
-    plan = get_pending_plan()
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+
+    plan = get_pending_plan(project_slug)
     if not plan:
         return {"approved": 0, "results": []}
 
     if body.issue_numbers:
-        to_execute = remove_plan_items(set(body.issue_numbers))
+        to_execute = remove_plan_items(set(body.issue_numbers), project_slug)
     else:
         to_execute = plan
-        set_pending_plan([])
+        set_pending_plan([], project_slug=project_slug)
 
-    results = await _execute_plan_decisions(to_execute)
+    results = await _execute_plan_decisions(to_execute, project_dir)
     errors = [r for r in results if "error" in r]
     return {"approved": len(to_execute), "results": results, "errors": errors}
 
@@ -306,9 +329,14 @@ async def approve_plan(body: ApproveRequest) -> dict:
 @router.post("/plan/skip/{issue_number}", responses={404: {"description": "Issue not in pending plan"}})
 async def skip_plan_item(issue_number: int) -> dict:
     """Remove a single issue from the pending plan without executing it."""
-    from sova.dashboard.services.supervisor_service import remove_plan_items
+    from sova.config.loader import load_config
+    from sova.dashboard.services.supervisor_service import remove_plan_items, resolve_project_slug
 
-    removed = remove_plan_items({issue_number})
+    project_dir = get_project_dir()
+    cfg = load_config(project_dir)
+    project_slug = resolve_project_slug(cfg.github_repo, project_dir)
+
+    removed = remove_plan_items({issue_number}, project_slug)
     if not removed:
         raise HTTPException(status_code=404, detail=f"Issue #{issue_number} is not in the pending plan")
     return {"skipped": issue_number}
