@@ -194,6 +194,23 @@ class TestPRMetricsAPI:
         assert resp.status_code == 200
         assert b"PR Metrics" in resp.content
 
+    async def test_project_scoped_pr_metrics_page(self, tmp_path) -> None:
+        from sova.config.registry import register_project, unregister_project
+        from sova.dashboard.app import create_app
+
+        app = create_app(multi_project=True)
+        transport = ASGITransport(app=app)
+        project_dir = tmp_path / "test-project"
+        project_dir.mkdir()
+        slug = register_project(project_dir)
+        try:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get(f"/p/{slug}/pr-metrics")
+                assert resp.status_code == 200
+                assert b"PR Metrics" in resp.content
+        finally:
+            unregister_project(slug)
+
 
 class TestPREventModel:
     async def test_create_event(self, session: AsyncSession) -> None:
