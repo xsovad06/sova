@@ -269,6 +269,11 @@ class TestSpecRouterErrors:
                 "sova.dashboard.routers.spec.spec_service.approve_spec",
                 return_value={"status": "approved"},
             ),
+            patch(
+                "sova.dashboard.routers.spec._transition_to_researched",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
             patch.object(
                 cs,
                 "start_agent",

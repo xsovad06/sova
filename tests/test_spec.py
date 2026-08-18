@@ -1259,6 +1259,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1288,6 +1289,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1312,6 +1314,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers") as mock_write,
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 1}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1348,6 +1351,7 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1560,6 +1564,7 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1814,6 +1819,7 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1850,6 +1856,7 @@ class TestSpecRouterTaskRunTransition:
         run_id = await self._create_awaiting_run("42")
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 456}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1885,6 +1892,7 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):
