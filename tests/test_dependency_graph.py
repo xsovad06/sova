@@ -1364,6 +1364,105 @@ class TestDependencyAPI:
             resp = await client.get("/api/dependencies/chain/1")
         assert resp.status_code == 503
 
+    @pytest.mark.asyncio
+    async def test_graph_endpoint_queue_position_enrichment(self, client: AsyncClient) -> None:
+        """Nodes in the task queue get queue_position; others do not."""
+        from unittest.mock import MagicMock
+
+        tasks = [
+            _task(1, title="Queued First"),
+            _task(2, title="Queued Second"),
+            _task(3, title="Not Queued"),
+        ]
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = [2, 1]
+        p1 = patch("sova.config.loader.load_config", return_value=mock_cfg)
+        p2 = patch("sova.adapters.create_adapter", return_value=AsyncMock())
+
+        async def _build(adapter, *, milestone=""):
+            return DependencyGraph(tasks)
+
+        p3 = patch("sova.supervisor.dependency_graph.build_dependency_graph", side_effect=_build)
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with p1, p2, p3, f1, f2, f3, f4:
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 200
+        nodes = {n["id"]: n for n in resp.json()["nodes"]}
+        assert nodes[1].get("queue_position") == 2
+        assert nodes[2].get("queue_position") == 1
+        assert "queue_position" not in nodes[3]
+
+    @pytest.mark.asyncio
+    async def test_graph_endpoint_queue_position_empty_queue(self, client: AsyncClient) -> None:
+        """Empty queue leaves nodes without queue_position."""
+        from unittest.mock import MagicMock
+
+        tasks = [_task(1, title="Feature")]
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = []
+        p1 = patch("sova.config.loader.load_config", return_value=mock_cfg)
+        p2 = patch("sova.adapters.create_adapter", return_value=AsyncMock())
+
+        async def _build(adapter, *, milestone=""):
+            return DependencyGraph(tasks)
+
+        p3 = patch("sova.supervisor.dependency_graph.build_dependency_graph", side_effect=_build)
+        f1, f2, f3, f4 = _mock_fetch_context()
+        with p1, p2, p3, f1, f2, f3, f4:
+            resp = await client.get("/api/dependencies/graph")
+        assert resp.status_code == 200
+        assert "queue_position" not in resp.json()["nodes"][0]
+
+
+class TestEnrichWithQueuePosition:
+    def test_adds_queue_position_to_matching_nodes(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.routers.dependencies import _enrich_with_queue_position
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = [5, 3]
+        graph_dict = {"nodes": [{"id": 3}, {"id": 5}, {"id": 7}]}
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            _enrich_with_queue_position(graph_dict, Path("/fake"))
+        assert graph_dict["nodes"][0]["queue_position"] == 2
+        assert graph_dict["nodes"][1]["queue_position"] == 1
+        assert "queue_position" not in graph_dict["nodes"][2]
+
+    def test_empty_queue_skips_enrichment(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.routers.dependencies import _enrich_with_queue_position
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = []
+        graph_dict = {"nodes": [{"id": 1}]}
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            _enrich_with_queue_position(graph_dict, Path("/fake"))
+        assert "queue_position" not in graph_dict["nodes"][0]
+
+    def test_config_failure_is_silent(self) -> None:
+        from sova.dashboard.routers.dependencies import _enrich_with_queue_position
+
+        graph_dict = {"nodes": [{"id": 1}]}
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("nope")):
+            _enrich_with_queue_position(graph_dict, Path("/fake"))
+        assert "queue_position" not in graph_dict["nodes"][0]
+
+    def test_malformed_node_without_id_is_skipped(self) -> None:
+        from unittest.mock import MagicMock
+
+        from sova.dashboard.routers.dependencies import _enrich_with_queue_position
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = [1, 2]
+        graph_dict = {"nodes": [{"id": 1}, {"no_id_key": 2}, {"id": 2}]}
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            _enrich_with_queue_position(graph_dict, Path("/fake"))
+        assert graph_dict["nodes"][0]["queue_position"] == 1
+        assert "queue_position" not in graph_dict["nodes"][1]
+        assert graph_dict["nodes"][2]["queue_position"] == 2
+
 
 # ---------------------------------------------------------------------------
 # Priority extraction
