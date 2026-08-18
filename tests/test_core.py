@@ -799,6 +799,55 @@ class TestWorkflowEngine:
         assert result.success
         assert step2_model == ["sonnet"]
 
+    async def test_step_unhandled_exception_captured(self) -> None:
+        """Unhandled exceptions in step.execute are captured and recorded as failures."""
+        ctx = _make_ctx()
+
+        async def raise_exception(ctx_inner: ExecutionContext) -> StepResult:
+            raise RuntimeError("Unexpected error in step")
+
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.execute = raise_exception
+        engine = WorkflowEngine(steps=[step], ctx=ctx)
+        result = await engine.run()
+
+        assert not result.success
+        assert result.steps_failed == 1
+        assert "Unexpected error in step" in (result.error or "")
+
+    async def test_persist_step_result_db_error_non_fatal(self) -> None:
+        """DB errors when persisting step results are logged but don't fail the pipeline."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+
+        with patch("sova.core.workflow.WorkflowEngine._update_step_execution", side_effect=Exception("DB error")):
+            engine = WorkflowEngine(steps=[step], ctx=ctx)
+            result = await engine.run()
+
+        assert result.success
+
+    async def test_prepare_step_execution_db_error_retries(self) -> None:
+        """DB errors when creating StepExecution trigger retry on the same step."""
+        ctx = _make_ctx()
+        step = DummyStep(should_pass=True, gate_pass=True)
+        step.max_retries = 1
+
+        call_count = 0
+
+        async def mock_create_failing_once(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("DB connection failed")
+            return 123
+
+        with patch("sova.core.workflow.WorkflowEngine._create_step_execution", side_effect=mock_create_failing_once):
+            engine = WorkflowEngine(steps=[step], ctx=ctx)
+            result = await engine.run()
+
+        assert result.success
+        assert call_count == 2
+
 
 class TestBillingFailureDetection:
     def test_budget_exhausted(self) -> None:
