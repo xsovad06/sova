@@ -3346,7 +3346,7 @@ class TestReviewerLLMReview:
     async def test_no_clear_without_task_run_id(self) -> None:
         """When task_run_id is None, _clear_current_step is not called."""
         from decimal import Decimal
-        from unittest.mock import patch
+        from unittest.mock import MagicMock, patch
 
         from sova.llm.models import LLMResult
         from sova.roles.reviewer import ReviewerRole
@@ -3366,6 +3366,14 @@ class TestReviewerLLMReview:
             cost_usd=Decimal("0.01"),
         )
 
+        # Create a proper mock for get_session that returns an async context manager
+        mock_result = MagicMock()
+        mock_result.scalars.return_value = iter([])  # Return empty iterator
+        mock_session = AsyncMock()
+        mock_session.execute.return_value = mock_result
+        mock_get_session = AsyncMock()
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
         mock_clear_step = AsyncMock()
         with (
             patch("sova.roles.reviewer.get_pr_diff", new_callable=AsyncMock, return_value="diff"),
@@ -3374,7 +3382,7 @@ class TestReviewerLLMReview:
             patch("sova.roles.reviewer.write_handoff", new_callable=AsyncMock),
             patch("sova.roles.reviewer.write_handoff_file", new_callable=MagicMock),
             patch("sova.roles.reviewer.read_handoff_file", return_value=None),
-            patch("sova.roles.reviewer.get_session", new_callable=AsyncMock),
+            patch("sova.roles.reviewer.get_session", mock_get_session),
             patch.object(ReviewerRole, "_clear_current_step", mock_clear_step),
         ):
             role = ReviewerRole()

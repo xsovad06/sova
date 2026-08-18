@@ -211,6 +211,7 @@ class ClaudeCodeRuntime(AgentRuntime):
             cwd=cwd,
             env=env,
             limit=_SUBPROCESS_LINE_LIMIT,
+            start_new_session=True,
         )
 
         return AgentProcess(proc)
@@ -332,6 +333,7 @@ class AiderRuntime(AgentRuntime):
                 cwd=cwd,
                 env=env,
                 limit=_SUBPROCESS_LINE_LIMIT,
+                start_new_session=True,
             )
             return AgentProcess(proc)
 
@@ -366,6 +368,7 @@ class AiderRuntime(AgentRuntime):
             cwd=cwd,
             env=env,
             limit=_SUBPROCESS_LINE_LIMIT,
+            start_new_session=True,
         )
         return AgentProcess(proc)
 
@@ -418,6 +421,7 @@ async def spawn_direct(
         cwd=cwd,
         env=env,
         limit=_SUBPROCESS_LINE_LIMIT,
+        start_new_session=True,
     )
     return AgentProcess(proc)
 
@@ -452,6 +456,7 @@ async def _spawn_with_file_output(
             stderr=stderr_fh,
             cwd=cwd,
             env=env,
+            start_new_session=True,
         )
 
     return FileAgentProcess(proc, stdout_path=stdout_path, stderr_path=stderr_path)
