@@ -87,6 +87,48 @@ class TestAppHelp:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard command
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardCommand:
+    def test_dashboard_reload_dirs_only_includes_dashboard_and_cli(self, tmp_path: Path) -> None:
+        """Verify dashboard command configures narrow reload_dirs to avoid killing agents."""
+        from sova.cli.app import app
+
+        _scaffold_install_artifacts(tmp_path)
+        with patch("uvicorn.run") as mock_run:
+            result = runner.invoke(app, ["dashboard", "--project", str(tmp_path), "--reload"])
+            assert result.exit_code == 0
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs["reload"] is True
+        reload_dirs = call_kwargs["reload_dirs"]
+        assert len(reload_dirs) == 2
+        assert any("dashboard" in d for d in reload_dirs)
+        assert any("cli" in d for d in reload_dirs)
+        assert not any("core" in d for d in reload_dirs)
+        assert not any("ipc" in d for d in reload_dirs)
+        assert not any("roles" in d for d in reload_dirs)
+
+    def test_dashboard_non_reload_mode_omits_reload_dirs(self, tmp_path: Path) -> None:
+        """Verify non-reload mode does not use reload_dirs."""
+        from sova.cli.app import app
+
+        _scaffold_install_artifacts(tmp_path)
+        with patch("uvicorn.run") as mock_run:
+            result = runner.invoke(app, ["dashboard", "--project", str(tmp_path)])
+            assert result.exit_code == 0
+
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args[1]
+        # First arg should be the app instance, not a string
+        assert "reload_dirs" not in call_kwargs
+        assert call_kwargs.get("reload") is None or call_kwargs.get("reload") is False
+
+
+# ---------------------------------------------------------------------------
 # Triage command
 # ---------------------------------------------------------------------------
 

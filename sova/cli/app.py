@@ -169,8 +169,14 @@ def dashboard(
 
         if project:
             os.environ["SOVA_DASHBOARD_PROJECT"] = str(project.resolve())
-        reload_dir = str(Path(__file__).resolve().parent.parent)
-        console.print(f"[dim]Watching {reload_dir} for changes[/dim]")
+        sova_root = Path(__file__).resolve().parent.parent
+        # Watch only dashboard and CLI modules to avoid triggering reloads on core logic changes.
+        # Core modules (ipc, core, roles) require full restart to maintain agent state integrity.
+        reload_dirs = [
+            str(sova_root / "dashboard"),
+            str(sova_root / "cli"),
+        ]
+        console.print("[dim]Watching dashboard and CLI modules for changes[/dim]")
         uvicorn.run(
             "sova.dashboard.app:create_app",
             factory=True,
@@ -178,7 +184,7 @@ def dashboard(
             port=port,
             log_level="info",
             reload=True,
-            reload_dirs=[reload_dir],
+            reload_dirs=reload_dirs,
             timeout_graceful_shutdown=5,
         )
     else:

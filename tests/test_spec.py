@@ -159,6 +159,68 @@ class TestTextHasOpenQuestions:
         assert not _text_has_open_questions("")
 
 
+class TestLoadProjectContext:
+    def test_loads_architecture_and_agents(self, tmp_path: Path) -> None:
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "architecture.md").write_text("# Architecture\nSome content")
+        (tmp_path / "AGENTS.md").write_text("# Agents\nConventions here")
+        result = _load_project_context(tmp_path)
+        assert "## Project Context" in result
+        assert "### Architecture" in result
+        assert "Some content" in result
+        assert "### Project Conventions" in result
+        assert "Conventions here" in result
+
+    def test_returns_empty_when_no_files(self, tmp_path: Path) -> None:
+        assert _load_project_context(tmp_path) == ""
+
+    def test_truncates_large_files(self, tmp_path: Path) -> None:
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        (rules_dir / "architecture.md").write_text("x" * 9000)
+        result = _load_project_context(tmp_path)
+        assert "... (truncated)" in result
+
+    def test_partial_files(self, tmp_path: Path) -> None:
+        (tmp_path / "AGENTS.md").write_text("# Agents only")
+        result = _load_project_context(tmp_path)
+        assert "### Project Conventions" in result
+        assert "Architecture" not in result
+
+    def test_skips_unreadable_files(self, tmp_path: Path) -> None:
+        agents = tmp_path / "AGENTS.md"
+        agents.write_text("good content", encoding="utf-8")
+        rules_dir = tmp_path / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        arch = rules_dir / "architecture.md"
+        arch.write_bytes(b"\xff\xfe" + b"\x80" * 100)
+        result = _load_project_context(tmp_path)
+        assert "good content" in result
+        assert "Architecture" not in result
+
+
+class TestBuildSpecPrompt:
+    def test_includes_project_context_when_dir_provided(self, tmp_path: Path) -> None:
+        (tmp_path / "AGENTS.md").write_text("# Project conventions")
+        result = _build_spec_prompt("42", "Test", "Body", project_dir=tmp_path)
+        assert "Project conventions" in result
+
+    def test_no_context_without_dir(self) -> None:
+        result = _build_spec_prompt("42", "Test", "Body")
+        assert "## Project Context" not in result
+
+    def test_replaces_all_placeholders(self, tmp_path: Path) -> None:
+        result = _build_spec_prompt("99", "My Title", "Issue body", project_dir=tmp_path)
+        assert "99" in result
+        assert "My Title" in result
+        assert "Issue body" in result
+        assert "{{issue_number}}" not in result
+        assert "{{title}}" not in result
+        assert "{{body}}" not in result
+        assert "{{project_context}}" not in result
+
+
 class TestMakeSlug:
     def test_simple_title(self) -> None:
         assert _make_slug("Add user authentication") == "add-user-authentication"
@@ -231,62 +293,6 @@ class TestFindSpecFile:
 
     def test_returns_none_when_no_dir(self, tmp_path: Path) -> None:
         assert find_spec_file("42", project_dir=tmp_path) is None
-
-
-class TestLoadProjectContext:
-    def test_returns_empty_when_no_files(self, tmp_path: Path) -> None:
-        assert _load_project_context(tmp_path) == ""
-
-    def test_loads_agents_md(self, tmp_path: Path) -> None:
-        (tmp_path / "AGENTS.md").write_text("# Conventions\nUse snake_case.", encoding="utf-8")
-        result = _load_project_context(tmp_path)
-        assert "## Project Context" in result
-        assert "### Project Conventions" in result
-        assert "Use snake_case." in result
-
-    def test_loads_architecture_md(self, tmp_path: Path) -> None:
-        rules_dir = tmp_path / ".claude" / "rules"
-        rules_dir.mkdir(parents=True)
-        (rules_dir / "architecture.md").write_text("# Arch\nKey decisions.", encoding="utf-8")
-        result = _load_project_context(tmp_path)
-        assert "### Architecture" in result
-        assert "Key decisions." in result
-
-    def test_truncates_large_files(self, tmp_path: Path) -> None:
-        (tmp_path / "AGENTS.md").write_text("x" * 9000, encoding="utf-8")
-        result = _load_project_context(tmp_path)
-        assert "... (truncated)" in result
-        content_section = result.split("### Project Conventions\n\n")[1]
-        assert len(content_section.split("\n... (truncated)")[0]) == 8000
-
-    def test_skips_unreadable_files(self, tmp_path: Path) -> None:
-        agents = tmp_path / "AGENTS.md"
-        agents.write_text("good content", encoding="utf-8")
-        rules_dir = tmp_path / ".claude" / "rules"
-        rules_dir.mkdir(parents=True)
-        arch = rules_dir / "architecture.md"
-        arch.write_bytes(b"\xff\xfe" + b"\x80" * 100)
-        result = _load_project_context(tmp_path)
-        assert "good content" in result
-        assert "Architecture" not in result
-
-
-class TestBuildSpecPrompt:
-    def test_without_project_dir(self) -> None:
-        result = _build_spec_prompt("42", "Test", "body text")
-        assert "#42" in result
-        assert "Test" in result
-        assert "body text" in result
-
-    def test_with_project_dir_injects_context(self, tmp_path: Path) -> None:
-        (tmp_path / "AGENTS.md").write_text("# Rules here", encoding="utf-8")
-        result = _build_spec_prompt("1", "Title", "desc", project_dir=tmp_path)
-        assert "## Project Context" in result
-        assert "# Rules here" in result
-
-    def test_with_empty_project_dir(self, tmp_path: Path) -> None:
-        result = _build_spec_prompt("1", "Title", "desc", project_dir=tmp_path)
-        assert "## Project Context" not in result
 
 
 # ---------------------------------------------------------------------------
