@@ -182,6 +182,12 @@ _REGISTRY: list[SettingMeta] = [
     ),
     SettingMeta("agent.model", "Model", "Claude model to use for agent work (opus, sonnet, haiku)", "agent"),
     SettingMeta(
+        "agent.fallback_models",
+        "Fallback models",
+        "Ordered list of models to try when the primary hits billing or rate-limit errors (e.g. sonnet, haiku)",
+        "agent",
+    ),
+    SettingMeta(
         "agent.max_budget", "Max budget (USD)", "Maximum spend per agent run before auto-abort", "agent", "number"
     ),
     SettingMeta(

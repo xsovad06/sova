@@ -105,6 +105,7 @@ class AgentConfig(BaseSettings):
     # Keep in sync with sova/ipc/runtime.py:_RUNTIMES registry
     runtime: Literal["claude-code", "aider"] = "claude-code"
     model: str = "opus"
+    fallback_models: list[str] = Field(default_factory=list)
     max_budget: Decimal = Field(Decimal("10.00"), gt=0)
     max_issue_budget: Decimal = Field(Decimal("50.00"), gt=0)
     step_timeout: int = Field(1800, gt=0)

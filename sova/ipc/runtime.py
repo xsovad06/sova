@@ -113,6 +113,7 @@ class AgentRuntime(ABC):
         *,
         env: dict[str, str] | None = None,
         model: str | None = None,
+        fallback_model: str | None = None,
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
@@ -124,6 +125,7 @@ class AgentRuntime(ABC):
             cwd: Working directory.
             env: Environment variables (None inherits parent).
             model: Optional model override.
+            fallback_model: Optional fallback model for billing/rate-limit resilience.
             max_budget_usd: Optional budget cap.
             output_dir: When set, redirect stdout/stderr to files in this
                 directory and return a FileAgentProcess. When None, use
@@ -178,6 +180,7 @@ class ClaudeCodeRuntime(AgentRuntime):
         *,
         env: dict[str, str] | None = None,
         model: str | None = None,
+        fallback_model: str | None = None,
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,
@@ -195,6 +198,9 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         if model:
             args.extend(["--model", model])
+
+        if fallback_model:
+            args.extend(["--fallback-model", fallback_model])
 
         if max_budget_usd is not None:
             args.extend(["--max-budget-usd", str(max_budget_usd)])
@@ -309,6 +315,7 @@ class AiderRuntime(AgentRuntime):
         *,
         env: dict[str, str] | None = None,
         model: str | None = None,
+        fallback_model: str | None = None,
         max_budget_usd: Decimal | None = None,
         output_dir: Path | None = None,
         run_label: str | None = None,

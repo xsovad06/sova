@@ -191,14 +191,18 @@ class TestOversightAgentPersona:
 
         recorded: list[dict] = []
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             recorded.append({"persona": agent._persona})
+
+        async def _mock_observe():
+            return {"test": "snapshot"}
 
         async def _fake_sleep(seconds):
             raise asyncio.CancelledError
 
         with (
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -223,8 +227,11 @@ class TestOversightAgentPersona:
         personas_seen: list[str] = []
         cycle_count = 0
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             personas_seen.append(agent._persona)
+
+        async def _mock_observe():
+            return {"test": "snapshot"}
 
         async def _fake_sleep(seconds):
             nonlocal cycle_count
@@ -236,6 +243,7 @@ class TestOversightAgentPersona:
 
         with (
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
@@ -260,14 +268,18 @@ class TestOversightAgentPersona:
         # Before any cycle, system prompt is empty (no persona loaded yet)
         assert agent.get_system_prompt() == ""
 
-        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None):
+        async def _mock_record(run_id, cycle, status, duration_ms, *, started_at=None, error=None, snapshot=None):
             pass
+
+        async def _mock_observe():
+            return {"test": "snapshot"}
 
         async def _fake_sleep(seconds):
             raise asyncio.CancelledError
 
         with (
             patch.object(agent, "_record_run", side_effect=_mock_record),
+            patch.object(agent, "_observe", side_effect=_mock_observe),
             patch("sova.oversight.agent.asyncio.sleep", side_effect=_fake_sleep),
         ):
             task = agent.start()
