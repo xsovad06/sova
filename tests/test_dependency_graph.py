@@ -846,6 +846,30 @@ class TestBuildDependencyGraph:
         assert adapter.list_tasks.call_count == 2
 
     @pytest.mark.asyncio
+    async def test_invalidate_cache_all_repos(self) -> None:
+        """invalidate_graph_cache with no repo clears entire cache."""
+        adapter1 = AsyncMock()
+        adapter1.repo = "org/repo-a"
+        adapter1.list_tasks.return_value = [_task(1)]
+        adapter1.get_task = AsyncMock()
+
+        adapter2 = AsyncMock()
+        adapter2.repo = "org/repo-b"
+        adapter2.list_tasks.return_value = [_task(2)]
+        adapter2.get_task = AsyncMock()
+
+        await build_dependency_graph(adapter1)
+        await build_dependency_graph(adapter2)
+
+        invalidate_graph_cache()
+
+        await build_dependency_graph(adapter1)
+        await build_dependency_graph(adapter2)
+
+        assert adapter1.list_tasks.call_count == 2
+        assert adapter2.list_tasks.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_cache_keyed_by_repo(self) -> None:
         """Different repos should have independent cache entries."""
         adapter1 = AsyncMock()
