@@ -14,6 +14,7 @@ from sova.cli.commands.admin import cleanup, costs, status
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
+from sova.cli.commands.maintain import maintain
 from sova.cli.commands.mcp import app as mcp_app
 from sova.cli.commands.memory import app as memory_app
 from sova.cli.commands.pr import address_pr, learn_from_pr, maintain_pr, review_pr
@@ -50,6 +51,9 @@ app.command(name="address-pr")(address_pr)
 app.command(name="maintain-pr")(maintain_pr)
 app.command(name="review-pr")(review_pr)
 app.command(name="learn-from-pr")(learn_from_pr)
+
+# Maintenance
+app.command(name="maintain")(maintain)
 
 # Admin
 app.command(name="status")(status)

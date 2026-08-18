@@ -35,6 +35,7 @@ from sova.dashboard.routers import (
     agents,
     control,
     costs,
+    dependabot,
     dependencies,
     feed,
     fleet_insights,
@@ -308,6 +309,7 @@ async def _shutdown_tasks(
     supervisor_daemons: list[SupervisorDaemon] | None = None,
     gc_task: asyncio.Task | None = None,
     merge_queue_tasks: list[asyncio.Task] | None = None,
+    dependabot_tasks: list[asyncio.Task] | None = None,
 ) -> None:
     """Cancel all background tasks during lifespan shutdown."""
     from sova.dashboard.routers.agents import _ws_manager
@@ -327,7 +329,7 @@ async def _shutdown_tasks(
         await watchdog.stop()
     for daemon in supervisor_daemons or []:
         await daemon.stop()
-    bg_tasks = pr_throttle_tasks + pr_monitor_tasks + (merge_queue_tasks or [])
+    bg_tasks = pr_throttle_tasks + pr_monitor_tasks + (merge_queue_tasks or []) + (dependabot_tasks or [])
     for t in bg_tasks:
         t.cancel()
     if bg_tasks:
@@ -514,6 +516,25 @@ def create_app(
             )
             merge_queue_tasks.append(asyncio.create_task(mq_monitor.run_loop()))
 
+        # Dependabot auto-merge background loop
+        dependabot_tasks: list[asyncio.Task] = []
+        if is_multi:
+            from sova.supervisor.dependabot import create_monitors_for_projects as _create_dep_monitors
+
+            for dep_monitor in _create_dep_monitors():
+                dependabot_tasks.append(asyncio.create_task(dep_monitor.run_loop()))
+        elif cfg.dependabot.enabled and cfg.github_repo:
+            from sova.supervisor.dependabot import DependabotMonitor
+
+            dep_monitor = DependabotMonitor(
+                project_dir=resolved,
+                config=cfg.dependabot,
+                notification_config=cfg.notification,
+                repo=cfg.github_repo,
+                github_user=cfg.github_user,
+            )
+            dependabot_tasks.append(asyncio.create_task(dep_monitor.run_loop()))
+
         # Start agent watchdog
         from sova.supervisor.watchdog import AgentWatchdog as _AgentWatchdog
 
@@ -590,6 +611,7 @@ def create_app(
                         supervisor_daemons=supervisor_daemons,
                         gc_task=gc_task,
                         merge_queue_tasks=merge_queue_tasks,
+                        dependabot_tasks=dependabot_tasks,
                     ),
                     timeout=5.0,
                 )
@@ -819,10 +841,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     async def project_oversight(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "oversight.html", "oversight")
 
-    @app.get("/p/{slug}/pr-metrics")
-    async def project_pr_metrics(request: Request, slug: str) -> Response:
-        return _project_page(request, templates, slug, "pr_metrics.html", "pr-metrics")
-
     @app.get("/p/{slug}/style-guide")
     async def project_style_guide(request: Request, slug: str) -> Response:
         return _project_page(request, templates, slug, "style_guide.html", "style-guide")
@@ -997,6 +1015,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(oversight.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
     app.include_router(fleet_insights.router, prefix=prefix)
+    app.include_router(dependabot.router, prefix=prefix)
 
 
 def _register_telemetry_router(app: FastAPI) -> None:
