@@ -561,6 +561,24 @@ class OversightConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OVERSIGHT_")
 
 
+class DependabotConfig(BaseSettings):
+    """Dependabot PR auto-merge: batch-process bot dependency PRs."""
+
+    enabled: bool = False
+    poll_interval_seconds: int = Field(3600, gt=0)
+    auto_merge_groups: list[str] = Field(
+        default_factory=lambda: ["github-actions", "testing", "production-dependencies"],
+    )
+    require_approval_groups: list[str] = Field(
+        default_factory=lambda: ["django-ecosystem"],
+    )
+    approval_label: str = "dependabot:approved"
+    ci_poll_interval_seconds: int = Field(60, gt=0)
+    ci_poll_timeout_seconds: int = Field(1800, gt=0)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DEPENDABOT_")
+
+
 class TelemetryConfig(BaseSettings):
     """Outbound telemetry push to a remote hub after pipeline finalization."""
 
@@ -675,6 +693,7 @@ class ProjectConfig(BaseSettings):
     fleet: FleetConfig = Field(default_factory=FleetConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
+    dependabot: DependabotConfig = Field(default_factory=DependabotConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
 

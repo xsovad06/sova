@@ -89,6 +89,7 @@ _NESTED_SECTIONS = (
     "fleet",
     "awareness",
     "oversight",
+    "dependabot",
 )
 
 
