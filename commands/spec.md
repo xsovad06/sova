@@ -177,7 +177,7 @@ Things the implementation must handle that aren't obvious from the issue.
 What to test: key scenarios, edge cases, integration points.
 Reference existing test patterns or fixtures to reuse.
 
-## Dependencies
+## Code Dependencies
 
 Existing services, utilities, or patterns to reuse.
 Reference specific functions/classes with file paths.
