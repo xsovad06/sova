@@ -75,6 +75,7 @@ class LiteLLMProvider(LLMProvider):
         prompt: str,
         *,
         model: str | None = None,
+        fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = 600,
