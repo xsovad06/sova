@@ -83,7 +83,9 @@ Respond with a JSON object (no markdown fences, no commentary):
   ],
   "deferred": [
     {{"action": "<action_type>", "issue": <number>, "reason": "Why this is deferred"}}
-  ]
+  ],
+  "queue_removals": [<issue_numbers_to_remove_from_queue>],
+  "queue_reorder": [<issue_numbers_in_suggested_order>]
 }}
 
 Valid action types: spawn_researcher, spawn_developer, spawn_integrate,
@@ -95,7 +97,10 @@ Rules:
 - Consider CodeRabbit review limits when deciding how many developers to spawn
 - If CI budget is low, prefer merging over starting new work
 - Deferred list should explain WHY each item is held back
-- Empty actions list is valid (means "do nothing this cycle")"""
+- Empty actions list is valid (means "do nothing this cycle")
+- queue_removals: issue numbers to prune from the queue (stale, deprioritized). Optional.
+- queue_reorder: suggest a new ordering for the queue based on priorities. Optional.
+  Only include issues already in the queue (you cannot add new issues)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +123,8 @@ class PlanResult:
     reasoning: str
     actions: tuple[PlannedAction, ...] = field(default_factory=tuple)
     deferred: tuple[DeferredAction, ...] = field(default_factory=tuple)
+    queue_removals: tuple[int, ...] = field(default_factory=tuple)
+    queue_reorder: tuple[int, ...] = field(default_factory=tuple)
 
 
 class SupervisorPlanner:
@@ -428,8 +435,13 @@ class SupervisorPlanner:
                 )
             )
 
+        queue_removals = tuple(item for item in (raw.get("queue_removals") or []) if type(item) is int and item > 0)
+        queue_reorder = tuple(item for item in (raw.get("queue_reorder") or []) if type(item) is int and item > 0)
+
         return PlanResult(
             reasoning=reasoning,
             actions=tuple(actions),
             deferred=tuple(deferred),
+            queue_removals=queue_removals,
+            queue_reorder=queue_reorder,
         )
