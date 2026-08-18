@@ -32,11 +32,18 @@ class ClaudeCodeProvider(LLMProvider):
         prompt: str,
         *,
         model: str | None = None,
+        fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
         timeout: float | None = 600,
     ) -> LLMResult:
-        args = _build_args(prompt, model=model, max_budget_usd=max_budget_usd, output_format="json")
+        args = _build_args(
+            prompt,
+            model=model,
+            fallback_model=fallback_model,
+            max_budget_usd=max_budget_usd,
+            output_format="json",
+        )
 
         log.info("llm.invoke", model=model, prompt_len=len(prompt))
 
@@ -150,6 +157,7 @@ def _build_args(
     prompt: str,
     *,
     model: str | None = None,
+    fallback_model: str | None = None,
     max_budget_usd: Decimal | None = None,
     output_format: str = "json",
 ) -> list[str]:
@@ -165,6 +173,9 @@ def _build_args(
 
     if model:
         args.extend(["--model", model])
+
+    if fallback_model:
+        args.extend(["--fallback-model", fallback_model])
 
     if max_budget_usd is not None:
         args.extend(["--max-budget-usd", str(max_budget_usd)])

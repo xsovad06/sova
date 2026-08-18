@@ -66,6 +66,9 @@ class ExecutionContext:
     resolved_model: str | None = None
     model_selection_reason: str | None = None
 
+    # Model fallback chain (index into config.agent.fallback_models)
+    fallback_model_index: int = 0
+
     def add_cost(self, amount: Decimal) -> None:
         """Accumulate cost from an LLM invocation."""
         self.cost_usd += amount
@@ -108,3 +111,15 @@ class ExecutionContext:
     @property
     def base_branch(self) -> str:
         return self.config.base_branch
+
+    def get_cli_fallback_model(self) -> str | None:
+        """Get the next fallback model to pass to the Claude CLI via --fallback-model flag.
+
+        Returns the model at fallback_models[fallback_model_index], or None if exhausted.
+        This enables intra-session resilience: if the primary model hits billing/rate-limit,
+        Claude can fall back internally before the step-level retry kicks in.
+        """
+        fallback_chain = self.config.agent.fallback_models
+        if self.fallback_model_index < len(fallback_chain):
+            return fallback_chain[self.fallback_model_index]
+        return None

@@ -510,6 +510,18 @@ def _resolve_config_model(project_dir: Path) -> str | None:
         return None
 
 
+def _resolve_config_fallback_model(project_dir: Path) -> str | None:
+    """Return the first fallback model from sova.toml, or None if empty."""
+    try:
+        from sova.config.loader import load_config
+
+        cfg = load_config(project_dir)
+        return cfg.agent.fallback_models[0] if cfg.agent.fallback_models else None
+    except Exception:
+        log.debug("resolve_config_fallback_model.failed", exc_info=True)
+        return None
+
+
 async def start_agent(
     issue: str,
     *,
@@ -644,11 +656,13 @@ async def start_agent(
                 )
                 if not model:
                     model = _resolve_config_model(project_dir)
+                fallback_model = _resolve_config_fallback_model(project_dir)
                 process = await get_runtime().spawn(
                     prompt,
                     cwd,
                     env=gh_env,
                     model=model,
+                    fallback_model=fallback_model,
                     output_dir=output_dir,
                     run_label=str(run_id),
                 )
@@ -800,6 +814,7 @@ async def start_command(
             log.debug("command.clear_handoff_failed", issue=issue, exc_info=True)
 
         model = _resolve_config_model(project_dir)
+        fallback_model = _resolve_config_fallback_model(project_dir)
 
         gh_env = await _resolve_project_gh_env(project_dir)
         output_dir = project_dir / ".claude" / "agent-output"
@@ -812,7 +827,13 @@ async def start_command(
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
             process = await get_runtime().spawn(
-                prompt, cwd, env=gh_env, model=model, output_dir=output_dir, run_label=str(pre_run_id)
+                prompt,
+                cwd,
+                env=gh_env,
+                model=model,
+                fallback_model=fallback_model,
+                output_dir=output_dir,
+                run_label=str(pre_run_id),
             )
         except Exception as exc:
             log.error("command.spawn_failed", command=command, issue=issue, error=str(exc), exc_info=True)

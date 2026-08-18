@@ -29,6 +29,7 @@ def test_default_config() -> None:
     assert cfg.base_branch == "main"
     assert cfg.task_source.type == "github"
     assert cfg.agent.model == "opus"
+    assert cfg.agent.fallback_models == []
     assert cfg.agent.max_budget == Decimal("10.00")
     assert cfg.agent.step_timeout == 1800
     assert cfg.review.enabled is True
@@ -88,6 +89,21 @@ reviewer = "Koda"
     assert cfg.triage.min_confidence == 0.8
     assert cfg.roles.default == "researcher"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
+
+
+def test_fallback_models_loaded_from_toml(tmp_path: Path) -> None:
+    """fallback_models list is loaded from [agent] section."""
+    toml_content = """
+[project]
+github_repo = "user/repo"
+
+[agent]
+model = "opus"
+fallback_models = ["sonnet", "haiku"]
+"""
+    (tmp_path / "sova.toml").write_text(toml_content)
+    cfg = load_config(tmp_path)
+    assert cfg.agent.fallback_models == ["sonnet", "haiku"]
 
 
 def test_check_cmd_loaded_from_toml(tmp_path: Path) -> None:

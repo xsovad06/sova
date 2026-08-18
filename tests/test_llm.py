@@ -1083,6 +1083,20 @@ class TestLLMProvider:
         assert "5.00" in args
         assert "--permission-mode" in args
 
+    def test_build_args_includes_fallback_model(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args("prompt", model="opus", fallback_model="sonnet")
+        assert "--fallback-model" in args
+        fm_idx = args.index("--fallback-model")
+        assert args[fm_idx + 1] == "sonnet"
+
+    def test_build_args_omits_fallback_model_when_empty(self) -> None:
+        from sova.llm.providers.claude_code import _build_args
+
+        args = _build_args("prompt", model="opus")
+        assert "--fallback-model" not in args
+
     async def test_invoke_command_delegates_to_invoke(self) -> None:
         from sova.llm.provider import LLMProvider
 

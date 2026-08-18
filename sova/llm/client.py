@@ -51,6 +51,7 @@ async def invoke(
     prompt: str,
     *,
     model: str | None = None,
+    fallback_model: str | None = None,
     task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
@@ -68,7 +69,9 @@ async def invoke(
 
     guard_prompt(prompt)
     resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
-    return await get_provider().invoke(prompt, model=resolved, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout)
+    return await get_provider().invoke(
+        prompt, model=resolved, fallback_model=fallback_model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
+    )
 
 
 def _resolve_task_type_model(model: str | None, task_type: str | None, *, cwd: Path | str | None = None) -> str | None:
@@ -98,6 +101,7 @@ async def invoke_command(
     args: str = "",
     *,
     model: str | None = None,
+    fallback_model: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
     timeout: float | None = 600,
@@ -109,7 +113,13 @@ async def invoke_command(
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
     return await get_provider().invoke_command(
-        command, args, model=model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
+        command,
+        args,
+        model=model,
+        fallback_model=fallback_model,
+        cwd=cwd,
+        max_budget_usd=max_budget_usd,
+        timeout=timeout,
     )
 
 
