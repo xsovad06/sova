@@ -4112,7 +4112,7 @@ class TestQueueServiceEnrichment:
         from sova.adapters.base import TaskState
         from sova.dashboard.services.queue_service import _RECOMMENDED_ACTION
 
-        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "spec"
+        assert _RECOMMENDED_ACTION[TaskState.NEEDS_SPEC] == "research"
 
     def test_researched_default_action_is_review_spec(self) -> None:
         from sova.adapters.base import TaskState

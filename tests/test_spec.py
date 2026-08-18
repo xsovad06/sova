@@ -1259,6 +1259,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1288,6 +1289,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1312,6 +1314,7 @@ class TestSpecRouter:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers") as mock_write,
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 1}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1348,6 +1351,7 @@ class TestSpecRouter:
         from sova.dashboard.services import control_service, handoff_service
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1443,11 +1447,124 @@ class TestSpecRouter:
 
         mock_clear.assert_not_called()
 
+    async def test_approve_transitions_issue_to_researched(self, _spec_dir: Path) -> None:
+        """approve_spec calls adapter.transition_state(RESEARCHED) before spawning developer."""
+        spec = _spec_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n**Complexity**: simple\n")
+
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        mock_adapter = AsyncMock()
+        call_order: list[str] = []
+        mock_adapter.transition_state.side_effect = lambda *a, **kw: call_order.append("transition")
+
+        async def _track_start(*a: object, **kw: object) -> dict:
+            call_order.append("start_agent")
+            return {"pid": 1}
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch("sova.config.context.get_project_dir", return_value=_spec_dir.parent),
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, side_effect=_track_start),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await approve_spec("42")
+
+        mock_adapter.transition_state.assert_awaited_once()
+        call_args = mock_adapter.transition_state.call_args
+        assert call_args[0][0] == "42"
+        assert call_args[0][1].value == "researched"
+        assert call_order == ["transition", "start_agent"]
+
+    async def test_approve_blocks_agent_on_transition_failure(self, _spec_dir: Path) -> None:
+        """approve_spec raises HTTP 500 and does not spawn developer when transition fails."""
+        from fastapi import HTTPException
+
+        spec = _spec_dir / "42-test.md"
+        spec.write_text("# Spec\n\n**Status**: draft\n**Complexity**: simple\n")
+
+        from sova.dashboard.routers.spec import approve_spec
+        from sova.dashboard.services import control_service, handoff_service, spec_service
+
+        mock_adapter = AsyncMock()
+        mock_adapter.transition_state.side_effect = RuntimeError("API error")
+
+        with (
+            patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
+            patch.object(spec_service, "write_answers"),
+            patch("sova.config.context.get_project_dir", return_value=_spec_dir.parent),
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_start,
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await approve_spec("42")
+            assert exc_info.value.status_code == 500
+
+        mock_start.assert_not_called()
+
+    async def test_skip_transitions_issue_to_researched(self) -> None:
+        """skip_spec calls adapter.transition_state(RESEARCHED) before spawning developer."""
+        from sova.dashboard.routers.spec import skip_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        mock_adapter = AsyncMock()
+        call_order: list[str] = []
+        mock_adapter.transition_state.side_effect = lambda *a, **kw: call_order.append("transition")
+
+        async def _track_start(*a: object, **kw: object) -> dict:
+            call_order.append("start_agent")
+            return {"pid": 1}
+
+        with (
+            patch("sova.config.context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock, side_effect=_track_start),
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            await skip_spec("42")
+
+        mock_adapter.transition_state.assert_awaited_once()
+        call_args = mock_adapter.transition_state.call_args
+        assert call_args[0][0] == "42"
+        assert call_args[0][1].value == "researched"
+        assert call_order == ["transition", "start_agent"]
+
+    async def test_skip_blocks_agent_on_transition_failure(self) -> None:
+        """skip_spec raises HTTP 500 and does not spawn developer when transition fails."""
+        from fastapi import HTTPException
+
+        from sova.dashboard.routers.spec import skip_spec
+        from sova.dashboard.services import control_service, handoff_service
+
+        mock_adapter = AsyncMock()
+        mock_adapter.transition_state.side_effect = RuntimeError("API error")
+
+        with (
+            patch("sova.config.context.get_project_dir", return_value=Path("/tmp")),
+            patch("sova.config.loader.load_config"),
+            patch("sova.adapters.create_adapter", return_value=mock_adapter),
+            patch.object(control_service, "start_agent", new_callable=AsyncMock) as mock_start,
+            patch.object(handoff_service, "clear_handoff"),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await skip_spec("42")
+            assert exc_info.value.status_code == 500
+
+        mock_start.assert_not_called()
+
     async def test_skip_spec_success(self) -> None:
         from sova.dashboard.routers.spec import skip_spec
         from sova.dashboard.services import control_service, handoff_service
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(
                 control_service,
                 "start_agent",
@@ -1702,6 +1819,7 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1738,6 +1856,7 @@ class TestSpecRouterTaskRunTransition:
         run_id = await self._create_awaiting_run("42")
 
         with (
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 456}),
             patch.object(handoff_service, "clear_handoff"),
         ):
@@ -1773,6 +1892,7 @@ class TestSpecRouterTaskRunTransition:
         with (
             patch.object(spec_service, "approve_spec", return_value={"status": "approved"}),
             patch.object(spec_service, "write_answers"),
+            patch("sova.dashboard.routers.spec._transition_to_researched", new_callable=AsyncMock, return_value=True),
             patch.object(control_service, "start_agent", new_callable=AsyncMock, return_value={"pid": 123}),
             patch.object(handoff_service, "clear_handoff"),
         ):

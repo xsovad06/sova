@@ -205,7 +205,7 @@ def _get_actions(
 
     actions: dict[WorkItemState, tuple[dict | None, list[dict]]] = {
         S.BACKLOG: (agent("triage", "Triage", "warning", "triage"), []),
-        S.NEEDS_SPEC: (cmd("spec", "Spec", "warning", "spec"), []),
+        S.NEEDS_SPEC: (agent("research", "Research", "purple", "researcher"), []),
         S.TRIAGED: (agent("research", "Research", "purple", "researcher"), []),
         S.RESEARCHED: (agent("develop", "Develop", "primary", "developer"), []),
         S.IN_PROGRESS: (agent("resume", "Resume", "primary", "developer"), []),
