@@ -447,13 +447,15 @@ class TestSupervisorPlan:
         """Reset the in-memory plan before and after each test."""
         from sova.dashboard.services.supervisor_service import set_pending_plan
 
-        set_pending_plan([])
+        set_pending_plan([], project_slug="test/repo")
         yield
-        set_pending_plan([])
+        set_pending_plan([], project_slug="test/repo")
 
     async def test_get_plan_empty(self, app) -> None:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/supervisor/plan")
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/plan")
         assert resp.status_code == 200
         assert resp.json()["pending"] == []
 
@@ -475,10 +477,12 @@ class TestSupervisorPlan:
                 reason="Spec approved",
             ),
         ]
-        set_pending_plan(decisions)
+        set_pending_plan(decisions, project_slug="test/repo")
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.get("/api/supervisor/plan")
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/plan")
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["pending"]) == 2
@@ -487,14 +491,37 @@ class TestSupervisorPlan:
         assert data["pending"][0]["role"] == "researcher"
         assert data["pending"][1]["issue_number"] == 43
 
+    async def test_get_plan_returns_empty_when_config_load_fails(self, app) -> None:
+        """GET /plan returns empty plan when load_config raises."""
+        from sova.dashboard.services.supervisor_service import set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        # Set up a plan for a project, but simulate config load failure
+        decisions = [
+            ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+        ]
+        set_pending_plan(decisions, project_slug="test/repo")
+
+        with patch("sova.config.loader.load_config", side_effect=FileNotFoundError("Config load failed")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/plan")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Should return empty plan on config failure, not crash
+        assert data["reasoning"] is None
+        assert data["pending"] == []
+        assert data["deferred"] == []
+
     async def test_approve_empty_plan_returns_zero(self, app) -> None:
         """approve_plan returns early with approved=0 when plan is empty."""
         from sova.dashboard.services.supervisor_service import set_pending_plan
 
-        set_pending_plan([])
+        set_pending_plan([], project_slug="test/repo")
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post("/api/supervisor/plan/approve", json={})
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
         data = resp.json()
         assert data["approved"] == 0
@@ -507,19 +534,20 @@ class TestSupervisorPlan:
         decisions = [
             ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
         ]
-        set_pending_plan(decisions)
+        set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
             "sova.dashboard.routers.supervisor._execute_plan_decisions",
             new_callable=AsyncMock,
             return_value=[{"run_id": 1}],
         )
-        with _mock_exec:
+        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
         # Plan should be cleared after approval
-        assert get_pending_plan() == []
+        assert get_pending_plan("test/repo") == []
 
     async def test_approve_selected_issues(self, app) -> None:
         from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
@@ -529,19 +557,20 @@ class TestSupervisorPlan:
             ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
             ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
         ]
-        set_pending_plan(decisions)
+        set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
             "sova.dashboard.routers.supervisor._execute_plan_decisions",
             new_callable=AsyncMock,
             return_value=[],
         )
-        with _mock_exec:
+        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post("/api/supervisor/plan/approve", json={"issue_numbers": [42]})
         assert resp.status_code == 200
         # Issue 43 should remain in the plan (not approved)
-        remaining = get_pending_plan()
+        remaining = get_pending_plan("test/repo")
         assert len(remaining) == 1
         assert remaining[0].issue_number == 43
 
@@ -554,14 +583,15 @@ class TestSupervisorPlan:
             ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
             ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
         ]
-        set_pending_plan(decisions)
+        set_pending_plan(decisions, project_slug="test/repo")
 
         _mock_exec = patch(
             "sova.dashboard.routers.supervisor._execute_plan_decisions",
             new_callable=AsyncMock,
             return_value=[{"run_id": 1}, {"error": "spawn failed", "issue_number": 43}],
         )
-        with _mock_exec:
+        with patch("sova.config.loader.load_config") as mock_cfg, _mock_exec:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post("/api/supervisor/plan/approve", json={})
         assert resp.status_code == 200
@@ -570,7 +600,7 @@ class TestSupervisorPlan:
         assert len(data["errors"]) == 1
         assert data["errors"][0]["issue_number"] == 43
         # Plan cleared regardless of partial failure
-        assert get_pending_plan() == []
+        assert get_pending_plan("test/repo") == []
 
     async def test_skip_removes_from_plan(self, app) -> None:
         from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
@@ -580,19 +610,41 @@ class TestSupervisorPlan:
             ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER),
             ProgressionDecision(issue_number=43, action=ProgressionAction.SPAWN_DEVELOPER),
         ]
-        set_pending_plan(decisions)
+        set_pending_plan(decisions, project_slug="test/repo")
 
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post("/api/supervisor/plan/skip/42")
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/skip/42")
         assert resp.status_code == 200
-        remaining = get_pending_plan()
+        remaining = get_pending_plan("test/repo")
         assert len(remaining) == 1
         assert remaining[0].issue_number == 43
 
     async def test_skip_nonexistent_issue_returns_404(self, app) -> None:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post("/api/supervisor/plan/skip/999")
+        with patch("sova.config.loader.load_config") as mock_cfg:
+            mock_cfg.return_value = MagicMock(github_repo="test/repo")
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/plan/skip/999")
         assert resp.status_code == 404
+
+    async def test_approve_with_config_load_failure(self, app) -> None:
+        """approve_plan propagates exception when load_config fails."""
+        import pytest
+
+        with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with pytest.raises(Exception, match="Config load failed"):
+                    await client.post("/api/supervisor/plan/approve", json={})
+
+    async def test_skip_with_config_load_failure(self, app) -> None:
+        """skip_plan_item propagates exception when load_config fails."""
+        import pytest
+
+        with patch("sova.config.loader.load_config", side_effect=Exception("Config load failed")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with pytest.raises(Exception, match="Config load failed"):
+                    await client.post("/api/supervisor/plan/skip/42")
 
 
 class TestSupervisorDaemonRequireApproval:
@@ -610,8 +662,8 @@ class TestSupervisorDaemonRequireApproval:
         from sova.supervisor.daemon import SupervisorDaemon
         from sova.supervisor.progression import ProgressionAction, ProgressionDecision
 
-        set_pending_plan([])
-        cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=True))
+        set_pending_plan([], project_slug="test/repo")
+        cfg = ProjectConfig(supervisor=SupervisorConfig(enabled=True, require_approval=True), github_repo="test/repo")
         daemon = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
 
         decisions = [ProgressionDecision(issue_number=42, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher")]
@@ -629,12 +681,12 @@ class TestSupervisorDaemonRequireApproval:
             result = await daemon.poll_once()
 
         # Decisions stored in plan, not executed
-        plan = get_pending_plan()
+        plan = get_pending_plan("test/repo")
         assert len(plan) == 1
         assert plan[0].issue_number == 42
         assert result["progression"]["pending"] == 1
         assert result["progression"]["executed"] == 0
-        set_pending_plan([])
+        set_pending_plan([], project_slug="test/repo")
 
     async def test_require_approval_false_executes_directly(self, session_factory) -> None:
         from sova.config.models import ProjectConfig, SupervisorConfig
@@ -683,7 +735,6 @@ class TestExecutePlanDecisions:
             return {"run_id": 1, "issue_number": decision.issue_number}
 
         with (
-            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=Path("/tmp/test")),
             patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
@@ -694,7 +745,7 @@ class TestExecutePlanDecisions:
                 side_effect=_fake_execute_decision,
             ),
         ):
-            results = await _execute_plan_decisions(decisions)
+            results = await _execute_plan_decisions(decisions, Path("/tmp/test"))
 
         assert len(results) == 1
         assert results[0]["run_id"] == 1
@@ -714,7 +765,6 @@ class TestExecutePlanDecisions:
             return {"run_id": 1}
 
         with (
-            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=Path("/tmp/test")),
             patch("sova.config.loader.load_config", return_value=MagicMock(supervisor=MagicMock(), github_repo="r/r")),
             patch("sova.adapters.create_adapter", return_value=MagicMock()),
             patch("sova.db.session.get_session_factory", new_callable=AsyncMock, return_value=MagicMock()),
@@ -725,11 +775,114 @@ class TestExecutePlanDecisions:
                 side_effect=_fake_execute_decision,
             ),
         ):
-            results = await _execute_plan_decisions(decisions)
+            results = await _execute_plan_decisions(decisions, Path("/tmp/test"))
 
         assert len(results) == 2
         assert results[0] == {"run_id": 1}
         assert results[1] == {"error": "agent slot full", "issue_number": 43}
+
+
+class TestMultiProjectPlanIsolation:
+    """Tests for project-keyed plan isolation."""
+
+    @pytest.fixture(autouse=True)
+    def clear_all_plans(self):
+        """Reset all project plans before and after each test."""
+        from sova.dashboard.services import supervisor_service
+
+        supervisor_service._pending_plan.clear()
+        supervisor_service._plan_reasoning.clear()
+        supervisor_service._plan_deferred.clear()
+        yield
+        supervisor_service._pending_plan.clear()
+        supervisor_service._plan_reasoning.clear()
+        supervisor_service._plan_deferred.clear()
+
+    def test_plans_isolated_by_project(self) -> None:
+        """Plans for different projects do not interfere with each other."""
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        project_a_decisions = [
+            ProgressionDecision(issue_number=10, action=ProgressionAction.SPAWN_RESEARCHER, role="researcher"),
+        ]
+        project_b_decisions = [
+            ProgressionDecision(issue_number=20, action=ProgressionAction.SPAWN_DEVELOPER, role="developer"),
+        ]
+
+        set_pending_plan(project_a_decisions, project_slug="test/repo")
+        set_pending_plan(project_b_decisions, project_slug="other/repo")
+
+        # Each project sees only its own plan
+        assert len(get_pending_plan(project_slug="test/repo")) == 1
+        assert get_pending_plan(project_slug="test/repo")[0].issue_number == 10
+        assert len(get_pending_plan(project_slug="other/repo")) == 1
+        assert get_pending_plan(project_slug="other/repo")[0].issue_number == 20
+
+    def test_remove_plan_items_scoped_to_project(self) -> None:
+        """remove_plan_items only affects the specified project."""
+        from sova.dashboard.services.supervisor_service import (
+            get_pending_plan,
+            remove_plan_items,
+            set_pending_plan,
+        )
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        project_a_decisions = [
+            ProgressionDecision(issue_number=10, action=ProgressionAction.SPAWN_RESEARCHER),
+            ProgressionDecision(issue_number=11, action=ProgressionAction.SPAWN_DEVELOPER),
+        ]
+        project_b_decisions = [
+            ProgressionDecision(issue_number=10, action=ProgressionAction.SPAWN_RESEARCHER),
+        ]
+
+        set_pending_plan(project_a_decisions, project_slug="test/repo")
+        set_pending_plan(project_b_decisions, project_slug="other/repo")
+
+        # Remove issue 10 from project A
+        removed = remove_plan_items({10}, project_slug="test/repo")
+        assert len(removed) == 1
+        assert removed[0].issue_number == 10
+
+        # Project A now has only issue 11
+        assert len(get_pending_plan(project_slug="test/repo")) == 1
+        assert get_pending_plan(project_slug="test/repo")[0].issue_number == 11
+
+        # Project B still has issue 10
+        assert len(get_pending_plan(project_slug="other/repo")) == 1
+        assert get_pending_plan(project_slug="other/repo")[0].issue_number == 10
+
+    def test_plan_reasoning_and_deferred_isolated(self) -> None:
+        """Reasoning and deferred lists are also project-scoped."""
+        from sova.dashboard.services.supervisor_service import (
+            get_plan_deferred,
+            get_plan_reasoning,
+            set_pending_plan,
+        )
+
+        set_pending_plan([], project_slug="test/repo", reasoning="Test reasoning", deferred=[{"action": "test"}])
+        set_pending_plan([], project_slug="other/repo", reasoning="Other reasoning", deferred=[{"action": "other"}])
+
+        assert get_plan_reasoning(project_slug="test/repo") == "Test reasoning"
+        assert get_plan_reasoning(project_slug="other/repo") == "Other reasoning"
+        assert get_plan_deferred(project_slug="test/repo") == [{"action": "test"}]
+        assert get_plan_deferred(project_slug="other/repo") == [{"action": "other"}]
+
+    def test_empty_github_repo_uses_empty_string_key(self) -> None:
+        """Projects with no github_repo use empty string as key."""
+        from sova.dashboard.services.supervisor_service import get_pending_plan, set_pending_plan
+        from sova.supervisor.progression import ProgressionAction, ProgressionDecision
+
+        decisions = [
+            ProgressionDecision(issue_number=99, action=ProgressionAction.SPAWN_RESEARCHER),
+        ]
+        set_pending_plan(decisions, project_slug="")
+
+        assert len(get_pending_plan(project_slug="")) == 1
+        assert get_pending_plan(project_slug="")[0].issue_number == 99
+
+        # Does not leak into projects with real slugs
+        assert len(get_pending_plan(project_slug="test/repo")) == 0
 
 
 class TestTaskQueueRouter:

@@ -18,47 +18,66 @@ log = get_logger(component="dashboard.service.supervisor")
 
 # In-memory plan store. Ephemeral: cleared on server restart. The daemon
 # rebuilds the plan on the next poll cycle so nothing is permanently lost.
-_pending_plan: list["ProgressionDecision"] = []
-_plan_reasoning: str | None = None
-_plan_deferred: list[dict] = []
+# Project-keyed to isolate plans in multi-project mode.
+_pending_plan: dict[str, list["ProgressionDecision"]] = {}
+_plan_reasoning: dict[str, str | None] = {}
+_plan_deferred: dict[str, list[dict]] = {}
 
 
-def get_pending_plan() -> list["ProgressionDecision"]:
-    """Return the current pending approval plan (may be empty)."""
-    return list(_pending_plan)
+def resolve_project_slug(github_repo: str, project_dir: Path | None = None) -> str:
+    """Derive a stable plan-store key from config.
+
+    Uses ``github_repo`` when set.  Falls back to the project directory name
+    so two projects without a repo slug never collide on the same key.
+    """
+    if github_repo:
+        return github_repo
+    if project_dir is not None:
+        return f"local:{project_dir.name}"
+    return ""
 
 
-def get_plan_reasoning() -> str | None:
-    """Return the LLM planner's reasoning text, if any."""
-    return _plan_reasoning
+def get_pending_plan(project_slug: str) -> list["ProgressionDecision"]:
+    """Return the current pending approval plan for a project (may be empty)."""
+    return list(_pending_plan.get(project_slug, []))
 
 
-def get_plan_deferred() -> list[dict]:
-    """Return the LLM planner's deferred action list, if any."""
-    return list(_plan_deferred)
+def get_plan_reasoning(project_slug: str) -> str | None:
+    """Return the LLM planner's reasoning text for a project, if any."""
+    return _plan_reasoning.get(project_slug)
+
+
+def get_plan_deferred(project_slug: str) -> list[dict]:
+    """Return the LLM planner's deferred action list for a project, if any."""
+    return list(_plan_deferred.get(project_slug, []))
 
 
 def set_pending_plan(
     decisions: list["ProgressionDecision"],
     *,
+    project_slug: str,
     reasoning: str | None = None,
     deferred: list[dict] | None = None,
 ) -> None:
-    """Replace the pending plan with a new set of decisions."""
+    """Replace the pending plan for a project with a new set of decisions."""
     global _pending_plan, _plan_reasoning, _plan_deferred  # noqa: PLW0603
-    _pending_plan = list(decisions)
-    _plan_reasoning = reasoning
-    _plan_deferred = list(deferred) if deferred else []
+    _pending_plan[project_slug] = list(decisions)
+    _plan_reasoning[project_slug] = reasoning
+    _plan_deferred[project_slug] = list(deferred) if deferred else []
 
 
-def remove_plan_items(issue_numbers: set[int]) -> list["ProgressionDecision"]:
-    """Remove and return decisions for the given issue numbers from the plan.
+def remove_plan_items(issue_numbers: set[int], project_slug: str) -> list["ProgressionDecision"]:
+    """Remove and return decisions for the given issue numbers from a project's plan.
 
     Decisions not in *issue_numbers* remain in the plan.
     """
     global _pending_plan
-    removed = [d for d in _pending_plan if d.issue_number in issue_numbers]
-    _pending_plan = [d for d in _pending_plan if d.issue_number not in issue_numbers]
+    plan = _pending_plan.get(project_slug, [])
+    if not plan:
+        return []
+    removed = [d for d in plan if d.issue_number in issue_numbers]
+    if removed:
+        _pending_plan[project_slug] = [d for d in plan if d.issue_number not in issue_numbers]
     return removed
 
 

@@ -216,23 +216,26 @@ class TestSupervisorServicePlanState:
         from sova.dashboard.services import supervisor_service as svc
 
         svc.set_pending_plan(
-            [], reasoning="test reasoning", deferred=[{"action": "spawn_developer", "issue": 1, "reason": "budget"}]
+            [],
+            project_slug="test/repo",
+            reasoning="test reasoning",
+            deferred=[{"action": "spawn_developer", "issue": 1, "reason": "budget"}],
         )
-        assert svc.get_plan_reasoning() == "test reasoning"
-        assert len(svc.get_plan_deferred()) == 1
-        assert svc.get_plan_deferred()[0]["issue"] == 1
+        assert svc.get_plan_reasoning("test/repo") == "test reasoning"
+        assert len(svc.get_plan_deferred("test/repo")) == 1
+        assert svc.get_plan_deferred("test/repo")[0]["issue"] == 1
 
     def test_set_clears_previous(self) -> None:
         from sova.dashboard.services import supervisor_service as svc
 
-        svc.set_pending_plan([], reasoning="first")
-        svc.set_pending_plan([])
-        assert svc.get_plan_reasoning() is None
-        assert svc.get_plan_deferred() == []
+        svc.set_pending_plan([], project_slug="test/repo", reasoning="first")
+        svc.set_pending_plan([], project_slug="test/repo")
+        assert svc.get_plan_reasoning("test/repo") is None
+        assert svc.get_plan_deferred("test/repo") == []
 
-    def test_backward_compatible_no_kwargs(self) -> None:
+    def test_defaults_without_optional_kwargs(self) -> None:
         from sova.dashboard.services import supervisor_service as svc
 
-        svc.set_pending_plan([])
-        assert svc.get_plan_reasoning() is None
-        assert svc.get_plan_deferred() == []
+        svc.set_pending_plan([], project_slug="test/repo")
+        assert svc.get_plan_reasoning("test/repo") is None
+        assert svc.get_plan_deferred("test/repo") == []

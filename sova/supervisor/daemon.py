@@ -226,7 +226,7 @@ class SupervisorDaemon:
             actionable = [d for d in decisions if d.action not in NON_ACTIONABLE_ACTIONS]
 
             if cfg.supervisor.require_approval:
-                from sova.dashboard.services.supervisor_service import set_pending_plan
+                from sova.dashboard.services.supervisor_service import resolve_project_slug, set_pending_plan
 
                 reasoning = plan.reasoning if plan else None
                 deferred = (
@@ -234,7 +234,8 @@ class SupervisorDaemon:
                     if plan
                     else None
                 )
-                set_pending_plan(actionable, reasoning=reasoning, deferred=deferred)
+                project_slug = resolve_project_slug(cfg.github_repo, self._project_dir)
+                set_pending_plan(actionable, project_slug=project_slug, reasoning=reasoning, deferred=deferred)
                 log.info("poll.progression_pending_approval", count=len(actionable))
                 return {"decisions": len(decisions), "pending": len(actionable), "executed": 0}, engine
 
