@@ -44,6 +44,7 @@
         <span class="text-gray-700 mx-0.5">|</span>
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#f38ba8;background:#f38ba830"></span> Human</span>
         <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border border-dashed" style="border-color:#fab387;background:#fab38720"></span> Interactive</span>
+        <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded border" style="border-color:#74c7ec;background:#74c7ec30"></span> Queued</span>
       </div>
       <div class="flex items-center gap-1">
         <button type="button" onclick="zoomIn()" title="Zoom in" class="text-xs text-gray-400 hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded border border-gray-700/60 hover:border-gray-600 transition-colors">+</button>
@@ -181,6 +182,14 @@
   </div>
 </div>
 
+<style>
+@keyframes graph-node-pulse {
+  0%   { stroke: #cdd6f4; stroke-width: 3; }
+  50%  { stroke: #74c7ec; stroke-width: 3; }
+  100% { stroke: #cdd6f4; stroke-width: 2; }
+}
+.graph-node-highlight { animation: graph-node-pulse 1s ease-in-out 2; }
+</style>
 <script src="/static/d3.min.js"></script>
 <script>
 const prefix = '{{ prefix|default("") }}';
@@ -204,11 +213,12 @@ let _svgSel = null;
 let _selectedNodeId = null;
 let _fitTransform = null;
 let _savedTransform = null;  // user's current pan/zoom, preserved across re-renders
+let _lastGraphData = null;
 
 function _computeGraphKey(data) {
   // agent_elapsed_seconds is intentionally excluded: it changes every poll while an agent runs
   // and would cause a full re-render (and position reset) on every poll cycle.
-  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}`).sort().join(',');
+  const n = (data.nodes || []).map(n => `${n.id}:${n.state}:${n.milestone||''}:${n.pr_state||''}:${n.agent_running?1:0}:${n.agent_run_id||''}:${n.agent_role||''}:${n.handoff_pending?1:0}:${n.handoff_action||''}:${n.last_run_status||''}:${n.last_run_id||''}:${n.priority||''}:${n.is_human_only?1:0}:${n.is_interactive_recommended?1:0}:${n.queue_position||0}`).sort().join(',');
   const e = (data.edges || []).map(e => `${e.from}:${e.to}`).sort().join(',');
   return n + '|' + e;
 }
@@ -497,6 +507,7 @@ async function loadGraph() {
     if (_svgSel) _savedTransform = d3.zoomTransform(_svgSel.node());
 
     errorEl.classList.add('hidden');
+    _lastGraphData = data;
     renderGraph(data);
   } catch (e) {
     loading.classList.add('hidden');
@@ -791,7 +802,7 @@ function renderGraph(data) {
     const descendants = id != null ? bfsSet(id, adjDependents) : new Set();
 
     mainG.selectAll('.dep-node').each(function() {
-      const nid = +this.dataset.nid;
+      const nid = +this.dataset.issue;
       const active = id == null || nid === id || ancestors.has(nid) || descendants.has(nid);
       const color = this.dataset.color;
       const border = this.dataset.border || (color + '66');
@@ -908,7 +919,7 @@ function renderGraph(data) {
 
     const g = mainG.append('g')
       .attr('class', 'dep-node')
-      .attr('data-nid', n.id).attr('data-color', color).attr('data-border', effectiveBorder).attr('data-done', isDone ? '1' : '0')
+      .attr('data-issue', n.id).attr('data-color', color).attr('data-border', effectiveBorder).attr('data-done', isDone ? '1' : '0')
       .attr('opacity', isDone ? 0.35 : 1)
       .style('cursor', 'pointer');
     const bgRect = g.append('rect').attr('class', 'node-bg')
@@ -1029,6 +1040,21 @@ function renderGraph(data) {
         .attr('fill', '#f38ba8');
     }
 
+    // Queue position badge (sapphire pill at bottom-right, offset left of status indicators)
+    if (n.queue_position) {
+      const QUEUE_COLOR = '#74c7ec';  // Catppuccin sapphire
+      const qbW = 26, qbH = 14;
+      const qbX = pos.x + NW - qbW - 16, qbY = pos.y + NH - qbH - 2;
+      g.append('rect')
+        .attr('x', qbX).attr('y', qbY).attr('width', qbW).attr('height', qbH).attr('rx', 7)
+        .attr('fill', QUEUE_COLOR + '30').attr('stroke', QUEUE_COLOR).attr('stroke-width', 0.5);
+      g.append('text')
+        .attr('x', qbX + qbW / 2).attr('y', qbY + 10)
+        .attr('text-anchor', 'middle')
+        .attr('fill', QUEUE_COLOR).attr('font-size', '7.5px').attr('font-weight', '600').attr('font-family', 'monospace')
+        .text(`Q${n.queue_position}`);
+    }
+
     // PR badge (small pill at the top-right corner of the node)
     if (n.pr_number && prc) {
       const badgeX = pos.x + NW - 38, badgeY = pos.y + 4;
@@ -1050,11 +1076,11 @@ function renderGraph(data) {
       .text(t1);
 
     g.on('mouseenter', function() {
-      if (+this.dataset.nid !== _selectedNodeId)
+      if (+this.dataset.issue !== _selectedNodeId)
         d3.select(this).select('rect.node-bg').attr('stroke', humanBorder || prc || (color + 'bb'));
     })
     .on('mouseleave', function() {
-      if (+this.dataset.nid !== _selectedNodeId)
+      if (+this.dataset.issue !== _selectedNodeId)
         d3.select(this).select('rect.node-bg').attr('stroke', effectiveBorder);
     })
     .on('click', event => {
@@ -1185,7 +1211,17 @@ function showDrawer(node) {
     View Lifecycle
   </a>`;
 
-  actions.innerHTML = actionBtns + lifecycleLink;
+  let queueBtn = '';
+  const isDone = (node.state || '').toLowerCase() === 'done' || (node.state || '').toLowerCase() === 'closed';
+  if (!isDone && !node.is_epic && !node.is_human_only) {
+    if (node.queue_position) {
+      queueBtn = `<span class="text-xs px-3 py-1.5 rounded bg-sky-700/20 text-sky-300 border border-sky-700/30">In queue (Q${node.queue_position})</span>`;
+    } else {
+      queueBtn = `<button onclick="addToQueueFromDrawer(${node.id})" class="dep-queue-btn text-xs px-3 py-1.5 rounded bg-sky-700/30 text-sky-300 hover:bg-sky-700/50 transition-colors">Add to Queue</button>`;
+    }
+  }
+
+  actions.innerHTML = actionBtns + queueBtn + lifecycleLink;
   drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -1208,6 +1244,67 @@ async function spawnAgent(issue, role) {
     setTimeout(loadGraph, 1500);
   } catch (e) {
     showToast(`Failed to start agent: ${e.message}`, 'error');
+  }
+}
+
+function scrollToGraphNode(issueNum) {
+  const nodeEl = document.querySelector(`.dep-node[data-issue="${issueNum}"]`);
+  if (!nodeEl) return;
+  _selectedNodeId = issueNum;
+  applyHighlight();
+
+  const nodeRect = nodeEl.querySelector('rect.node-bg');
+  if (nodeRect) {
+    nodeRect.classList.add('graph-node-highlight');
+    nodeRect.addEventListener('animationend', () => nodeRect.classList.remove('graph-node-highlight'), { once: true });
+  }
+
+  const graphContainer = document.getElementById('graph-container');
+  if (!graphContainer || !_svgSel || !_zoomBehavior || !nodeRect) return;
+
+  const nx = +nodeRect.getAttribute('x'), ny = +nodeRect.getAttribute('y');
+  const nw = +nodeRect.getAttribute('width'), nh = +nodeRect.getAttribute('height');
+  const centerX = nx + nw / 2, centerY = ny + nh / 2;
+
+  const cw = graphContainer.clientWidth, ch = graphContainer.clientHeight;
+  const scale = 1.2;
+  const tx = cw / 2 - centerX * scale, ty = ch / 2 - centerY * scale;
+  const t = d3.zoomIdentity.translate(tx, ty).scale(scale);
+  _savedTransform = t;
+  _svgSel.transition().duration(600).call(_zoomBehavior.transform, t);
+
+  const nodeData = _lastGraphData && (_lastGraphData.nodes || []).find(n => n.id === issueNum);
+  if (nodeData) {
+    showDrawer(nodeData);
+  } else {
+    showToast('Graph data still loading, try again shortly', 'info');
+  }
+}
+
+async function addToQueueFromDrawer(issueNum) {
+  try {
+    const res = await fetch(`${apiBase}/supervisor/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_number: issueNum }),
+    });
+    if (res.status === 409) {
+      showToast(`Issue #${issueNum} is already in the queue`, 'info');
+      loadGraph();
+      return;
+    }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      showToast(d.detail || `Failed to add #${issueNum} to queue`, 'error');
+      return;
+    }
+    const data = await res.json();
+    _queueData = data.queue;
+    _queueLastSaved = Date.now();
+    renderQueue();
+    loadGraph();
+  } catch (e) {
+    showToast(`Failed to add to queue: ${e.message}`, 'error');
   }
 }
 
@@ -1490,7 +1587,7 @@ function renderQueue() {
         ondragstart="queueDragStart(event)" ondragover="queueDragOver(event)" ondragleave="queueDragLeave(event)" ondrop="queueDrop(event)" ondragend="queueDragEnd(event)">
       <div class="flex items-center gap-2 min-w-0">
         <span class="text-gray-600 w-4 text-right shrink-0">${i + 1}.</span>
-        <span class="font-mono text-accent shrink-0">#${num}</span>
+        <button type="button" onclick="scrollToGraphNode(${num})" class="font-mono text-accent shrink-0 hover:underline cursor-pointer">#${num}</button>
       </div>
       <div class="flex items-center gap-0.5 shrink-0">
         <button type="button" onclick="moveQueueItem(${i}, -1)" ${i === 0 ? 'disabled' : ''}
