@@ -1035,6 +1035,22 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
+        "supervisor.auto_queue",
+        "Auto queue",
+        "Enable deterministic queue maintenance: prune done issues, "
+        "discover ready issues, and apply LLM planner queue changes each cycle.",
+        "supervisor",
+        "boolean",
+    ),
+    SettingMeta(
+        "supervisor.max_queue_size",
+        "Max queue size",
+        "Maximum number of issues in the task queue (0 = unlimited, default 10). "
+        "The cap only limits additions; existing entries are never removed to satisfy it.",
+        "supervisor",
+        "integer",
+    ),
+    SettingMeta(
         "supervisor.task_queue",
         "Task queue",
         "Ordered list of issue numbers for the supervisor to evaluate (empty = evaluate all)",

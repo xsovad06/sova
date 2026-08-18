@@ -90,6 +90,7 @@ class TestSupervisorDaemon:
         with (
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={}),
             patch.object(daemon, "_poll_quota", new_callable=AsyncMock, return_value={"enabled": False}),
+            patch.object(daemon, "_poll_queue_maintenance", new_callable=AsyncMock, return_value={"changed": False}),
             patch.object(
                 daemon,
                 "_poll_progression",
@@ -100,6 +101,7 @@ class TestSupervisorDaemon:
             result = await daemon.poll_once()
             assert "progression" in result
             assert "quota" in result
+            assert "queue_maintenance" in result
             assert "health" in result
 
     async def test_log_decision_writes_to_db(
@@ -457,19 +459,82 @@ class TestSupervisorDaemon:
             call_order.append("quota")
             return {"enabled": True, "can_create_pr": True, "reviews_in_window": 0}
 
+        async def mock_queue(_adapter, _cfg):
+            call_order.append("queue_maintenance")
+            return {"changed": False}
+
         async def mock_progression(_adapter, _cfg):
             call_order.append("progression")
             return {"decisions": 0, "executed": 0}, None
 
         with (
             patch.object(daemon, "_poll_quota", side_effect=mock_quota),
+            patch.object(daemon, "_poll_queue_maintenance", side_effect=mock_queue),
             patch.object(daemon, "_poll_progression", side_effect=mock_progression),
             patch.object(daemon, "_poll_health", new_callable=AsyncMock, return_value={"db": "ok"}),
             patch("sova.adapters.create_adapter", return_value=AsyncMock()),
         ):
             await daemon.poll_once()
 
-        assert call_order == ["quota", "progression"], f"Expected quota before progression, got: {call_order}"
+        assert call_order == ["quota", "queue_maintenance", "progression"], (
+            f"Expected quota -> queue_maintenance -> progression, got: {call_order}"
+        )
+
+    async def test_poll_queue_maintenance_success(self, daemon: SupervisorDaemon) -> None:
+        """_poll_queue_maintenance returns structured result on success."""
+        from sova.supervisor.queue_maintenance import QueueMaintenanceResult
+
+        mock_result = QueueMaintenanceResult(
+            previous=(10, 20),
+            current=(20, 30),
+            removed=(10,),
+            added=(30,),
+            changed=True,
+        )
+        adapter = AsyncMock()
+
+        with patch(
+            "sova.supervisor.queue_maintenance.maintain_queue", new_callable=AsyncMock, return_value=mock_result
+        ):
+            result = await daemon._poll_queue_maintenance(adapter, daemon._config)
+
+        assert result["changed"] is True
+        assert result["removed"] == [10]
+        assert result["added"] == [30]
+        assert result["queue_size"] == 2
+
+    async def test_poll_queue_maintenance_error(self, daemon: SupervisorDaemon) -> None:
+        """_poll_queue_maintenance returns error dict on exception."""
+        adapter = AsyncMock()
+
+        with patch(
+            "sova.supervisor.queue_maintenance.maintain_queue",
+            new_callable=AsyncMock,
+            side_effect=Exception("unexpected"),
+        ):
+            result = await daemon._poll_queue_maintenance(adapter, daemon._config)
+
+        assert "error" in result
+
+    async def test_auto_queue_disabled_skips_maintenance(self, session_factory: async_sessionmaker) -> None:
+        """Queue maintenance is skipped when auto_queue is False."""
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, auto_queue=False, poll_interval_seconds=1),
+            github_repo="test/repo",
+        )
+        d = SupervisorDaemon(config=cfg, project_dir=Path("/tmp/test"), session_factory=session_factory)
+
+        with (
+            patch.object(d, "_poll_quota", new_callable=AsyncMock, return_value={}),
+            patch.object(d, "_poll_queue_maintenance", new_callable=AsyncMock) as mock_qm,
+            patch.object(d, "_poll_progression", new_callable=AsyncMock, return_value=({}, None)),
+            patch.object(d, "_poll_health", new_callable=AsyncMock, return_value={}),
+            patch("sova.adapters.create_adapter", return_value=AsyncMock()),
+        ):
+            result = await d.poll_once()
+
+        mock_qm.assert_not_called()
+        assert result["queue_maintenance"] == {"skipped": "auto_queue disabled"}
 
 
 class TestSupervisorDecisionModel:

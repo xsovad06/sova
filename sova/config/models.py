@@ -529,6 +529,8 @@ class SupervisorConfig(BaseSettings):
     ci_block_minutes: int = Field(50, ge=0)
     persona_path: str = ""
     llm_planning: bool = False
+    auto_queue: bool = True
+    max_queue_size: int = Field(10, ge=0)
     task_queue: list[int] = Field(default_factory=list, json_schema_extra={"items": {"exclusiveMinimum": 0}})
 
     @field_validator("task_queue", mode="before")

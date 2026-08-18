@@ -688,3 +688,60 @@ class TestParseResponseEdgeCases:
         assert result is not None
         assert result.actions[0].priority == 1
         assert result.actions[1].priority == 2
+
+    def test_queue_removals_parsed(self, planner: SupervisorPlanner) -> None:
+        raw = {
+            "reasoning": "prune stale issues",
+            "actions": [],
+            "queue_removals": [10, 20],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_removals == (10, 20)
+
+    def test_queue_reorder_parsed(self, planner: SupervisorPlanner) -> None:
+        raw = {
+            "reasoning": "reorder by priority",
+            "actions": [],
+            "queue_reorder": [30, 10, 20],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_reorder == (30, 10, 20)
+
+    def test_queue_fields_default_empty(self, planner: SupervisorPlanner) -> None:
+        raw = {"reasoning": "no queue changes", "actions": []}
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_removals == ()
+        assert result.queue_reorder == ()
+
+    def test_queue_removals_invalid_items_dropped(self, planner: SupervisorPlanner) -> None:
+        raw = {
+            "reasoning": "test",
+            "actions": [],
+            "queue_removals": [-1, "bad", 0, 42],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_removals == (42,)
+
+    def test_queue_removals_rejects_booleans(self, planner: SupervisorPlanner) -> None:
+        raw = {
+            "reasoning": "test",
+            "actions": [],
+            "queue_removals": [True, False, 5],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_removals == (5,)
+
+    def test_queue_reorder_rejects_booleans(self, planner: SupervisorPlanner) -> None:
+        raw = {
+            "reasoning": "test",
+            "actions": [],
+            "queue_reorder": [True, 10, False, 20],
+        }
+        result = planner._parse_response(raw)
+        assert result is not None
+        assert result.queue_reorder == (10, 20)

@@ -143,6 +143,13 @@ class SupervisorDaemon:
         # progression engine reads fresh data, not last cycle's cached counts).
         results["quota"] = await self._poll_quota(cfg)
 
+        # Phase 1.5: Queue maintenance (prune done issues, discover ready ones).
+        # Runs before progression so _resolve_task_ids() reads the freshly maintained queue.
+        if cfg.supervisor.auto_queue:
+            results["queue_maintenance"] = await self._poll_queue_maintenance(adapter, cfg)
+        else:
+            results["queue_maintenance"] = {"skipped": "auto_queue disabled"}
+
         # Phase 2: Progression engine (evaluates against freshly synced quota)
         progression_engine = None
         results["progression"], progression_engine = await self._poll_progression(adapter, cfg)
@@ -180,6 +187,16 @@ class SupervisorDaemon:
                     session_factory=self._session_factory,
                 )
                 plan = await planner.plan(adapter)
+
+                if cfg.supervisor.auto_queue and plan and (plan.queue_removals or plan.queue_reorder):
+                    from sova.supervisor.queue_maintenance import apply_planner_queue_changes
+
+                    apply_planner_queue_changes(
+                        cfg.supervisor,
+                        self._project_dir,
+                        removals=list(plan.queue_removals),
+                        reorder=list(plan.queue_reorder),
+                    )
 
             engine = TaskProgressionEngine(
                 config=cfg.supervisor,
@@ -316,6 +333,22 @@ class SupervisorDaemon:
                 detail=str(exc),
             )
             log.warning("poll.quota_error", exc_info=True)
+            return {"error": str(exc)}
+
+    async def _poll_queue_maintenance(self, adapter: TaskAdapter, cfg: ProjectConfig) -> dict:
+        """Run deterministic queue maintenance: prune done, discover ready, persist."""
+        try:
+            from sova.supervisor.queue_maintenance import maintain_queue
+
+            result = await maintain_queue(adapter, cfg.supervisor, self._project_dir)
+            return {
+                "changed": result.changed,
+                "removed": list(result.removed),
+                "added": list(result.added),
+                "queue_size": len(result.current),
+            }
+        except Exception as exc:
+            log.warning("poll.queue_maintenance_error", exc_info=True)
             return {"error": str(exc)}
 
     async def _poll_health(self) -> dict:
