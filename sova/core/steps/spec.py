@@ -139,6 +139,8 @@ the exact template structure shown below.
 
 {{body}}
 
+{{project_context}}
+
 ## Spec Template
 
 Use this exact structure:
@@ -169,7 +171,9 @@ Reference specific files to create/modify.
 
 ## Design Decisions
 
-Pre-answered questions for ambiguities found.
+Pre-answered questions for ambiguities found. When in doubt about a convention, \
+pattern, or technical choice, make the decision here based on the project context \
+provided above. Follow existing patterns and conventions.
 
 1. **Question?** Answer with rationale.
 
@@ -191,9 +195,16 @@ What to test: key scenarios, edge cases, integration points.
 
 ## Open Questions
 
-Anything that needs user input before development starts.
+Items that require human judgment before development can start: business rules, \
+scope boundaries, UX preferences, or external system behavior that cannot be \
+determined from the codebase or research findings.
 
-(Omit this section if there are no open questions.)
+NEVER put code facts, convention choices, or technical decisions here. If uncertain \
+about a code fact, check the research findings or project context above. If the \
+answer can be inferred from existing patterns, make the decision in Design Decisions \
+instead with a rationale.
+
+(Omit this section if all uncertainties can be resolved from the provided context.)
 ```
 
 ## Rules
@@ -204,6 +215,10 @@ Anything that needs user input before development starts.
 - Complexity: simple (1-2 files, <50 lines), moderate (3-6 files, 50-200 lines), complex (7+ files or >200 lines)
 - Do NOT include code blocks in the spec itself (it is a planning document)
 - Return ONLY the spec document, no surrounding text
+- NEVER include an Open Question that could be answered by reading the project's conventions, \
+  architecture, or existing implementations. Move such items to Design Decisions with a rationale.
+- When a convention exists (config flags, caching patterns, feed events, adapter patterns), follow it. \
+  Do not ask the user whether to follow their own conventions.
 """
 
 
@@ -216,15 +231,41 @@ def _text_has_open_questions(text: str) -> bool:
     return True
 
 
-def _build_spec_prompt(issue_number: str, title: str, body: str) -> str:
+def _load_project_context(project_dir: Path) -> str:
+    """Load key project files to give the spec writer codebase context."""
+    sections = []
+    context_files = [
+        (project_dir / ".claude" / "rules" / "architecture.md", "Architecture"),
+        (project_dir / "AGENTS.md", "Project Conventions"),
+    ]
+    for path, label in context_files:
+        if path.is_file():
+            try:
+                content = path.read_text(encoding="utf-8")
+                if len(content) > 8000:
+                    content = content[:8000] + "\n... (truncated)"
+                sections.append(f"### {label}\n\n{content}")
+            except (OSError, UnicodeError):
+                pass
+    if not sections:
+        return ""
+    return "## Project Context\n\n" + "\n\n".join(sections)
+
+
+def _build_spec_prompt(issue_number: str, title: str, body: str, project_dir: Path | None = None) -> str:
     """Build the LLM prompt for spec generation."""
     from datetime import date
+
+    context = ""
+    if project_dir is not None:
+        context = _load_project_context(project_dir)
 
     return (
         _SPEC_PROMPT_TEMPLATE.replace("{{issue_number}}", issue_number)
         .replace("{{title}}", title)
         .replace("{{body}}", body)
         .replace("{{date}}", date.today().isoformat())
+        .replace("{{project_context}}", context)
     )
 
 
@@ -281,7 +322,7 @@ class SpecStep(BaseStep):
         if task is None:
             task = await ctx.adapter.get_task(ctx.issue_number)
 
-        prompt = _build_spec_prompt(ctx.issue_number, task.title, task.body or "")
+        prompt = _build_spec_prompt(ctx.issue_number, task.title, task.body or "", ctx.project_dir)
 
         try:
             result = await invoke(

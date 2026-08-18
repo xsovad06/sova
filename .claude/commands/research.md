@@ -115,6 +115,15 @@ Similar work was done in {ticket/PR reference if found}.
 ### UI Notes
 
 {UI implications, or omit this section if none.}
+
+### Unresolved Questions
+
+Items that genuinely require human judgment: business rules, scope boundaries, UX \
+preferences, or external system behavior that cannot be determined from the codebase. \
+Do NOT include questions answerable by reading existing code, conventions, or patterns. \
+If no such questions exist, omit this section.
+
+- Question 1: context for why this cannot be determined from code
 ```
 
 Write the updated body back to the tracker. You MUST append the research to the issue description/body, NOT as a comment. Use file-based input for reliability with long content:
