@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -189,6 +190,35 @@ async def _fetch_last_run_map() -> dict[int, dict]:
         return {}
 
 
+def _enrich_with_queue_position(graph_dict: dict, project_dir: str | Path) -> None:
+    """Add ``queue_position`` (1-indexed) to nodes that appear in the task queue.
+
+    Fail-open: config or iteration errors are silently swallowed so the graph
+    response is still returned without queue data.
+    """
+    from sova.config.loader import load_config
+
+    try:
+        cfg = load_config(project_dir)
+        queue = list(cfg.supervisor.task_queue)
+    except Exception:
+        log.warning("dependency_graph.queue_config_load_failed", exc_info=True)
+        return
+
+    if not queue:
+        return
+
+    pos_map = {issue_num: idx + 1 for idx, issue_num in enumerate(queue)}
+    for node in graph_dict.get("nodes", []):
+        node_id = node.get("id")
+        if node_id is None:
+            log.warning("dependency_graph.node_missing_id", extra={"node": node})
+            continue
+        qp = pos_map.get(node_id)
+        if qp is not None:
+            node["queue_position"] = qp
+
+
 @router.get(
     "/graph",
     responses={
@@ -201,6 +231,9 @@ async def get_graph(milestone: str = "") -> dict:
 
     Optional ``milestone`` query param filters to issues in that milestone.
     Dependencies outside the milestone are still fetched individually.
+
+    Nodes are post-enriched with ``queue_position`` (1-indexed) when the issue
+    appears in the supervisor task queue.
     """
     try:
         graph, pr_map, agent_map, last_run_map = await asyncio.gather(
@@ -211,7 +244,7 @@ async def get_graph(milestone: str = "") -> dict:
         )
         handoff_map = _fetch_handoff_map()
         project_dir = get_project_dir()
-        return graph.to_dict(
+        result = graph.to_dict(
             pr_map=pr_map,
             pr_state_actions=_PR_STATE_ACTIONS,
             agent_map=agent_map,
@@ -219,6 +252,8 @@ async def get_graph(milestone: str = "") -> dict:
             last_run_map=last_run_map,
             project_dir=project_dir,
         )
+        _enrich_with_queue_position(result, project_dir)
+        return result
     except _ConfigError:
         log.error("Project config/adapter error for dependency graph", exc_info=True)
         raise HTTPException(status_code=503, detail="Project configuration unavailable")
