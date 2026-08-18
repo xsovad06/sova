@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import func as sa_func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 
@@ -615,6 +616,24 @@ class PREvent(Base):
         Index("ix_pr_events_timestamp", "timestamp"),
         Index("ix_pr_events_project", "project_slug"),
     )
+
+
+class ProjectSetting(Base):
+    """Key-value store for DB-backed project configuration."""
+
+    __tablename__ = "project_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(200), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=sa_func.now(),
+    )
+
+    __table_args__ = (Index("ix_project_settings_key", "key", unique=True),)
 
 
 class MergeQueueEntry(Base):

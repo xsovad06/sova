@@ -41,7 +41,6 @@ GROUPS: dict[str, str] = {
     "fleet": "Fleet & Telemetry",
     "awareness": "Awareness",
     "oversight": "Oversight Agent",
-    "dependabot": "Dependabot",
 }
 
 GROUP_ORDER: list[str] = [
@@ -69,7 +68,6 @@ GROUP_ORDER: list[str] = [
     "fleet",
     "awareness",
     "oversight",
-    "dependabot",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -1313,55 +1311,6 @@ _REGISTRY: list[SettingMeta] = [
         "Analysis timeout (sec)",
         "Timeout in seconds for the LLM analysis call (minimum 10)",
         "oversight",
-        "number",
-    ),
-    # -- Dependabot --
-    SettingMeta(
-        "dependabot.enabled",
-        "Dependabot auto-merge",
-        "Enable background auto-merge of Dependabot PRs after CI passes",
-        "dependabot",
-        "boolean",
-    ),
-    SettingMeta(
-        "dependabot.poll_interval_seconds",
-        _LABEL_POLL_INTERVAL,
-        "Seconds between Dependabot PR sweeps",
-        "dependabot",
-        "number",
-    ),
-    SettingMeta(
-        "dependabot.auto_merge_groups",
-        "Auto-merge groups",
-        "Dependabot group names to auto-merge without manual approval (comma-separated list)",
-        "dependabot",
-        "list",
-    ),
-    SettingMeta(
-        "dependabot.require_approval_groups",
-        "Require approval groups",
-        "Dependabot group names that require the approval label before auto-merge (comma-separated list)",
-        "dependabot",
-        "list",
-    ),
-    SettingMeta(
-        "dependabot.approval_label",
-        "Approval label",
-        "GitHub label that grants merge approval for require-approval groups",
-        "dependabot",
-    ),
-    SettingMeta(
-        "dependabot.ci_poll_interval_seconds",
-        "CI poll interval (s)",
-        "Seconds between CI status checks while waiting for checks to complete",
-        "dependabot",
-        "number",
-    ),
-    SettingMeta(
-        "dependabot.ci_poll_timeout_seconds",
-        "CI poll timeout (s)",
-        "Maximum seconds to wait for CI to complete before skipping a PR",
-        "dependabot",
         "number",
     ),
 ]
