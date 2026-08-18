@@ -42,11 +42,14 @@ Run this after a PR has been merged to clean up local state and capture learning
    git worktree remove .claude/worktrees/<ID> --force 2>/dev/null || true
    ```
 
-5. **Close linked issue and update project board** (if not auto-closed by PR):
+5. **Close linked issue and clean up labels**:
    ```bash
    gh issue close <ISSUE_NUMBER> 2>/dev/null || true
    ```
-   If the project uses a GitHub Projects board, move the issue to "Done".
+   Remove stale workflow labels that are no longer meaningful on a closed issue:
+   ```bash
+   gh issue edit <ISSUE_NUMBER> --remove-label "agent:in-review" --remove-label "agent:in-progress" --remove-label "sova:revise" --remove-label "sova:block" 2>/dev/null || true
+   ```
 
 6. **Capture learnings** from the PR review (run `/ingest-review` workflow):
    - Fetch PR review data
