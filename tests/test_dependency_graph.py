@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -115,6 +116,34 @@ class TestParseDependencies:
         assert result == {10}
         mock_log.warning.assert_called_once()
         assert "Multiple" in mock_log.warning.call_args[0][0]
+
+    def test_code_dependencies_not_matched(self) -> None:
+        """'## Code Dependencies' (code-level) must not match the issue-level parser."""
+        body = "## Code Dependencies\n- utils.parse_dependencies()\n- models.Task\n"
+        assert parse_dependencies(body) == set()
+
+    def test_code_dependencies_does_not_interfere(self) -> None:
+        """Both sections coexist: only '## Dependencies' is parsed for issue refs."""
+        body = "## Code Dependencies\n- utils.module\n\n## Dependencies\n- #42\n"
+        assert parse_dependencies(body) == {42}
+
+    def test_code_dependencies_does_not_interfere_reversed_order(self) -> None:
+        """Parser is order-agnostic: Dependencies before Code Dependencies works too."""
+        body = "## Dependencies\n- #42\n\n## Code Dependencies\n- utils.module\n"
+        assert parse_dependencies(body) == {42}
+
+    def test_spec_template_uses_code_dependencies_heading(self) -> None:
+        """Spec templates must use '## Code Dependencies' to avoid collision."""
+        repo_root = Path(__file__).resolve().parent.parent
+        for template_path in [
+            repo_root / "commands" / "spec.md",
+            repo_root / ".claude" / "commands" / "spec.md",
+        ]:
+            content = template_path.read_text(encoding="utf-8")
+            assert "## Code Dependencies" in content, f"{template_path.name} still uses '## Dependencies'"
+            assert re.search(r"^## Dependencies\s*$", content, re.MULTILINE | re.IGNORECASE) is None, (
+                f"{template_path.name} has bare '## Dependencies' heading"
+            )
 
 
 # ---------------------------------------------------------------------------
