@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from sova.db.models import Base, OversightFinding, OversightRun, OversightRunStatus
+from sova.llm.models import LLMResult
 from sova.oversight.analysis import (
     _build_prompt,
     _clamp,
@@ -47,8 +48,7 @@ async def db_session():
 def _make_provider(response_text: str) -> AsyncMock:
     """Create a mock LLM provider that returns the given text."""
     provider = AsyncMock()
-    result = AsyncMock()
-    result.result = response_text
+    result = LLMResult(text=response_text, model="test")
     provider.invoke = AsyncMock(return_value=result)
     return provider
 

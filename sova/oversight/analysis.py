@@ -241,7 +241,7 @@ async def analyze_snapshot(
         prompt = _build_prompt(persona, snapshot_text)
 
         llm_result = await provider.invoke(prompt, model=model, timeout=analysis_timeout)
-        raw_text = llm_result.result if hasattr(llm_result, "result") else str(llm_result)
+        raw_text = llm_result.text
 
         try:
             parsed = _parse_findings(raw_text)
