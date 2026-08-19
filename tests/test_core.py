@@ -3005,12 +3005,16 @@ class TestWorkflowDB:
         assert timeout == ctx.config.ci.max_wait + 120
 
     async def test_step_timeout_regular_step(self) -> None:
-        """_step_timeout returns agent.step_timeout for non-monitor_ci steps."""
+        """_step_timeout returns develop.step_timeout for develop step, agent.step_timeout for others."""
         ctx = _make_ctx()
         engine = WorkflowEngine(steps=[], ctx=ctx)
 
+        # develop uses develop.step_timeout
         timeout = engine._step_timeout("develop")
+        assert timeout == ctx.config.develop.step_timeout
 
+        # other steps use agent.step_timeout
+        timeout = engine._step_timeout("commit")
         assert timeout == ctx.config.agent.step_timeout
 
     async def test_write_output_flushes_when_needed(self) -> None:
@@ -7668,6 +7672,163 @@ class TestDevelopStepInnerCheckLoop:
             result = await _get_dirty_test_files(Path("/tmp/worktree"))
 
         assert result == {"tests/test_core.py", "utils_test.py"}
+
+    def test_check_loop_budget_returns_none_when_within_limits(self) -> None:
+        """_check_loop_budget returns None when time and budget are within limits."""
+        import time
+
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(develop=DevelopConfig(max_fix_time=300))
+        ctx = _make_ctx(config=cfg)
+        step = DevelopStep()
+
+        loop_start = time.monotonic()
+        result = step._check_loop_budget(ctx, loop_start, 300, 1)
+
+        assert result is None
+
+    def test_check_loop_budget_returns_error_when_time_exceeded(self) -> None:
+        """_check_loop_budget returns error summary when time budget exceeded."""
+        import time
+
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(develop=DevelopConfig(max_fix_time=1))
+        ctx = _make_ctx(config=cfg)
+        step = DevelopStep()
+
+        loop_start = time.monotonic() - 10
+        result = step._check_loop_budget(ctx, loop_start, 1, 2)
+
+        assert result is not None
+        assert "time budget exceeded" in result
+        assert "after 1 fix cycle(s)" in result
+
+    def test_check_loop_budget_returns_error_when_budget_exceeded(self) -> None:
+        """_check_loop_budget returns error summary when cost budget exceeded."""
+        import time
+
+        from sova.config.models import AgentConfig, DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(
+            agent=AgentConfig(max_budget=Decimal("1.00")),
+            develop=DevelopConfig(max_fix_time=300),
+        )
+        ctx = _make_ctx(config=cfg)
+        ctx.cost_usd = Decimal("2.00")
+        step = DevelopStep()
+
+        loop_start = time.monotonic()
+        result = step._check_loop_budget(ctx, loop_start, 300, 3)
+
+        assert result is not None
+        assert "budget exceeded" in result
+        assert "after 2 fix cycle(s)" in result
+
+    def test_check_duplicate_failure_returns_none_when_output_differs_from_initial(self) -> None:
+        """_check_duplicate_failure returns None when check output differs from initial."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        result = step._check_duplicate_failure("new error output", "initial error output", 1)
+
+        assert result is None
+
+    def test_check_duplicate_failure_returns_none_when_output_differs(self) -> None:
+        """_check_duplicate_failure returns None when check output changes."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        result = step._check_duplicate_failure("new error output", "old error output", 2)
+
+        assert result is None
+
+    def test_check_duplicate_failure_returns_error_when_duplicate_detected(self) -> None:
+        """_check_duplicate_failure returns error summary when duplicate detected."""
+        from sova.core.steps.develop import DevelopStep
+
+        step = DevelopStep()
+        # Create long enough output that the tail comparison is meaningful
+        same_output = "x" * 4000
+        result = step._check_duplicate_failure(same_output, same_output[-3000:], 3)
+
+        assert result is not None
+        assert "duplicate failure" in result
+        assert "after 3 fix cycle(s)" in result
+
+    async def test_check_loop_handles_max_fix_time_exceeded(self) -> None:
+        """_run_inner_check_loop stops when max_fix_time exceeded."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=5, max_fix_time=1),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("time.monotonic") as mock_time,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout="FAIL", stderr=""),  # initial check
+            ]
+            mock_time.side_effect = [0, 10]  # Start at 0, then 10 seconds elapsed
+            passed, summary = await step._run_inner_check_loop(ctx)
+
+        assert passed is False
+        assert "time budget exceeded" in summary
+
+    async def test_check_loop_handles_duplicate_failure(self) -> None:
+        """_run_inner_check_loop detects duplicate failures and stops."""
+        from sova.config.models import DevelopConfig
+        from sova.core.steps.develop import DevelopStep
+        from sova.llm.models import LLMResult
+
+        cfg = ProjectConfig(
+            check_cmd="make check",
+            develop=DevelopConfig(max_fix_cycles=3, guard_test_weakening=False),
+        )
+        ctx = _make_ctx(config=cfg, worktree_dir=Path("/tmp/worktree"))
+        step = DevelopStep()
+
+        same_error = "SAME ERROR OUTPUT" * 200
+
+        with (
+            patch("sova.core.steps.develop.run", new_callable=AsyncMock) as mock_run,
+            patch("sova.core.steps.develop.invoke", new_callable=AsyncMock) as mock_invoke,
+        ):
+            mock_run.side_effect = [
+                MagicMock(success=True),  # command -v probe
+                MagicMock(success=False, stdout=same_error, stderr=""),  # initial check
+                # Cycle 1: duplicate detected immediately (seeded from initial check output)
+                MagicMock(success=True, stdout="hash1\n"),  # rev-parse HEAD (pre)
+                MagicMock(success=True, stdout=" file.py | 1 +\n"),  # git diff (has changes)
+                MagicMock(success=True, stdout=""),  # git diff --cached
+                MagicMock(success=True, stdout="hash2\n"),  # rev-parse HEAD (post)
+                MagicMock(success=True, stdout=""),  # git status --porcelain
+                MagicMock(success=False, stdout=same_error, stderr=""),  # re-run check (DUPLICATE)
+            ]
+            mock_invoke.return_value = LLMResult(
+                text="Fixed",
+                model="opus",
+                cost_usd=Decimal("0.10"),
+                input_tokens=100,
+                output_tokens=50,
+            )
+            passed, summary = await step._run_inner_check_loop(ctx)
+
+        assert passed is False
+        assert "duplicate failure" in summary
+        assert "after 1 fix cycle(s)" in summary
+        assert mock_invoke.call_count == 1
 
 
 # ---------------------------------------------------------------------------
