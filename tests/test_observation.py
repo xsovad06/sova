@@ -454,7 +454,7 @@ class TestCollectFleetSlots:
         mock_insights = FakeInsights(projects_scanned=["proj-a", "proj-b"], total_runs=3)
 
         mock_cfg = AsyncMock()
-        mock_cfg.agent.max_concurrent = 4
+        mock_cfg.max_parallel_agents = 4
 
         with (
             patch.object(FleetService, "get_insights", return_value=mock_insights),
@@ -485,7 +485,7 @@ class TestCollectFleetSlots:
             if "bad" in str(path):
                 raise RuntimeError("config error")
             cfg = AsyncMock()
-            cfg.agent.max_concurrent = 2
+            cfg.max_parallel_agents = 2
             return cfg
 
         with (

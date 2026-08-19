@@ -350,7 +350,7 @@ async def _collect_fleet_slots(registry: dict[str, str]) -> AgentSlotSummary:
                 path = registry.get(slug)
                 if path:
                     cfg = load_config(Path(path))
-                    total_slots += cfg.agent.max_concurrent
+                    total_slots += cfg.max_parallel_agents
             except Exception:
                 log.debug("oversight.observation.fleet_slot_config_error", slug=slug, exc_info=True)
         return AgentSlotSummary(
