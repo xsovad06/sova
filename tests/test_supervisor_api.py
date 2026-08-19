@@ -911,56 +911,49 @@ class TestTaskQueueRouter:
         assert resp.status_code == 200
         assert resp.json()["queue"] == []
 
-    async def test_add_to_queue(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+    async def test_add_to_queue(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 201
         assert resp.json()["queue"] == [42]
 
-    async def test_add_duplicate_returns_409(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.post("/api/supervisor/queue", json={"issue_number": 42})
-                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+    async def test_add_duplicate_returns_409(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/supervisor/queue", json={"issue_number": 42})
+            resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
         assert resp.status_code == 409
 
-    async def test_set_queue_with_reorder(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.post("/api/supervisor/queue", json={"issue_number": 10})
-                await client.post("/api/supervisor/queue", json={"issue_number": 20})
-                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10]})
+    async def test_set_queue_with_reorder(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/supervisor/queue", json={"issue_number": 10})
+            await client.post("/api/supervisor/queue", json={"issue_number": 20})
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [20, 10]})
         assert resp.status_code == 200
         assert resp.json()["queue"] == [20, 10]
 
-    async def test_set_queue_deduplicates(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [5, 5, 10, 5]})
+    async def test_set_queue_deduplicates(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [5, 5, 10, 5]})
         assert resp.status_code == 200
         assert resp.json()["queue"] == [5, 10]
 
-    async def test_remove_from_queue(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.post("/api/supervisor/queue", json={"issue_number": 42})
-                await client.post("/api/supervisor/queue", json={"issue_number": 43})
-                resp = await client.delete("/api/supervisor/queue/42")
+    async def test_remove_from_queue(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/supervisor/queue", json={"issue_number": 42})
+            await client.post("/api/supervisor/queue", json={"issue_number": 43})
+            resp = await client.delete("/api/supervisor/queue/42")
         assert resp.status_code == 200
         assert resp.json()["queue"] == [43]
 
-    async def test_remove_nonexistent_returns_404(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.delete("/api/supervisor/queue/999")
+    async def test_remove_nonexistent_returns_404(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.delete("/api/supervisor/queue/999")
         assert resp.status_code == 404
 
-    async def test_clear_queue(self, app, project_dir) -> None:
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                await client.post("/api/supervisor/queue", json={"issue_number": 42})
-                resp = await client.delete("/api/supervisor/queue")
+    async def test_clear_queue(self, app) -> None:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/api/supervisor/queue", json={"issue_number": 42})
+            resp = await client.delete("/api/supervisor/queue")
         assert resp.status_code == 200
         assert resp.json()["queue"] == []
 
@@ -1065,14 +1058,12 @@ class TestTaskQueueValidation:
         """POST /queue with issue_number=0 returns 422 validation error."""
         from sova.dashboard.app import create_app
 
-        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
         with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
             with patch("sova.dashboard.app.list_projects", return_value={}):
                 app = create_app(project_dir=tmp_path)
 
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=tmp_path):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/api/supervisor/queue", json={"issue_number": 0})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/queue", json={"issue_number": 0})
         assert resp.status_code == 422
 
 
@@ -1095,23 +1086,20 @@ class TestTaskQueueErrorPaths:
 
     async def test_negative_issue_number_rejected(self, app, project_dir) -> None:
         """POST /queue with negative issue_number returns 422."""
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/api/supervisor/queue", json={"issue_number": -5})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/supervisor/queue", json={"issue_number": -5})
         assert resp.status_code == 422
 
-    async def test_set_queue_negative_rejected(self, app, project_dir) -> None:
+    async def test_set_queue_negative_rejected(self, app) -> None:
         """PUT /queue with negative issue_numbers returns 422."""
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, -2, 3]})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [1, -2, 3]})
         assert resp.status_code == 422
 
-    async def test_set_queue_zero_rejected(self, app, project_dir) -> None:
+    async def test_set_queue_zero_rejected(self, app) -> None:
         """PUT /queue with zero issue_numbers returns 422."""
-        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [0]})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [0]})
         assert resp.status_code == 422
 
     async def test_set_queue_write_failure_returns_503(self, app, project_dir) -> None:
@@ -1224,6 +1212,72 @@ class TestAutoResearchDefault:
 
         cfg = SupervisorConfig()
         assert cfg.auto_research is False
+
+
+class TestMaybeMigrateQueueFromToml:
+    """Tests for _maybe_migrate_queue_from_toml one-time migration."""
+
+    @pytest.fixture
+    def project_dir(self, tmp_path):
+        return tmp_path
+
+    @pytest.fixture(autouse=True)
+    def _reset_flag(self):
+        import sova.dashboard.routers.supervisor as sup_mod
+
+        sup_mod._toml_migrated.clear()
+        yield
+        sup_mod._toml_migrated.clear()
+
+    async def test_skips_when_already_migrated(self) -> None:
+        import sova.dashboard.routers.supervisor as sup_mod
+
+        project_dir = Path("/already-done")
+        sup_mod._toml_migrated.add(str(project_dir))
+        mock_read = AsyncMock()
+        with patch("sova.dashboard.routers.supervisor._read_queue", mock_read):
+            await sup_mod._maybe_migrate_queue_from_toml(project_dir)
+        mock_read.assert_not_called()
+
+    async def test_skips_when_toml_queue_empty(self, project_dir) -> None:
+        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = []
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            await _maybe_migrate_queue_from_toml(project_dir)
+
+    async def test_migrates_toml_queue_to_db(self, project_dir) -> None:
+        from sova.config.db_loader import load_task_queue
+        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = [10, 20, 30]
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            await _maybe_migrate_queue_from_toml(project_dir)
+
+        loaded = await load_task_queue(project_dir)
+        assert loaded == [10, 20, 30]
+
+    async def test_does_not_overwrite_existing_db_value(self, project_dir) -> None:
+        from sova.config.db_loader import load_task_queue, save_task_queue
+        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+
+        await save_task_queue(project_dir, [99])
+
+        mock_cfg = MagicMock()
+        mock_cfg.supervisor.task_queue = [10, 20]
+        with patch("sova.config.loader.load_config", return_value=mock_cfg):
+            await _maybe_migrate_queue_from_toml(project_dir)
+
+        loaded = await load_task_queue(project_dir)
+        assert loaded == [99]
+
+    async def test_exception_is_swallowed(self) -> None:
+        from sova.dashboard.routers.supervisor import _maybe_migrate_queue_from_toml
+
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("boom")):
+            await _maybe_migrate_queue_from_toml(Path("/nonexistent"))
 
 
 class TestDeduplicate:
