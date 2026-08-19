@@ -41,6 +41,7 @@ GROUPS: dict[str, str] = {
     "fleet": "Fleet & Telemetry",
     "awareness": "Awareness",
     "oversight": "Oversight Agent",
+    "a2a": "A2A Protocol",
 }
 
 GROUP_ORDER: list[str] = [
@@ -68,6 +69,7 @@ GROUP_ORDER: list[str] = [
     "fleet",
     "awareness",
     "oversight",
+    "a2a",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -1333,6 +1335,20 @@ _REGISTRY: list[SettingMeta] = [
         "Timeout in seconds for the LLM analysis call (minimum 10)",
         "oversight",
         "number",
+    ),
+    # -- A2A Protocol --
+    SettingMeta(
+        "a2a.enabled",
+        "Enable A2A protocol",
+        "Expose SOVA roles as discoverable A2A agents (disabled by default for security)",
+        "a2a",
+        "boolean",
+    ),
+    SettingMeta(
+        "a2a.endpoint_base",
+        "Endpoint base URL",
+        "Base URL for A2A Agent Card (e.g. http://localhost:8111). Auto-detected if empty.",
+        "a2a",
     ),
 ]
 
