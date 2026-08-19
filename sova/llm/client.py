@@ -7,6 +7,7 @@ to work unchanged.  The actual implementation lives in the configured
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,7 @@ from sova.llm.models import BatchRequest, BatchResult, LLMResult, StreamEvent
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from sova.config.models import ProjectConfig
     from sova.llm.provider import LLMProvider
 
 log = get_logger(component="llm.client")
@@ -55,7 +57,7 @@ async def invoke(
     task_type: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
-    timeout: float | None = 600,
+    timeout: float | None = None,
 ) -> LLMResult:
     """Run a prompt via the active LLM provider.
 
@@ -68,32 +70,71 @@ async def invoke(
     from sova.llm.guard import guard_prompt
 
     guard_prompt(prompt)
-    resolved = _resolve_task_type_model(model, task_type, cwd=cwd)
+    cfg = _try_load_config(cwd) if model is None or timeout is None else None
+    resolved = _resolve_task_type_model(model, task_type, cfg=cfg)
+    resolved_timeout = _resolve_timeout(timeout, cfg=cfg)
     return await get_provider().invoke(
-        prompt, model=resolved, fallback_model=fallback_model, cwd=cwd, max_budget_usd=max_budget_usd, timeout=timeout
+        prompt,
+        model=resolved,
+        fallback_model=fallback_model,
+        cwd=cwd,
+        max_budget_usd=max_budget_usd,
+        timeout=resolved_timeout,
     )
 
 
-def _resolve_task_type_model(model: str | None, task_type: str | None, *, cwd: Path | str | None = None) -> str | None:
+def _try_load_config(cwd: Path | str | None = None) -> "ProjectConfig | None":
+    """Load project config, returning None on failure."""
+    try:
+        from sova.config.loader import load_config
+
+        return load_config(Path(cwd) if cwd else None)
+    except Exception:
+        log.debug("llm.config_load_failed", exc_info=True)
+        return None
+
+
+def _resolve_task_type_model(
+    model: str | None,
+    task_type: str | None,
+    *,
+    cfg: "ProjectConfig | None" = None,
+    cwd: Path | str | None = None,
+) -> str | None:
     """Resolve model from task_type routing if no explicit model is provided."""
     if model or not task_type:
         return model
 
-    try:
-        from sova.config.loader import load_config
+    resolved_cfg = cfg if cfg is not None else _try_load_config(cwd)
+    if resolved_cfg is None:
+        return model
 
-        cfg = load_config(Path(cwd) if cwd else None)
-        if not cfg.llm.routing:
-            return model
+    if not resolved_cfg.llm.routing:
+        return model
 
-        override = cfg.llm.routing.get(task_type)
-        if override is not None:
-            log.info("llm.task_type_route", task_type=task_type, model=override)
-            return override
-    except Exception:
-        log.debug("llm.task_type_resolve_failed", task_type=task_type, exc_info=True)
+    override = resolved_cfg.llm.routing.get(task_type)
+    if override is not None:
+        log.info("llm.task_type_route", task_type=task_type, model=override)
+        return override
 
     return model
+
+
+def _resolve_timeout(
+    timeout: float | None,
+    *,
+    cfg: "ProjectConfig | None" = None,
+    cwd: Path | str | None = None,
+) -> float:
+    """Resolve timeout from config when None, with hardcoded fallback."""
+    if timeout is not None:
+        return timeout
+
+    resolved_cfg = cfg if cfg is not None else _try_load_config(cwd)
+    if resolved_cfg is None:
+        return 900.0
+
+    return float(resolved_cfg.llm.cli_timeout)
 
 
 async def invoke_command(
@@ -104,7 +145,7 @@ async def invoke_command(
     fallback_model: str | None = None,
     cwd: Path | str | None = None,
     max_budget_usd: Decimal | None = None,
-    timeout: float | None = 600,
+    timeout: float | None = None,
 ) -> LLMResult:
     """Run a slash command via the active LLM provider."""
     if args:
@@ -112,15 +153,17 @@ async def invoke_command(
 
         assembled = f"{command} {args}".strip()
         guard_prompt(assembled)
-    return await get_provider().invoke_command(
-        command,
-        args,
-        model=model,
-        fallback_model=fallback_model,
-        cwd=cwd,
-        max_budget_usd=max_budget_usd,
-        timeout=timeout,
-    )
+    resolved_timeout = _resolve_timeout(timeout, cwd=cwd)
+    async with asyncio.timeout(resolved_timeout):
+        return await get_provider().invoke_command(
+            command,
+            args,
+            model=model,
+            fallback_model=fallback_model,
+            cwd=cwd,
+            max_budget_usd=max_budget_usd,
+            timeout=resolved_timeout,
+        )
 
 
 async def invoke_batch(

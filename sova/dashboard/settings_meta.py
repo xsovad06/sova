@@ -173,6 +173,13 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
         "number",
     ),
+    SettingMeta(
+        "llm.cli_timeout",
+        "CLI timeout",
+        "Default timeout for LLM CLI calls in seconds (default 900 = 15 min)",
+        "llm",
+        "number",
+    ),
     # -- Agent --
     SettingMeta(
         "agent.runtime",

@@ -88,6 +88,7 @@ class LLMConfig(BaseSettings):
     batch_gcs_prefix: str = "sova-batch"
     batch_poll_interval: int = Field(60, gt=0)
     batch_timeout: int = Field(86400, gt=0)
+    cli_timeout: int = Field(900, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LLM_")
 

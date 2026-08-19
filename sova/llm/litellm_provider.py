@@ -78,7 +78,7 @@ class LiteLLMProvider(LLMProvider):
         fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
-        timeout: float | None = 600,
+        timeout: float | None = None,
     ) -> LLMResult:
         target_model = model or self.model
         start = time.monotonic()
