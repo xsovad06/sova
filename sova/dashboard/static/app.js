@@ -30,8 +30,8 @@ function apiUrl(path) {
   return (window.SOVA_API_PREFIX || '/api') + path;
 }
 
-async function fetchAPI(url) {
-  var res = await fetch(url);
+async function fetchAPI(url, options) {
+  var res = await fetch(url, options);
   if (!res.ok) throw new Error('API error: ' + res.status);
   return res.json();
 }
