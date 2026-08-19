@@ -508,10 +508,11 @@ class GitHubAdapter(TaskAdapter):
         if result.success:
             return
 
-        # Match label-specific "not found" errors (e.g., "label 'X' not found").
-        # Avoid matching issue-not-found or repo-not-found errors.
+        # Match label-specific "not found" errors. gh outputs either
+        # "label 'X' not found" or "'X' not found" depending on version.
         stderr_lower = result.stderr.lower()
-        if "label" in stderr_lower and "not found" in stderr_lower:
+        label_lower = label.lower()
+        if "not found" in stderr_lower and label_lower in stderr_lower:
             log.info("label.auto_create", label=label, repo=self.repo)
             create = await self._gh(
                 "label",
