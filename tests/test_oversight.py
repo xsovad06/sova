@@ -337,6 +337,23 @@ class TestOversightAgent:
         assert recorded[0]["error"] == "observation_failed"
 
     @pytest.mark.asyncio
+    async def test_analyze_returns_early_when_disabled(self) -> None:
+        """_analyze returns ([], None) immediately when config.enabled is False."""
+        cfg = OversightConfig(wake_interval_minutes=1, enabled=False)
+        agent = OversightAgent(config=cfg)
+
+        with (
+            patch("sova.llm.client.get_provider") as mock_provider,
+            patch("sova.oversight.analysis.analyze_snapshot") as mock_analyze,
+        ):
+            findings, error = await agent._analyze({"projects": []}, "run-123")
+
+        assert findings == []
+        assert error is None
+        mock_provider.assert_not_called()
+        mock_analyze.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_record_run_db_failure_does_not_raise(self) -> None:
         """If get_session raises, _record_run logs but doesn't propagate."""
         cfg = OversightConfig(wake_interval_minutes=1)

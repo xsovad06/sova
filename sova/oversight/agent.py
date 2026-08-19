@@ -158,6 +158,9 @@ class OversightAgent:
         Returns:
             Tuple of (list of findings, error message or None).
         """
+        if not self._config.enabled:
+            log.debug("oversight.analyze.disabled", run_id=run_id)
+            return [], None
         from sova.llm.client import get_provider
         from sova.oversight.analysis import analyze_snapshot
 
