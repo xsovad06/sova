@@ -158,6 +158,7 @@ class DevelopStep(BaseStep):
             )
 
         try:
+            cost_before_develop = ctx.cost_usd
             result = await invoke_command(
                 "/develop",
                 args=args,
@@ -165,16 +166,35 @@ class DevelopStep(BaseStep):
                 fallback_model=ctx.get_cli_fallback_model(),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
-                timeout=ctx.config.agent.step_timeout,
+                timeout=ctx.config.develop.step_timeout,
             )
             ctx.add_cost(result.cost_usd)
             ctx.session_id = result.session_id
 
+            if result.cost_usd < 0.50:
+                diff = await run("git", "diff", "--stat", "HEAD", cwd=ctx.working_dir)
+                staged = await run("git", "diff", "--cached", "--stat", cwd=ctx.working_dir)
+                log_check = await run("git", "log", f"{ctx.base_branch}..HEAD", "--oneline", cwd=ctx.working_dir)
+                untracked = await run("git", "status", "--porcelain", cwd=ctx.working_dir)
+                has_any_change = bool(
+                    (diff.success and diff.stdout.strip())
+                    or (staged.success and staged.stdout.strip())
+                    or (log_check.success and log_check.stdout.strip())
+                    or (untracked.success and any(line.startswith("??") for line in untracked.stdout.splitlines()))
+                )
+                if not has_any_change:
+                    error = f"Development produced no changes (cost ${result.cost_usd:.2f} < $0.50 threshold)"
+                    log.warning("step.develop.early_no_change_abort", cost=result.cost_usd)
+                    return StepResult(
+                        success=False,
+                        summary="Development failed",
+                        error=error,
+                        cost_usd=ctx.cost_usd - cost_before_develop,
+                    )
+
             await _append_implementation_notes(ctx)
 
-            cost_before_checks = ctx.cost_usd
             checks_passed, check_summary = await self._run_inner_check_loop(ctx)
-            inner_loop_cost = ctx.cost_usd - cost_before_checks
 
             summary = f"Development completed ({result.total_tokens} tokens)"
             if check_summary:
@@ -183,7 +203,7 @@ class DevelopStep(BaseStep):
             return StepResult(
                 success=checks_passed,
                 summary=summary,
-                cost_usd=result.cost_usd + inner_loop_cost,
+                cost_usd=ctx.cost_usd - cost_before_develop,
                 error=check_summary if not checks_passed else None,
             )
         except RuntimeError as exc:
@@ -195,6 +215,8 @@ class DevelopStep(BaseStep):
         Returns a (passed, summary) tuple where passed is True when checks
         succeed (or are skipped) and summary is a short description string.
         """
+        import time
+
         develop_cfg = ctx.config.develop
         max_cycles = develop_cfg.max_fix_cycles
         if max_cycles == 0:
@@ -205,6 +227,8 @@ class DevelopStep(BaseStep):
         if check_cmd is None:
             return True, ""
 
+        loop_start_time = time.monotonic()
+
         # Initial check run
         check_result = await run("sh", "-c", check_cmd, cwd=ctx.working_dir, timeout=develop_cfg.check_timeout)
         if check_result.success:
@@ -214,10 +238,12 @@ class DevelopStep(BaseStep):
         check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
         log.warning("step.develop.checks_failed", output=check_output[:500])
 
+        last_check_output_tail: str = check_output[-3000:]
+
         for cycle in range(1, max_cycles + 1):
-            if ctx.is_budget_exceeded:
-                log.warning("step.develop.budget_exceeded_in_check_loop", cycle=cycle)
-                return False, f"checks still failing after {cycle - 1} fix cycle(s) (budget exceeded)"
+            budget_check = self._check_loop_budget(ctx, loop_start_time, develop_cfg.max_fix_time, cycle)
+            if budget_check is not None:
+                return False, budget_check
 
             log.info("step.develop.fix_cycle", cycle=cycle, max=max_cycles)
 
@@ -234,9 +260,54 @@ class DevelopStep(BaseStep):
                 return True, f"checks passed after {cycle} fix cycle(s)"
 
             check_output = (check_result.stdout + "\n" + check_result.stderr).strip()
+            duplicate_check = self._check_duplicate_failure(check_output, last_check_output_tail, cycle)
+            if duplicate_check is not None:
+                return False, duplicate_check
+
+            last_check_output_tail = check_output[-3000:]
             log.warning("step.develop.checks_still_failing", cycle=cycle, output=check_output[:500])
 
         return False, f"checks still failing after {max_cycles} fix cycle(s)"
+
+    def _check_loop_budget(
+        self,
+        ctx: ExecutionContext,
+        loop_start_time: float,
+        max_fix_time: int,
+        cycle: int,
+    ) -> str | None:
+        """Check time and budget constraints for the inner check loop.
+
+        Returns error summary if budget exceeded, None if OK to continue.
+        """
+        import time
+
+        elapsed = time.monotonic() - loop_start_time
+        if elapsed >= max_fix_time:
+            log.warning("step.develop.max_fix_time_exceeded", elapsed=int(elapsed), limit=max_fix_time)
+            return f"checks still failing after {cycle - 1} fix cycle(s) (time budget exceeded)"
+
+        if ctx.is_budget_exceeded:
+            log.warning("step.develop.budget_exceeded_in_check_loop", cycle=cycle)
+            return f"checks still failing after {cycle - 1} fix cycle(s) (budget exceeded)"
+
+        return None
+
+    def _check_duplicate_failure(
+        self,
+        check_output: str,
+        last_check_output_tail: str,
+        cycle: int,
+    ) -> str | None:
+        """Check if the failure output is identical to the previous cycle.
+
+        Returns error summary if duplicate detected, None otherwise.
+        """
+        check_output_tail = check_output[-3000:]
+        if check_output_tail == last_check_output_tail:
+            log.warning("step.develop.duplicate_failure_detected", cycle=cycle)
+            return f"checks still failing after {cycle} fix cycle(s) (duplicate failure)"
+        return None
 
     async def _resolve_and_verify_check_cmd(self, ctx: ExecutionContext) -> str | None:
         """Resolve the check command and verify it is executable.
@@ -332,6 +403,7 @@ class DevelopStep(BaseStep):
                 fallback_model=ctx.get_cli_fallback_model(),
                 cwd=ctx.working_dir,
                 max_budget_usd=ctx.config.agent.max_budget - ctx.cost_usd,
+                timeout=ctx.config.develop.fix_timeout,
             )
             ctx.add_cost(llm_result.cost_usd)
         except RuntimeError as exc:

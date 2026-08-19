@@ -130,6 +130,10 @@ class WorkflowEngine:
             task_run_id=self._task_run_id,
         )
 
+        await self._check_per_issue_budget(result)
+        if result.error:
+            return result
+
         log.info(
             "workflow.start",
             issue=self._ctx.issue_number or "",
@@ -469,10 +473,13 @@ class WorkflowEngine:
         """Return the hard timeout in seconds for a given step.
 
         monitor_ci gets ci.max_wait + a 120s grace period;
+        develop uses develop.step_timeout;
         all other steps use agent.step_timeout.
         """
         if step_name == "monitor_ci":
             return self._ctx.config.ci.max_wait + 120
+        if step_name == "develop":
+            return min(self._ctx.config.develop.step_timeout, self._ctx.config.agent.step_timeout)
         return self._ctx.config.agent.step_timeout
 
     # -- Output helpers --
@@ -489,6 +496,50 @@ class WorkflowEngine:
             self._output_writer = None
 
     # -- DB persistence --
+
+    async def _check_per_issue_budget(self, result: WorkflowResult) -> None:
+        """Check if the per-issue budget has been exceeded by prior runs.
+
+        Queries all TaskRuns for this issue and sums their cost. If the total
+        exceeds max_issue_budget, sets result.error and result.final_status to
+        abort the pipeline before any steps execute.
+        """
+        if not self._ctx.issue_number:
+            return
+
+        max_issue_budget = self._ctx.config.agent.max_issue_budget
+        async with await get_session() as session:
+            from sqlalchemy import func, select
+
+            _TERMINAL = ("done", "failed", "rejected", "interrupted", "paused")
+            stmt = (
+                select(func.coalesce(func.sum(TaskRun.total_cost_usd), Decimal("0")))
+                .where(TaskRun.issue_number == self._ctx.issue_number)
+                .where(TaskRun.id != self._task_run_id)
+                .where(TaskRun.status.in_(_TERMINAL))
+            )
+            prior_cost = await session.scalar(stmt)
+            prior_cost = prior_cost or Decimal("0")
+
+            if prior_cost >= max_issue_budget:
+                result.final_status = TaskStatus.PAUSED
+                result.error = (
+                    f"Per-issue budget exceeded: ${prior_cost:.2f} spent on issue "
+                    f"#{self._ctx.issue_number} (limit: ${max_issue_budget})"
+                )
+                try:
+                    await self._write_output(f"PAUSED: {result.error}")
+                    await self._close_output()
+                    await self._record_failure("budget_check", "per_issue_budget_exceeded", result.error)
+                    await self._update_task_run_status(TaskStatus.PAUSED, error=result.error)
+                except Exception as exc:
+                    log.error("workflow.budget_check_cleanup_failed", error=str(exc), exc_info=True)
+                log.warning(
+                    "workflow.per_issue_budget_exceeded",
+                    issue=self._ctx.issue_number,
+                    prior_cost=str(prior_cost),
+                    limit=str(max_issue_budget),
+                )
 
     async def _create_task_run(self) -> int:
         """Create the initial TaskRun record and return its ID."""
