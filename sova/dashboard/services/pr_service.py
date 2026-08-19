@@ -174,6 +174,41 @@ def _summarize_ci(rollup: list[dict] | None) -> str:
     return "none"
 
 
+def _is_bot_review(review: dict) -> bool:
+    """Check if a review is from a bot based on [bot] login suffix."""
+    author = review.get("author") or {}
+    login = author.get("login") or ""
+    return login.endswith("[bot]")
+
+
+def _extract_cr_reviews(latest_reviews: list[dict]) -> list[dict]:
+    """Extract CHANGES_REQUESTED reviews from latest_reviews."""
+    return [r for r in latest_reviews if r.get("state") == "CHANGES_REQUESTED"]
+
+
+def _should_unblock_bot_reviews(
+    cr_reviews: list[dict],
+    all_threads_resolved: bool,
+    ci_status: str,
+    mergeable: str,
+) -> str | None:
+    """Check if bot CHANGES_REQUESTED reviews with resolved threads should unblock the PR.
+
+    Returns APPROVED_CI_GREEN if all conditions are met and CI is green + mergeable,
+    APPROVED if conditions are met but CI is not green or not mergeable,
+    None if any condition fails (no CR reviews, threads unresolved, or human CR present).
+    """
+    if not cr_reviews:
+        return None
+    if not all_threads_resolved:
+        return None
+    if not all(_is_bot_review(r) for r in cr_reviews):
+        return None
+    if ci_status == "passed" and mergeable == "MERGEABLE":
+        return ComputedPRState.APPROVED_CI_GREEN
+    return ComputedPRState.APPROVED
+
+
 def compute_pr_state(
     *,
     is_draft: bool,
@@ -191,14 +226,22 @@ def compute_pr_state(
     if ci_status == "failed":
         return ComputedPRState.CI_FAILED
     if review_decision == "CHANGES_REQUESTED":
+        if latest_reviews:
+            cr_reviews = _extract_cr_reviews(latest_reviews)
+            unblock_state = _should_unblock_bot_reviews(cr_reviews, all_threads_resolved, ci_status, mergeable)
+            if unblock_state:
+                return unblock_state
         return ComputedPRState.CHANGES_REQUESTED
     if review_decision == "APPROVED" and ci_status == "passed" and mergeable == "MERGEABLE":
         return ComputedPRState.APPROVED_CI_GREEN
     if review_decision == "APPROVED":
         return ComputedPRState.APPROVED
     if latest_reviews:
-        has_active_changes_requested = any(r.get("state") == "CHANGES_REQUESTED" for r in latest_reviews)
-        if has_active_changes_requested:
+        cr_reviews = _extract_cr_reviews(latest_reviews)
+        if cr_reviews:
+            unblock_state = _should_unblock_bot_reviews(cr_reviews, all_threads_resolved, ci_status, mergeable)
+            if unblock_state:
+                return unblock_state
             return ComputedPRState.CHANGES_REQUESTED
         if all_threads_resolved and ci_status == "passed" and mergeable == "MERGEABLE":
             return ComputedPRState.APPROVED_CI_GREEN

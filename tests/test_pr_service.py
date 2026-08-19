@@ -18,6 +18,8 @@ from sova.dashboard.services.pr_service import (
     _extract_latest_approval_at,
     _extract_linked_issue,
     _extract_review_logins,
+    _is_bot_review,
+    _should_unblock_bot_reviews,
     _summarize_ci,
     check_integration_gates,
     compute_pr_state,
@@ -107,6 +109,121 @@ class TestComputePrState:
     def test_no_reviews_ci_green_not_mergeable_stays_awaiting(self) -> None:
         result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
         assert result == ComputedPRState.AWAITING_REVIEW
+
+
+    def test_bot_changes_requested_threads_resolved_ci_green(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_bot_changes_requested_threads_resolved_ci_not_green(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="none",
+        )
+        assert result == ComputedPRState.APPROVED
+
+    def test_bot_changes_requested_zero_threads_stays_blocked(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=False,
+            ci_status="passed",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_bot_changes_requested_threads_not_resolved_stays_blocked(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=False,
+            ci_status="passed",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_mixed_bot_and_human_changes_requested_stays_blocked(self) -> None:
+        reviews = [
+            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
+            {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
+        ]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_multiple_bots_changes_requested_threads_resolved(self) -> None:
+        reviews = [
+            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
+            {"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}},
+        ]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_changes_requested_no_latest_reviews_stays_blocked(self) -> None:
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=None,
+            all_threads_resolved=True,
+            ci_status="passed",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
+
+    def test_bot_changes_requested_in_latest_reviews_threads_resolved(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "dependabot[bot]"}}]
+        result = _state(
+            review_decision="",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_bot_changes_requested_human_approved_threads_resolved(self) -> None:
+        reviews = [
+            {"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}},
+            {"state": "APPROVED", "author": {"login": "alice"}},
+        ]
+        result = _state(
+            review_decision="CHANGES_REQUESTED",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+    def test_human_changes_requested_in_latest_reviews_stays_blocked(self) -> None:
+        reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}}]
+        result = _state(
+            review_decision="",
+            latest_reviews=reviews,
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.CHANGES_REQUESTED
 
 
 class TestParseLinkedIssue:
@@ -876,6 +993,33 @@ class TestExtractReviewLogins:
         assert _extract_review_logins(reviews) == ["bob"]
 
 
+
+class TestIsBotReview:
+    def test_bot_suffix(self) -> None:
+        review = {"author": {"login": "coderabbitai[bot]"}}
+        assert _is_bot_review(review) is True
+
+    def test_dependabot(self) -> None:
+        review = {"author": {"login": "dependabot[bot]"}}
+        assert _is_bot_review(review) is True
+
+    def test_human_reviewer(self) -> None:
+        review = {"author": {"login": "alice"}}
+        assert _is_bot_review(review) is False
+
+    def test_no_author(self) -> None:
+        review = {"author": None}
+        assert _is_bot_review(review) is False
+
+    def test_empty_login(self) -> None:
+        review = {"author": {"login": ""}}
+        assert _is_bot_review(review) is False
+
+    def test_no_login_field(self) -> None:
+        review = {"author": {}}
+        assert _is_bot_review(review) is False
+
+
 class TestExtractLatestApprovalAt:
     def test_picks_latest_approved(self) -> None:
         reviews = [
@@ -942,6 +1086,54 @@ class TestCheckThreadsFromPrData:
 # ---------------------------------------------------------------------------
 # PR router endpoint tests
 # ---------------------------------------------------------------------------
+
+
+
+class TestShouldUnblockBotReviews:
+    """Test _should_unblock_bot_reviews early return paths."""
+
+    def test_returns_none_when_cr_reviews_empty(self) -> None:
+        """Test line 195: early return when cr_reviews is empty list."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_none_when_threads_not_resolved(self) -> None:
+        """Test early return when threads are not all resolved."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=False,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_none_when_human_reviewer_present(self) -> None:
+        """Test early return when not all reviews are from bots."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[
+                {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}},
+                {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
+            ],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
+        """Test successful unblock when all bot reviews, threads resolved, CI passed."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
 
 
 class TestPRGatesRouter:
