@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
-from sova.adapters.base import Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.logging import get_logger
 
 log = get_logger(component="adapter.jira")
@@ -153,7 +153,7 @@ class JiraAdapter(TaskAdapter):
         )
         if response.status_code != 200:
             log.warning("list_tasks.failed", status=response.status_code, body=response.text[:200])
-            return []
+            raise AdapterError(f"Failed to fetch issues from Jira: HTTP {response.status_code}")
 
         data = response.json()
         return [self._parse_issue(issue) for issue in data.get("issues", [])]

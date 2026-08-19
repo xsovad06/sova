@@ -302,7 +302,11 @@ async def _run_batch_harden(
         config = load_config(project_dir)
         adapter = create_adapter(config)
 
-        all_open = await adapter.list_tasks(TaskFilters(state="open"))
+        try:
+            all_open = await adapter.list_tasks(TaskFilters(state="open"))
+        except Exception:
+            log.warning("batch.list_tasks_failed", exc_info=True)
+            all_open = []
         project_docs = _load_project_docs(project_dir)
         all_issues_summary = _format_issues_summary(all_open)
 

@@ -14,6 +14,14 @@ _log = get_logger(component="adapter.base")
 _EGRESS_BLOCKED = "egress.blocked"
 
 
+class AdapterError(Exception):
+    """Raised when a task source adapter fails an API operation.
+
+    Callers can catch this to distinguish adapter failures (network errors,
+    rate limiting, auth issues) from programming errors.
+    """
+
+
 class TaskState(StrEnum):
     """Issue lifecycle states managed by agents on the tracker."""
 
@@ -109,7 +117,13 @@ class TaskAdapter(ABC):
 
     @abstractmethod
     async def list_tasks(self, filters: TaskFilters | None = None) -> list[Task]:
-        """List open tasks, optionally filtered."""
+        """List open tasks, optionally filtered.
+
+        Raises:
+            AdapterError: on API failure (network, rate limit, auth).
+                Returns empty list only when the tracker genuinely has
+                no matching issues.
+        """
 
     @abstractmethod
     async def get_task(self, task_id: str) -> Task:

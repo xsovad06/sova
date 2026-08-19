@@ -10,7 +10,7 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sova.adapters.base import Task, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, Task, TaskFilters, TaskState
 from sova.config.models import ProjectConfig
 from sova.core.context import ExecutionContext
 from sova.roles.dispatcher import dispatch
@@ -76,7 +76,11 @@ class WatchLoop:
 
     async def scan(self) -> list[Task]:
         """Scan the adapter for actionable tasks, ordered by pipeline priority."""
-        tasks = await self._adapter.list_tasks(TaskFilters(state="open"))
+        try:
+            tasks = await self._adapter.list_tasks(TaskFilters(state="open"))
+        except AdapterError:
+            log.warning("scan.list_tasks_failed", exc_info=True)
+            return []
         actionable = [t for t in tasks if t.state in _ACTIONABLE_STATES]
         actionable.sort(key=lambda t: _STATE_PRIORITY.get(t.state, 99))
         return actionable

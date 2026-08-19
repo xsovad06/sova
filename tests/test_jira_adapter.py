@@ -366,12 +366,14 @@ class TestListTasks:
 
     @respx.mock
     async def test_list_tasks_api_error(self) -> None:
+        from sova.adapters.base import AdapterError
+
         adapter = _adapter()
         respx.post("https://test.atlassian.net/rest/api/3/search/jql").mock(
             return_value=Response(500, text="Server error"),
         )
-        tasks = await adapter.list_tasks()
-        assert tasks == []
+        with pytest.raises(AdapterError, match="Failed to fetch issues from Jira"):
+            await adapter.list_tasks()
 
 
 class TestListTasksFiltering:

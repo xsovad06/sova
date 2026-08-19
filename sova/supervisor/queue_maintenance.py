@@ -47,6 +47,12 @@ async def maintain_queue(
 
     Skips the entire pass and returns unchanged if GitHub API calls fail
     (rate limiting, network errors). Never writes a partial queue.
+
+    Includes an empty-list guard: if the adapter returns [] but the queue
+    is non-empty, the queue is returned unchanged (prevents data loss when
+    the API succeeds but returns an empty result due to query filter issues
+    or transient backend problems). Rate limit and network errors are caught
+    separately via the AdapterError exception path above.
     """
     previous = tuple(config.task_queue)
 
@@ -54,6 +60,14 @@ async def maintain_queue(
         tasks = await adapter.list_tasks()
     except Exception:
         log.warning("queue_maintenance.list_tasks_failed", exc_info=True)
+        return QueueMaintenanceResult(previous=previous, current=previous)
+
+    if not tasks and previous:
+        log.warning(
+            "queue_maintenance.empty_list_guard",
+            message="Adapter returned empty list but queue is non-empty; skipping maintenance to prevent data loss",
+            queue_size=len(previous),
+        )
         return QueueMaintenanceResult(previous=previous, current=previous)
 
     task_map: dict[int, TaskState] = {}
@@ -76,7 +90,10 @@ async def maintain_queue(
     changed = tuple(current) != previous
 
     if changed:
-        if _save_queue_to_toml(project_dir, current):
+        from sova.config.db_loader import save_task_queue
+
+        try:
+            await save_task_queue(project_dir, current)
             config.task_queue = current
             log.info(
                 "queue_maintenance.updated",
@@ -84,10 +101,10 @@ async def maintain_queue(
                 added=list(added_issues),
                 queue_size=len(current),
             )
-        else:
+        except Exception:
+            log.warning("queue_maintenance.persist_failed_reverting", exc_info=True)
             current = list(previous)
             changed = False
-            log.warning("queue_maintenance.persist_failed_reverting")
     else:
         log.debug("queue_maintenance.no_changes", queue_size=len(current))
 
@@ -169,46 +186,7 @@ def _discover_ready(
     return tuple(candidates)
 
 
-def _save_queue_to_toml(project_dir: Path, queue: list[int]) -> bool:
-    """Persist task_queue to sova.toml using atomic temp-file-then-rename.
-
-    Returns True on success, False on failure. Callers should only update
-    in-memory config after a True return.
-    """
-    import tempfile
-
-    import tomlkit
-
-    toml_path = project_dir / "sova.toml"
-    try:
-        doc = tomlkit.parse(toml_path.read_text()) if toml_path.exists() else tomlkit.document()
-    except FileNotFoundError:
-        doc = tomlkit.document()
-    except Exception:
-        log.warning("queue_maintenance.toml_read_failed", exc_info=True)
-        return False
-
-    if "supervisor" not in doc:
-        doc["supervisor"] = tomlkit.table()
-    doc["supervisor"]["task_queue"] = queue
-
-    try:
-        fd, tmp_path_str = tempfile.mkstemp(dir=project_dir, prefix=".sova-queue-", suffix=".toml.tmp")
-        tmp = Path(tmp_path_str)
-        try:
-            with open(fd, "w") as f:
-                f.write(tomlkit.dumps(doc))
-            tmp.replace(toml_path)
-            return True
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
-    except Exception:
-        log.warning("queue_maintenance.toml_write_failed", exc_info=True)
-        return False
-
-
-def apply_planner_queue_changes(
+async def apply_planner_queue_changes(
     config: SupervisorConfig,
     project_dir: Path,
     *,
@@ -217,7 +195,7 @@ def apply_planner_queue_changes(
 ) -> list[int]:
     """Apply LLM planner queue suggestions (prune/reorder only, never add).
 
-    Returns the updated queue. Persists to sova.toml if changed.
+    Returns the updated queue. Persists to DB if changed.
     """
     current = list(config.task_queue)
     changed = False
@@ -251,9 +229,13 @@ def apply_planner_queue_changes(
             log.info("queue_maintenance.planner_partial_reorder", new_order=current)
 
     if changed:
-        if _save_queue_to_toml(project_dir, current):
+        from sova.config.db_loader import save_task_queue
+
+        try:
+            await save_task_queue(project_dir, current)
             config.task_queue = current
-        else:
+        except Exception:
+            log.warning("queue_maintenance.planner_persist_failed", exc_info=True)
             return list(config.task_queue)
 
     return current

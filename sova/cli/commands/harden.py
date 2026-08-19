@@ -51,7 +51,11 @@ async def _harden(
     adapter = create_adapter(config)
 
     # Fetch all open issues once (used for both target selection and conflict analysis).
-    all_open = await adapter.list_tasks(TaskFilters(state="open"))
+    try:
+        all_open = await adapter.list_tasks(TaskFilters(state="open"))
+    except Exception as exc:
+        console.print(f"[red]Failed to fetch issues: {exc}[/red]")
+        return
     tasks = await _resolve_harden_tasks(adapter, issue, all_open)
 
     if not tasks:

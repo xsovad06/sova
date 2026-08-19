@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sova.adapters.base import Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 
 if TYPE_CHECKING:
     from sova.config.models import ProjectConfig
@@ -60,6 +60,7 @@ def create_adapter(config: ProjectConfig) -> TaskAdapter:
 
 
 __all__ = [
+    "AdapterError",
     "Milestone",
     "PRReview",
     "Task",
