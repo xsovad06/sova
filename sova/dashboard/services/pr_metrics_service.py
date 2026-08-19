@@ -391,11 +391,10 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
 
     Returns the number of events created.
     """
-    import os
-
     from sova.dashboard.project_context import get_project_dir
     from sova.db.models import PREvent
     from sova.db.session import get_session
+    from sova.utils.gh import resolve_gh_env
     from sova.utils.shell import run
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -405,13 +404,7 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
         "number,title,createdAt,mergedAt,closedAt,author,additions,deletions,changedFiles,latestReviews,headRefName"
     )
 
-    env: dict[str, str] = dict(os.environ)
-    if github_user:
-        from sova.utils.gh import get_gh_token
-
-        token = await get_gh_token(github_user)
-        if token:
-            env["GH_TOKEN"] = token
+    env = await resolve_gh_env(github_user)
 
     for state in ("merged", "closed"):
         cmd = ["gh", "pr", "list", "--repo", repo, "--state", state, "--json", fields, "--limit", "200"]
@@ -432,18 +425,21 @@ async def backfill_pr_events(*, repo: str, days: int = 90, github_user: str = ""
     if not events:
         return 0
 
+    def _naive(ts: datetime) -> datetime:
+        return ts.replace(tzinfo=None) if ts.tzinfo else ts
+
     project_dir = get_project_dir() or Path.cwd()
     async with await get_session(project_dir) as session:
         existing_rows = await session.execute(
             select(PREvent.pr_number, PREvent.repo, PREvent.event_type, PREvent.timestamp).where(PREvent.repo == repo)
         )
         existing_keys: set[tuple[int, str, str, datetime]] = {
-            (row.pr_number, row.repo, row.event_type, row.timestamp) for row in existing_rows
+            (row.pr_number, row.repo, row.event_type, _naive(row.timestamp)) for row in existing_rows
         }
 
         created = 0
         for ev in events:
-            key = (ev["pr_number"], ev["repo"], ev["event_type"], ev["timestamp"])
+            key = (ev["pr_number"], ev["repo"], ev["event_type"], _naive(ev["timestamp"]))
             if key in existing_keys:
                 continue
             existing_keys.add(key)
