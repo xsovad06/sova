@@ -1036,7 +1036,14 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta(
         "supervisor.max_researcher_failures",
         "Max researcher failures",
-        "Block researcher spawn after this many consecutive failures (0 = unlimited)",
+        "Block researcher spawn after this many failures since last success (0 = unlimited)",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
+        "supervisor.max_developer_failures",
+        "Max developer failures",
+        "Block developer spawn after this many failures since last success (0 = unlimited)",
         "supervisor",
         "number",
     ),

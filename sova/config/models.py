@@ -530,6 +530,7 @@ class SupervisorConfig(BaseSettings):
     poll_interval_seconds: int = Field(120, gt=0)
     log_retention_days: int = Field(30, gt=0)
     max_researcher_failures: int = Field(3, ge=0)
+    max_developer_failures: int = Field(3, ge=0)
     ci_warn_minutes: int = Field(200, ge=0)
     ci_block_minutes: int = Field(50, ge=0)
     persona_path: str = ""

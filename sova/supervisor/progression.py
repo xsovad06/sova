@@ -798,6 +798,8 @@ class TaskProgressionEngine:
         simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
             simple_results.append(await self._check_repeated_failures_gate(issue_number))
+        if candidate == ProgressionAction.SPAWN_DEVELOPER:
+            simple_results.append(await self._check_developer_repeated_failures_gate(issue_number))
         if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
             cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
             cb_block = await self._check_address_review_circuit_breaker_gate(issue_number, pr_number=cb_pr)
@@ -1210,6 +1212,50 @@ class TaskProgressionEngine:
                     )
         except Exception:
             log.debug("repeated_failures.check_failed", issue=issue, exc_info=True)
+
+        return None
+
+    async def _check_developer_repeated_failures_gate(self, issue: int) -> BlockReason | None:
+        """Block developer spawn after too many failures since the last success. Fail-open."""
+        max_failures = self._config.max_developer_failures
+        if max_failures == 0:
+            return None
+        try:
+            async with self._session_factory() as session:
+                # Only count failures after the most recent successful developer run so
+                # that issues which were successfully developed and re-researched can be
+                # developed again without being blocked by stale failure history.
+                last_success_subq = (
+                    select(func.coalesce(func.max(TaskRun.id), 0))
+                    .where(
+                        TaskRun.issue_number == str(issue),
+                        TaskRun.role == "developer",
+                        TaskRun.status == "done",
+                    )
+                    .scalar_subquery()
+                )
+                stmt = (
+                    select(func.count())
+                    .select_from(TaskRun)
+                    .where(
+                        TaskRun.issue_number == str(issue),
+                        TaskRun.role == "developer",
+                        TaskRun.status == "failed",
+                        TaskRun.id > last_success_subq,
+                    )
+                )
+                result = await session.execute(stmt)
+                count = result.scalar_one_or_none() or 0
+                if count >= max_failures:
+                    return BlockReason(
+                        gate="developer_repeated_failure",
+                        detail=(
+                            f"Developer has failed {count} times for #{issue}; "
+                            f"human review required (threshold: {max_failures})"
+                        ),
+                    )
+        except Exception:
+            log.debug("developer_repeated_failures.check_failed", issue=issue, exc_info=True)
 
         return None
 
