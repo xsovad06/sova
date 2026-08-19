@@ -678,7 +678,7 @@ async def test_develop_step_execute_success(tmp_path: Path) -> None:
     mock_result = LLMResult(
         text="done",
         model="sonnet",
-        cost_usd=Decimal("0.10"),
+        cost_usd=Decimal("0.60"),  # Increased above 0.50 threshold to avoid early_no_change_abort
         input_tokens=500,
         output_tokens=200,
         session_id="sess-1",
@@ -1042,7 +1042,7 @@ async def test_develop_step_passes_spec_in_args(tmp_path: Path) -> None:
     mock_result = LLMResult(
         text="done",
         model="sonnet",
-        cost_usd=Decimal("0.10"),
+        cost_usd=Decimal("0.60"),  # Increased above 0.50 threshold to avoid early_no_change_abort
         input_tokens=500,
         output_tokens=200,
         session_id="sess-1",
@@ -1074,7 +1074,7 @@ async def test_develop_step_no_spec_passes_issue_number_only(tmp_path: Path) -> 
     mock_result = LLMResult(
         text="done",
         model="sonnet",
-        cost_usd=Decimal("0.10"),
+        cost_usd=Decimal("0.60"),  # Increased above 0.50 threshold to avoid early_no_change_abort
         input_tokens=500,
         output_tokens=200,
         session_id="sess-1",
@@ -1162,5 +1162,10 @@ def _make_ctx(
     ctx.config.agent.max_budget = Decimal("5")
     ctx.config.check_cmd = ""
     ctx.config.develop.max_fix_cycles = 0
-    ctx.add_cost = MagicMock()
+
+    # Make add_cost actually update cost_usd
+    def add_cost(amount):
+        ctx.cost_usd += amount
+
+    ctx.add_cost = add_cost
     return ctx

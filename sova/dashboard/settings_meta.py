@@ -364,6 +364,27 @@ _REGISTRY: list[SettingMeta] = [
         "develop",
         "boolean",
     ),
+    SettingMeta(
+        "develop.max_fix_time",
+        "Max fix time (s)",
+        "Time budget (s) for inner check loop. Checked at cycle start; may overshoot by one fix+check cycle.",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.fix_timeout",
+        "Fix timeout (s)",
+        "Timeout in seconds for a single LLM fix invocation in the inner check loop",
+        "develop",
+        "number",
+    ),
+    SettingMeta(
+        "develop.step_timeout",
+        "Step timeout (s)",
+        "Develop-specific step timeout (defaults to 1200s; capped at agent.step_timeout)",
+        "develop",
+        "number",
+    ),
     # -- CI --
     SettingMeta("ci.poll_interval", _LABEL_POLL_INTERVAL, "Seconds between CI status checks", "ci", "number"),
     SettingMeta("ci.max_wait", "Max wait (s)", "Maximum seconds to wait for CI to complete", "ci", "number"),
