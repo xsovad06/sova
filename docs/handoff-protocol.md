@@ -183,3 +183,43 @@ The handoff protocol is complementary to the existing checkpoint/request system:
 - **Handoffs** (`handoff.json`): Used between agent runs. One agent finishes, writes what to do next, and a new agent picks it up. Asynchronous across multiple agent runs.
 
 Both are rendered in the dashboard's control page. Checkpoints appear as modal dialogs (interrupt flow), handoffs appear as persistent action panels (suggest next steps).
+
+## A2A Protocol Interop
+
+SOVA implements Phase 1 of the [A2A (Agent-to-Agent) protocol](https://github.com/google/A2A) as a read-only interoperability layer on top of the internal handoff system. When enabled (`[a2a] enabled = true` in `sova.toml`), external agents can discover SOVA's capabilities, query task status, and cancel running tasks. Task submission (`POST /a2a/tasks/send`) and handoff migration to A2A transport are planned for future phases.
+
+### Relationship to Internal Handoff
+
+The A2A layer is a facade. The internal handoff system (file + DB) remains the execution engine. A2A Phase 1 provides:
+
+- **Discovery**: `GET /.well-known/agent.json` returns a composite Agent Card listing all SOVA roles as A2A skills. Per-role cards are available at `GET /a2a/{role}/agent.json`.
+- **Status queries**: `GET /a2a/tasks/{id}` translates `TaskRun` records to A2A task format
+- **State mapping**: SOVA's 19 task states map to A2A's 5 states (submitted, working, completed, failed, canceled), with the granular SOVA state preserved in task metadata
+- **Task cancellation**: `POST /a2a/tasks/{id}/cancel` stops running agents and marks tasks as rejected
+
+### A2A Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/.well-known/agent.json` | Composite A2A Agent Card (all roles) |
+| GET | `/a2a/{role}/agent.json` | Per-role A2A Agent Card |
+| GET | `/a2a/tasks` | List recent tasks in A2A format (paginated) |
+| GET | `/a2a/tasks/{task_id}` | Get a single task's status and artifacts |
+| POST | `/a2a/tasks/{task_id}/cancel` | Cancel a running task |
+
+### Configuration
+
+```toml
+[a2a]
+enabled = false          # Disabled by default (security)
+endpoint_base = ""       # Auto-detected from request URL if empty
+```
+
+### External Agent Integration
+
+External agents interacting with SOVA should:
+
+1. Discover SOVA via `GET /.well-known/agent.json`
+2. Query task status via `GET /a2a/tasks/{task_id}` (task IDs follow the `sova-run-{N}` pattern)
+3. Read the `metadata.sova_status` field for granular state beyond A2A's 5-state model
+4. Access handoff data via the `artifacts` array when the task is completed
