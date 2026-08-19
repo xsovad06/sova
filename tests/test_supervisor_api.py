@@ -1204,6 +1204,95 @@ class TestSaveTaskQueueEdgeCases:
         assert result == [10, 20, 30]
 
 
+class TestSupervisorPersonaEndpoints:
+    """Tests for persona GET and POST /persona/open endpoints."""
+
+    @pytest.fixture
+    def app(self):
+        from sova.dashboard.app import create_app
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=Path.cwd())
+
+    async def test_get_persona_success(self, app) -> None:
+        persona_info = {"content": "Test persona", "path": "/tmp/persona.md", "exists": True}
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.supervisor.persona.get_persona_info", return_value=persona_info),
+        ):
+            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/persona")
+        assert resp.status_code == 200
+        assert resp.json()["content"] == "Test persona"
+
+    async def test_get_persona_error_returns_500(self, app) -> None:
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("bad config")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/persona")
+        assert resp.status_code == 500
+        assert "Failed to fetch" in resp.json()["detail"]
+
+    async def test_open_persona_config_error_returns_500(self, app) -> None:
+        with patch("sova.config.loader.load_config", side_effect=RuntimeError("no config")):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/persona/open")
+        assert resp.status_code == 500
+        assert "Failed to load project configuration" in resp.json()["detail"]
+
+    async def test_open_persona_no_editor_returns_400(self, app) -> None:
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.oversight.persona.get_open_command", return_value=None),
+        ):
+            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/persona/open")
+        assert resp.status_code == 400
+        assert "No editor command" in resp.json()["detail"]
+
+    async def test_open_persona_editor_not_found_returns_400(self, app) -> None:
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.oversight.persona.get_open_command", return_value="nonexistent-editor"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=FileNotFoundError()),
+        ):
+            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/persona/open")
+        assert resp.status_code == 400
+        assert "not found" in resp.json()["detail"]
+
+    async def test_open_persona_subprocess_error_returns_500(self, app) -> None:
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.oversight.persona.get_open_command", return_value="code"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=OSError("spawn failed")),
+        ):
+            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/persona/open")
+        assert resp.status_code == 500
+        assert "Failed to open editor" in resp.json()["detail"]
+
+    async def test_open_persona_success(self, app) -> None:
+        with (
+            patch("sova.config.loader.load_config") as mock_cfg,
+            patch("sova.supervisor.persona.ensure_persona_exists", return_value=Path("/tmp/persona.md")),
+            patch("sova.oversight.persona.get_open_command", return_value="code"),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
+        ):
+            mock_cfg.return_value.supervisor.persona_path = "/tmp/persona.md"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/persona/open")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "spawned"
+
+
 class TestAutoResearchDefault:
     """Verify auto_research defaults to False per architecture.md."""
 
