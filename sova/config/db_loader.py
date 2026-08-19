@@ -126,6 +126,32 @@ def _set_nested(d: dict[str, Any], dotted_key: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
+async def save_task_queue(project_dir: Path | None, queue: list[int]) -> None:
+    """Persist the supervisor task_queue to the DB.
+
+    Shared by the dashboard API and the daemon's queue maintenance.
+    Raises on failure so callers can handle rollback or HTTP errors.
+    """
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session:
+        async with session.begin():
+            await save_setting(session, "supervisor.task_queue", queue)
+
+
+async def load_task_queue(project_dir: Path | None) -> list[int]:
+    """Load the supervisor task_queue from the DB (async).
+
+    Returns [] if not set. Shared by dashboard API endpoints that need
+    the current queue state without going through the sync load_config().
+    """
+    from sova.db.session import get_session
+
+    async with await get_session(project_dir=project_dir) as session:
+        queue = await get_setting(session, "supervisor.task_queue")
+    return queue if isinstance(queue, list) else []
+
+
 def _resolve_db_path(project_dir: Path | None) -> Path | None:
     """Resolve the SQLite DB path without side effects (no mkdir).
 

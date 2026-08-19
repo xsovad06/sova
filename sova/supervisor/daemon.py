@@ -191,7 +191,7 @@ class SupervisorDaemon:
                 if cfg.supervisor.auto_queue and plan and (plan.queue_removals or plan.queue_reorder):
                     from sova.supervisor.queue_maintenance import apply_planner_queue_changes
 
-                    apply_planner_queue_changes(
+                    await apply_planner_queue_changes(
                         cfg.supervisor,
                         self._project_dir,
                         removals=list(plan.queue_removals),

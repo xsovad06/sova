@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
 
 from sova.dashboard.services.supervisor_service import get_decision_counts, get_recent_decisions
 from sova.db.models import SupervisorDecision
@@ -889,19 +890,19 @@ class TestTaskQueueRouter:
     """Tests for the task queue CRUD endpoints."""
 
     @pytest.fixture
-    def app(self, tmp_path):
+    def project_dir(self, tmp_path):
+        return tmp_path
+
+    @pytest.fixture
+    def app(self, project_dir):
         from sova.dashboard.app import create_app
 
         # Write a minimal sova.toml so queue writes have a file to update
-        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+        (project_dir / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
 
         with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
             with patch("sova.dashboard.app.list_projects", return_value={}):
-                return create_app(project_dir=tmp_path)
-
-    @pytest.fixture
-    def project_dir(self, tmp_path):
-        return tmp_path
+                return create_app(project_dir=project_dir)
 
     async def test_get_queue_empty(self, app, project_dir) -> None:
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
@@ -963,17 +964,38 @@ class TestTaskQueueRouter:
         assert resp.status_code == 200
         assert resp.json()["queue"] == []
 
-    async def test_queue_persists_to_toml(self, app, project_dir) -> None:
-        """Verify queue changes are written to sova.toml."""
+    async def test_queue_persists_to_db(self, app, project_dir) -> None:
+        """Verify queue changes are written to DB."""
+        from sova.config.db_loader import get_setting
+        from sova.db.session import get_session
+
         with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 await client.post("/api/supervisor/queue", json={"issue_number": 42})
 
-        import tomllib
+        async with await get_session(project_dir=project_dir) as session:
+            queue = await get_setting(session, "supervisor.task_queue")
+        assert queue == [42]
 
-        with open(project_dir / "sova.toml", "rb") as f:
-            data = tomllib.load(f)
-        assert data["supervisor"]["task_queue"] == [42]
+    async def test_concurrent_adds_no_duplicates(self, app, project_dir) -> None:
+        """Concurrent add requests must not produce duplicate entries."""
+        import asyncio
+
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                results = await asyncio.gather(
+                    client.post("/api/supervisor/queue", json={"issue_number": 10}),
+                    client.post("/api/supervisor/queue", json={"issue_number": 20}),
+                    client.post("/api/supervisor/queue", json={"issue_number": 30}),
+                )
+        statuses = sorted(r.status_code for r in results)
+        assert all(s in (201, 409) for s in statuses)
+
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/supervisor/queue")
+        queue = resp.json()["queue"]
+        assert len(queue) == len(set(queue)), f"Duplicate entries in queue: {queue}"
 
 
 class TestTaskQueueValidation:
@@ -1055,38 +1077,21 @@ class TestTaskQueueValidation:
 
 
 class TestTaskQueueErrorPaths:
-    """Tests for queue error paths: malformed TOML, write failures, negative numbers."""
-
-    @pytest.fixture
-    def app(self, tmp_path):
-        from sova.dashboard.app import create_app
-
-        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
-
-        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
-            with patch("sova.dashboard.app.list_projects", return_value={}):
-                return create_app(project_dir=tmp_path)
+    """Tests for queue error paths: DB write failures, negative numbers."""
 
     @pytest.fixture
     def project_dir(self, tmp_path):
         return tmp_path
 
-    async def test_malformed_toml_returns_503_on_save(self, app, project_dir) -> None:
-        """_save_task_queue with corrupt TOML returns 503.
+    @pytest.fixture
+    def app(self, project_dir):
+        from sova.dashboard.app import create_app
 
-        We patch load_config to succeed (returning an empty queue) so the endpoint
-        reaches _save_task_queue, which then hits the corrupt file.
-        """
-        mock_cfg = MagicMock()
-        mock_cfg.supervisor.task_queue = []
-        (project_dir / "sova.toml").write_text("{{{{not valid toml")
-        with (
-            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("sova.config.loader.load_config", return_value=mock_cfg),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
-        assert resp.status_code == 503
+        (project_dir / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
+
+        with patch("sova.dashboard.app.recover_stale_runs", new_callable=AsyncMock):
+            with patch("sova.dashboard.app.list_projects", return_value={}):
+                return create_app(project_dir=project_dir)
 
     async def test_negative_issue_number_rejected(self, app, project_dir) -> None:
         """POST /queue with negative issue_number returns 422."""
@@ -1109,65 +1114,106 @@ class TestTaskQueueErrorPaths:
                 resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [0]})
         assert resp.status_code == 422
 
-    async def test_write_failure_returns_503(self, app, project_dir) -> None:
-        """Writing queue returns 503 when file I/O fails."""
+    async def test_set_queue_write_failure_returns_503(self, app, project_dir) -> None:
+        """PUT /queue returns 503 when DB save fails."""
         with (
             patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
-            patch("pathlib.Path.write_text", side_effect=OSError("disk full")),
+            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.put("/api/supervisor/queue", json={"issue_numbers": [42]})
         assert resp.status_code == 503
 
-    def test_save_task_queue_atomic_write_cleanup(self, tmp_path) -> None:
-        """Verify temp file is cleaned up on write failure."""
-        from sova.dashboard.routers.supervisor import _save_task_queue
+    async def test_add_to_queue_write_failure_returns_503(self, app, project_dir) -> None:
+        """POST /queue returns 503 when DB save fails."""
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post("/api/supervisor/queue", json={"issue_number": 42})
+        assert resp.status_code == 503
 
-        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
-        tmp_file = tmp_path / "sova.toml.tmp"
+    async def test_remove_from_queue_write_failure_returns_503(self, app, project_dir) -> None:
+        """DELETE /queue/{issue_number} returns 503 when DB save fails."""
+        with patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                await client.post("/api/supervisor/queue", json={"issue_number": 42})
 
-        with patch.object(Path, "replace", side_effect=OSError("disk error")):
-            with pytest.raises(Exception):
-                _save_task_queue(tmp_path, [42])
-        # Temp file should be cleaned up
-        assert not tmp_file.exists()
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/supervisor/queue/42")
+        assert resp.status_code == 503
+
+    async def test_clear_queue_write_failure_returns_503(self, app, project_dir) -> None:
+        """DELETE /queue returns 503 when DB save fails."""
+        with (
+            patch("sova.dashboard.routers.supervisor.get_project_dir", return_value=project_dir),
+            patch("sova.config.db_loader.save_setting", side_effect=OperationalError("DB error", None, None)),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.delete("/api/supervisor/queue")
+        assert resp.status_code == 503
 
 
 class TestSaveTaskQueueEdgeCases:
-    """Tests for _save_task_queue edge cases."""
+    """Tests for save_task_queue/load_task_queue shared helpers."""
 
-    def test_save_creates_toml_when_missing(self, tmp_path) -> None:
-        from sova.dashboard.routers.supervisor import _save_task_queue
+    async def test_save_creates_db_entry_when_missing(self, tmp_path) -> None:
+        """Verify queue is saved to DB when no prior entry exists."""
+        from sova.config.db_loader import get_setting, save_task_queue
+        from sova.db.session import get_session
 
-        _save_task_queue(tmp_path, [42, 43])
-        import tomllib
+        await save_task_queue(tmp_path, [42, 43])
 
-        with open(tmp_path / "sova.toml", "rb") as f:
-            data = tomllib.load(f)
-        assert data["supervisor"]["task_queue"] == [42, 43]
+        async with await get_session(project_dir=tmp_path) as session:
+            queue = await get_setting(session, "supervisor.task_queue")
+        assert queue == [42, 43]
 
-    def test_save_preserves_existing_config(self, tmp_path) -> None:
-        from sova.dashboard.routers.supervisor import _save_task_queue
+    async def test_save_updates_existing_queue(self, tmp_path) -> None:
+        """Verify queue updates replace the existing DB entry."""
+        from sova.config.db_loader import get_setting, save_setting, save_task_queue
+        from sova.db.session import get_session
 
-        (tmp_path / "sova.toml").write_text('[project]\ngithub_repo = "test/repo"\n')
-        _save_task_queue(tmp_path, [10])
-        import tomllib
+        async with await get_session(project_dir=tmp_path) as session:
+            async with session.begin():
+                await save_setting(session, "supervisor.task_queue", [1, 2])
 
-        with open(tmp_path / "sova.toml", "rb") as f:
-            data = tomllib.load(f)
-        assert data["project"]["github_repo"] == "test/repo"
-        assert data["supervisor"]["task_queue"] == [10]
+        await save_task_queue(tmp_path, [10])
 
-    def test_save_with_none_project_dir(self, tmp_path, monkeypatch) -> None:
-        from sova.dashboard.routers.supervisor import _save_task_queue
+        async with await get_session(project_dir=tmp_path) as session:
+            queue = await get_setting(session, "supervisor.task_queue")
+        assert queue == [10]
+
+    async def test_save_with_none_project_dir(self, tmp_path, monkeypatch) -> None:
+        """Verify save_task_queue handles None project_dir."""
+        from sova.config.db_loader import get_setting, save_task_queue
+        from sova.db.session import get_session
 
         monkeypatch.chdir(tmp_path)
-        _save_task_queue(None, [1])
-        import tomllib
+        await save_task_queue(None, [1])
 
-        with open(tmp_path / "sova.toml", "rb") as f:
-            data = tomllib.load(f)
-        assert data["supervisor"]["task_queue"] == [1]
+        async with await get_session(project_dir=None) as session:
+            queue = await get_setting(session, "supervisor.task_queue")
+        assert queue == [1]
+
+    async def test_load_returns_empty_when_unset(self, tmp_path) -> None:
+        """load_task_queue returns [] when no queue is stored."""
+        from sova.config.db_loader import load_task_queue
+
+        result = await load_task_queue(tmp_path)
+        assert result == []
+
+    async def test_load_returns_saved_queue(self, tmp_path) -> None:
+        """load_task_queue returns the queue that was saved."""
+        from sova.config.db_loader import load_task_queue, save_task_queue
+
+        await save_task_queue(tmp_path, [10, 20, 30])
+        result = await load_task_queue(tmp_path)
+        assert result == [10, 20, 30]
 
 
 class TestAutoResearchDefault:
