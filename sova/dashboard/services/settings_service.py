@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy.exc import OperationalError
+
 from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.settings")
@@ -45,52 +47,35 @@ def _flatten_dict(prefix: str, obj: dict, result: dict, registered: frozenset[st
             result[full_key] = value
 
 
-def get_config_file_path(project_dir: Path | None = None) -> Path:
-    """Get the path to sova.toml for this project."""
-    if project_dir is None:
-        project_dir = Path.cwd()
-    return project_dir / "sova.toml"
-
-
-def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
-    """Update a single config key in sova.toml using tomlkit for round-trip.
+async def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
+    """Update a single config key in the database.
 
     Validates the value type against settings metadata before writing.
     Only registered settings (present in settings_meta) can be updated.
     """
+    from sova.config.db_loader import save_setting
     from sova.dashboard.settings_meta import _META_BY_KEY
+    from sova.db.session import get_session
 
     if key not in _META_BY_KEY:
         return {"error": f"Unknown setting: '{key}'"}
-
-    toml_path = get_config_file_path(project_dir)
-    if not toml_path.exists():
-        return {"error": "sova.toml not found"}
 
     validation_error = _validate_value_type(key, value)
     if validation_error:
         return {"error": validation_error}
 
     try:
-        import tomlkit
-
-        doc = tomlkit.parse(toml_path.read_text())
-
-        parts = key.split(".")
-        target = doc
-        for part in parts[:-1]:
-            if part not in target:
-                target[part] = tomlkit.table()
-            target = target[part]
-
-        target[parts[-1]] = _cast_value(value)
-        toml_path.write_text(tomlkit.dumps(doc))
+        session = await get_session(project_dir)
+        async with session:
+            await save_setting(session, key, _cast_value(value))
+            await session.commit()
         return {"status": "ok", "key": key, "value": value}
-    except ImportError:
-        log.warning("tomlkit not available, skipping config update")
-        return {"error": "tomlkit not installed -- cannot update config"}
-    except Exception as e:
-        return {"error": str(e)}
+    except OperationalError:
+        log.warning("settings.update.db_not_initialized", key=key, exc_info=True)
+        return {"error": "Database not initialized. Run 'sova init-db' first."}
+    except Exception:
+        log.warning("settings.update.error", key=key, exc_info=True)
+        return {"error": "Failed to persist configuration"}
 
 
 def _validate_value_type(key: str, value: str) -> str | None:

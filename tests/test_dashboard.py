@@ -16140,12 +16140,12 @@ class TestAgentPoolConfig:
 
 class TestSettingsMaxParallelSync:
     async def test_update_config_triggers_sync(self, client: AsyncClient, monkeypatch):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         sync_called = []
         monkeypatch.setattr(
             "sova.dashboard.routers.settings.settings_service",
-            MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "max_parallel_agents"})),
+            MagicMock(update_config=AsyncMock(return_value={"status": "ok", "key": "max_parallel_agents"})),
         )
         monkeypatch.setattr(
             "sova.dashboard.services.agent_pool.sync_max_concurrent",
@@ -16159,12 +16159,12 @@ class TestSettingsMaxParallelSync:
         assert len(sync_called) == 1
 
     async def test_update_config_no_sync_for_other_keys(self, client: AsyncClient, monkeypatch):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
         sync_called = []
         monkeypatch.setattr(
             "sova.dashboard.routers.settings.settings_service",
-            MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "github_repo"})),
+            MagicMock(update_config=AsyncMock(return_value={"status": "ok", "key": "github_repo"})),
         )
         monkeypatch.setattr(
             "sova.dashboard.services.agent_pool.sync_max_concurrent",
@@ -16178,9 +16178,9 @@ class TestSettingsMaxParallelSync:
         assert len(sync_called) == 0
 
     async def test_update_config_accepts_json_boolean(self, client: AsyncClient, monkeypatch):
-        from unittest.mock import MagicMock
+        from unittest.mock import AsyncMock, MagicMock
 
-        mock_service = MagicMock(update_config=MagicMock(return_value={"status": "ok", "key": "supervisor.enabled"}))
+        mock_service = MagicMock(update_config=AsyncMock(return_value={"status": "ok", "key": "supervisor.enabled"}))
         monkeypatch.setattr("sova.dashboard.routers.settings.settings_service", mock_service)
         resp = await client.post(
             "/api/settings/config",

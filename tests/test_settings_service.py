@@ -72,51 +72,99 @@ class TestValidateValueType:
 
 
 class TestUpdateConfigIntegration:
-    def test_rejects_invalid_number_preserves_file(self, tmp_path, monkeypatch) -> None:
-        toml_file = tmp_path / "sova.toml"
-        toml_file.write_text("[agent]\nmax_budget = 10\n")
-        original = toml_file.read_text()
+    @pytest.fixture(autouse=True)
+    async def _db(self, monkeypatch):
+        from sova.db.session import close_db, init_db
 
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        await init_db(run_migrations=False)
+        yield
+        await close_db()
+
+    async def test_rejects_invalid_number(self) -> None:
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="agent.max_budget", value="abc")
+        result = await update_config(key="agent.max_budget", value="abc")
         assert "error" in result
         assert "number" in result["error"]
-        assert toml_file.read_text() == original
 
-    def test_rejects_invalid_boolean_preserves_file(self, tmp_path, monkeypatch) -> None:
-        toml_file = tmp_path / "sova.toml"
-        toml_file.write_text("[review]\nenabled = true\n")
-        original = toml_file.read_text()
-
+    async def test_rejects_invalid_boolean(self) -> None:
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="review.enabled", value="yes")
+        result = await update_config(key="review.enabled", value="yes")
         assert "error" in result
         assert "true or false" in result["error"]
-        assert toml_file.read_text() == original
 
-    def test_accepts_valid_number_writes_file(self, tmp_path) -> None:
-        toml_file = tmp_path / "sova.toml"
-        toml_file.write_text("[agent]\nmax_budget = 10\n")
-
+    async def test_accepts_valid_number(self) -> None:
+        from sova.config.db_loader import get_setting
         from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
 
-        result = update_config(tmp_path, key="agent.max_budget", value="25")
+        result = await update_config(key="agent.max_budget", value="25")
         assert result.get("status") == "ok"
-        assert "25" in toml_file.read_text()
 
-    def test_rejects_unregistered_key(self, tmp_path) -> None:
-        toml_file = tmp_path / "sova.toml"
-        toml_file.write_text("[agent]\nmax_budget = 10\n")
-        original = toml_file.read_text()
+        session = await get_session()
+        async with session:
+            stored = await get_setting(session, "agent.max_budget")
+        assert stored == 25
 
+    async def test_accepts_boolean(self) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+
+        result = await update_config(key="review.enabled", value="true")
+        assert result.get("status") == "ok"
+
+        session = await get_session()
+        async with session:
+            stored = await get_setting(session, "review.enabled")
+        assert stored is True
+
+    async def test_rejects_unregistered_key(self) -> None:
         from sova.dashboard.services.settings_service import update_config
 
-        result = update_config(tmp_path, key="nonexistent.key", value="anything")
+        result = await update_config(key="nonexistent.key", value="anything")
         assert "error" in result
         assert "Unknown setting" in result["error"]
-        assert toml_file.read_text() == original
+
+    async def test_upsert_overwrites_existing(self) -> None:
+        from sova.config.db_loader import get_setting
+        from sova.dashboard.services.settings_service import update_config
+        from sova.db.session import get_session
+
+        await update_config(key="agent.max_budget", value="10")
+        result = await update_config(key="agent.max_budget", value="50")
+        assert result.get("status") == "ok"
+
+        session = await get_session()
+        async with session:
+            stored = await get_setting(session, "agent.max_budget")
+        assert stored == 50
+
+    async def test_operational_error_returns_db_not_initialized(self, monkeypatch) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        from sova.dashboard.services.settings_service import update_config
+
+        async def raise_op_error(*_a, **_kw):
+            raise OperationalError("no such table", {}, Exception())
+
+        monkeypatch.setattr("sova.config.db_loader.save_setting", raise_op_error)
+        result = await update_config(key="agent.max_budget", value="10")
+        assert "error" in result
+        assert "Database not initialized" in result["error"]
+
+    async def test_generic_exception_returns_fixed_message(self, monkeypatch) -> None:
+        from sova.dashboard.services.settings_service import update_config
+
+        async def raise_generic(*_a, **_kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr("sova.config.db_loader.save_setting", raise_generic)
+        result = await update_config(key="agent.max_budget", value="10")
+        assert "error" in result
+        assert result["error"] == "Failed to persist configuration"
 
 
 class TestExtractValidationDetail:
@@ -173,16 +221,13 @@ class TestSettingsRouterErrors:
     """Router-level tests for settings API error and validation paths."""
 
     @pytest.fixture()
-    async def _db(self):
-        import os
-
+    async def _db(self, monkeypatch):
         from sova.db.session import close_db, init_db
 
-        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
         await init_db(run_migrations=False)
         yield
         await close_db()
-        os.environ.pop("SOVA_DATABASE_URL", None)
 
     @pytest.fixture()
     async def client(self, _db):
@@ -233,7 +278,7 @@ class TestSettingsRouterErrors:
         assert resp.json()["detail"] == "Failed to fetch configuration"
 
     async def test_update_config_server_error(self, client, monkeypatch) -> None:
-        def raise_generic(*_a, **_kw):
+        async def raise_generic(*_a, **_kw):
             raise RuntimeError("disk full")
 
         monkeypatch.setattr("sova.dashboard.services.settings_service.update_config", raise_generic)
@@ -242,10 +287,10 @@ class TestSettingsRouterErrors:
         assert resp.json()["detail"] == "Failed to update configuration"
 
     async def test_update_config_validation_rejection(self, client, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "sova.dashboard.services.settings_service.update_config",
-            lambda *a, **kw: {"error": "'x' expects a number, got 'abc'"},
-        )
+        async def mock_update(*_a, **_kw):
+            return {"error": "'x' expects a number, got 'abc'"}
+
+        monkeypatch.setattr("sova.dashboard.services.settings_service.update_config", mock_update)
         resp = await client.post("/api/settings/config", json={"key": "x", "value": "abc"})
         assert resp.status_code == 200
         data = resp.json()
