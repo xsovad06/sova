@@ -15,6 +15,7 @@ from sova.dashboard.services.pr_service import (
     _check_coderabbit_from_pr_data,
     _check_threads_from_pr_data,
     _enrich_pr,
+    _extract_all_linked_issues,
     _extract_latest_approval_at,
     _extract_linked_issue,
     _extract_review_logins,
@@ -23,6 +24,8 @@ from sova.dashboard.services.pr_service import (
     _summarize_ci,
     check_integration_gates,
     compute_pr_state,
+    get_pr_mergeability_map,
+    list_open_prs_with_state,
     parse_linked_issue,
 )
 
@@ -109,7 +112,6 @@ class TestComputePrState:
     def test_no_reviews_ci_green_not_mergeable_stays_awaiting(self) -> None:
         result = _state(ci_status="passed", mergeable="CONFLICTING", latest_reviews=None)
         assert result == ComputedPRState.AWAITING_REVIEW
-
 
     def test_bot_changes_requested_threads_resolved_ci_green(self) -> None:
         reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "coderabbitai[bot]"}}]
@@ -993,7 +995,6 @@ class TestExtractReviewLogins:
         assert _extract_review_logins(reviews) == ["bob"]
 
 
-
 class TestIsBotReview:
     def test_bot_suffix(self) -> None:
         review = {"author": {"login": "coderabbitai[bot]"}}
@@ -1086,54 +1087,6 @@ class TestCheckThreadsFromPrData:
 # ---------------------------------------------------------------------------
 # PR router endpoint tests
 # ---------------------------------------------------------------------------
-
-
-
-class TestShouldUnblockBotReviews:
-    """Test _should_unblock_bot_reviews early return paths."""
-
-    def test_returns_none_when_cr_reviews_empty(self) -> None:
-        """Test line 195: early return when cr_reviews is empty list."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_none_when_threads_not_resolved(self) -> None:
-        """Test early return when threads are not all resolved."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=False,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_none_when_human_reviewer_present(self) -> None:
-        """Test early return when not all reviews are from bots."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[
-                {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}},
-                {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
-            ],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result is None
-
-    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
-        """Test successful unblock when all bot reviews, threads resolved, CI passed."""
-        result = _should_unblock_bot_reviews(
-            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
-            all_threads_resolved=True,
-            ci_status="passed",
-            mergeable="MERGEABLE",
-        )
-        assert result == ComputedPRState.APPROVED_CI_GREEN
 
 
 class TestPRGatesRouter:
@@ -1241,3 +1194,322 @@ class TestPRGatesRouter:
             assert resp.status_code == 200
             data = resp.json()
             assert data["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Coverage gap tests for uncovered paths
+# ---------------------------------------------------------------------------
+
+
+class TestExtractAllLinkedIssues:
+    """Tests for _extract_all_linked_issues helper."""
+
+    def test_returns_closing_references_when_present(self) -> None:
+        """Test line 120: early return when closingIssuesReferences has items."""
+        raw = {
+            "closingIssuesReferences": [{"number": 42}, {"number": 43}, {"number": None}],
+            "body": "Closes #99",
+        }
+        result = _extract_all_linked_issues(raw)
+        assert result == [42, 43]
+
+    def test_filters_none_from_closing_references(self) -> None:
+        """Test that None values are filtered from closingIssuesReferences."""
+        raw = {
+            "closingIssuesReferences": [{"number": None}, {"number": 10}, {"foo": "bar"}],
+        }
+        result = _extract_all_linked_issues(raw)
+        assert result == [10]
+
+    def test_falls_back_to_body_when_no_closing_refs(self) -> None:
+        """Test fallback to parse_linked_issue when closingIssuesReferences is empty."""
+        raw = {"closingIssuesReferences": [], "body": "Fixes #88"}
+        result = _extract_all_linked_issues(raw)
+        assert result == [88]
+
+    def test_returns_empty_when_no_refs_and_no_body_match(self) -> None:
+        """Test empty list when no references and body doesn't match."""
+        raw = {"closingIssuesReferences": [], "body": "No issue here"}
+        result = _extract_all_linked_issues(raw)
+        assert result == []
+
+
+class TestSummarizeCiNoneState:
+    """Test _summarize_ci returning 'none' default."""
+
+    def test_returns_none_when_only_unknown_status_contexts(self) -> None:
+        """Test line 174: returns 'none' when all StatusContexts have unknown states."""
+        # StatusContext items with unknown states skip state addition (continue)
+        # leaving states set empty, which falls through to 'none'
+        checks = [
+            {"__typename": "StatusContext", "state": "EXPECTED"},
+            {"__typename": "StatusContext", "state": "RANDOM"},
+        ]
+        assert _summarize_ci(checks) == "none"
+
+    def test_unknown_check_run_status_defaults_to_pending(self) -> None:
+        """Test that unknown CheckRun status defaults to pending, not none."""
+        # CheckRun with unknown status/conclusion adds "pending" (line 165)
+        checks = [{"status": "UNKNOWN", "conclusion": ""}]
+        assert _summarize_ci(checks) == "pending"
+
+
+class TestShouldUnblockBotReviews:
+    """Test _should_unblock_bot_reviews early return paths."""
+
+    def test_returns_none_when_cr_reviews_empty(self) -> None:
+        """Test line 195: early return when cr_reviews is empty list."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_none_when_threads_not_resolved(self) -> None:
+        """Test early return when threads are not all resolved."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=False,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_none_when_human_reviewer_present(self) -> None:
+        """Test early return when not all reviews are from bots."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[
+                {"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}},
+                {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}},
+            ],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result is None
+
+    def test_returns_approved_ci_green_when_all_conditions_met(self) -> None:
+        """Test successful unblock when all bot reviews, threads resolved, CI passed."""
+        result = _should_unblock_bot_reviews(
+            cr_reviews=[{"state": "CHANGES_REQUESTED", "author": {"login": "bot[bot]"}}],
+            all_threads_resolved=True,
+            ci_status="passed",
+            mergeable="MERGEABLE",
+        )
+        assert result == ComputedPRState.APPROVED_CI_GREEN
+
+
+class TestGetPrMergeabilityMap:
+    """Test get_pr_mergeability_map exception handling and result building."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_list_prs_exception(self, monkeypatch) -> None:
+        """Test lines 447-449: exception handling returns empty dict."""
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service.list_open_prs_with_state",
+            AsyncMock(side_effect=RuntimeError("API failure")),
+        )
+        result = await get_pr_mergeability_map()
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_builds_map_with_single_pr_per_issue(self, monkeypatch) -> None:
+        """Test result dict building when each issue has one PR."""
+        prs = [
+            {"number": 10, "mergeable": "MERGEABLE", "linked_issues": [42]},
+            {"number": 20, "mergeable": "CONFLICTING", "linked_issues": [43]},
+        ]
+        monkeypatch.setattr("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs))
+        result = await get_pr_mergeability_map()
+        assert result == {42: "MERGEABLE", 43: "CONFLICTING"}
+
+    @pytest.mark.asyncio
+    async def test_conflicting_wins_over_mergeable(self, monkeypatch) -> None:
+        """Test lines 455-456: CONFLICTING priority when same issue has multiple PRs."""
+        prs = [
+            {"number": 10, "mergeable": "MERGEABLE", "linked_issues": [42]},
+            {"number": 20, "mergeable": "CONFLICTING", "linked_issues": [42]},
+        ]
+        monkeypatch.setattr("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs))
+        result = await get_pr_mergeability_map()
+        assert result[42] == "CONFLICTING"
+
+    @pytest.mark.asyncio
+    async def test_handles_pr_with_no_linked_issues(self, monkeypatch) -> None:
+        """Test PRs with no linked_issues or None linked_issues."""
+        prs = [
+            {"number": 10, "mergeable": "MERGEABLE", "linked_issues": None},
+            {"number": 20, "mergeable": "MERGEABLE", "linked_issues": []},
+            {"number": 30, "mergeable": "MERGEABLE", "linked_issues": [42]},
+        ]
+        monkeypatch.setattr("sova.dashboard.services.pr_service.list_open_prs_with_state", AsyncMock(return_value=prs))
+        result = await get_pr_mergeability_map()
+        assert result == {42: "MERGEABLE"}
+
+
+class TestListOpenPrsWithState:
+    """Test list_open_prs_with_state exception paths and background tasks."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_config_load_exception(self, monkeypatch, tmp_path) -> None:
+        """Test lines 472-474: config load exception returns empty list."""
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("config error")))
+        result = await list_open_prs_with_state()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_github_repo(self, monkeypatch, tmp_path) -> None:
+        """Test lines 476-477: returns empty when github_repo is empty."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = ""
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+        result = await list_open_prs_with_state()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_uses_empty_thread_counts_on_exception(self, monkeypatch, tmp_path) -> None:
+        """Test lines 490-492: thread counts exception handling returns empty dict."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+
+        raw_prs = [{"number": 10, "title": "Test"}]
+        monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
+        monkeypatch.setattr(
+            "sova.git.pr.get_review_thread_counts",
+            AsyncMock(side_effect=RuntimeError("thread count error")),
+        )
+        monkeypatch.setattr("sova.dashboard.services.pr_service._enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
+
+        result = await list_open_prs_with_state()
+        assert len(result) == 1
+        assert result[0]["_thread_counts"] == (0, 0)
+
+    @pytest.mark.asyncio
+    async def test_executes_without_exception_when_enriching_prs(self, monkeypatch, tmp_path) -> None:
+        """Test lines 503-505: background task setup doesn't raise exceptions."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+        mock_cfg = MagicMock()
+        mock_cfg.github_repo = "owner/repo"
+        mock_cfg.github_user = "testuser"
+        monkeypatch.setattr("sova.config.loader.load_config", lambda _: mock_cfg)
+
+        raw_prs = [{"number": 10}]
+        monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
+        monkeypatch.setattr("sova.git.pr.get_review_thread_counts", AsyncMock(return_value={}))
+        monkeypatch.setattr("sova.dashboard.services.pr_service._enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
+
+        # Mock _record_state_transitions to avoid side effects
+        async def mock_record(prs, *, repo):
+            pass
+        monkeypatch.setattr("sova.dashboard.services.pr_service._record_state_transitions", mock_record)
+
+        # Should not raise
+        result = await list_open_prs_with_state()
+        assert len(result) == 1
+
+
+class TestRecordStateTransitions:
+    """Test _record_state_transitions early returns and event write logic."""
+
+    @pytest.mark.asyncio
+    async def test_skips_prs_with_no_previous_state(self, monkeypatch) -> None:
+        """Test lines 523-524: early continue when prev is None."""
+        from sova.dashboard.services.pr_service import _record_state_transitions
+
+        # Clear any previous state
+        from sova.dashboard.services import pr_service
+        pr_service._last_known_states.clear()
+
+        prs = [{"number": 10, "computed_state": "approved"}]
+        await _record_state_transitions(prs, repo="owner/repo")
+        # No exception = success, no events written because prev is None
+
+    @pytest.mark.asyncio
+    async def test_skips_prs_with_same_state(self, monkeypatch) -> None:
+        """Test lines 525-526: early continue when state == prev."""
+        from sova.dashboard.services import pr_service
+        from sova.dashboard.services.pr_service import _record_state_transitions
+
+        # Set previous state
+        pr_service._last_known_states[10] = "approved"
+
+        prs = [{"number": 10, "computed_state": "approved", "updated_at": "2026-08-01T12:00:00Z"}]
+        await _record_state_transitions(prs, repo="owner/repo")
+        # No exception = success, no events written because state unchanged
+
+    @pytest.mark.asyncio
+    async def test_skips_state_with_no_event_mapping(self, monkeypatch) -> None:
+        """Test lines 528-530: early continue when state has no event type mapping."""
+        from sova.dashboard.services import pr_service
+        from sova.dashboard.services.pr_service import _record_state_transitions
+
+        # Set previous state
+        pr_service._last_known_states[10] = "some_old_state"
+
+        prs = [{"number": 10, "computed_state": "unknown_state", "updated_at": "2026-08-01T12:00:00Z"}]
+        await _record_state_transitions(prs, repo="owner/repo")
+        # No exception = success, no events written because no mapping
+
+    @pytest.mark.asyncio
+    async def test_handles_event_write_exception_gracefully(self, monkeypatch, tmp_path) -> None:
+        """Test lines 555-556: individual event write exception is logged but doesn't fail."""
+        from sova.dashboard.services import pr_service
+        from sova.dashboard.services.pr_service import _record_state_transitions
+
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
+
+        # Mock get_session to raise on commit
+        async def mock_session(*args, **kwargs):
+            class MockSession:
+                def add(self, obj):
+                    pass
+                async def commit(self):
+                    raise RuntimeError("DB error")
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *args):
+                    pass
+            return MockSession()
+
+        monkeypatch.setattr("sova.db.session.get_session", mock_session)
+
+        # Set previous state so transition happens
+        pr_service._last_known_states[10] = "draft"
+
+        prs = [{
+            "number": 10,
+            "computed_state": "approved_ci_green",
+            "updated_at": "2026-08-01T12:00:00Z",
+            "author": "alice",
+        }]
+
+        # Should not raise despite DB error
+        await _record_state_transitions(prs, repo="owner/repo")
+
+    @pytest.mark.asyncio
+    async def test_handles_outer_exception_gracefully(self, monkeypatch) -> None:
+        """Test lines 557-558: outer exception handler catches all."""
+        from sova.dashboard.services import pr_service
+        from sova.dashboard.services.pr_service import _record_state_transitions
+
+        # Make get_project_dir raise
+        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: (_ for _ in ()).throw(RuntimeError("outer error")))
+
+        pr_service._last_known_states[10] = "draft"
+        prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
+
+        # Should not raise
+        await _record_state_transitions(prs, repo="owner/repo")
