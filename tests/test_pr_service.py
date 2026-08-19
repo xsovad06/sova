@@ -1356,7 +1356,11 @@ class TestListOpenPrsWithState:
     async def test_returns_empty_on_config_load_exception(self, monkeypatch, tmp_path) -> None:
         """Test lines 472-474: config load exception returns empty list."""
         monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
-        monkeypatch.setattr("sova.config.loader.load_config", lambda _: (_ for _ in ()).throw(RuntimeError("config error")))
+
+        def _raise_config(_: object) -> None:
+            raise RuntimeError("config error")
+
+        monkeypatch.setattr("sova.config.loader.load_config", _raise_config)
         result = await list_open_prs_with_state()
         assert result == []
 
@@ -1389,7 +1393,10 @@ class TestListOpenPrsWithState:
             "sova.git.pr.get_review_thread_counts",
             AsyncMock(side_effect=RuntimeError("thread count error")),
         )
-        monkeypatch.setattr("sova.dashboard.services.pr_service._enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service._enrich_pr",
+            lambda pr, now: {**pr, "computed_state": "test"},
+        )
 
         result = await list_open_prs_with_state()
         assert len(result) == 1
@@ -1409,11 +1416,15 @@ class TestListOpenPrsWithState:
         raw_prs = [{"number": 10}]
         monkeypatch.setattr("sova.git.pr.list_open_prs", AsyncMock(return_value=raw_prs))
         monkeypatch.setattr("sova.git.pr.get_review_thread_counts", AsyncMock(return_value={}))
-        monkeypatch.setattr("sova.dashboard.services.pr_service._enrich_pr", lambda pr, now: {**pr, "computed_state": "test"})
+        monkeypatch.setattr(
+            "sova.dashboard.services.pr_service._enrich_pr",
+            lambda pr, now: {**pr, "computed_state": "test"},
+        )
 
         # Mock _record_state_transitions to avoid side effects
         async def mock_record(prs, *, repo):
             pass
+
         monkeypatch.setattr("sova.dashboard.services.pr_service._record_state_transitions", mock_record)
 
         # Should not raise
@@ -1427,10 +1438,10 @@ class TestRecordStateTransitions:
     @pytest.mark.asyncio
     async def test_skips_prs_with_no_previous_state(self, monkeypatch) -> None:
         """Test lines 523-524: early continue when prev is None."""
+        from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
 
         # Clear any previous state
-        from sova.dashboard.services import pr_service
         pr_service._last_known_states.clear()
 
         prs = [{"number": 10, "computed_state": "approved"}]
@@ -1476,12 +1487,16 @@ class TestRecordStateTransitions:
             class MockSession:
                 def add(self, obj):
                     pass
+
                 async def commit(self):
                     raise RuntimeError("DB error")
+
                 async def __aenter__(self):
                     return self
+
                 async def __aexit__(self, *args):
                     pass
+
             return MockSession()
 
         monkeypatch.setattr("sova.db.session.get_session", mock_session)
@@ -1489,12 +1504,14 @@ class TestRecordStateTransitions:
         # Set previous state so transition happens
         pr_service._last_known_states[10] = "draft"
 
-        prs = [{
-            "number": 10,
-            "computed_state": "approved_ci_green",
-            "updated_at": "2026-08-01T12:00:00Z",
-            "author": "alice",
-        }]
+        prs = [
+            {
+                "number": 10,
+                "computed_state": "approved_ci_green",
+                "updated_at": "2026-08-01T12:00:00Z",
+                "author": "alice",
+            }
+        ]
 
         # Should not raise despite DB error
         await _record_state_transitions(prs, repo="owner/repo")
@@ -1506,7 +1523,13 @@ class TestRecordStateTransitions:
         from sova.dashboard.services.pr_service import _record_state_transitions
 
         # Make get_project_dir raise
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: (_ for _ in ()).throw(RuntimeError("outer error")))
+        def _raise_outer() -> None:
+            raise RuntimeError("outer error")
+
+        monkeypatch.setattr(
+            "sova.dashboard.project_context.get_project_dir",
+            _raise_outer,
+        )
 
         pr_service._last_known_states[10] = "draft"
         prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
