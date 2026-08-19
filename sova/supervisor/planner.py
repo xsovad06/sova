@@ -18,6 +18,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -401,7 +402,7 @@ class SupervisorPlanner:
                     .group_by(CostRecord.issue)
                 )
                 cost_result = await session.execute(cost_stmt)
-                cost_by_issue: dict[str, float] = {row[0]: float(row[1] or 0) for row in cost_result.all()}
+                cost_by_issue: dict[str, Decimal] = {row[0]: Decimal(str(row[1] or 0)) for row in cost_result.all()}
 
             if not runs:
                 return "## Issue Health\nNo developer runs for queued issues"
@@ -427,7 +428,7 @@ class SupervisorPlanner:
             for issue_num in sorted(issues_with_runs, key=lambda x: int(x)):
                 health = health_by_issue[issue_num]
                 error = health["last_error"] or "none"
-                cost = cost_by_issue.get(issue_num, 0.0)
+                cost = cost_by_issue.get(issue_num, Decimal(0))
                 failed = health["failed"]
                 succeeded = health["succeeded"]
                 lines.append(f"| #{issue_num} | {failed} failed | {succeeded} succeeded | ${cost:.2f} | {error} |")
