@@ -111,7 +111,11 @@ async def _fetch_triage_tasks(adapter: TaskAdapter, issue: str | None) -> list[T
     if issue:
         return [await adapter.get_task(issue)]
     filters = TaskFilters(state="open")
-    all_tasks = await adapter.list_tasks(filters)
+    try:
+        all_tasks = await adapter.list_tasks(filters)
+    except Exception:
+        log.warning("triage.list_tasks_failed", exc_info=True)
+        return []
     return [t for t in all_tasks if t.state == TaskState.BACKLOG]
 
 
