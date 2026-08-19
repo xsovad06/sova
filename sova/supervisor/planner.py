@@ -18,6 +18,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -192,6 +193,7 @@ class SupervisorPlanner:
         sections.append(await self._get_issue_counts(adapter))
         sections.append(self._get_priority_queue())
         sections.append(await self._get_recent_failures())
+        sections.append(await self._get_issue_health())
 
         section_count = len([s for s in sections if s])
         log.debug("planner.context_assembled", section_count=section_count, persona_loaded=True)
@@ -357,6 +359,82 @@ class SupervisorPlanner:
             return "\n".join(lines)
         except Exception:
             return "## Recent Failures (24h)\nData unavailable"
+
+    async def _get_issue_health(self) -> str:
+        """Get per-issue health data for issues in the task queue.
+
+        Returns a summary of developer run outcomes, cost, and last error for
+        each queued issue that has at least one developer run in the last 30
+        days. This helps the planner identify consistently failing issues for
+        deprioritization.
+        """
+        queue = self._config.supervisor.task_queue
+        if not queue:
+            return "## Issue Health\nNo task queue configured"
+
+        try:
+            from collections import defaultdict
+            from datetime import datetime, timedelta, timezone
+
+            from sqlalchemy import func, select
+
+            from sova.db.models import CostRecord, TaskRun
+
+            issue_strs = [str(q) for q in queue]
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+            async with self._session_factory() as session:
+                stmt = (
+                    select(TaskRun)
+                    .where(
+                        TaskRun.role == "developer",
+                        TaskRun.issue_number.in_(issue_strs),
+                        TaskRun.started_at >= cutoff,
+                    )
+                    .order_by(TaskRun.started_at.desc())
+                )
+                result = await session.execute(stmt)
+                runs = result.scalars().all()
+
+                cost_stmt = (
+                    select(CostRecord.issue, func.sum(CostRecord.cost_usd))
+                    .where(CostRecord.issue.in_(issue_strs))
+                    .group_by(CostRecord.issue)
+                )
+                cost_result = await session.execute(cost_stmt)
+                cost_by_issue: dict[str, Decimal] = {row[0]: Decimal(str(row[1] or 0)) for row in cost_result.all()}
+
+            if not runs:
+                return "## Issue Health\nNo developer runs for queued issues"
+
+            health_by_issue: dict[str, dict] = defaultdict(lambda: {"failed": 0, "succeeded": 0, "last_error": None})
+            issues_with_runs = set()
+
+            for run in runs:
+                issues_with_runs.add(run.issue_number)
+                health = health_by_issue[run.issue_number]
+                if run.status == "done":
+                    health["succeeded"] += 1
+                elif run.status == "failed":
+                    health["failed"] += 1
+                    if health["last_error"] is None:
+                        health["last_error"] = _sanitize_error(run.error_message)
+
+            lines = [
+                "## Issue Health (last 30 days)",
+                "| Issue | Failed | Succeeded | Cost | Last Error |",
+                "|-------|--------|-----------|------|------------|",
+            ]
+            for issue_num in sorted(issues_with_runs, key=lambda x: int(x)):
+                health = health_by_issue[issue_num]
+                error = health["last_error"] or "none"
+                cost = cost_by_issue.get(issue_num, Decimal(0))
+                failed = health["failed"]
+                succeeded = health["succeeded"]
+                lines.append(f"| #{issue_num} | {failed} failed | {succeeded} succeeded | ${cost:.2f} | {error} |")
+            return "\n".join(lines)
+        except Exception:
+            return "## Issue Health\nData unavailable"
 
     async def _call_llm(self, api_key: str, system_prompt: str, user_prompt: str) -> dict | None:
         try:

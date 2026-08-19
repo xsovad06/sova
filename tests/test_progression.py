@@ -543,6 +543,196 @@ class TestRepeatedFailuresGate:
 
 
 # ---------------------------------------------------------------------------
+# _check_developer_repeated_failures_gate
+# ---------------------------------------------------------------------------
+
+
+class TestDeveloperRepeatedFailuresGate:
+    def _make_session(self, count: int) -> AsyncMock:
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = count
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        return mock_session
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_passes(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(2))
+        result = await engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_at_threshold_blocks(self) -> None:
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(3))
+        result = await engine._check_developer_repeated_failures_gate(42)
+        assert result is not None
+        assert result.gate == "developer_repeated_failure"
+        assert "42" in result.detail
+        assert "3" in result.detail
+
+    @pytest.mark.asyncio
+    async def test_zero_disables_gate(self) -> None:
+        """max_developer_failures=0 disables the gate entirely."""
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=0))
+        engine._session_factory = MagicMock(return_value=self._make_session(999))
+        result = await engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_db_error_fails_open(self) -> None:
+        """DB exceptions are swallowed and the gate passes (fail-open)."""
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
+        bad_session = AsyncMock()
+        bad_session.__aenter__ = AsyncMock(return_value=bad_session)
+        bad_session.__aexit__ = AsyncMock(return_value=False)
+        bad_session.execute = AsyncMock(side_effect=Exception("db error"))
+        engine._session_factory = MagicMock(return_value=bad_session)
+        result = await engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_null_count_treated_as_zero(self) -> None:
+        """scalar_one_or_none() returning None is treated as 0 failures."""
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
+        engine._session_factory = MagicMock(return_value=self._make_session(None))
+        result = await engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_gate_integrated_in_evaluate_task(self) -> None:
+        """Test that developer repeated failures gate is called when evaluating RESEARCHED tasks."""
+        from sova.adapters.base import TaskState
+
+        adapter = AsyncMock()
+        adapter.get_state = AsyncMock(return_value=TaskState.RESEARCHED)
+        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.RESEARCHED)])
+        engine = _make_engine(adapter=adapter, config=SupervisorConfig(auto_develop=True, max_developer_failures=3))
+
+        # Mock the gate to return a block
+        block = BlockReason(gate="developer_repeated_failure", detail="too many failures")
+        with patch.object(engine, "_check_developer_repeated_failures_gate", return_value=block):
+            decision = await engine.evaluate_task(42)
+
+        # Verify the gate was called and the action was blocked
+        assert decision.action == ProgressionAction.BLOCKED
+        assert decision.blocked_by is not None
+        assert len(decision.blocked_by) > 0
+        assert any(b.gate == "developer_repeated_failure" for b in decision.blocked_by)
+
+
+# ---------------------------------------------------------------------------
+# _check_developer_repeated_failures_gate (integration with real DB)
+# ---------------------------------------------------------------------------
+
+
+class TestDeveloperRepeatedFailuresGateIntegration:
+    """Integration tests using real SQLite to verify the SQL subquery logic."""
+
+    @pytest.fixture
+    async def db_engine(self, monkeypatch: pytest.MonkeyPatch) -> TaskProgressionEngine:
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path(tempfile.mkdtemp())
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
+        engine._session_factory = sf
+        yield engine
+        await close_db()
+
+    @staticmethod
+    def _dev_run(issue: str, status: str, hours_ago: int) -> object:
+        from datetime import datetime, timedelta, timezone
+
+        from sova.db.models import TaskRun
+
+        return TaskRun(
+            issue_number=issue,
+            role="developer",
+            status=status,
+            started_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+        )
+
+    @pytest.mark.asyncio
+    async def test_mixed_outcomes_counts_only_after_last_success(self, db_engine: TaskProgressionEngine) -> None:
+        """fail, succeed, fail, fail, fail -> 3 failures since last success -> blocks."""
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        self._dev_run("42", "failed", 5),
+                        self._dev_run("42", "done", 4),
+                        self._dev_run("42", "failed", 3),
+                        self._dev_run("42", "failed", 2),
+                        self._dev_run("42", "failed", 1),
+                    ]
+                )
+
+        result = await db_engine._check_developer_repeated_failures_gate(42)
+        assert result is not None
+        assert result.gate == "developer_repeated_failure"
+
+    @pytest.mark.asyncio
+    async def test_recent_success_resets_count(self, db_engine: TaskProgressionEngine) -> None:
+        """fail, fail, fail, succeed -> 0 failures since last success -> passes."""
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        self._dev_run("42", "failed", 4),
+                        self._dev_run("42", "failed", 3),
+                        self._dev_run("42", "failed", 2),
+                        self._dev_run("42", "done", 1),
+                    ]
+                )
+
+        result = await db_engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_runs_passes(self, db_engine: TaskProgressionEngine) -> None:
+        """No developer runs at all -> passes."""
+        result = await db_engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_below_threshold_passes(self, db_engine: TaskProgressionEngine) -> None:
+        """2 failures (below threshold of 3) -> passes."""
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        self._dev_run("42", "failed", 2),
+                        self._dev_run("42", "failed", 1),
+                    ]
+                )
+
+        result = await db_engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_other_issue_not_counted(self, db_engine: TaskProgressionEngine) -> None:
+        """Failures on a different issue don't affect the count."""
+        async with db_engine._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        self._dev_run("99", "failed", 3),
+                        self._dev_run("99", "failed", 2),
+                        self._dev_run("99", "failed", 1),
+                    ]
+                )
+
+        result = await db_engine._check_developer_repeated_failures_gate(42)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # evaluate_task (integration of state machine + gates)
 # ---------------------------------------------------------------------------
 
