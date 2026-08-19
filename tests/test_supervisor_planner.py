@@ -329,6 +329,7 @@ class TestContextAssembly:
             patch.object(planner, "_get_issue_counts", new_callable=AsyncMock, return_value="## Issue Counts"),
             patch.object(planner, "_get_priority_queue", return_value="## Priority Queue"),
             patch.object(planner, "_get_recent_failures", new_callable=AsyncMock, return_value="## Recent Failures"),
+            patch.object(planner, "_get_issue_health", new_callable=AsyncMock, return_value="## Issue Health"),
         ):
             result = await planner._assemble_context(mock_adapter)
 
@@ -337,6 +338,7 @@ class TestContextAssembly:
         assert "## Issue Counts" in result
         assert "## Priority Queue" in result
         assert "## Recent Failures" in result
+        assert "## Issue Health" in result
 
     def test_priority_queue_with_items(self, planner: SupervisorPlanner) -> None:
         planner._config = ProjectConfig(
@@ -657,6 +659,117 @@ class TestGetRecentFailures:
         planner._session_factory = MagicMock(return_value=mock_session)
 
         result = await planner._get_recent_failures()
+        assert "Data unavailable" in result
+
+
+class TestGetIssueHealth:
+    @pytest.fixture
+    async def db_planner(self, monkeypatch: pytest.MonkeyPatch) -> SupervisorPlanner:
+        """Planner with a real in-memory SQLite session factory."""
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path("/tmp/test-planner-health")
+        project_dir.mkdir(exist_ok=True)
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, task_queue=[42, 17]),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
+        yield p
+        await close_db()
+
+    async def test_with_developer_runs(self, db_planner: SupervisorPlanner) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from sova.db.models import TaskRun
+
+        now = datetime.now(timezone.utc)
+        async with db_planner._session_factory() as session:
+            async with session.begin():
+                session.add_all(
+                    [
+                        TaskRun(
+                            issue_number="42",
+                            role="developer",
+                            status="failed",
+                            error_message="test failed",
+                            started_at=now - timedelta(hours=4),
+                        ),
+                        TaskRun(
+                            issue_number="42",
+                            role="developer",
+                            status="failed",
+                            error_message="lint error",
+                            started_at=now - timedelta(hours=3),
+                        ),
+                        TaskRun(
+                            issue_number="42",
+                            role="developer",
+                            status="done",
+                            started_at=now - timedelta(hours=2),
+                        ),
+                        TaskRun(
+                            issue_number="17",
+                            role="developer",
+                            status="failed",
+                            error_message="timeout",
+                            started_at=now - timedelta(hours=1),
+                        ),
+                    ]
+                )
+
+        result = await db_planner._get_issue_health()
+
+        assert "## Issue Health (last 30 days)" in result
+        assert "#42" in result
+        assert "#17" in result
+        assert "2 failed" in result
+        assert "1 succeeded" in result
+        assert "timeout" in result
+        assert "$" in result
+        assert "Cost" in result
+        assert "lint error" in result
+
+    async def test_no_developer_runs(self, db_planner: SupervisorPlanner) -> None:
+        result = await db_planner._get_issue_health()
+        assert "## Issue Health" in result
+        assert "No developer runs for queued issues" in result
+
+    async def test_empty_task_queue(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
+        from sova.db.session import close_db, get_session_factory, init_db
+
+        project_dir = Path("/tmp/test-planner-health-empty")
+        project_dir.mkdir(exist_ok=True)
+        await init_db(project_dir)
+        sf = await get_session_factory(project_dir)
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, task_queue=[]),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=project_dir, session_factory=sf)
+
+        result = await p._get_issue_health()
+        assert "No task queue configured" in result
+        await close_db()
+
+    async def test_db_error(self) -> None:
+        cfg = ProjectConfig(
+            supervisor=SupervisorConfig(enabled=True, llm_planning=True, task_queue=[42]),
+            github_repo="test/repo",
+        )
+        p = SupervisorPlanner(config=cfg, project_dir=Path("/tmp/test"), session_factory=MagicMock())
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=RuntimeError("db error"))
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        p._session_factory = MagicMock(return_value=mock_session)
+
+        result = await p._get_issue_health()
         assert "Data unavailable" in result
 
 
