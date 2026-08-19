@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from sova.adapters.base import Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
+from sova.adapters.base import AdapterError, Milestone, PRReview, Task, TaskAdapter, TaskFilters, TaskState
 from sova.utils.gh import resolve_gh_env
 from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
@@ -103,13 +103,15 @@ class GitHubAdapter(TaskAdapter):
         if not result.success:
             event = "list_tasks.rate_limited" if result.is_rate_limited else "list_tasks.failed"
             log.warning(event, stderr=result.stderr[:200])
-            return []
+            msg = f"Failed to fetch issues from {self.repo}: {result.stderr[:200]}"
+            raise AdapterError(msg)
 
         try:
             issues = json.loads(result.stdout)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
             log.warning("list_tasks.bad_json", stdout=result.stdout[:200])
-            return []
+            msg = f"Failed to parse issue list from {self.repo}: {e}"
+            raise AdapterError(msg) from e
 
         return [_parse_issue(issue) for issue in issues]
 

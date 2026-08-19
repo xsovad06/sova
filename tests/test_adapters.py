@@ -277,11 +277,29 @@ class TestGitHubAdapter:
         tasks = await self.adapter.list_tasks()
         assert tasks == []
 
-    async def test_list_tasks_gh_failure(self, mock_run: AsyncMock) -> None:
+    async def test_list_tasks_gh_failure_raises(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.base import AdapterError
+
         mock_run.return_value = _shell_result(returncode=1, stderr="API error")
 
-        tasks = await self.adapter.list_tasks()
-        assert tasks == []
+        with pytest.raises(AdapterError, match="Failed to fetch issues"):
+            await self.adapter.list_tasks()
+
+    async def test_list_tasks_rate_limited_raises(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.base import AdapterError
+
+        mock_run.return_value = _shell_result(returncode=1, stderr="rate limit exceeded")
+
+        with pytest.raises(AdapterError, match="Failed to fetch issues"):
+            await self.adapter.list_tasks()
+
+    async def test_list_tasks_bad_json_raises(self, mock_run: AsyncMock) -> None:
+        from sova.adapters.base import AdapterError
+
+        mock_run.return_value = _shell_result(stdout="not valid json {{{")
+
+        with pytest.raises(AdapterError, match="Failed to parse issue list"):
+            await self.adapter.list_tasks()
 
     async def test_list_tasks_paginate_uses_high_limit(self, mock_run: AsyncMock) -> None:
         mock_run.return_value = _shell_result(stdout="[]")
