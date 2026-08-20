@@ -22,7 +22,6 @@ log = get_logger(component="fleet_manager")
 
 _DB_FILENAME = "sova.db"
 _QUERY_TIMEOUT = 5.0
-_slot_locks: dict[str, asyncio.Lock] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,33 +101,25 @@ class FleetManagerService:
             global_coderabbit_can_create=global_cr_can_create,
         )
 
-    async def set_max_concurrent(self, slug: str, value: int) -> str | None:
-        """Update max_concurrent for a project (DB write-back + in-memory).
+    def set_max_concurrent(self, slug: str, value: int) -> bool:
+        """Update max_concurrent for a project (in-memory + TOML write-back).
 
-        Writes to DB first; only updates in-memory state on success.
-        Serialized per-project to prevent interleaving of DB write and
-        in-memory update across concurrent requests.
-        Returns None on success, or an error string:
-        - "not_found" if the slug is unknown
-        - "db_error" if the DB write failed
+        Returns True if successfully updated.
         """
         projects = list_projects()
         path_str = projects.get(slug)
         if path_str is None:
-            return "not_found"
+            return False
 
-        lock = _slot_locks.setdefault(slug, asyncio.Lock())
-        async with lock:
-            project_dir = Path(path_str)
-            db_ok = await self._write_max_concurrent_to_db(project_dir, value)
-            if not db_ok:
-                return "db_error"
+        # Update in-memory pool if it exists
+        pools = list_all_pools()
+        if slug in pools:
+            pools[slug].max_concurrent = value
 
-            pools = list_all_pools()
-            if slug in pools:
-                pools[slug].max_concurrent = value
-
-        return None
+        # TOML write-back for persistence
+        project_dir = Path(path_str)
+        self._write_max_concurrent_to_toml(project_dir, value)
+        return True
 
     async def _get_project_status(
         self,
@@ -247,24 +238,21 @@ class FleetManagerService:
             return 0
 
     @staticmethod
-    async def _write_max_concurrent_to_db(project_dir: Path, value: int) -> bool:
-        """Write max_parallel_agents to the target project's DB.
-
-        Manages its own session and transaction because it targets a
-        cross-project DB (not the caller's session). Returns True on
-        success, False on any DB error.
-        """
+    def _write_max_concurrent_to_toml(project_dir: Path, value: int) -> None:
+        """Write max_parallel_agents back to sova.toml using tomlkit."""
+        toml_path = project_dir / "sova.toml"
+        if not toml_path.exists():
+            return
         try:
-            from sova.config.db_loader import save_setting
-            from sova.db.session import get_session
+            import tomlkit
 
-            async with await get_session(project_dir=project_dir) as session:
-                await save_setting(session, "max_parallel_agents", value)
-                await session.commit()
-            return True
+            doc = tomlkit.parse(toml_path.read_text())
+            doc["max_parallel_agents"] = value
+            toml_path.write_text(tomlkit.dumps(doc))
+        except ImportError:
+            log.debug("fleet_manager.tomlkit_unavailable")
         except Exception:
-            log.warning("fleet_manager.db_write_failed", exc_info=True)
-            return False
+            log.warning("fleet_manager.toml_write_failed", exc_info=True)
 
     @staticmethod
     def _empty_status() -> FleetStatus:

@@ -87,7 +87,7 @@ class LLMProvider(ABC):
         fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
-        timeout: float | None = None,
+        timeout: float | None = 600,
     ) -> LLMResult:
         """Run a prompt and return the parsed result."""
         ...
@@ -114,7 +114,7 @@ class LLMProvider(ABC):
         fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
-        timeout: float | None = None,
+        timeout: float | None = 600,
     ) -> LLMResult:
         """Run a slash command (e.g., /develop, /review).
 

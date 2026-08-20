@@ -28,18 +28,10 @@ async def get_fleet_status() -> dict:
     return asdict(status)
 
 
-@router.patch(
-    "/projects/{slug}/slots",
-    responses={
-        404: {"description": "Project not found"},
-        503: {"description": "Failed to persist to database"},
-    },
-)
+@router.patch("/projects/{slug}/slots", responses={404: {"description": "Project not found"}})
 async def update_project_slots(slug: str, req: SlotUpdateRequest) -> dict:
     """Update max_concurrent slots for a project."""
-    error = await _service.set_max_concurrent(slug, req.value)
-    if error == "not_found":
+    ok = _service.set_max_concurrent(slug, req.value)
+    if not ok:
         raise HTTPException(status_code=404, detail=f"Project '{slug}' not found")
-    if error == "db_error":
-        raise HTTPException(status_code=503, detail="Failed to persist slot update to database")
     return {"slug": slug, "max_concurrent": req.value}

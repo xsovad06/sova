@@ -361,11 +361,12 @@ class SpecStep(BaseStep):
         has_questions = _text_has_open_questions(text)
         spec_complexity = _extract_complexity(text)
 
-        # Auto-approve simple specs without open questions.
+        # Auto-approve specs at or below threshold when they have no open questions.
         # Auto-approved specs chain directly to developer via handoff with auto_execute=True,
         # exiting the researcher pipeline early (skip-to-role pattern).
-        if ctx.config.spec.auto_approve_simple and not has_questions:
-            if _complexity_rank(spec_complexity) <= _complexity_rank("simple"):
+        threshold = ctx.config.spec.auto_approve_threshold
+        if threshold != "none" and not has_questions:
+            if _complexity_rank(spec_complexity) <= _complexity_rank(threshold):
                 # Mark as approved in the spec file
                 if not re.search(r"\*\*Status\*\*:\s*\w+", text):
                     return StepResult(

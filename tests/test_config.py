@@ -39,6 +39,9 @@ def test_default_config() -> None:
     assert cfg.roles.default == "developer"
     assert cfg.pipeline.auto_handoff is True
     assert cfg.pipeline.auto_address_review is True
+    assert cfg.pipeline.auto_integrate is False
+    assert cfg.spec.auto_approve_threshold == "simple"
+    assert cfg.supervisor.auto_review is True
     assert cfg.triage.auto_label is True
     assert cfg.triage.min_confidence == 0.7
     assert cfg.monitoring.enabled is True
@@ -795,3 +798,108 @@ block_threshold_gb = 2.0
 
         with pytest.raises(ValueError, match="block_threshold_gb.*must be less than.*warn_threshold_gb"):
             MemoryGuardConfig(warn_threshold_gb=2.0, block_threshold_gb=5.0)
+
+
+class TestPipelineAutoIntegrate:
+    def test_default_false(self) -> None:
+        cfg = PipelineConfig()
+        assert cfg.auto_integrate is False
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[pipeline]
+auto_integrate = true
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.pipeline.auto_integrate is True
+
+
+class TestSpecAutoApproveThreshold:
+    def test_default_simple(self) -> None:
+        from sova.config.models import SpecConfig
+
+        cfg = SpecConfig()
+        assert cfg.auto_approve_threshold == "simple"
+
+    def test_accepts_valid_thresholds(self) -> None:
+        from sova.config.models import SpecConfig
+
+        for threshold in ("none", "simple", "moderate", "complex"):
+            cfg = SpecConfig(auto_approve_threshold=threshold)
+            assert cfg.auto_approve_threshold == threshold
+
+    def test_backward_compat_true_preserves_default(self, tmp_path: Path) -> None:
+        """Old auto_approve_simple=true preserves the default threshold."""
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[spec]
+auto_approve_simple = true
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.spec.auto_approve_threshold == "simple"
+
+    def test_backward_compat_false_disables_approval(self, tmp_path: Path) -> None:
+        """Old auto_approve_simple=false maps to threshold='none' to disable auto-approval."""
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[spec]
+auto_approve_simple = false
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.spec.auto_approve_threshold == "none"
+
+    def test_backward_compat_false_does_not_override_explicit_threshold(self, tmp_path: Path) -> None:
+        """Explicit auto_approve_threshold takes precedence over old auto_approve_simple=false."""
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[spec]
+auto_approve_simple = false
+auto_approve_threshold = "moderate"
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.spec.auto_approve_threshold == "moderate"
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[spec]
+auto_approve_threshold = "moderate"
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.spec.auto_approve_threshold == "moderate"
+
+
+class TestSupervisorAutoReview:
+    def test_default_true(self) -> None:
+        from sova.config.models import SupervisorConfig
+
+        cfg = SupervisorConfig()
+        assert cfg.auto_review is True
+
+    def test_toml_loading(self, tmp_path: Path) -> None:
+        toml_content = """
+[project]
+github_repo = "user/repo"
+
+[supervisor]
+auto_review = false
+"""
+        (tmp_path / "sova.toml").write_text(toml_content)
+        cfg = load_config(tmp_path)
+        assert cfg.supervisor.auto_review is False

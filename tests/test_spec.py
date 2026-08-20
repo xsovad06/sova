@@ -409,7 +409,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
 
@@ -442,7 +442,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
 
@@ -476,7 +476,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -517,7 +517,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -542,7 +542,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -568,7 +568,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -598,7 +598,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -631,7 +631,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
 
@@ -681,7 +681,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -743,7 +743,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -775,7 +775,7 @@ class TestSpecStep:
         )
         ctx = _make_ctx(
             project_dir=tmp_path,
-            spec_config=SpecConfig(auto_approve_simple=True),
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
             adapter=adapter,
         )
         step = SpecStep()
@@ -790,6 +790,167 @@ class TestSpecStep:
         prompt = mock_invoke.call_args[0][0]
         assert "Custom body with details" in prompt
         assert "Findings here" in prompt
+
+    async def test_threshold_none_never_auto_approves(self, tmp_path: Path) -> None:
+        """Threshold 'none' never auto-approves, even for simple specs."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Simple task", body="Do it.\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="none"),
+            adapter=adapter,
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Simple task\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "approval" in result.summary.lower()
+        assert "auto-approved" not in result.summary.lower()
+
+        spec_path = find_spec_file("42", project_dir=tmp_path)
+        assert spec_path is not None
+        assert "**Status**: draft" in spec_path.read_text()
+
+    async def test_threshold_simple_auto_approves_simple_not_moderate(self, tmp_path: Path) -> None:
+        """Threshold 'simple' auto-approves simple specs but not moderate."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        # Test: simple spec is auto-approved
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="42", title="Simple task", body="Do it.\n\n**Complexity**: simple", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
+            adapter=adapter,
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Simple task\n\n**Status**: draft\n**Complexity**: simple\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "auto-approved" in result.summary.lower()
+
+        # Test: moderate spec is not auto-approved
+        adapter.get_task.return_value = Task(
+            id="43", title="Moderate task", body="Do it.\n\n**Complexity**: moderate", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="simple"),
+            adapter=adapter,
+            issue_number="43",
+        )
+
+        spec_text = "# Spec: Moderate task\n\n**Status**: draft\n**Complexity**: moderate\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "auto-approved" not in result.summary.lower()
+        assert "approval" in result.summary.lower()
+
+    async def test_threshold_moderate_auto_approves_moderate_not_complex(self, tmp_path: Path) -> None:
+        """Threshold 'moderate' auto-approves moderate specs but not complex."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        # Test: moderate spec is auto-approved
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="44", title="Moderate task", body="Do it.\n\n**Complexity**: moderate", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="moderate"),
+            adapter=adapter,
+            issue_number="44",
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Moderate task\n\n**Status**: draft\n**Complexity**: moderate\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "auto-approved" in result.summary.lower()
+
+        # Test: complex spec is not auto-approved
+        adapter.get_task.return_value = Task(
+            id="45", title="Complex task", body="Do it.\n\n**Complexity**: complex", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="moderate"),
+            adapter=adapter,
+            issue_number="45",
+        )
+
+        spec_text = "# Spec: Complex task\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "auto-approved" not in result.summary.lower()
+        assert "approval" in result.summary.lower()
+
+    async def test_threshold_complex_auto_approves_complex(self, tmp_path: Path) -> None:
+        """Threshold 'complex' auto-approves complex specs."""
+        from sova.llm.models import LLMResult
+
+        (tmp_path / ".claude" / "agent-control").mkdir(parents=True, exist_ok=True)
+
+        adapter = _mock_adapter()
+        adapter.get_task.return_value = Task(
+            id="46", title="Complex task", body="Do it.\n\n**Complexity**: complex", state=TaskState.TRIAGED
+        )
+        ctx = _make_ctx(
+            project_dir=tmp_path,
+            spec_config=SpecConfig(auto_approve_threshold="complex"),
+            adapter=adapter,
+            issue_number="46",
+        )
+        step = SpecStep()
+
+        spec_text = "# Spec: Complex task\n\n**Status**: draft\n**Complexity**: complex\n\n## Solution\n\nDo stuff\n"
+        llm_result = LLMResult(
+            text=spec_text, model="sonnet", cost_usd=Decimal("0.05"), input_tokens=100, output_tokens=50
+        )
+        with patch("sova.core.steps.spec.invoke", new_callable=AsyncMock, return_value=llm_result):
+            result = await step.execute(ctx)
+
+        assert result.success
+        assert "auto-approved" in result.summary.lower()
 
     async def test_execute_empty_llm_response(self, tmp_path: Path) -> None:
         """Step fails gracefully when LLM returns empty text."""
@@ -1221,12 +1382,12 @@ class TestSpecConfig:
     def test_default_values(self) -> None:
         config = ProjectConfig()
         assert config.spec.threshold == "moderate"
-        assert config.spec.auto_approve_simple is True
+        assert config.spec.auto_approve_threshold == "simple"
 
     def test_custom_values(self) -> None:
-        config = ProjectConfig(spec=SpecConfig(threshold="always", auto_approve_simple=False))
+        config = ProjectConfig(spec=SpecConfig(threshold="always", auto_approve_threshold="none"))
         assert config.spec.threshold == "always"
-        assert config.spec.auto_approve_simple is False
+        assert config.spec.auto_approve_threshold == "none"
 
     def test_threshold_validation(self) -> None:
         # Valid values should work
@@ -1234,17 +1395,29 @@ class TestSpecConfig:
             config = SpecConfig(threshold=value)
             assert config.threshold == value
 
+    def test_auto_approve_threshold_validation(self) -> None:
+        # Valid threshold values should work
+        for value in ("none", "simple", "moderate", "complex"):
+            config = SpecConfig(auto_approve_threshold=value)
+            assert config.auto_approve_threshold == value
+
     def test_invalid_threshold_raises(self) -> None:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
             SpecConfig(threshold="invalid")
 
+    def test_invalid_auto_approve_threshold_raises(self) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            SpecConfig(auto_approve_threshold="invalid")
+
     def test_settings_meta_exists(self) -> None:
         from sova.dashboard.settings_meta import get_meta
 
         assert get_meta("spec.threshold") is not None
-        assert get_meta("spec.auto_approve_simple") is not None
+        assert get_meta("spec.auto_approve_threshold") is not None
 
     def test_settings_group_exists(self) -> None:
         from sova.dashboard.settings_meta import GROUP_ORDER, GROUPS
