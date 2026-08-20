@@ -27,6 +27,12 @@ readonly -a MODEL_PRICING=(
 )
 
 main() {
+    # Skip logging for SOVA-spawned agent sessions (data comes from DB instead)
+    if [ "${SOVA_AGENT_RUN:-}" = "1" ]; then
+        cat > /dev/null
+        exit 0
+    fi
+
     local hook_payload
     hook_payload="$(cat)"
 

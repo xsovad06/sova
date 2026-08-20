@@ -19,6 +19,11 @@ source "$SCRIPT_DIR/resolve_root.sh"
 # Branch name regex pattern (GitHub issues only; cf. sova/git/worktree.py _ISSUE_BRANCH_RE for JIRA support)
 readonly ISSUE_BRANCH_PATTERN='^(feat|fix|refactor|chore|test|docs)/issue-([0-9]+)'
 
+# Skip logging for SOVA-spawned agent sessions (data comes from DB instead)
+if [ "${SOVA_AGENT_RUN:-}" = "1" ]; then
+    exit 0
+fi
+
 event="${1:?Usage: log.sh <event> [issue_number] [notes]}"
 issue="${2:-}"
 notes="${3:-}"

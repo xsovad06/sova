@@ -54,6 +54,18 @@ _HEADLESS_PREAMBLE = (
 )
 
 
+_SOVA_AGENT_ENV_KEY = "SOVA_AGENT_RUN"
+
+
+def _inject_agent_marker(env: dict[str, str] | None) -> dict[str, str]:
+    """Ensure SOVA_AGENT_RUN=1 is set so benchmark hooks skip logging."""
+    import os
+
+    merged = dict(os.environ) if env is None else dict(env)
+    merged[_SOVA_AGENT_ENV_KEY] = "1"
+    return merged
+
+
 async def _check_cli_available(cli_name: str, install_hint: str) -> tuple[bool, str]:
     """Check if a CLI tool is installed and return its version.
 
@@ -207,15 +219,17 @@ class ClaudeCodeRuntime(AgentRuntime):
 
         log.info("process.spawn", cwd=str(cwd), model=model, prompt_len=len(prompt))
 
+        agent_env = _inject_agent_marker(env)
+
         if output_dir is not None:
-            return await _spawn_with_file_output(args, cwd, env, output_dir, run_label)
+            return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
 
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            env=env,
+            env=agent_env,
             limit=_SUBPROCESS_LINE_LIMIT,
             start_new_session=True,
         )
@@ -321,6 +335,7 @@ class AiderRuntime(AgentRuntime):
         run_label: str | None = None,
     ) -> AgentProcess | FileAgentProcess:
         transformed = self.transform_prompt(prompt)
+        agent_env = _inject_agent_marker(env)
 
         # If the prompt was a sova CLI command, execute it directly
         # instead of passing to Aider (which cannot run shell commands).
@@ -331,14 +346,14 @@ class AiderRuntime(AgentRuntime):
             cmd_parts = _shlex.split(transformed)
 
             if output_dir is not None:
-                return await _spawn_with_file_output(cmd_parts, cwd, env, output_dir, run_label)
+                return await _spawn_with_file_output(cmd_parts, cwd, agent_env, output_dir, run_label)
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd_parts,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
-                env=env,
+                env=agent_env,
                 limit=_SUBPROCESS_LINE_LIMIT,
                 start_new_session=True,
             )
@@ -366,14 +381,14 @@ class AiderRuntime(AgentRuntime):
         log.info("aider.spawn", cwd=str(cwd), model=model, prompt_len=len(transformed))
 
         if output_dir is not None:
-            return await _spawn_with_file_output(args, cwd, env, output_dir, run_label)
+            return await _spawn_with_file_output(args, cwd, agent_env, output_dir, run_label)
 
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            env=env,
+            env=agent_env,
             limit=_SUBPROCESS_LINE_LIMIT,
             start_new_session=True,
         )
@@ -418,15 +433,17 @@ async def spawn_direct(
     """
     log.info("process.spawn_direct", cwd=str(cwd), cmd=cmd_parts[0:3])
 
+    agent_env = _inject_agent_marker(env)
+
     if output_dir is not None:
-        return await _spawn_with_file_output(cmd_parts, cwd, env, output_dir, run_label)
+        return await _spawn_with_file_output(cmd_parts, cwd, agent_env, output_dir, run_label)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd_parts,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
-        env=env,
+        env=agent_env,
         limit=_SUBPROCESS_LINE_LIMIT,
         start_new_session=True,
     )
