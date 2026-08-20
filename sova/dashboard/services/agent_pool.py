@@ -120,6 +120,11 @@ def read_max_parallel(project_dir: Path) -> int:
         return ProjectAgents.max_concurrent
 
 
+def get_default_project_dir() -> Path | None:
+    """Return the default project directory (single-project mode)."""
+    return _default_project_dir
+
+
 def set_project_dir(path: Path) -> None:
     """Set the default project directory (single-project mode)."""
     global _default_project_dir

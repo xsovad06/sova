@@ -5,7 +5,7 @@ SOVA has four main components: CLI, Agent Core, Dashboard, and Scheduler.
 ```
 CLI (sova/cli/)         : Typer CLI with 24 top-level commands (43 total with subcommands)
 Agent Core (sova/core/) : WorkflowEngine, step pipelines, state machine
-Dashboard (sova/dashboard/): FastAPI web UI with 26 routers and 39 services
+Dashboard (sova/dashboard/): FastAPI web UI with 27 routers and 39 services
 Scheduler (sova/scheduler/): Watch loop, parallel executor, server daemon
 ```
 

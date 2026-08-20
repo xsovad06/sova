@@ -24,12 +24,12 @@ A unified repository that ships:
 
 ```
 sova/
-  sova/                            # Python package (19 modules)
+  sova/                            # Python package (20 modules)
     cli/                           # Typer CLI (24 top-level commands, 43 total with subcommands)
     core/                          # Workflow engine, 29 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner)
     adapters/                      # Task source plugins (GitHub, Jira Cloud; Linear planned)
-    dashboard/                     # FastAPI web UI (26 routers, 39 services, 24 page templates)
+    dashboard/                     # FastAPI web UI (27 routers, 39 services, 24 page templates)
     scheduler/                     # Watch loop, parallel executor, server daemon
     llm/                           # Provider-agnostic LLM interface, cost tracking
     mcp/                           # MCP server for tool integration
@@ -44,6 +44,7 @@ sova/
     oversight/                     # Oversight agent daemon, operations persona
     supervisor/                    # Task progression engine, dependency graph, quota tracking
     monitoring/                    # Resource monitoring (CPU, memory, I/O per agent)
+    a2a/                           # A2A (Agent-to-Agent) protocol
   commands/                        # 28 standardized commands (markdown with frontmatter)
   invariants/                      # Pluggable pre-push constraint checks (bash)
   personas/                        # Framework-specific guidance (Django, FastAPI, Odoo, PatternFly, Python)
@@ -173,7 +174,7 @@ FastAPI web UI with Catppuccin dark theme, Tailwind CSS, and SVG icon system.
 - Legacy redirects: overview, control, runs, tasks, work (redirect to dashboard or agents)
 
 ### API
-26 routers under `/api`: overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry.
+27 routers under `/api` and `/a2a`: overview, runs, costs, control, feed, handoff, lifecycle, memory, logs, tasks, queue, quota, settings, setup, agents, work, roles, spec, prs, dependencies, resources, supervisor, oversight, fleet_manager, fleet_insights, telemetry, a2a.
 
 39 backend services covering run management, cost aggregation, agent lifecycle, handoff processing, batch operations, supervisor, fleet management, oversight, and more.
 

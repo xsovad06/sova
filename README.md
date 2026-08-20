@@ -54,7 +54,7 @@ Each transition is enforced by gate checks. The Developer refuses issues that ha
 
 - **Role-Based Agents**: specialized triage, researcher, developer, and reviewer roles with automatic dispatch and autonomous Developer-Reviewer chaining
 - **Gate-Checked Pipeline**: every step validates its output before the next begins; Developer pipeline (16 steps), Address-Review pipeline (10 steps), Researcher and Planner pipelines (4 steps each)
-- **Web Dashboard**: 24-page UI with 26 API endpoints for monitoring runs, costs, agent control, lifecycle tracking, supervisor, fleet management, and configuration
+- **Web Dashboard**: 24-page UI with 27 API endpoints for monitoring runs, costs, agent control, lifecycle tracking, supervisor, fleet management, and configuration
 - **Supervisor Engine**: deterministic task progression with 14 gate checks, dependency graph, rate limit tracking, and optional LLM-assisted planning
 - **24/7 Server Mode**: scheduler with priority-based watch loop and parallel execution
 - **Handoff System**: per-issue handoff files eliminate race conditions in parallel agent runs; dashboard renders action buttons for human decisions

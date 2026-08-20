@@ -39,7 +39,7 @@ Initial public release.
 ### Dashboard
 
 - 24-page web UI with Catppuccin Mocha dark theme and Tailwind CSS
-- 26 API routers and 39 backend services
+- 27 API routers and 39 backend services
 - Multi-project support with per-request config isolation via URL routing (`/p/{slug}/`)
 - Real-time agent output streaming via SSE
 - Multi-agent control panel: start, stop, view logs, handoff actions
@@ -62,6 +62,7 @@ Initial public release.
 - Jira Cloud with lifecycle enrichment and JQL-based task filtering
 - CodeRabbit review quota tracking and automatic CHANGES_REQUESTED dismissal
 - Configurable CodeRabbit review trigger after PR creation
+- A2A (Agent-to-Agent) protocol for inter-agent communication
 
 ### Knowledge System
 
