@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,6 +25,9 @@ def _scaffold_install_artifacts(tmp_path: Path) -> None:
     (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
     memory_dir = tmp_path / ".claude" / "agent-memory"
     memory_dir.mkdir(parents=True, exist_ok=True)
+    # Also create agent permissions
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)"]}}))
 
 
 @pytest.fixture(autouse=True)
@@ -516,8 +520,9 @@ class TestProjectCommands:
         from sova.cli.commands.project import _verify_install
 
         _scaffold_install_artifacts(tmp_path)
-        problems = _verify_install(tmp_path)
+        problems, warnings = _verify_install(tmp_path)
         assert problems == []
+        assert warnings == []
 
     def test_verify_install_missing_commands(self, tmp_path: Path) -> None:
         """Verification catches missing commands directory."""
@@ -525,7 +530,7 @@ class TestProjectCommands:
 
         (tmp_path / "sova.toml").write_text("")
         (tmp_path / ".claude" / "agent-memory").mkdir(parents=True)
-        problems = _verify_install(tmp_path)
+        problems, _warnings = _verify_install(tmp_path)
         assert any("commands" in p for p in problems)
 
     def test_verify_install_missing_memory(self, tmp_path: Path) -> None:
@@ -536,8 +541,19 @@ class TestProjectCommands:
         commands_dir = tmp_path / ".claude" / "commands"
         commands_dir.mkdir(parents=True)
         (commands_dir / "test.md").write_text("# test")
-        problems = _verify_install(tmp_path)
+        problems, _warnings = _verify_install(tmp_path)
         assert any("agent-memory" in p for p in problems)
+
+    def test_verify_install_missing_permissions_is_warning(self, tmp_path: Path) -> None:
+        """Missing agent permissions are returned as warnings, not problems."""
+        from sova.cli.commands.project import _verify_install
+
+        _scaffold_install_artifacts(tmp_path)
+        # Remove permissions so they are missing
+        (tmp_path / ".claude" / "settings.json").unlink()
+        problems, warnings = _verify_install(tmp_path)
+        assert problems == []
+        assert any("permissions" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +635,84 @@ class TestInstallGitIdentityWarning:
 
 
 # ---------------------------------------------------------------------------
+# Agent permissions setup
+# ---------------------------------------------------------------------------
+
+
+class TestAgentPermissionsSetup:
+    async def test_install_creates_permissions(self, tmp_path: Path) -> None:
+        """Install creates agent permissions in .claude/settings.json."""
+        import json
+
+        from sova.cli.commands.project import _install
+
+        # Manually create only the artifacts _verify_install needs,
+        # WITHOUT pre-creating settings.json so the test verifies
+        # that _install itself creates permissions from scratch.
+        (tmp_path / "sova.toml").write_text("[task_source]\ntype = 'github'\n")
+        commands_dir = tmp_path / ".claude" / "commands"
+        commands_dir.mkdir(parents=True, exist_ok=True)
+        (commands_dir / "dummy.md").write_text("---\nname: dummy\n---\n")
+        memory_dir = tmp_path / ".claude" / "agent-memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+
+        settings_path = tmp_path / ".claude" / "settings.json"
+        assert not settings_path.exists()
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.install_commands") as mock_cmds,
+            patch("sova.commands.distribution.install_guidelines") as mock_guides,
+            patch("sova.commands.distribution.install_skills") as mock_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_cmds.return_value = MagicMock(installed=1)
+            mock_guides.return_value = MagicMock(installed=0)
+            mock_sk.return_value = MagicMock(installed=0)
+            await _install(path=tmp_path, no_dashboard=True, update=False)
+
+        assert settings_path.exists()
+        data = json.loads(settings_path.read_text())
+        assert "permissions" in data
+        assert "allow" in data["permissions"]
+        assert "Bash(*)" in data["permissions"]["allow"]
+        assert "Read(*)" in data["permissions"]["allow"]
+        assert "Edit(*)" in data["permissions"]["allow"]
+        assert "Write(*)" in data["permissions"]["allow"]
+
+    async def test_install_update_adds_missing_permissions(self, tmp_path: Path) -> None:
+        """Install with update=True adds missing permissions."""
+        import json
+
+        from sova.cli.commands.project import _install
+
+        _scaffold_install_artifacts(tmp_path)
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)"]}}))
+
+        with (
+            patch("sova.db.session.init_db", new_callable=AsyncMock),
+            patch("sova.commands.distribution.update_commands") as mock_up_cmds,
+            patch("sova.commands.distribution.update_guidelines") as mock_up_guides,
+            patch("sova.commands.distribution.update_skills") as mock_up_sk,
+            patch("sova.commands.catalog.get_canonical_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_guidelines_dir", return_value=tmp_path),
+            patch("sova.commands.catalog.get_skills_dir", return_value=tmp_path),
+            patch("sova.config.loader.load_config"),
+        ):
+            mock_up_cmds.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            mock_up_guides.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            mock_up_sk.return_value = MagicMock(updated=0, skipped=0, conflicts=[])
+            await _install(path=tmp_path, no_dashboard=True, update=True)
+
+        data = json.loads(settings_path.read_text())
+        assert sorted(data["permissions"]["allow"]) == sorted(["Bash(*)", "Read(*)", "Edit(*)", "Write(*)"])
+
+
+# ---------------------------------------------------------------------------
 # Doctor install completeness checks
 # ---------------------------------------------------------------------------
 
@@ -648,6 +742,37 @@ class TestDoctorInstallChecks:
         checks = _check_install_completeness(tmp_path)
         db_check = next(c for c in checks if c[0] == "database")
         assert db_check[1] is False
+
+    def test_check_install_completeness_includes_permissions(self, tmp_path: Path) -> None:
+        """Doctor check reports agent permissions status."""
+        import json
+
+        from sova.cli.commands.doctor import _check_install_completeness
+
+        _scaffold_install_artifacts(tmp_path)
+        (tmp_path / ".claude" / "sova.db").write_text("")
+        settings_path = tmp_path / ".claude" / "settings.json"
+        settings_path.write_text(json.dumps({"permissions": {"allow": ["Bash(*)", "Read(*)", "Edit(*)", "Write(*)"]}}))
+
+        checks = _check_install_completeness(tmp_path)
+        perm_check = next(c for c in checks if c[0] == "agent permissions")
+        assert perm_check[1] is True
+        assert perm_check[2] == "configured"
+
+    def test_check_install_completeness_warns_missing_permissions(self, tmp_path: Path) -> None:
+        """Doctor check warns when agent permissions are missing."""
+        from sova.cli.commands.doctor import _check_install_completeness
+
+        _scaffold_install_artifacts(tmp_path)
+        (tmp_path / ".claude" / "sova.db").write_text("")
+        # Remove the permissions that _scaffold_install_artifacts creates
+        (tmp_path / ".claude" / "settings.json").unlink()
+
+        checks = _check_install_completeness(tmp_path)
+        perm_check = next(c for c in checks if c[0] == "agent permissions")
+        assert perm_check[1] is False
+        assert "missing" in perm_check[2].lower()
+        assert "sova install --update" in perm_check[2]
 
 
 # ---------------------------------------------------------------------------
