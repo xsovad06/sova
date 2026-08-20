@@ -245,6 +245,8 @@ class ServerConfig(BaseSettings):
     port: int = 8111
     pid_file: str = ""
     scheduler_enabled: bool = True
+    log_max_bytes: int = 10_485_760
+    log_backup_count: int = 5
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SERVER_")
 
@@ -254,6 +256,18 @@ class NotificationConfig(BaseSettings):
 
     desktop: bool = False
     slack_webhook_url: str = Field("", repr=False)
+
+    email_enabled: bool = False
+    email_to: str = ""
+    email_from: str = ""
+    email_smtp_host: str = ""
+    email_smtp_port: int = 587
+    email_smtp_starttls: bool = True
+    email_smtp_user: str = Field("", repr=False)
+    email_smtp_password: str = Field("", repr=False)
+
+    webhook_url: str = ""
+    webhook_headers: str = Field("", repr=False)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_NOTIFICATION_")
 

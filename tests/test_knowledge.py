@@ -12,9 +12,19 @@ from sova.db.session import close_db, init_db
 
 
 @pytest.fixture(autouse=True)
-async def setup_db():
-    """Initialize a fresh in-memory DB for each test."""
-    os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+async def setup_db(tmp_path, worker_id):
+    """Initialize a fresh in-memory DB for each test.
+
+    Uses file-based DB for parallel execution to avoid worker isolation issues.
+    """
+    if worker_id == "master":
+        # Single-process execution
+        os.environ["SOVA_DATABASE_URL"] = "sqlite+aiosqlite://"
+    else:
+        # Parallel execution: use unique file per worker to avoid conflicts
+        db_file = tmp_path / f"test_{worker_id}.db"
+        os.environ["SOVA_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file}"
+
     await init_db(run_migrations=False)
     yield
     await close_db()

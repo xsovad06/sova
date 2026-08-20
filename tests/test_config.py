@@ -91,6 +91,82 @@ reviewer = "Koda"
     assert cfg.roles.nicknames == {"reviewer": "Koda"}
 
 
+def test_notification_config_defaults() -> None:
+    """NotificationConfig has correct defaults."""
+    from sova.config.models import NotificationConfig
+
+    cfg = NotificationConfig()
+    assert cfg.desktop is False
+    assert cfg.slack_webhook_url == ""
+    assert cfg.email_enabled is False
+    assert cfg.email_to == ""
+    assert cfg.email_from == ""
+    assert cfg.email_smtp_host == ""
+    assert cfg.email_smtp_port == 587
+    assert cfg.email_smtp_starttls is True
+    assert cfg.email_smtp_user == ""
+    assert cfg.email_smtp_password == ""
+    assert cfg.webhook_url == ""
+    assert cfg.webhook_headers == ""
+
+
+def test_notification_config_from_toml(tmp_path: Path) -> None:
+    """NotificationConfig loads email and webhook settings from TOML."""
+    toml_content = """
+[notification]
+desktop = false
+email_enabled = true
+email_to = "dev@example.com"
+email_from = "sova@example.com"
+email_smtp_host = "smtp.example.com"
+email_smtp_port = 465
+email_smtp_starttls = false
+webhook_url = "https://hooks.example.com/sova"
+webhook_headers = '{"Authorization": "Bearer token123"}'
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.notification.desktop is False
+    assert cfg.notification.email_enabled is True
+    assert cfg.notification.email_to == "dev@example.com"
+    assert cfg.notification.email_from == "sova@example.com"
+    assert cfg.notification.email_smtp_host == "smtp.example.com"
+    assert cfg.notification.email_smtp_port == 465
+    assert cfg.notification.email_smtp_starttls is False
+    assert cfg.notification.webhook_url == "https://hooks.example.com/sova"
+    assert cfg.notification.webhook_headers == '{"Authorization": "Bearer token123"}'
+
+
+def test_server_config_log_rotation_defaults() -> None:
+    """ServerConfig has correct log rotation defaults."""
+    from sova.config.models import ServerConfig
+
+    cfg = ServerConfig()
+    assert cfg.log_max_bytes == 10_485_760  # 10 MB
+    assert cfg.log_backup_count == 5
+
+
+def test_server_config_from_toml(tmp_path: Path) -> None:
+    """ServerConfig loads log rotation settings from TOML."""
+    toml_content = """
+[server]
+host = "0.0.0.0"
+port = 9000
+log_max_bytes = 5242880
+log_backup_count = 3
+"""
+    toml_file = tmp_path / "sova.toml"
+    toml_file.write_text(toml_content)
+
+    cfg = load_config(tmp_path)
+    assert cfg.server.host == "0.0.0.0"
+    assert cfg.server.port == 9000
+    assert cfg.server.log_max_bytes == 5_242_880
+    assert cfg.server.log_backup_count == 3
+
+
 def test_fallback_models_loaded_from_toml(tmp_path: Path) -> None:
     """fallback_models list is loaded from [agent] section."""
     toml_content = """
