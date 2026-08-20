@@ -23,14 +23,14 @@ All configurable timeouts cascade from `sova.toml` or env vars (`SOVA_` prefix).
 ### Timeout conventions
 
 - Use `asyncio.timeout()` (Python 3.11+) for new code, not `asyncio.wait_for()`
-- Always kill the subprocess on timeout -- call `proc.kill()` then `await proc.wait()`
+- Always kill the subprocess on timeout: call `proc.kill()` then `await proc.wait()`
 - Agent stop escalates SIGTERM to SIGKILL after timeout (`sova/ipc/control.py`)
 - Steps that invoke Claude CLI pass `timeout=ctx.config.agent.step_timeout`
 - Steps with their own focused timeouts (CreatePRStep at 120s, ValidateStep at 120s) are not affected
 
 ## Database Session Management
 
-- `expire_on_commit=False` -- objects remain accessible after commit without re-query
+- `expire_on_commit=False`: objects remain accessible after commit without re-query
 - SQLite: `check_same_thread=False` for async multi-threaded access
 - After Alembic migrations on file-backed SQLite, `await engine.dispose()` clears stale schema cache
 - Always use context manager: `async with await get_session() as session:`
@@ -52,7 +52,7 @@ Tests MUST monkeypatch `get_project_dir` to `tmp_path` and may need to clear `_h
 
 ### TTL caches
 
-PR synthesis and issue-PR lookups in `agent_recovery.py` use `time.monotonic()` with a 60-second TTL (`_SYNTHESIS_TTL_SECONDS = 60`, `_check_ttl_cache()`). Use `time.monotonic()` (not `time.time()`) for TTL checks -- immune to clock skew.
+PR synthesis and issue-PR lookups in `agent_recovery.py` use `time.monotonic()` with a 60-second TTL (`_SYNTHESIS_TTL_SECONDS = 60`, `_check_ttl_cache()`). Use `time.monotonic()` (not `time.time()`) for TTL checks, as it is immune to clock skew.
 
 ### LRU caches
 
@@ -92,9 +92,9 @@ Always pass `return_exceptions=True` to `asyncio.gather()` during cancellation.
 
 | Buffer | Max Size | TTL | File |
 |--------|----------|-----|------|
-| Agent output lines | 5000 | -- | `agent_pool.py` (`deque(maxlen=5000)`) |
+| Agent output lines | 5000 | - | `agent_pool.py` (`deque(maxlen=5000)`) |
 | Recently completed agents | 5 | 30s | `agent_pool.py` (`RECENTLY_COMPLETED_TTL`) |
-| Completed batches | 50 | -- | `batch_service.py` (`_MAX_COMPLETED_BATCHES`) |
+| Completed batches | 50 | - | `batch_service.py` (`_MAX_COMPLETED_BATCHES`) |
 
 ## Dashboard Polling Intervals
 
@@ -120,7 +120,7 @@ Current offloading sites: `log_service.py` (log file parsing). Small JSON reads 
 
 ## Subprocess Streaming
 
-LLM output uses JSONL streaming (`--output-format stream-json`). Reads stdout line-by-line without buffering. No active timeout on streaming reads -- process lifetime and budget checks govern total duration. Dashboard agents capture output into a bounded `deque(maxlen=5000)`.
+LLM output uses JSONL streaming (`--output-format stream-json`). Reads stdout line-by-line without buffering. No active timeout on streaming reads; process lifetime and budget checks govern total duration. Dashboard agents capture output into a bounded `deque(maxlen=5000)`.
 
 ## Scheduler Polling
 

@@ -29,7 +29,7 @@ API contract patterns, request/response models, and integration conventions used
 
 ### Response Format
 
-Flat dicts with resource-centric keys -- no global envelope:
+Flat dicts with resource-centric keys, no global envelope:
 
 ```python
 # Collections
@@ -174,11 +174,11 @@ Stream parsing in `sova/dashboard/services/agent_output.py`:
 
 Two Pydantic models for inter-agent state (`sova/ipc/handoff.py`):
 
-**HandoffAction** -- button definition:
+**HandoffAction** (button definition):
 - `id`, `label`, `style` (`approve|neutral|danger`), `mode` (`agent|claude-command|shell`)
 - `command`, `args`, `auto_execute`
 
-**DashboardHandoff** -- file-based state:
+**DashboardHandoff** (file-based state):
 - `source`, `status` (`awaiting_action|completed|failed`), `issue`, `pr_number`
 - `summary`, `next_actions` (list of HandoffAction)
 

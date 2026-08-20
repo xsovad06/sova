@@ -209,7 +209,7 @@ Control position with `data-tooltip-pos` (default: `top`):
 
 ### Sidebar Behavior
 
-Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS -- any `[data-tooltip]` inside `.sidebar` follows this rule.
+Sidebar tooltips (`right` position) only appear when the sidebar is collapsed. When expanded, labels are visible so tooltips are suppressed. This is handled automatically by the CSS; any `[data-tooltip]` inside `.sidebar` follows this rule.
 
 ### Disabled Buttons
 

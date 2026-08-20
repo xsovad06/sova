@@ -16,13 +16,13 @@ SOVA defines one custom exception. Prefer standard library exceptions elsewhere.
 **SonarCloud S5713 rule**: never catch both parent and child in the same except tuple:
 
 ```python
-# Wrong -- redundant
+# Wrong: redundant
 except (json.JSONDecodeError, ValueError):
 
-# Correct -- broad catch
+# Correct: broad catch
 except ValueError:
 
-# Correct -- narrow catch for JSON + separate concern
+# Correct: narrow catch for JSON + separate concern
 except (json.JSONDecodeError, OSError):
 ```
 
@@ -37,7 +37,7 @@ log = get_logger(component="module.name")
 
 - **Event names**: dot-delimited keys (`step.create_pr.assign_failed`, `workflow.gate.failed`)
 - **Always pass `exc_info=True`** in warning/error calls inside except blocks
-- **Never use bare `print()`** for diagnostics -- use the logger
+- **Never use bare `print()`** for diagnostics. Use the logger.
 
 ## Non-Fatal Side Effects
 
@@ -59,14 +59,14 @@ This pattern appears in 100+ locations including:
 
 ## Typer Exit and Dashboard Endpoints
 
-`typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly -- `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
+`typer.Exit` inherits from `SystemExit` (a `BaseException`), **not** `Exception`. Any dashboard endpoint that calls a CLI function raising `typer.Exit` must catch `SystemExit` explicitly. `except Exception` will not intercept it, causing an unhandled 500 with a raw traceback.
 
 ```python
-# Wrong -- typer.Exit escapes this
+# Wrong: typer.Exit escapes this
 except Exception as exc:
     raise HTTPException(status_code=500, detail=str(exc))
 
-# Correct -- catch SystemExit for CLI errors, generic message for others
+# Correct: catch SystemExit for CLI errors, generic message for others
 except SystemExit:
     raise HTTPException(status_code=404, detail="Project directory not found")
 except Exception:
@@ -89,14 +89,14 @@ except Exception:
 When iterating over items to delete (files, directories, registry entries), wrap try/except **inside** the loop so one failure doesn't skip the remaining items.
 
 ```python
-# Wrong -- first failure skips everything after it
+# Wrong: first failure skips everything after it
 try:
     for name in items:
         (path / name).unlink()
 except OSError as exc:
     failed.append(f"cleanup: {exc}")
 
-# Correct -- each item attempted independently
+# Correct: each item attempted independently
 for name in items:
     try:
         (path / name).unlink()
@@ -117,7 +117,7 @@ Two modes in `sova/utils/shell.py`:
 
 - Timeout uses `asyncio.timeout()`; on expiry, kills process, returns `returncode=-1`
 - `subprocess_error()` factory truncates stderr to 500 chars
-- Always catch `ProcessLookupError` when calling `proc.kill()` -- the process may already be dead
+- Always catch `ProcessLookupError` when calling `proc.kill()`, as the process may already be dead
 
 ## Step-Level Retry
 
@@ -125,10 +125,10 @@ Two modes in `sova/utils/shell.py`:
 
 1. Attempts = `step.max_retries + 1` (default `max_retries=0`, one attempt)
 2. Catches broad `Exception` during `step.execute()`, converts to `StepResult(success=False)`
-3. On success, runs `step.validate_output()` (gate check) -- gate failure is NOT retried
+3. On success, runs `step.validate_output()` (gate check). Gate failure is NOT retried.
 4. Records attempt count and duration in `StepExecution` DB records
 
-**Do NOT implement retry logic inside step `execute()` methods** -- declare `max_retries` on the class.
+**Do NOT implement retry logic inside step `execute()` methods.** Declare `max_retries` on the class.
 
 ## Gate Check Validation
 
@@ -171,7 +171,7 @@ Multiple codepaths can finalize a TaskRun. Always guard:
 
 ```python
 if task_run.status in TASK_RUN_TERMINAL:
-    return  # Don't overwrite status -- but still update cost
+    return  # Don't overwrite status, but still update cost
 ```
 
 Status updates are conditional (once terminal, never overwrite); cost updates are unconditional (stream cost is authoritative).
@@ -180,7 +180,7 @@ Status updates are conditional (once terminal, never overwrite); cost updates ar
 
 When LLM calls fail for user-facing outputs, always provide a structured fallback from available data. **Never discard to a bare stub.**
 
-PR body generation uses a deterministic template (`_build_pr_body()`) -- no LLM call. For steps that still use conditional LLM calls (validate, monitor_ci, rebase), the pattern is:
+PR body generation uses a deterministic template (`_build_pr_body()`) with no LLM call. For steps that still use conditional LLM calls (validate, monitor_ci, rebase), the pattern is:
 
 ```python
 try:

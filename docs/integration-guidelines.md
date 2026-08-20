@@ -101,7 +101,7 @@ Fire-and-forget via `asyncio.create_task()`. Three backends by platform:
 | JXA | macOS (fallback) | `osascript -l JavaScript`, `json.dumps()` for escaping |
 | `notify-send` | Linux | Standard `run()` call |
 
-All paths wrapped in `try/except` -- notifications never crash the pipeline.
+All paths wrapped in `try/except`, so notifications never crash the pipeline.
 
 ## Agent Process Control (`sova/ipc/control.py`, `sova/ipc/runtime.py`)
 

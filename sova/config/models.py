@@ -575,6 +575,15 @@ class SupervisorConfig(BaseSettings):
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SUPERVISOR_")
 
 
+class A2AConfig(BaseSettings):
+    """A2A (Agent-to-Agent) protocol configuration."""
+
+    enabled: bool = False
+    endpoint_base: str = ""
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_A2A_")
+
+
 class OversightConfig(BaseSettings):
     """Oversight agent configuration."""
 
@@ -705,6 +714,7 @@ class ProjectConfig(BaseSettings):
     fleet: FleetConfig = Field(default_factory=FleetConfig)
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
+    a2a: A2AConfig = Field(default_factory=A2AConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
 
