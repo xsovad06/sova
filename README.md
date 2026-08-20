@@ -315,6 +315,32 @@ SOVA is in **alpha** (v0.1.0). Keep the following in mind:
 - **GitHub-first**: GitHub Issues is fully supported. Jira Cloud is supported with partial lifecycle integration. Linear is planned.
 - **SQLite default**: suitable for single-developer use. PostgreSQL is supported but requires manual configuration.
 
+## Diagnostics and Maintenance
+
+### Failure Rate Audit
+
+Monitor SOVA's failure rate and identify patterns with the audit script. Run it after major infrastructure changes, quarterly for trend tracking, or when investigating reported high failure rates.
+
+```bash
+# Human-readable report
+python scripts/audit_sova_failures.py
+
+# Include error clusters
+python scripts/audit_sova_failures.py --detailed
+
+# JSON output for automation
+python scripts/audit_sova_failures.py --json
+```
+
+The audit tracks:
+- Overall success/failure rates
+- Step-level failure rates
+- Error message clusters
+- Timeout, budget, and gate check failures
+- Before/after comparisons for infrastructure changes
+
+For full details and example output, see [scripts/README.md](scripts/README.md).
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and PR guidelines.
