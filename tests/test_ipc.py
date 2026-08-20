@@ -849,6 +849,157 @@ class TestNotify:
             assert call_order == ["notify_returned", "desktop_done"]
 
 
+class TestEmailNotification:
+    async def test_send_email_notification_success(self) -> None:
+        from sova.ipc.notifications import send_email_notification
+
+        config = NotificationConfig(
+            email_enabled=True,
+            email_to="dev@example.com",
+            email_from="sova@example.com",
+            email_smtp_host="smtp.example.com",
+            email_smtp_port=587,
+            email_smtp_starttls=True,
+            email_smtp_user="user@example.com",
+            email_smtp_password="secret",
+        )
+
+        with patch("sova.ipc.notifications.smtplib.SMTP") as mock_smtp_cls:
+            mock_smtp = MagicMock()
+            mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
+
+            await send_email_notification(config, "SOVA Alert", "Developer finished #42")
+
+            mock_smtp_cls.assert_called_once_with("smtp.example.com", 587, timeout=30)
+            mock_smtp.starttls.assert_called_once()
+            mock_smtp.login.assert_called_once_with("user@example.com", "secret")
+            mock_smtp.send_message.assert_called_once()
+
+            msg = mock_smtp.send_message.call_args[0][0]
+            assert msg["Subject"] == "SOVA Alert"
+            assert msg["From"] == "sova@example.com"
+            assert msg["To"] == "dev@example.com"
+            assert "Developer finished #42" in msg.get_content()
+
+    async def test_send_email_notification_no_starttls(self) -> None:
+        from sova.ipc.notifications import send_email_notification
+
+        config = NotificationConfig(
+            email_enabled=True,
+            email_to="dev@example.com",
+            email_from="sova@example.com",
+            email_smtp_host="smtp.example.com",
+            email_smtp_port=465,
+            email_smtp_starttls=False,
+        )
+
+        with patch("sova.ipc.notifications.smtplib.SMTP") as mock_smtp_cls:
+            mock_smtp = MagicMock()
+            mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
+
+            await send_email_notification(config, "Title", "Body")
+
+            mock_smtp.starttls.assert_not_called()
+
+    async def test_send_email_notification_error_logged(self) -> None:
+        from sova.ipc.notifications import _safe_notify, send_email_notification
+
+        config = NotificationConfig(
+            email_enabled=True,
+            email_to="dev@example.com",
+            email_from="sova@example.com",
+            email_smtp_host="smtp.example.com",
+        )
+
+        with patch("sova.ipc.notifications.send_email_notification", side_effect=Exception("SMTP error")):
+            coro = send_email_notification(config, "Title", "Body")
+            await _safe_notify("notify.email_failed", coro, "Title")
+
+
+class TestWebhookNotification:
+    async def test_send_webhook_notification_success(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from sova.ipc.notifications import send_webhook_notification
+
+        with patch("sova.ipc.notifications.httpx.AsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            await send_webhook_notification(
+                "https://hooks.example.com/sova",
+                '{"Authorization": "Bearer token"}',
+                "SOVA Alert",
+                "Developer finished #42",
+            )
+
+            mock_client.post.assert_awaited_once()
+            call_args = mock_client.post.call_args
+            assert call_args[0][0] == "https://hooks.example.com/sova"
+            assert call_args[1]["json"]["title"] == "SOVA Alert"
+            assert call_args[1]["json"]["message"] == "Developer finished #42"
+            assert call_args[1]["headers"]["Authorization"] == "Bearer token"
+
+    async def test_send_webhook_notification_error_logged(self) -> None:
+        from sova.ipc.notifications import _safe_notify, send_webhook_notification
+
+        with patch("sova.ipc.notifications.send_webhook_notification", side_effect=Exception("HTTP error")):
+            coro = send_webhook_notification("https://example.com", "", "Title", "Body")
+            await _safe_notify("notify.webhook_failed", coro, "Title")
+
+
+class TestNotifyDispatcher:
+    async def test_notify_dispatches_to_email(self) -> None:
+        from sova.ipc.notifications import notify
+
+        config = NotificationConfig(
+            desktop=False,
+            email_enabled=True,
+            email_to="dev@example.com",
+            email_from="sova@example.com",
+            email_smtp_host="smtp.example.com",
+        )
+
+        with (
+            patch("sova.ipc.notifications.send_desktop_notification") as mock_desktop,
+            patch("sova.ipc.notifications.send_email_notification") as mock_email,
+        ):
+            notify(config, "Title", "Body", subtitle="Sub")
+            await asyncio.sleep(0.01)
+
+            mock_desktop.assert_not_awaited()
+            mock_email.assert_awaited_once()
+            assert mock_email.call_args[0][0] == config
+            assert mock_email.call_args[0][1] == "Title"
+            assert "Sub" in mock_email.call_args[0][2]
+            assert "Body" in mock_email.call_args[0][2]
+
+    async def test_notify_dispatches_to_webhook(self) -> None:
+        from sova.ipc.notifications import notify
+
+        config = NotificationConfig(
+            desktop=False,
+            webhook_url="https://hooks.example.com/sova",
+            webhook_headers='{"Authorization": "Bearer token"}',
+        )
+
+        with (
+            patch("sova.ipc.notifications.send_desktop_notification") as mock_desktop,
+            patch("sova.ipc.notifications.send_webhook_notification") as mock_webhook,
+        ):
+            notify(config, "Title", "Body")
+            await asyncio.sleep(0.01)
+
+            mock_desktop.assert_not_awaited()
+            mock_webhook.assert_awaited_once()
+            assert mock_webhook.call_args[0][0] == "https://hooks.example.com/sova"
+            assert mock_webhook.call_args[0][2] == "Title"
+            assert mock_webhook.call_args[0][3] == "Body"
+
+
 # ---------------------------------------------------------------------------
 # AgentRuntime
 # ---------------------------------------------------------------------------

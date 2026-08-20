@@ -168,12 +168,90 @@ machine_id = ""                            # Auto-derived from hostname+username
 
 For the full configuration reference, see [`sova/config/models.py`](sova/config/models.py). Environment variables override TOML values using the `SOVA_` prefix (e.g., `SOVA_BASE_BRANCH=develop`).
 
+## Notifications
+
+SOVA supports multiple notification backends for agent handoffs and system events:
+
+```toml
+[notification]
+# Desktop notifications (macOS via terminal-notifier or JXA, Linux via notify-send)
+desktop = false
+
+# Slack webhook
+slack_webhook_url = ""
+
+# Email via SMTP
+email_enabled = true
+email_to = "dev@example.com"
+email_from = "sova@example.com"
+email_smtp_host = "smtp.example.com"
+email_smtp_port = 587
+email_smtp_starttls = true
+# Credentials via env: SOVA_NOTIFICATION_EMAIL_SMTP_USER, SOVA_NOTIFICATION_EMAIL_SMTP_PASSWORD
+
+# Generic webhook (HTTP POST)
+webhook_url = "https://hooks.example.com/sova"
+webhook_headers = '{"Authorization": "Bearer token123"}'  # JSON object with custom headers
+```
+
+All backends are fire-and-forget. Errors are logged but never block agent execution.
+
+## Server Management
+
+SOVA can run as an always-on service (dashboard + scheduler daemon):
+
+```bash
+# Start the server
+sova server start --host 127.0.0.1 --port 8111
+
+# Restart the server
+sova server restart
+
+# Stop the server
+sova server stop
+
+# Check server status
+sova server status
+
+# View activity summary
+sova server digest --hours 24
+
+# Install as system service (systemd on Linux, launchd on macOS)
+sova server install-service --type systemd --project /path/to/project
+```
+
+After installing as a service:
+
+```bash
+# systemd
+systemctl --user enable sova-server
+systemctl --user start sova-server
+systemctl --user status sova-server
+
+# launchd
+launchctl load ~/Library/LaunchAgents/com.sova.server.plist
+launchctl start com.sova.server
+launchctl list | grep sova
+```
+
+**Health monitoring**: The server exposes health and digest endpoints for external monitoring:
+- `GET /api/scheduler/health` -- uptime, scan count, error count, agent slots, DB status
+- `GET /api/scheduler/digest?hours=24` -- tasks completed/failed, cost summary
+
+**Log rotation**: When `log_file` is configured, logs rotate automatically (10 MB max, 5 backups by default). Configure via:
+
+```toml
+[server]
+log_max_bytes = 10485760    # 10 MB
+log_backup_count = 5
+```
+
 ## CLI Reference
 
 | Category | Commands |
 |----------|----------|
 | **Core** | `sova run <issue>`, `sova triage <issue>`, `sova harden <issue>`, `sova watch`, `sova parallel` |
-| **Server** | `sova server start\|stop\|status` |
+| **Server** | `sova server start\|stop\|restart\|status\|digest\|install-service` |
 | **Setup** | `sova install <path>`, `sova setup <path>`, `sova uninstall <path>`, `sova init-db`, `sova doctor` |
 | **PR Ops** | `sova address-pr <pr>`, `sova maintain-pr <pr>`, `sova review-pr <pr>`, `sova learn-from-pr <pr>` |
 | **Monitor** | `sova status`, `sova costs`, `sova config`, `sova dashboard` |

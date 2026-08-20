@@ -206,6 +206,50 @@ class TestWatchLoop:
         loop.stop()
         assert loop.is_running is False
 
+    async def test_health_returns_initial_metrics(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        config = _make_config()
+        adapter = _mock_adapter()
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        health = loop.health()
+
+        assert "uptime_seconds" in health
+        assert health["uptime_seconds"] >= 0
+        assert health["scans_total"] == 0
+        assert health["errors_total"] == 0
+        assert health["last_scan_at"] is None
+
+    async def test_health_tracks_scan_count(self) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [_make_task("1", state=TaskState.TRIAGED)]
+        adapter = _mock_adapter(tasks=tasks)
+        config = _make_config()
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        await loop.scan()
+        await loop.scan()
+
+        health = loop.health()
+        assert health["scans_total"] == 2
+        assert health["last_scan_at"] is not None
+
+    @patch("sova.scheduler.watch.dispatch", side_effect=RuntimeError("boom"))
+    async def test_health_tracks_error_count(self, mock_dispatch: AsyncMock) -> None:
+        from sova.scheduler.watch import WatchLoop
+
+        tasks = [_make_task("1", state=TaskState.RESEARCHED)]
+        adapter = _mock_adapter(tasks=tasks)
+        config = _make_config()
+        loop = WatchLoop(config=config, adapter=adapter)
+
+        await loop.process_task(tasks[0])
+
+        health = loop.health()
+        assert health["errors_total"] == 1
+
 
 # ---------------------------------------------------------------------------
 # ParallelExecutor tests
@@ -360,6 +404,52 @@ class TestSOVAServer:
 
         assert app is not None
         assert app.title == "SOVA Dashboard"
+
+    async def test_server_health_endpoint_returns_metrics(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        app = server.create_app()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/scheduler/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "status" in data
+        assert "uptime_seconds" in data
+        assert "scheduler" in data
+        assert data["scheduler"]["running"] in (True, False)
+        assert "scans_total" in data["scheduler"]
+        assert "errors_total" in data["scheduler"]
+        assert "agents" in data
+        assert "db" in data
+
+    async def test_server_digest_endpoint_returns_summary(self) -> None:
+        import httpx
+        from httpx import ASGITransport
+
+        from sova.scheduler.server import SOVAServer
+
+        config = _make_config()
+        server = SOVAServer(config=config)
+        app = server.create_app()
+
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/scheduler/digest")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "period_hours" in data
+        assert "tasks" in data
+        assert "cost_usd" in data
+        assert isinstance(data["tasks"]["completed"], int)
+        assert isinstance(data["tasks"]["failed"], int)
+        assert isinstance(data["cost_usd"], (int, float))
 
     async def test_server_has_scheduler_status_endpoint(self) -> None:
         import httpx
@@ -1099,3 +1189,179 @@ class TestParallelExecutorCoverage:
 
         assert fake_task.cancelled() or fake_task.done()
         assert len(executor._active) == 0
+
+
+class TestServerCLICommands:
+    """Tests for sova server CLI commands."""
+
+    def test_restart_command_calls_stop_then_start(self, tmp_path: Path) -> None:
+        """restart command calls stop() then start()."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+        pid_file = tmp_path / "test.pid"
+
+        # Mock both stop and start to avoid actual server startup
+        with (
+            patch("sova.scheduler.server.stop_server", return_value=True) as mock_stop,
+            patch("sova.scheduler.server.SOVAServer") as mock_server_class,
+            patch("sova.config.loader.load_config") as mock_config,
+            patch("sova.config.registry.has_projects", return_value=False),
+        ):
+            mock_config.return_value = _make_config(server={"pid_file": str(pid_file)})
+            mock_server = MagicMock()
+            mock_server_class.return_value = mock_server
+
+            runner.invoke(app, ["restart", "--project", str(tmp_path)])
+
+            # Should have called stop_server
+            assert mock_stop.called
+            # Should have created and run a new server
+            assert mock_server.run.called
+
+    def test_digest_command_prints_summary(self, tmp_path: Path) -> None:
+        """digest command queries DB and prints summary."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+
+        # Mock DB session with canned results
+        mock_session = AsyncMock()
+        mock_session.close = AsyncMock()
+
+        # Create mock results with proper scalar return values
+        completed_result = MagicMock()
+        completed_result.scalar.return_value = 5
+
+        failed_result = MagicMock()
+        failed_result.scalar.return_value = 1
+
+        in_progress_result = MagicMock()
+        in_progress_result.scalar.return_value = 2
+
+        cost_result = MagicMock()
+        cost_result.scalar.return_value = 12.50
+
+        async def mock_execute(*args, **kwargs):
+            # Rotate through results
+            if not hasattr(mock_execute, "call_count"):
+                mock_execute.call_count = 0
+            mock_execute.call_count += 1
+
+            results = [completed_result, failed_result, in_progress_result, cost_result]
+            return results[mock_execute.call_count - 1]
+
+        mock_session.execute.side_effect = mock_execute
+
+        async def async_get_session(*args, **kwargs):
+            return mock_session
+
+        with patch("sova.db.session.get_session", side_effect=async_get_session):
+            result = runner.invoke(app, ["digest", "--project", str(tmp_path), "--hours", "24"])
+
+            assert result.exit_code == 0
+            # Output goes to stderr via console.print
+            output = result.stdout + (result.stderr or "")
+            assert "Tasks completed: 5" in output or "5" in output
+            assert "Tasks failed: 1" in output or "1" in output
+            assert "$12.50" in output
+
+    def test_install_service_systemd(self, tmp_path: Path) -> None:
+        """install-service --type systemd renders and installs the service unit."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+        target_dir = tmp_path / ".config" / "systemd" / "user"
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/sova"),
+        ):
+            result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path)])
+
+            assert result.exit_code == 0
+            service_file = target_dir / "sova-server.service"
+            assert service_file.exists()
+
+            content = service_file.read_text()
+            assert "ExecStart=/usr/bin/sova server start" in content
+            assert f"SOVA_PROJECT_DIR={tmp_path}" in content
+            assert "StandardOutput=journal" in content
+            assert "Environment=HOME=%h" in content
+
+    def test_install_service_launchd(self, tmp_path: Path) -> None:
+        """install-service --type launchd renders and installs the plist."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+        target_dir = tmp_path / "Library" / "LaunchAgents"
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/local/bin/sova"),
+        ):
+            result = runner.invoke(app, ["install-service", "--type", "launchd", "--project", str(tmp_path)])
+
+            assert result.exit_code == 0
+            plist_file = target_dir / "com.sova.server.plist"
+            assert plist_file.exists()
+
+            content = plist_file.read_text()
+            assert "<string>/usr/local/bin/sova</string>" in content
+            assert f"<string>{tmp_path}</string>" in content
+            assert f"{tmp_path}/Library/Logs/sova/sova-server.log" in content
+            assert f"{tmp_path}/Library/Logs/sova/sova-server.err" in content
+            assert "<key>SOVA_PROJECT_DIR</key>" in content
+
+    def test_install_service_refuses_overwrite_without_force(self, tmp_path: Path) -> None:
+        """install-service refuses to overwrite existing file without --force."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+        target_dir = tmp_path / ".config" / "systemd" / "user"
+        target_dir.mkdir(parents=True)
+        existing_file = target_dir / "sova-server.service"
+        existing_file.write_text("existing content")
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/sova"),
+        ):
+            result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path)])
+
+            assert result.exit_code == 1
+            output = result.stdout + (result.stderr or "")
+            assert "already exists" in output.lower()
+            assert existing_file.read_text() == "existing content"
+
+    def test_install_service_overwrites_with_force(self, tmp_path: Path) -> None:
+        """install-service --force overwrites existing file."""
+        from typer.testing import CliRunner
+
+        from sova.cli.commands.server import app
+
+        runner = CliRunner()
+        target_dir = tmp_path / ".config" / "systemd" / "user"
+        target_dir.mkdir(parents=True)
+        existing_file = target_dir / "sova-server.service"
+        existing_file.write_text("old content")
+
+        with (
+            patch("pathlib.Path.home", return_value=tmp_path),
+            patch("shutil.which", return_value="/usr/bin/sova"),
+        ):
+            result = runner.invoke(app, ["install-service", "--type", "systemd", "--project", str(tmp_path), "--force"])
+
+            assert result.exit_code == 0
+            assert existing_file.read_text() != "old content"
+            assert "ExecStart=/usr/bin/sova" in existing_file.read_text()

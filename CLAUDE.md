@@ -15,7 +15,14 @@ sova uninstall /path/to/project     # Remove SOVA from a project
 sova run 42                         # Work on issue #42
 sova triage 42                      # Triage a single issue
 sova dashboard --project /path      # Start web UI at http://localhost:8111
-sova server start                   # Start dashboard + scheduler daemon
+
+# Server management (dashboard + scheduler daemon)
+sova server start                   # Start the server
+sova server restart                 # Restart the server
+sova server stop                    # Stop the server
+sova server status                  # Check if server is running
+sova server digest --hours 24       # Show activity summary
+sova server install-service --type systemd  # Install as system service
 
 # Dashboard (shortcut)
 make serve                          # Start web UI at http://localhost:8111
