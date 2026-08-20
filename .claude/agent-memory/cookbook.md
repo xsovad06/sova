@@ -363,6 +363,7 @@ Fully documented in `.claude/rules/` or `.claude/skills/`. One-line refs only.
 - **Security-critical config models must keep `extra="forbid"`** -- bulk `extra="ignore"` for forward compat silently weakens security when applied to `EgressConfig` (typo `mdoe="block"` falls back to `mode="warn"`). Carve out `extra="forbid"` for models where unknown-key tolerance has security consequences. PR #654. [confirmed: 1]
 - **DB-backed writers must seed sequence from existing records on re-adoption** -- `OutputWriter._next_line_number` starts at 0; query `MAX(line_number)` on first flush. PR #243. [confirmed: 1]
 - **Never log user-controlled path/query parameters directly** -- SonarCloud flags `log.warning("... %s", task_id)` when `task_id` comes from URL path as a security vulnerability (log injection). Use validated internal values instead (e.g., `run_id` after parsing). PR #703. [confirmed: 1]
+- **Never return `str(e)` in API error responses** -- exposes SQL statements, database paths, or driver details to callers. Log the exception with `exc_info=True` and return a fixed message (e.g., `{"error": "Failed to persist configuration"}`). PR #707. [confirmed: 1]
 
 ## Awareness Subsystem
 
