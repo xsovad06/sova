@@ -24,7 +24,7 @@ A unified repository that ships:
 
 ```
 sova/
-  sova/                            # Python package (20 modules)
+  sova/                            # Python package (19 modules)
     cli/                           # Typer CLI (24 top-level commands, 43 total with subcommands)
     core/                          # Workflow engine, 29 step implementations, state machine
     roles/                         # Agent roles (triage, researcher, developer, reviewer, custom, planner)
