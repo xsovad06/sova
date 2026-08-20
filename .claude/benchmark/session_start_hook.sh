@@ -12,6 +12,11 @@ source "$SCRIPT_DIR/resolve_root.sh"
 readonly ISSUE_BRANCH_PATTERN='^(feat|fix|refactor|chore|test|docs)/issue-([0-9]+)'
 
 main() {
+    # Skip logging for SOVA-spawned agent sessions (data comes from DB instead)
+    if [ "${SOVA_AGENT_RUN:-}" = "1" ]; then
+        exit 0
+    fi
+
     local project_dir
     project_dir="$(resolve_project_root)"
 
