@@ -59,9 +59,9 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
     try:
         identity = await check_git_identity(cwd=project_dir)
         if not identity.valid:
-            missing = ", ".join(identity.missing_fields)
+            _ = ", ".join(identity.missing_fields)
             console.print(
-                f"[yellow]Warning: git identity incomplete (missing {missing}). "
+                f"[yellow]Warning: git identity incomplete (missing {_}). "
                 f"Agents need this to commit. Set with: git config user.name / user.email[/yellow]"
             )
     except Exception:
@@ -80,6 +80,12 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
 
     # Load config once -- used by Stage 4 (commands) and Stage 5 (RTK)
     cfg = load_config(project_dir)
+
+    # Stage 3.5: Agent permissions (non-fatal)
+    try:
+        _configure_agent_permissions(claude_dir, update=update)
+    except Exception as exc:
+        console.print(f"[yellow]Warning: agent permission setup failed: {exc}[/yellow]")
 
     # Stage 4: Commands, guidelines, and skills
     try:
@@ -149,9 +155,12 @@ async def _install(*, path: Path | None, no_dashboard: bool, update: bool) -> No
             console.print(f"[yellow]Warning: agent memory setup failed: {exc}[/yellow]")
 
     # Verify and report
-    problems = _verify_install(project_dir, update=update)
+    problems, install_warnings = _verify_install(project_dir, update=update)
     if "commands" in failed_stages:
         problems.append("commands/guidelines installation failed")
+    if install_warnings:
+        for warning in install_warnings:
+            console.print(f"  [yellow]Warning: {warning}[/yellow]")
     if problems:
         console.print("\n[red]Installation incomplete -- the following are missing:[/red]")
         for problem in problems:
@@ -184,6 +193,25 @@ async def _configure_git_hooks(project_dir: Path) -> None:
             console.print("[green]Configured git hooks: core.hooksPath = .githooks[/green]")
         else:
             console.print("[yellow]Warning: failed to configure git hooks[/yellow]")
+
+
+def _configure_agent_permissions(claude_dir: Path, *, update: bool) -> None:
+    """Inject agent permissions into .claude/settings.json."""
+    from sova.utils.permissions import check_agent_permissions, inject_agent_permissions
+
+    has_all, missing = check_agent_permissions(claude_dir)
+
+    if has_all:
+        if not update:
+            console.print("[dim]Agent permissions already configured.[/dim]")
+        return
+
+    if inject_agent_permissions(claude_dir):
+        console.print("[green]Agent permissions configured.[/green]")
+    else:
+        has_all_after, still_missing = check_agent_permissions(claude_dir)
+        if not has_all_after:
+            console.print(f"[yellow]Warning: missing permissions: {', '.join(still_missing)}[/yellow]")
 
 
 def _configure_rtk(cfg: ProjectConfig, claude_dir: Path) -> None:
@@ -230,11 +258,16 @@ def _create_agent_memory(claude_dir: Path) -> None:
             mem_file.write_text(f"# {name.replace('.md', '').replace('-', ' ').title()}\n")
 
 
-def _verify_install(project_dir: Path, *, update: bool = False) -> list[str]:
-    """Check that a SOVA installation has all critical artifacts."""
+def _verify_install(project_dir: Path, *, update: bool = False) -> tuple[list[str], list[str]]:
+    """Check that a SOVA installation has all critical artifacts.
+
+    Returns (problems, warnings) where problems are fatal and warnings are advisory.
+    """
     from sova.commands.catalog import get_canonical_dir
+    from sova.utils.permissions import check_agent_permissions
 
     problems: list[str] = []
+    warnings: list[str] = []
 
     try:
         if not (project_dir / "sova.toml").exists():
@@ -249,10 +282,16 @@ def _verify_install(project_dir: Path, *, update: bool = False) -> list[str]:
             memory_dir = project_dir / ".claude" / "agent-memory"
             if not memory_dir.is_dir():
                 problems.append(".claude/agent-memory/ directory missing")
+
+        # Agent permissions are advisory (non-fatal)
+        claude_dir = project_dir / ".claude"
+        has_all, missing = check_agent_permissions(claude_dir)
+        if not has_all:
+            warnings.append(f"agent permissions missing: {', '.join(missing)}")
     except OSError as exc:
         problems.append(f"cannot verify installation: {exc}")
 
-    return problems
+    return (problems, warnings)
 
 
 def uninstall(

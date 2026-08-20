@@ -208,22 +208,19 @@ def _validate_sova_config(project_dir: Path) -> list[_Check]:
 
 def _check_github_config(cfg: ProjectConfig) -> list[_Check]:
     """Check GitHub-specific configuration fields."""
-    repo = cfg.github_repo or _EMPTY
-    user = cfg.github_user or _EMPTY
     return [
-        ("github_repo configured", bool(cfg.github_repo), repo, False),
-        ("github_user configured", bool(cfg.github_user), user, False),
+        ("github_repo configured", bool(cfg.github_repo), cfg.github_repo or _EMPTY, False),
+        ("github_user configured", bool(cfg.github_user), cfg.github_user or _EMPTY, False),
     ]
 
 
 def _check_jira_config(cfg: ProjectConfig) -> list[_Check]:
     """Check Jira-specific configuration fields."""
     ts = cfg.task_source
-    token_detail = "(set)" if ts.jira_api_token else _EMPTY
     return [
         ("jira_base_url", bool(ts.jira_base_url), ts.jira_base_url or _EMPTY, False),
         ("jira_email", bool(ts.jira_email), ts.jira_email or _EMPTY, False),
-        ("jira_api_token", bool(ts.jira_api_token), token_detail, False),
+        ("jira_api_token", bool(ts.jira_api_token), "(set)" if ts.jira_api_token else _EMPTY, False),
         ("jira_project_key", bool(ts.jira_project_key), ts.jira_project_key or _EMPTY, False),
     ]
 
@@ -326,6 +323,8 @@ async def _check_agent_runtime(project_dir: Path) -> list[_Check]:
 
 def _check_install_completeness(project_dir: Path) -> list[_Check]:
     """Check that sova install created all expected artifacts."""
+    from sova.utils.permissions import check_agent_permissions
+
     checks: list[_Check] = []
 
     commands_dir = project_dir / ".claude" / "commands"
@@ -347,6 +346,15 @@ def _check_install_completeness(project_dir: Path) -> list[_Check]:
 
     db_path = project_dir / ".claude" / "sova.db"
     checks.append(("database", db_path.is_file(), str(db_path) if db_path.is_file() else "missing", True))
+
+    # Agent permissions (warning-level: agents now use bypassPermissions by default)
+    claude_dir = project_dir / ".claude"
+    has_all, missing = check_agent_permissions(claude_dir)
+    if has_all:
+        checks.append(("agent permissions", True, "configured", False))
+    else:
+        detail = f"missing {', '.join(missing)} -- run: sova install --update"
+        checks.append(("agent permissions", False, detail, False))
 
     return checks
 
