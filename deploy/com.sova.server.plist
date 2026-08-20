@@ -22,6 +22,8 @@
 
     <key>EnvironmentVariables</key>
     <dict>
+        <key>SOVA_PROJECT_DIR</key>
+        <string>/path/to/your/project</string>
         <!-- Uncomment for PostgreSQL team deployments -->
         <!-- <key>SOVA_DATABASE_URL</key> -->
         <!-- <string>postgresql://user:pass@localhost:5432/sova</string> -->
@@ -36,11 +38,12 @@
         <false/>
     </dict>
 
+    <!-- Use persistent log directory instead of /tmp -->
     <key>StandardOutPath</key>
-    <string>/tmp/sova-server.log</string>
+    <string>~/Library/Logs/sova/sova-server.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/tmp/sova-server.err</string>
+    <string>~/Library/Logs/sova/sova-server.err</string>
 
     <key>ProcessType</key>
     <string>Background</string>

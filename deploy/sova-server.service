@@ -6,6 +6,8 @@ After=network.target
 [Service]
 Type=simple
 User=%i
+# Set the home directory for ~/.claude resolution
+Environment=HOME=%h
 # Set the project directory as an environment variable
 Environment=SOVA_PROJECT_DIR=/path/to/your/project
 # Uncomment for PostgreSQL team deployments:
@@ -13,6 +15,10 @@ Environment=SOVA_PROJECT_DIR=/path/to/your/project
 
 ExecStart=sova server start --host 0.0.0.0 --port 8111 --project ${SOVA_PROJECT_DIR}
 ExecStop=sova server stop --project ${SOVA_PROJECT_DIR}
+
+# Use journald for log rotation
+StandardOutput=journal
+StandardError=journal
 
 Restart=on-failure
 RestartSec=10
@@ -24,4 +30,4 @@ ProtectHome=read-only
 ReadWritePaths=%h/.config/sova %h/.claude
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
