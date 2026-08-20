@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -299,43 +299,27 @@ class TestFleetManagerService:
 
     @pytest.mark.asyncio
     async def test_set_max_concurrent_unknown_project(self) -> None:
-        """set_max_concurrent returns 'not_found' for unknown project."""
+        """set_max_concurrent returns False for unknown project."""
         service = FleetManagerService()
         with patch("sova.dashboard.services.fleet_manager_service.list_projects", return_value={}):
-            result = await service.set_max_concurrent("nope", 5)
-        assert result == "not_found"
+            result = service.set_max_concurrent("nope", 5)
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_set_max_concurrent_updates_pool(self, tmp_path: Path) -> None:
-        """set_max_concurrent updates in-memory pool after successful DB write."""
+        """set_max_concurrent updates in-memory pool."""
         pa = ProjectAgents(max_concurrent=2)
         service = FleetManagerService()
 
         with (
             patch("sova.dashboard.services.fleet_manager_service.list_projects", return_value={"proj": str(tmp_path)}),
             patch("sova.dashboard.services.fleet_manager_service.list_all_pools", return_value={"proj": pa}),
-            patch.object(service, "_write_max_concurrent_to_db", new_callable=AsyncMock, return_value=True),
+            patch.object(service, "_write_max_concurrent_to_toml"),
         ):
-            result = await service.set_max_concurrent("proj", 5)
+            result = service.set_max_concurrent("proj", 5)
 
-        assert result is None
+        assert result is True
         assert pa.max_concurrent == 5
-
-    @pytest.mark.asyncio
-    async def test_set_max_concurrent_db_failure_no_memory_update(self, tmp_path: Path) -> None:
-        """set_max_concurrent does NOT update in-memory pool when DB write fails."""
-        pa = ProjectAgents(max_concurrent=2)
-        service = FleetManagerService()
-
-        with (
-            patch("sova.dashboard.services.fleet_manager_service.list_projects", return_value={"proj": str(tmp_path)}),
-            patch("sova.dashboard.services.fleet_manager_service.list_all_pools", return_value={"proj": pa}),
-            patch.object(service, "_write_max_concurrent_to_db", new_callable=AsyncMock, return_value=False),
-        ):
-            result = await service.set_max_concurrent("proj", 5)
-
-        assert result == "db_error"
-        assert pa.max_concurrent == 2
 
     @pytest.mark.asyncio
     async def test_coderabbit_dedup_across_projects(self, tmp_path: Path) -> None:
@@ -420,6 +404,8 @@ def _fleet_app():
 @pytest.mark.asyncio
 async def test_fleet_manager_status_endpoint(_fleet_app) -> None:
     """GET /api/fleet-manager/status returns expected shape."""
+    from unittest.mock import AsyncMock
+
     from httpx import ASGITransport, AsyncClient
 
     app, fm_mod = _fleet_app
@@ -454,6 +440,8 @@ async def test_fleet_manager_status_endpoint(_fleet_app) -> None:
 @pytest.mark.asyncio
 async def test_fleet_manager_slots_endpoint(_fleet_app) -> None:
     """PATCH /api/fleet-manager/projects/{slug}/slots updates slots."""
+    from unittest.mock import AsyncMock, MagicMock
+
     from httpx import ASGITransport, AsyncClient
 
     app, fm_mod = _fleet_app
@@ -461,7 +449,7 @@ async def test_fleet_manager_slots_endpoint(_fleet_app) -> None:
     original = fm_mod._service
     try:
         mock_svc = AsyncMock()
-        mock_svc.set_max_concurrent = AsyncMock(return_value=None)
+        mock_svc.set_max_concurrent = MagicMock(return_value=True)
         fm_mod._service = mock_svc
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.patch(
@@ -478,6 +466,8 @@ async def test_fleet_manager_slots_endpoint(_fleet_app) -> None:
 @pytest.mark.asyncio
 async def test_fleet_manager_slots_not_found(_fleet_app) -> None:
     """PATCH to unknown project returns 404."""
+    from unittest.mock import AsyncMock, MagicMock
+
     from httpx import ASGITransport, AsyncClient
 
     app, fm_mod = _fleet_app
@@ -485,7 +475,7 @@ async def test_fleet_manager_slots_not_found(_fleet_app) -> None:
     original = fm_mod._service
     try:
         mock_svc = AsyncMock()
-        mock_svc.set_max_concurrent = AsyncMock(return_value="not_found")
+        mock_svc.set_max_concurrent = MagicMock(return_value=False)
         fm_mod._service = mock_svc
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.patch(
@@ -496,29 +486,6 @@ async def test_fleet_manager_slots_not_found(_fleet_app) -> None:
         fm_mod._service = original
 
     assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_fleet_manager_slots_db_error(_fleet_app) -> None:
-    """PATCH returns 503 when DB write fails (not 404)."""
-    from httpx import ASGITransport, AsyncClient
-
-    app, fm_mod = _fleet_app
-
-    original = fm_mod._service
-    try:
-        mock_svc = AsyncMock()
-        mock_svc.set_max_concurrent = AsyncMock(return_value="db_error")
-        fm_mod._service = mock_svc
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.patch(
-                "/api/fleet-manager/projects/myapp/slots",
-                json={"value": 3},
-            )
-    finally:
-        fm_mod._service = original
-
-    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -606,41 +573,32 @@ class TestFleetManagerServiceCoverage:
             result = FleetManagerService._read_coderabbit_limit(Path("/nonexistent"))
         assert result == 0
 
-    @pytest.mark.asyncio
-    async def test_write_max_concurrent_to_db_writes(self, tmp_path: Path) -> None:
-        """_write_max_concurrent_to_db calls save_setting with correct key/value and returns True."""
-        mock_save = AsyncMock()
-        mock_commit = AsyncMock()
-        mock_session = AsyncMock()
-        mock_session.commit = mock_commit
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_get_session = AsyncMock(return_value=mock_session)
+    def test_write_max_concurrent_to_toml_no_file(self, tmp_path: Path) -> None:
+        """_write_max_concurrent_to_toml is a no-op if sova.toml doesn't exist."""
+        FleetManagerService._write_max_concurrent_to_toml(tmp_path, 5)
+        assert not (tmp_path / "sova.toml").exists()
 
-        service = FleetManagerService()
-        with (
-            patch("sova.config.db_loader.save_setting", mock_save),
-            patch("sova.db.session.get_session", mock_get_session),
-        ):
-            result = await service._write_max_concurrent_to_db(tmp_path, 8)
+    def test_write_max_concurrent_to_toml_writes(self, tmp_path: Path) -> None:
+        """_write_max_concurrent_to_toml updates the value in sova.toml."""
+        toml_path = tmp_path / "sova.toml"
+        toml_path.write_text("max_parallel_agents = 2\n")
 
-        assert result is True
-        mock_save.assert_awaited_once_with(mock_session, "max_parallel_agents", 8)
-        mock_commit.assert_awaited_once()
+        FleetManagerService._write_max_concurrent_to_toml(tmp_path, 8)
 
-    @pytest.mark.asyncio
-    async def test_write_max_concurrent_to_db_error_returns_false(self) -> None:
-        """_write_max_concurrent_to_db returns False on DB errors."""
-        mock_save = AsyncMock(side_effect=Exception("DB gone"))
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_get_session = AsyncMock(return_value=mock_session)
+        content = toml_path.read_text()
+        assert "8" in content
 
-        service = FleetManagerService()
-        with (
-            patch("sova.config.db_loader.save_setting", mock_save),
-            patch("sova.db.session.get_session", mock_get_session),
-        ):
-            result = await service._write_max_concurrent_to_db(Path("/dummy"), 5)
-        assert result is False
+    def test_write_max_concurrent_to_toml_write_error(self, tmp_path: Path) -> None:
+        """_write_max_concurrent_to_toml handles write errors gracefully."""
+        toml_path = tmp_path / "sova.toml"
+        toml_path.write_text("max_parallel_agents = 2\n")
+
+        with patch.dict("sys.modules", {"tomlkit": None}):
+            # Force re-import to trigger ImportError; since import is inline,
+            # we need a different approach: make toml_path unreadable
+            pass
+
+        # Test the generic Exception path: corrupt TOML content
+        toml_path.write_text("not valid toml [[[")
+        # Should not raise
+        FleetManagerService._write_max_concurrent_to_toml(tmp_path, 5)

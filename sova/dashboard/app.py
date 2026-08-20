@@ -24,8 +24,8 @@ if TYPE_CHECKING:
     from sova.supervisor.daemon import SupervisorDaemon
     from sova.supervisor.watchdog import AgentWatchdog
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -641,7 +641,6 @@ def _setup_single_project(
     _register_page_routes(app, templates)
     _register_api_routers(app, prefix="/api")
     _register_telemetry_router(app)
-    _register_a2a_routes(app)
 
 
 def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
@@ -680,6 +679,8 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.post("/api/projects/uninstall")
     async def api_uninstall_project(req: UninstallRequest) -> dict[str, bool]:
+        from fastapi import HTTPException
+
         from sova.config.registry import get_project_path
 
         slug = req.slug.lower()
@@ -832,7 +833,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
     # Also keep non-prefixed API for backward compat / fallback
     _register_api_routers(app, prefix="/api")
     _register_telemetry_router(app)
-    _register_a2a_routes(app)
 
 
 def _project_page(
@@ -1008,36 +1008,3 @@ def _register_telemetry_router(app: FastAPI) -> None:
     from sova.dashboard.routers import telemetry
 
     app.include_router(telemetry.router, prefix="/api")
-
-
-def _register_a2a_routes(app: FastAPI) -> None:
-    """Register A2A protocol endpoints: Agent Card discovery + task management.
-
-    The /.well-known/agent.json endpoint is at the root (A2A spec).
-    Task management endpoints are under /a2a/.
-    Both are gated behind the a2a.enabled config flag.
-    """
-    from sova.dashboard.routers import a2a as a2a_router
-
-    app.include_router(a2a_router.router, prefix="/a2a")
-
-    @app.get("/.well-known/agent.json")
-    async def well_known_agent_card(request: Request) -> Response:
-        from sova.a2a.agent_card import generate_agent_card
-        from sova.config.context import get_project_dir
-        from sova.config.loader import load_config
-        from sova.dashboard.services.agent_pool import get_default_project_dir
-
-        project_dir = get_project_dir() or get_default_project_dir()
-        if project_dir is None:
-            endpoint_base = str(request.base_url).rstrip("/")
-            card = generate_agent_card(endpoint_base=endpoint_base)
-            return JSONResponse(content=card)
-
-        cfg = load_config(project_dir)
-        if not cfg.a2a.enabled:
-            raise HTTPException(status_code=404, detail="A2A protocol is disabled")
-
-        endpoint_base = cfg.a2a.endpoint_base or str(request.base_url).rstrip("/")
-        card = generate_agent_card(endpoint_base=endpoint_base)
-        return JSONResponse(content=card)

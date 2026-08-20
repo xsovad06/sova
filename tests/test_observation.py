@@ -163,12 +163,12 @@ class TestCollectDbData:
                 self._conn = await self._real.__aenter__()
                 original_execute = self._conn.execute
 
-                async def patched_execute(sql, *a, **kw):
+                def patched_execute(sql, *a, **kw):
                     self._call_count += 1
                     # Let PRAGMAs through (first 2 calls), fail on schema check
                     if self._call_count > 2:
                         raise TypeError("simulated non-OperationalError")
-                    return await original_execute(sql, *a, **kw)
+                    return original_execute(sql, *a, **kw)
 
                 self._conn.execute = patched_execute
                 return self._conn

@@ -159,6 +159,7 @@ max_wait = 900              # Seconds to wait for CI checks
 [pipeline]
 auto_handoff = true         # Developer auto-hands off to Reviewer
 auto_address_review = true  # Reviewer auto-triggers address-review
+auto_integrate = false      # Auto-run integration when Reviewer approves PR
 
 [telemetry]
 hub_url = "https://your-hub.example.com"  # Push run summaries to a central hub (SOVA_TELEMETRY_HUB_URL)

@@ -61,6 +61,7 @@ class ProgressionAction(StrEnum):
     SPAWN_TRIAGE = "spawn_triage"
     SPAWN_RESEARCHER = "spawn_researcher"
     SPAWN_DEVELOPER = "spawn_developer"
+    SPAWN_REVIEWER = "spawn_reviewer"
     SPAWN_INTEGRATE = "spawn_integrate"
     SPAWN_ADDRESS_REVIEW = "spawn_address_review"
     WAIT = "wait"
@@ -91,6 +92,7 @@ _ACTION_TO_ROLE: dict[ProgressionAction, str] = {
     ProgressionAction.SPAWN_TRIAGE: "triage",
     ProgressionAction.SPAWN_RESEARCHER: "researcher",
     ProgressionAction.SPAWN_DEVELOPER: "developer",
+    ProgressionAction.SPAWN_REVIEWER: "reviewer",
     ProgressionAction.SPAWN_INTEGRATE: "command:integrate-pr",
     ProgressionAction.SPAWN_ADDRESS_REVIEW: "developer",
 }
@@ -432,7 +434,11 @@ class TaskProgressionEngine:
             kwargs["slug"] = slug
 
         # Actions that operate on an existing PR need the PR number
-        if decision.action in (ProgressionAction.SPAWN_INTEGRATE, ProgressionAction.SPAWN_ADDRESS_REVIEW):
+        if decision.action in (
+            ProgressionAction.SPAWN_REVIEWER,
+            ProgressionAction.SPAWN_INTEGRATE,
+            ProgressionAction.SPAWN_ADDRESS_REVIEW,
+        ):
             pr_info = await self._find_pr_for_issue(decision.issue_number) if not decision.pr_number else None
             pr_number = decision.pr_number or (pr_info.number if pr_info else None)
             if pr_number is None:
@@ -798,8 +804,6 @@ class TaskProgressionEngine:
         simple_results: list[BlockReason | None] = [running_result, budget_result, ownership_block]
         if candidate == ProgressionAction.SPAWN_RESEARCHER:
             simple_results.append(await self._check_repeated_failures_gate(issue_number))
-        if candidate == ProgressionAction.SPAWN_DEVELOPER:
-            simple_results.append(await self._check_developer_repeated_failures_gate(issue_number))
         if candidate == ProgressionAction.SPAWN_ADDRESS_REVIEW:
             cb_pr = (refined_pr_info.number if refined_pr_info else None) or discovered_pr
             cb_block = await self._check_address_review_circuit_breaker_gate(issue_number, pr_number=cb_pr)
@@ -903,29 +907,36 @@ class TaskProgressionEngine:
         the relevant auto flag is disabled (needs human approval), or None when no
         transition exists from this state.
         """
-        if state == TaskState.TRIAGED:
-            return (
-                ProgressionAction.SPAWN_RESEARCHER
-                if self._config.auto_research
-                else ProgressionAction.CHECKPOINT_NEEDED
-            )
-        if state == TaskState.RESEARCHED:
-            return (
-                ProgressionAction.SPAWN_DEVELOPER if self._config.auto_develop else ProgressionAction.CHECKPOINT_NEEDED
-            )
-        if state == TaskState.IN_REVIEW:
-            # IN_REVIEW has two possible actions: address-review (if SOVA verdict is revise/block)
-            # or integrate (if PR is approved). The actual action is refined in _refine_in_review_action
-            # which checks the SOVA verdict (requires I/O). Return SPAWN_INTEGRATE as a placeholder
-            # if either auto flag is enabled; CHECKPOINT_NEEDED if both are disabled.
-            if self._config.auto_integrate or self._config.auto_address_review:
-                return ProgressionAction.SPAWN_INTEGRATE
-            return ProgressionAction.CHECKPOINT_NEEDED
-        if state == TaskState.BACKLOG:
-            return ProgressionAction.SPAWN_TRIAGE if self._config.auto_triage else ProgressionAction.CHECKPOINT_NEEDED
+        # IN_PROGRESS always resets stale state regardless of config
         if state == TaskState.IN_PROGRESS:
             return ProgressionAction.RESET_STALE_STATE
-        # NEEDS_SPEC: human approves spec externally
+
+        # Map states to (action, config_flag) tuples
+        action_map = {
+            TaskState.TRIAGED: (ProgressionAction.SPAWN_RESEARCHER, self._config.auto_research),
+            TaskState.RESEARCHED: (ProgressionAction.SPAWN_DEVELOPER, self._config.auto_develop),
+            TaskState.BACKLOG: (ProgressionAction.SPAWN_TRIAGE, self._config.auto_triage),
+            TaskState.NEEDS_SPEC: (ProgressionAction.SPAWN_RESEARCHER, self._config.auto_research),
+        }
+
+        # Check simple state mappings
+        if state in action_map:
+            action, enabled = action_map[state]
+            return action if enabled else ProgressionAction.CHECKPOINT_NEEDED
+
+        # IN_REVIEW needs special handling: it has three possible actions (spawn reviewer,
+        # address-review, or integrate), refined later in _refine_in_review_action. Return
+        # SPAWN_INTEGRATE as placeholder if ANY auto flag is enabled.
+        if state == TaskState.IN_REVIEW:
+            any_auto_enabled = any(
+                [
+                    self._config.auto_integrate,
+                    self._config.auto_address_review,
+                    self._config.auto_review,
+                ]
+            )
+            return ProgressionAction.SPAWN_INTEGRATE if any_auto_enabled else ProgressionAction.CHECKPOINT_NEEDED
+
         # DONE, HUMAN_ONLY: no action
         return None
 
@@ -1215,50 +1226,6 @@ class TaskProgressionEngine:
 
         return None
 
-    async def _check_developer_repeated_failures_gate(self, issue: int) -> BlockReason | None:
-        """Block developer spawn after too many failures since the last success. Fail-open."""
-        max_failures = self._config.max_developer_failures
-        if max_failures == 0:
-            return None
-        try:
-            async with self._session_factory() as session:
-                # Only count failures after the most recent successful developer run so
-                # that issues which were successfully developed and re-researched can be
-                # developed again without being blocked by stale failure history.
-                last_success_subq = (
-                    select(func.coalesce(func.max(TaskRun.id), 0))
-                    .where(
-                        TaskRun.issue_number == str(issue),
-                        TaskRun.role == "developer",
-                        TaskRun.status == "done",
-                    )
-                    .scalar_subquery()
-                )
-                stmt = (
-                    select(func.count())
-                    .select_from(TaskRun)
-                    .where(
-                        TaskRun.issue_number == str(issue),
-                        TaskRun.role == "developer",
-                        TaskRun.status == "failed",
-                        TaskRun.id > last_success_subq,
-                    )
-                )
-                result = await session.execute(stmt)
-                count = result.scalar_one_or_none() or 0
-                if count >= max_failures:
-                    return BlockReason(
-                        gate="developer_repeated_failure",
-                        detail=(
-                            f"Developer has failed {count} times for #{issue}; "
-                            f"human review required (threshold: {max_failures})"
-                        ),
-                    )
-        except Exception:
-            log.debug("developer_repeated_failures.check_failed", issue=issue, exc_info=True)
-
-        return None
-
     def _check_merge_conflict_gate(self, issue_number: int, mergeability_map: dict[int, str]) -> BlockReason | None:
         """Check if the PR for this issue has merge conflicts. Fail-open."""
         status = mergeability_map.get(issue_number)
@@ -1409,8 +1376,9 @@ class TaskProgressionEngine:
         """Refine the IN_REVIEW placeholder into a specific action based on SOVA verdict.
 
         Returns (action, pr_info). Checks the SOVA review verdict to decide
-        between SPAWN_ADDRESS_REVIEW (verdict is revise/block) and SPAWN_INTEGRATE
-        (verdict is approve or no review exists).
+        between SPAWN_REVIEWER (no review exists, auto_review enabled),
+        SPAWN_ADDRESS_REVIEW (verdict is revise/block), and SPAWN_INTEGRATE
+        (verdict is approve).
         """
         pr_info = await self._find_pr_for_issue(issue)
         if pr_info is None:
@@ -1433,6 +1401,9 @@ class TaskProgressionEngine:
             if self._config.auto_address_review:
                 return ProgressionAction.SPAWN_ADDRESS_REVIEW, pr_info
             return ProgressionAction.CHECKPOINT_NEEDED, pr_info
+
+        if not has_review and self._config.auto_review:
+            return ProgressionAction.SPAWN_REVIEWER, pr_info
 
         if self._config.auto_integrate:
             return ProgressionAction.SPAWN_INTEGRATE, pr_info

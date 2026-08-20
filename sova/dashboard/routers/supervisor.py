@@ -17,8 +17,6 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="dashboard.api.supervisor")
 
-_QUEUE_SETTING_KEY = "supervisor.task_queue"
-
 
 class ApproveRequest(BaseModel):
     issue_numbers: list[int] | None = None
@@ -363,9 +361,8 @@ async def _persist_queue(project_dir: Path | None, queue: list[int]) -> None:
 
     try:
         await save_task_queue(project_dir, queue)
-    except (SQLAlchemyError, DBAPIError):
-        log.error("supervisor.queue.persist_failed", exc_info=True)
-        raise HTTPException(status_code=503, detail="Failed to persist queue to database")
+    except (SQLAlchemyError, DBAPIError) as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to save queue to DB: {exc}") from exc
 
 
 async def _read_queue(project_dir: Path | None) -> list[int]:
@@ -375,42 +372,10 @@ async def _read_queue(project_dir: Path | None) -> list[int]:
     return await load_task_queue(project_dir)
 
 
-_toml_migrated: set[str] = set()
-
-
-async def _maybe_migrate_queue_from_toml(project_dir: Path | None) -> None:
-    """One-time migration: copy task_queue from sova.toml to DB if DB is empty.
-
-    Must be called under _queue_lock to prevent races with concurrent writes.
-    """
-    cache_key = str(project_dir) if project_dir else "__default__"
-    if cache_key in _toml_migrated:
-        return
-
-    _toml_migrated.add(cache_key)
-
-    db_queue = await _read_queue(project_dir)
-    if db_queue:
-        return
-
-    try:
-        from sova.config.loader import load_config
-
-        cfg = load_config(project_dir)
-        toml_queue = cfg.supervisor.task_queue
-        if toml_queue:
-            log.info("supervisor.queue.toml_migration", count=len(toml_queue))
-            await _persist_queue(project_dir, toml_queue)
-    except Exception:
-        log.debug("supervisor.queue.toml_migration_skipped", exc_info=True)
-
-
 @router.get("/queue")
 async def get_queue() -> dict:
     """Return the current task queue."""
     project_dir = get_project_dir()
-    async with _queue_lock:
-        await _maybe_migrate_queue_from_toml(project_dir)
     return {"queue": await _read_queue(project_dir)}
 
 

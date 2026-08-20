@@ -90,7 +90,6 @@ _NESTED_SECTIONS = (
     "fleet",
     "awareness",
     "oversight",
-    "a2a",
 )
 
 

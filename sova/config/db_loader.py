@@ -142,21 +142,14 @@ async def save_task_queue(project_dir: Path | None, queue: list[int]) -> None:
 async def load_task_queue(project_dir: Path | None) -> list[int]:
     """Load the supervisor task_queue from the DB (async).
 
-    Returns [] if not set or if the stored data is malformed.
-    Validates that every element is a positive int (rejects bool subclass,
-    zero, and negative values). Shared by dashboard API endpoints that need
+    Returns [] if not set. Shared by dashboard API endpoints that need
     the current queue state without going through the sync load_config().
     """
     from sova.db.session import get_session
 
     async with await get_session(project_dir=project_dir) as session:
         queue = await get_setting(session, "supervisor.task_queue")
-    if not isinstance(queue, list):
-        return []
-    if not all(type(x) is int and x > 0 for x in queue):
-        logger.warning("Corrupted task_queue in DB, returning empty: %r", queue)
-        return []
-    return queue
+    return queue if isinstance(queue, list) else []
 
 
 def _resolve_db_path(project_dir: Path | None) -> Path | None:

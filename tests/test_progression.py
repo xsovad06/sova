@@ -141,7 +141,7 @@ class TestDetermineTransition:
         assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.SPAWN_INTEGRATE
 
     def test_in_review_auto_integrate_disabled(self) -> None:
-        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=False))
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=False, auto_review=False))
         assert engine._determine_transition(TaskState.IN_REVIEW) == ProgressionAction.CHECKPOINT_NEEDED
 
     def test_in_review_auto_address_review_only_returns_candidate(self) -> None:
@@ -168,9 +168,13 @@ class TestDetermineTransition:
         engine = _make_engine()
         assert engine._determine_transition(TaskState.DONE) is None
 
-    def test_needs_spec_returns_none(self) -> None:
-        engine = _make_engine()
-        assert engine._determine_transition(TaskState.NEEDS_SPEC) is None
+    def test_needs_spec_spawns_researcher_when_auto_research(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=True))
+        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.SPAWN_RESEARCHER
+
+    def test_needs_spec_checkpoint_when_auto_research_disabled(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_research=False))
+        assert engine._determine_transition(TaskState.NEEDS_SPEC) == ProgressionAction.CHECKPOINT_NEEDED
 
     def test_human_only_returns_none(self) -> None:
         engine = _make_engine()
@@ -539,196 +543,6 @@ class TestRepeatedFailuresGate:
         engine = _make_engine(config=SupervisorConfig(max_researcher_failures=3))
         engine._session_factory = MagicMock(return_value=self._make_session(None))
         result = await engine._check_repeated_failures_gate(42)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _check_developer_repeated_failures_gate
-# ---------------------------------------------------------------------------
-
-
-class TestDeveloperRepeatedFailuresGate:
-    def _make_session(self, count: int) -> AsyncMock:
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = count
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        return mock_session
-
-    @pytest.mark.asyncio
-    async def test_below_threshold_passes(self) -> None:
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(2))
-        result = await engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_at_threshold_blocks(self) -> None:
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(3))
-        result = await engine._check_developer_repeated_failures_gate(42)
-        assert result is not None
-        assert result.gate == "developer_repeated_failure"
-        assert "42" in result.detail
-        assert "3" in result.detail
-
-    @pytest.mark.asyncio
-    async def test_zero_disables_gate(self) -> None:
-        """max_developer_failures=0 disables the gate entirely."""
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=0))
-        engine._session_factory = MagicMock(return_value=self._make_session(999))
-        result = await engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_db_error_fails_open(self) -> None:
-        """DB exceptions are swallowed and the gate passes (fail-open)."""
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
-        bad_session = AsyncMock()
-        bad_session.__aenter__ = AsyncMock(return_value=bad_session)
-        bad_session.__aexit__ = AsyncMock(return_value=False)
-        bad_session.execute = AsyncMock(side_effect=Exception("db error"))
-        engine._session_factory = MagicMock(return_value=bad_session)
-        result = await engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_null_count_treated_as_zero(self) -> None:
-        """scalar_one_or_none() returning None is treated as 0 failures."""
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
-        engine._session_factory = MagicMock(return_value=self._make_session(None))
-        result = await engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_gate_integrated_in_evaluate_task(self) -> None:
-        """Test that developer repeated failures gate is called when evaluating RESEARCHED tasks."""
-        from sova.adapters.base import TaskState
-
-        adapter = AsyncMock()
-        adapter.get_state = AsyncMock(return_value=TaskState.RESEARCHED)
-        adapter.list_tasks = AsyncMock(return_value=[_task(42, state=TaskState.RESEARCHED)])
-        engine = _make_engine(adapter=adapter, config=SupervisorConfig(auto_develop=True, max_developer_failures=3))
-
-        # Mock the gate to return a block
-        block = BlockReason(gate="developer_repeated_failure", detail="too many failures")
-        with patch.object(engine, "_check_developer_repeated_failures_gate", return_value=block):
-            decision = await engine.evaluate_task(42)
-
-        # Verify the gate was called and the action was blocked
-        assert decision.action == ProgressionAction.BLOCKED
-        assert decision.blocked_by is not None
-        assert len(decision.blocked_by) > 0
-        assert any(b.gate == "developer_repeated_failure" for b in decision.blocked_by)
-
-
-# ---------------------------------------------------------------------------
-# _check_developer_repeated_failures_gate (integration with real DB)
-# ---------------------------------------------------------------------------
-
-
-class TestDeveloperRepeatedFailuresGateIntegration:
-    """Integration tests using real SQLite to verify the SQL subquery logic."""
-
-    @pytest.fixture
-    async def db_engine(self, monkeypatch: pytest.MonkeyPatch) -> TaskProgressionEngine:
-        monkeypatch.setenv("SOVA_DATABASE_URL", "sqlite+aiosqlite://")
-        from sova.db.session import close_db, get_session_factory, init_db
-
-        project_dir = Path(tempfile.mkdtemp())
-        await init_db(project_dir)
-        sf = await get_session_factory(project_dir)
-        engine = _make_engine(config=SupervisorConfig(max_developer_failures=3))
-        engine._session_factory = sf
-        yield engine
-        await close_db()
-
-    @staticmethod
-    def _dev_run(issue: str, status: str, hours_ago: int) -> object:
-        from datetime import datetime, timedelta, timezone
-
-        from sova.db.models import TaskRun
-
-        return TaskRun(
-            issue_number=issue,
-            role="developer",
-            status=status,
-            started_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
-        )
-
-    @pytest.mark.asyncio
-    async def test_mixed_outcomes_counts_only_after_last_success(self, db_engine: TaskProgressionEngine) -> None:
-        """fail, succeed, fail, fail, fail -> 3 failures since last success -> blocks."""
-        async with db_engine._session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        self._dev_run("42", "failed", 5),
-                        self._dev_run("42", "done", 4),
-                        self._dev_run("42", "failed", 3),
-                        self._dev_run("42", "failed", 2),
-                        self._dev_run("42", "failed", 1),
-                    ]
-                )
-
-        result = await db_engine._check_developer_repeated_failures_gate(42)
-        assert result is not None
-        assert result.gate == "developer_repeated_failure"
-
-    @pytest.mark.asyncio
-    async def test_recent_success_resets_count(self, db_engine: TaskProgressionEngine) -> None:
-        """fail, fail, fail, succeed -> 0 failures since last success -> passes."""
-        async with db_engine._session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        self._dev_run("42", "failed", 4),
-                        self._dev_run("42", "failed", 3),
-                        self._dev_run("42", "failed", 2),
-                        self._dev_run("42", "done", 1),
-                    ]
-                )
-
-        result = await db_engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_no_runs_passes(self, db_engine: TaskProgressionEngine) -> None:
-        """No developer runs at all -> passes."""
-        result = await db_engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_below_threshold_passes(self, db_engine: TaskProgressionEngine) -> None:
-        """2 failures (below threshold of 3) -> passes."""
-        async with db_engine._session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        self._dev_run("42", "failed", 2),
-                        self._dev_run("42", "failed", 1),
-                    ]
-                )
-
-        result = await db_engine._check_developer_repeated_failures_gate(42)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_other_issue_not_counted(self, db_engine: TaskProgressionEngine) -> None:
-        """Failures on a different issue don't affect the count."""
-        async with db_engine._session_factory() as session:
-            async with session.begin():
-                session.add_all(
-                    [
-                        self._dev_run("99", "failed", 3),
-                        self._dev_run("99", "failed", 2),
-                        self._dev_run("99", "failed", 1),
-                    ]
-                )
-
-        result = await db_engine._check_developer_repeated_failures_gate(42)
         assert result is None
 
 
@@ -1151,6 +965,23 @@ class TestExecuteDecision:
         result = await engine.execute_decision(decision)
         mock_start.assert_called_once_with(issue="20", role="command:integrate-pr", pr_number=55, slug="test-project")
         assert result["run_id"] == 3
+
+    @pytest.mark.asyncio
+    @patch("sova.config.registry.find_slug_for_path", return_value="test-project")
+    @patch("sova.dashboard.services.agent_lifecycle.start_agent", new_callable=AsyncMock)
+    async def test_spawn_reviewer_passes_pr_number(self, mock_start: AsyncMock, _slug: MagicMock) -> None:
+        mock_start.return_value = {"run_id": 4}
+        engine = _make_engine()
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=77, url=""))
+        decision = ProgressionDecision(
+            issue_number=30,
+            action=ProgressionAction.SPAWN_REVIEWER,
+            role="reviewer",
+            reason="Ready",
+        )
+        result = await engine.execute_decision(decision)
+        mock_start.assert_called_once_with(issue="30", role="reviewer", pr_number=77, slug="test-project")
+        assert result["run_id"] == 4
 
     @pytest.mark.asyncio
     async def test_spawn_integrate_no_pr_errors(self) -> None:
@@ -2775,7 +2606,7 @@ class TestRefineInReviewAction:
 
     @pytest.mark.asyncio
     async def test_no_sova_review_with_auto_integrate_spawns_integrate(self) -> None:
-        engine = _make_engine(SupervisorConfig(auto_integrate=True))
+        engine = _make_engine(SupervisorConfig(auto_integrate=True, auto_review=False))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
@@ -2789,7 +2620,7 @@ class TestRefineInReviewAction:
 
     @pytest.mark.asyncio
     async def test_no_sova_review_auto_integrate_disabled_returns_checkpoint(self) -> None:
-        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True))
+        engine = _make_engine(SupervisorConfig(auto_integrate=False, auto_address_review=True, auto_review=False))
         engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
         with patch(
             "sova.supervisor.progression.get_sova_review_verdict",
@@ -2798,6 +2629,20 @@ class TestRefineInReviewAction:
         ):
             action, pr = await engine._refine_in_review_action(42)
         assert action == ProgressionAction.CHECKPOINT_NEEDED
+        assert pr is not None
+        assert pr.number == 55
+
+    @pytest.mark.asyncio
+    async def test_no_sova_review_spawns_reviewer_when_auto_review_enabled(self) -> None:
+        engine = _make_engine(SupervisorConfig(auto_review=True))
+        engine._find_pr_for_issue = AsyncMock(return_value=PRInfo(number=55, url=""))
+        with patch(
+            "sova.supervisor.progression.get_sova_review_verdict",
+            new_callable=AsyncMock,
+            return_value={"has_sova_review": False, "verdict": None, "finding_count": 0, "reviewed_at": None},
+        ):
+            action, pr = await engine._refine_in_review_action(42)
+        assert action == ProgressionAction.SPAWN_REVIEWER
         assert pr is not None
         assert pr.number == 55
 
