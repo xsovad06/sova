@@ -7,6 +7,8 @@ pipeline readiness, and dispatches the appropriate role for each one.
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -65,6 +67,11 @@ class WatchLoop:
         self._running = False
         self._stop_event = asyncio.Event()
 
+        self._start_time = time.monotonic()
+        self._scan_count = 0
+        self._error_count = 0
+        self._last_scan_at: datetime | None = None
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -83,6 +90,10 @@ class WatchLoop:
             return []
         actionable = [t for t in tasks if t.state in _ACTIONABLE_STATES]
         actionable.sort(key=lambda t: _STATE_PRIORITY.get(t.state, 99))
+
+        self._scan_count += 1
+        self._last_scan_at = datetime.now(UTC)
+
         return actionable
 
     async def check_veto(self, task: Task) -> bool:
@@ -128,10 +139,12 @@ class WatchLoop:
                 return True
 
             log.warning("task.failed", task_id=task.id, role=role.name, error=result.error)
+            self._error_count += 1
             return False
 
         except Exception:
             log.error("task.exception", task_id=task.id, exc_info=True)
+            self._error_count += 1
             return False
 
     async def run(self) -> None:
@@ -164,6 +177,7 @@ class WatchLoop:
 
                 except Exception:
                     log.error("watch.cycle_error", exc_info=True)
+                    self._error_count += 1
                     interval = self._config.watch.interval_active
 
                 if not self._running:
@@ -178,3 +192,13 @@ class WatchLoop:
         finally:
             self._running = False
             log.info("watch.stopped")
+
+    def health(self) -> dict:
+        """Return health metrics for monitoring."""
+        uptime = time.monotonic() - self._start_time
+        return {
+            "uptime_seconds": round(uptime, 1),
+            "scans_total": self._scan_count,
+            "errors_total": self._error_count,
+            "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
+        }
