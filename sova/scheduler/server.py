@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from sova.config.models import ProjectConfig
+from sova.const import DEFAULT_SERVER_PORT
 from sova.utils.logging import get_logger
 
 log = get_logger(component="scheduler.server")
@@ -89,7 +90,7 @@ class SOVAServer:
         config: ProjectConfig,
         project_dir: Path | None = None,
         host: str = "127.0.0.1",
-        port: int = 8111,
+        port: int = DEFAULT_SERVER_PORT,
         multi_project: bool = False,
     ) -> None:
         self._config = config
