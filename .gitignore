@@ -24,6 +24,7 @@ dashboard/.venv/
 # Runtime data
 *.pid
 *.log
+*.log.*
 *.db.bak
 
 # Test artifacts (MagicMock path evaluations creating real SQLite files)
