@@ -30,8 +30,8 @@ def _load_spec_for_develop(ctx: ExecutionContext) -> str:
     Returns the spec content string, or empty string if no approved spec exists.
     """
     try:
+        from sova.core.spec_utils import read_spec
         from sova.core.steps._spec_helpers import DEVELOP_SECTIONS, extract_sections_from_text
-        from sova.dashboard.services.spec_service import read_spec
 
         spec_data = read_spec(ctx.issue_number, ctx.project_dir)
         if spec_data is None or spec_data.get("status") != "approved":

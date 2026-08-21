@@ -4031,7 +4031,7 @@ class TestCustomRole:
             input_states=["researched"],
             output_state="in_review",
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         assert role.name == "my-role"
         assert role.description == "A custom role"
         assert TaskState.RESEARCHED in role.allowed_input_states
@@ -4049,7 +4049,7 @@ class TestCustomRole:
             input_states=[],
             output_state="",
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         task = Task(id="1", title="Test", body="", state=TaskState.RESEARCHED)
         assessment = await role.assess_task(task)
         assert assessment.suitability == "ready"
@@ -4067,7 +4067,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         ctx = _make_ctx(state=TaskState.BACKLOG, force=False)
         result = await role.execute(ctx)
         assert not result.success
@@ -4090,7 +4090,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         ctx = _make_ctx(state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=True, summary="DAG completed: 1 nodes executed", total_cost_usd=Decimal("0.5"))
@@ -4117,7 +4117,7 @@ class TestCustomRole:
             output_state="in_review",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         ctx = _make_ctx(state=TaskState.RESEARCHED)
 
         mock_result = DAGResult(success=False, summary="DAG failed at node n1", error="develop step crashed")
@@ -4140,7 +4140,7 @@ class TestCustomRole:
             output_state="",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         task = Task(id="1", title="Test", state=TaskState.BACKLOG)
         assert role.validate_preconditions(task)
 
@@ -4157,7 +4157,7 @@ class TestCustomRole:
             output_state="",
             graph_json={"nodes": [{"id": "n1", "command": "develop"}], "edges": []},
         )
-        role = CustomRole(defn)
+        role = CustomRole(defn, command_dispatcher=AsyncMock())
         assert role.output_state is None
 
 

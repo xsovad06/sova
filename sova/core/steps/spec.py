@@ -24,9 +24,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from sova.core.context import ExecutionContext
+from sova.core.spec_utils import find_spec_file
 from sova.core.steps._handoff_helpers import write_step_handoff
 from sova.core.steps.base import BaseStep, GateCheckResult, StepResult
-from sova.dashboard.services.spec_service import find_spec_file
 from sova.ipc.handoff import HandoffAction
 from sova.llm.client import invoke
 from sova.llm.guard import PromptInjectionError
@@ -361,64 +361,79 @@ class SpecStep(BaseStep):
         has_questions = _text_has_open_questions(text)
         spec_complexity = _extract_complexity(text)
 
-        # Auto-approve simple specs without open questions.
-        # Auto-approved specs chain directly to developer via handoff with auto_execute=True,
-        # exiting the researcher pipeline early (skip-to-role pattern).
-        can_auto_approve = (
-            ctx.config.spec.auto_approve_simple
-            and not has_questions
-            and _complexity_rank(spec_complexity) <= _complexity_rank("simple")
-        )
-        if can_auto_approve:
-            if not re.search(r"\*\*Status\*\*:\s*\w+", text):
-                return StepResult(
-                    success=False,
-                    summary="Auto-approval failed: status line not found in spec",
-                    error="Could not find **Status**: <value> pattern in spec file",
-                    cost_usd=result.cost_usd,
-                )
-            updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
-            try:
-                spec_path.write_text(updated)
-            except OSError as exc:
-                return StepResult(
-                    success=False,
-                    summary="Failed to update spec file",
-                    error=str(exc),
-                    cost_usd=result.cost_usd,
-                )
-            log.info(
-                "step.spec.auto_approved",
-                issue=ctx.issue_number,
-                complexity=spec_complexity,
-            )
-            return await write_step_handoff(
+        if ctx.config.spec.auto_approve_simple and not has_questions:
+            auto_result = await self._try_auto_approve(
                 ctx,
-                role="researcher",
-                phase="spec",
-                summary=f"Spec auto-approved for #{ctx.issue_number} (complexity: {spec_complexity})",
-                agent_summary="Spec auto-approved, spawning developer",
-                next_action="develop",
-                actions=[
-                    HandoffAction(
-                        id="develop",
-                        label="Develop",
-                        description=f"Start development for #{ctx.issue_number}",
-                        style="approve",
-                        mode="agent",
-                        command="",
-                        args={"issue": ctx.issue_number, "role": "developer"},
-                        auto_execute=True,
-                    ),
-                ],
-                notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
-                notification_subtitle=f"Researcher finished #{ctx.issue_number}",
-                result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
+                spec_path,
+                text,
+                spec_complexity,
                 cost_usd=result.cost_usd,
             )
+            if auto_result is not None:
+                return auto_result
 
         # Needs human review -- write handoff and pause pipeline
         return await self._write_approval_handoff(ctx, spec_complexity, has_questions, cost_usd=result.cost_usd)
+
+    async def _try_auto_approve(
+        self,
+        ctx: ExecutionContext,
+        spec_path: Path,
+        text: str,
+        spec_complexity: str,
+        *,
+        cost_usd: Decimal = Decimal("0"),
+    ) -> StepResult | None:
+        """Auto-approve simple specs, returning None if not eligible."""
+        if _complexity_rank(spec_complexity) > _complexity_rank("simple"):
+            return None
+
+        if not re.search(r"\*\*Status\*\*:\s*\w+", text):
+            return StepResult(
+                success=False,
+                summary="Auto-approval failed: status line not found in spec",
+                error="Could not find **Status**: <value> pattern in spec file",
+                cost_usd=cost_usd,
+            )
+        updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
+        try:
+            spec_path.write_text(updated)
+        except OSError as exc:
+            return StepResult(
+                success=False,
+                summary="Failed to update spec file",
+                error=str(exc),
+                cost_usd=cost_usd,
+            )
+        log.info(
+            "step.spec.auto_approved",
+            issue=ctx.issue_number,
+            complexity=spec_complexity,
+        )
+        return await write_step_handoff(
+            ctx,
+            role="researcher",
+            phase="spec",
+            summary=f"Spec auto-approved for #{ctx.issue_number} (complexity: {spec_complexity})",
+            agent_summary="Spec auto-approved, spawning developer",
+            next_action="develop",
+            actions=[
+                HandoffAction(
+                    id="develop",
+                    label="Develop",
+                    description=f"Start development for #{ctx.issue_number}",
+                    style="approve",
+                    mode="agent",
+                    command="",
+                    args={"issue": ctx.issue_number, "role": "developer"},
+                    auto_execute=True,
+                ),
+            ],
+            notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
+            notification_subtitle=f"Researcher finished #{ctx.issue_number}",
+            result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
+            cost_usd=cost_usd,
+        )
 
     async def _write_approval_handoff(
         self,

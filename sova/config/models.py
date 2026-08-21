@@ -598,6 +598,7 @@ class OversightConfig(BaseSettings):
     analysis_model: str = "sonnet"
     dedup_window_days: int = Field(14, ge=1)
     analysis_timeout_seconds: int = Field(120, ge=10)
+    observation_timeout: float = Field(20.0, ge=5.0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_OVERSIGHT_")
 

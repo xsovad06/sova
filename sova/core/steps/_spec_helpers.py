@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sova.dashboard.services.spec_service import find_spec_file
+from sova.core.spec_utils import find_spec_file
 from sova.utils.logging import get_logger
 from sova.utils.markdown import extract_section
 

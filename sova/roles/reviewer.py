@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
-from sova.dashboard.services.spec_service import find_spec_file
+from sova.core.spec_utils import find_spec_file
 from sova.db.models import TaskRun
 from sova.db.session import get_session
 from sova.git.diff import parse_diff_lines

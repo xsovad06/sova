@@ -1432,6 +1432,13 @@ _REGISTRY: list[SettingMeta] = [
         "oversight",
         "number",
     ),
+    SettingMeta(
+        "oversight.observation_timeout",
+        "Observation timeout (sec)",
+        "Timeout in seconds for the observation snapshot collection (minimum 5)",
+        "oversight",
+        "number",
+    ),
     # -- A2A Protocol --
     SettingMeta(
         "a2a.enabled",
