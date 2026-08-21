@@ -454,6 +454,7 @@ class TestReviewerPanelIntegration:
         config = ProjectConfig()
         config.review.panel.enabled = True
         config.review.panel.dimensions = ["correctness"]
+        config.review.challenger_enabled = False
 
         adapter = AsyncMock()
         adapter.get_task.return_value = _task()
