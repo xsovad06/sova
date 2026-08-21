@@ -1,0 +1,20 @@
+name: docs-workflow
+description: Custom pipeline for documentation tasks
+steps:
+  - name: research
+    command: research
+    prompt_template: "Research the following topic based on issue body"
+    timeout: 600
+
+  - name: develop
+    command: develop
+    prompt_template: "Write documentation based on research findings"
+    depends_on: [research]
+    condition: "{{ research.done == 'true' }}"
+    timeout: 900
+
+  - name: review
+    command: review
+    prompt_template: "Review the documentation for quality and completeness"
+    depends_on: [develop]
+    timeout: 600

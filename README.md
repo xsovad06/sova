@@ -31,6 +31,7 @@ SOVA is a standalone application that turns GitHub Issues into merged pull reque
 - **4-Tier Knowledge System** -- layered memory with cross-project learning ([details](knowledge/KNOWLEDGE.md))
 - **Persona Auto-Detection** -- detects your tech stack and loads relevant guidance (see [`personas/`](personas/))
 - **Pluggable Task Sources** -- GitHub Issues and Jira Cloud supported, Linear planned
+- **YAML Workflows** -- define custom agent pipelines in YAML without writing Python code; declarative syntax with Jinja2 conditions, automatic validation, and cycle detection (see [`commands/workflows/README.md`](commands/workflows/README.md))
 
 ## Architecture Overview
 
@@ -104,6 +105,9 @@ sova triage 42
 
 # Work on an issue (runs the full pipeline: develop, test, review, PR)
 sova run 42
+
+# Or run a custom YAML workflow
+sova run --workflow docs-workflow 42
 
 # Or start the server for fully autonomous operation
 sova server start

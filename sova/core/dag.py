@@ -138,7 +138,7 @@ class DAGExecutor:
             summary = result.get("message", str(result)) if isinstance(result, dict) else str(result)
             raw_cost = result.get("cost_usd") if isinstance(result, dict) else 0
             try:
-                cost_usd = Decimal(str(raw_cost)) if raw_cost not in (None, "") else Decimal("0")
+                cost_usd = Decimal(str(raw_cost)) if raw_cost else Decimal("0")
             except (InvalidOperation, TypeError, ValueError):
                 cost_usd = Decimal("0")
 
@@ -329,7 +329,12 @@ def _topological_sort(graph_json: dict) -> list[str]:
 
 
 def _evaluate_condition(condition: str, context_keys: dict[str, str]) -> bool:
-    """Evaluate a simple condition string like 'key == value' or 'key != value'."""
+    """Evaluate a condition -- supports both simple 'key == value' and Jinja2 '{{ expr }}' formats."""
+    # Jinja2 template syntax detection
+    if "{{" in condition and "}}" in condition:
+        return _evaluate_jinja2_condition(condition, context_keys)
+
+    # Legacy simple condition format (backward compatibility)
     if "!=" in condition:
         parts = condition.split("!=", 1)
         if len(parts) == 2:
@@ -343,3 +348,39 @@ def _evaluate_condition(condition: str, context_keys: dict[str, str]) -> bool:
 
     log.warning("dag.condition.unknown_format", condition=condition)
     return False  # Unknown condition format -- fail-safe
+
+
+def _evaluate_jinja2_condition(condition: str, context_keys: dict[str, str]) -> bool:
+    """Evaluate a Jinja2 template condition using sandboxed environment."""
+    try:
+        from jinja2.sandbox import SandboxedEnvironment
+
+        env = SandboxedEnvironment()
+        template = env.from_string(condition)
+
+        # Build nested context from flat dotted keys
+        # E.g., {"step1.done": "true"} -> {"step1": {"done": "true"}}
+        nested_context: dict[str, Any] = {}
+        for key, value in context_keys.items():
+            if "." in key:
+                parts = key.split(".", 1)
+                if parts[0] not in nested_context:
+                    nested_context[parts[0]] = {}
+                elif not isinstance(nested_context[parts[0]], dict):
+                    # Skip keys that would cause type conflicts
+                    log.warning("dag.context.type_conflict", key=key, parent=parts[0])
+                    continue
+                nested_context[parts[0]][parts[1]] = value
+            else:
+                nested_context[key] = value
+
+        result = template.render(**nested_context)
+
+        # Convert result to boolean
+        if isinstance(result, str):
+            result = result.strip().lower()
+            return result in ("true", "1", "yes")
+        return bool(result)
+    except Exception as exc:
+        log.warning("dag.condition.jinja2_error", condition=condition, error=str(exc), exc_info=True)
+        return False  # Fail-safe on evaluation errors

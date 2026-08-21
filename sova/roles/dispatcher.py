@@ -7,6 +7,8 @@ pipeline order: Triage -> Research -> Develop.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from sova.adapters.base import TaskState
 from sova.config.models import RolesConfig
 from sova.core.context import ExecutionContext
@@ -30,6 +32,9 @@ _ROLES: dict[str, type[AgentRole]] = {
 }
 
 BUILTIN_ROLE_NAMES: frozenset[str] = frozenset(_ROLES.keys())
+
+# Cache for discovered YAML workflows (invalidated on None)
+_yaml_workflows_cache: list | None = None
 
 # Maps tracker states to the role that should handle them
 _STATE_TO_ROLE: dict[TaskState, str] = {
@@ -80,23 +85,45 @@ def list_roles() -> list[AgentRole]:
     return [cls() for cls in _ROLES.values()]
 
 
-async def get_role_async(name: str, *, config: RolesConfig | None = None) -> AgentRole:
-    """Get a role by name, falling back to DB lookup for custom roles.
+async def get_role_async(name: str, *, config: RolesConfig | None = None, project_dir: Path | None = None) -> AgentRole:
+    """Get a role by name, falling back to YAML workflows and DB lookup for custom roles.
 
-    Raises ValueError if the role name is not found in built-ins or DB.
+    Args:
+        name: Role name to look up
+        config: Optional RolesConfig for nickname resolution
+        project_dir: Project root directory (defaults to cwd, but should be passed from context)
+
+    Raises ValueError if the role name is not found in built-ins, YAML, or DB.
     """
+    global _yaml_workflows_cache
     name = _resolve_nickname(name, config)
 
     role_cls = _ROLES.get(name)
     if role_cls is not None:
         return role_cls()
 
+    # Try YAML workflow discovery (with caching)
+    from sova.core.yaml_workflow import discover_yaml_workflows
+    from sova.roles.custom import CustomRole
+
+    if _yaml_workflows_cache is None:
+        resolved_dir = project_dir or Path.cwd()
+        yaml_dirs = [
+            resolved_dir / ".sova" / "workflows",
+            resolved_dir / "commands" / "workflows",
+        ]
+        _yaml_workflows_cache = discover_yaml_workflows(yaml_dirs)
+
+    for workflow in _yaml_workflows_cache:
+        if workflow.name == name:
+            log.info("dispatcher.yaml_workflow_found", name=name)
+            return CustomRole(workflow)
+
     # Fall back to DB lookup for custom roles
     from sqlalchemy import select
 
     from sova.db.models import WorkflowDefinition
     from sova.db.session import get_session
-    from sova.roles.custom import CustomRole
 
     try:
         async with await get_session() as session:
@@ -105,6 +132,7 @@ async def get_role_async(name: str, *, config: RolesConfig | None = None) -> Age
                 result = await session.execute(stmt)
                 definition = result.scalar_one_or_none()
                 if definition is not None:
+                    log.info("dispatcher.db_workflow_found", name=name)
                     return CustomRole(definition)
     except Exception:
         log.warning("dispatcher.custom_lookup_failed", name=name, exc_info=True)
@@ -128,7 +156,7 @@ async def dispatch(
     Returns the role used and its execution result.
     """
     if role_name:
-        role = await get_role_async(role_name, config=config)
+        role = await get_role_async(role_name, config=config, project_dir=ctx.project_dir)
     elif ctx.has_issue:
         # Auto-select based on tracker state
         state = await ctx.adapter.get_state(ctx.issue_number)

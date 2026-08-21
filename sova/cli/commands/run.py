@@ -18,20 +18,28 @@ def run_issue(
     issue: Annotated[Optional[str], typer.Argument(help="Issue number (optional for project-scope roles).")] = None,
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     role: Annotated[Optional[str], typer.Option("--role", "-r", help="Force a specific role.")] = None,
+    workflow: Annotated[Optional[str], typer.Option("--workflow", "-w", help="Run a YAML-defined workflow.")] = None,
     force: Annotated[bool, typer.Option("--force", "-f", help="Skip pipeline gate checks.")] = False,
     resume: Annotated[Optional[int], typer.Option("--resume", help="Resume from a previous run ID.")] = None,
     pr: Annotated[Optional[int], typer.Option("--pr", help="PR number (skips PR discovery).")] = None,
     run_id: Annotated[Optional[int], typer.Option("--run-id", help="Reuse an existing TaskRun.")] = None,
 ) -> None:
     """Run the agent workflow for a single issue or a project-scope role."""
-    if not issue and not role:
-        console.print("[red]Either an issue number or --role is required.[/red]")
+    if workflow and role:
+        console.print("[red]Cannot specify both --workflow and --role.[/red]")
         raise typer.Exit(code=2)
+
+    effective_role = workflow or role
+
+    if not issue and not effective_role:
+        console.print("[red]Either an issue number or --role/--workflow is required.[/red]")
+        raise typer.Exit(code=2)
+
     asyncio.run(
         _run_workflow(
             issue or "",
             project_dir=project,
-            role_name=role,
+            role_name=effective_role,
             force=force,
             resume_run_id=resume,
             pr_number=pr,
