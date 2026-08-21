@@ -25,8 +25,8 @@ _TITLE_JIRA_KEY_RE = re.compile(r"\[[A-Z]+-(\d+)\]")
 _BRANCH_ISSUE_RE = re.compile(r"(?:^|/)issue-(\d+)(?=$|[-_/])")
 _BRANCH_JIRA_KEY_RE = re.compile(r"(?:^|/)[A-Z]+-(\d+)(?=$|[-_/])")
 
-_PR_CACHE_TTL = 60  # seconds (shared across supervisor, PR monitor, dashboard)
-_pr_cache: dict[str, tuple[float, list[dict]]] = {}
+_PR_CACHE_TTL = 120  # seconds (shared across supervisor, PR monitor, dashboard)
+_pr_cache: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 
 _last_known_states: dict[int, str] = {}
 _bg_tasks: set[asyncio.Task[None]] = set()
@@ -466,25 +466,32 @@ async def get_pr_mergeability_map() -> dict[int, str]:
     return result
 
 
-async def list_open_prs_with_state() -> list[dict]:
-    """List all open PRs with computed state. Cached per-repo for 60s."""
+async def list_open_prs_with_state(project_dir: Path | None = None, *, raise_on_error: bool = False) -> list[dict]:
+    """List all open PRs with computed state. Cached per-repo for 120s.
+
+    When raise_on_error=True, config/retrieval failures propagate instead of
+    returning [] (so callers can distinguish "no PRs" from "retrieval failed").
+    """
     from sova.config.loader import load_config
     from sova.dashboard.project_context import get_project_dir
     from sova.git.pr import get_review_thread_counts, list_open_prs
 
-    project_dir = get_project_dir() or Path.cwd()
+    if project_dir is None:
+        project_dir = get_project_dir() or Path.cwd()
 
     try:
         cfg = load_config(project_dir)
     except Exception:
         log.warning("pr_service.config_load_failed", project_dir=str(project_dir), exc_info=True)
+        if raise_on_error:
+            raise
         return []
 
     if not cfg.github_repo:
         return []
 
     repo = cfg.github_repo
-    cache_key = repo
+    cache_key = (repo, cfg.github_user)
     now = time.monotonic()
     cached = _pr_cache.get(cache_key)
     if cached and (now - cached[0]) < _PR_CACHE_TTL:
@@ -507,16 +514,15 @@ async def list_open_prs_with_state() -> list[dict]:
     _pr_cache[cache_key] = (now, result)
     log.info("pr_service.refreshed", repo=repo, count=len(result))
 
-    task = asyncio.ensure_future(_record_state_transitions(result, repo=repo))
+    task = asyncio.ensure_future(_record_state_transitions(result, repo=repo, project_dir=project_dir))
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
 
     return result
 
 
-async def _record_state_transitions(prs: list[dict], *, repo: str) -> None:
+async def _record_state_transitions(prs: list[dict], *, repo: str, project_dir: Path) -> None:
     """Detect state changes and write PREvent rows (fire-and-forget)."""
-    from sova.dashboard.project_context import get_project_dir
     from sova.db.models import PREvent
     from sova.db.session import get_session
 
@@ -553,7 +559,6 @@ async def _record_state_transitions(prs: list[dict], *, repo: str) -> None:
         return
 
     try:
-        project_dir = get_project_dir() or Path.cwd()
         for ev in events_to_write:
             try:
                 async with await get_session(project_dir) as session:

@@ -53,7 +53,7 @@ auto_address_review = true
 auto_integrate = true
 llm_planning = true
 require_approval = false
-task_queue = [20, 597, 691, 693, 694, 118, 33, 122, 125, 126]
+task_queue = [639, 641, 642, 644, 643, 741, 740, 746, 745, 638, 645]
 auto_research = true
 auto_triage = true
 
@@ -72,5 +72,5 @@ enabled = true
 
 [oversight]
 analysis_model = "claude-sonnet-4-5@20250929"
-auto_create_issues = true
+auto_create_issues = false
 enabled = true

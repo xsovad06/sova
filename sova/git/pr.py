@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from urllib.parse import urlparse
@@ -14,6 +15,10 @@ from sova.utils.logging import get_logger
 from sova.utils.shell import ShellResult, run
 
 log = get_logger(component="git.pr")
+
+_FIND_PR_CACHE_TTL = 90.0  # seconds
+_find_pr_cache: dict[tuple[str, str, str], tuple[float, PRInfo | None]] = {}
+_SEARCH_FAILED = object()
 
 
 def _track_gh_rate_limit(result: ShellResult, github_user: str = "") -> None:
@@ -198,25 +203,44 @@ async def find_pr_for_issue(issue_id: str, *, repo: str, github_user: str = "") 
     Falls back to branch name search for JIRA issues where the body
     contains 'RHCLOUD-N' instead of '#N'.
     """
-    log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
     issue_num = issue_id.lstrip("#").strip()
+    cache_key = (repo, github_user, issue_num)
+    now = time.monotonic()
+    cached = _find_pr_cache.get(cache_key)
+    if cached and (now - cached[0]) < _FIND_PR_CACHE_TTL:
+        return cached[1]
+
+    log.info("git.find_pr_for_issue", issue=issue_id, repo=repo)
     env = await resolve_gh_env(github_user)
 
-    found = await _search_prs_by_body(issue_num, repo=repo, env=env, github_user=github_user)
-    if found:
-        return found
+    body_result = await _search_prs_by_body(issue_num, repo=repo, env=env, github_user=github_user)
+    if isinstance(body_result, PRInfo):
+        _find_pr_cache[cache_key] = (now, body_result)
+        return body_result
 
     from sova.supervisor.github_quota import get_github_quota_tracker
 
     if get_github_quota_tracker(github_user).should_skip():
+        _find_pr_cache[cache_key] = (now, None)
         return None
 
-    return await _search_prs_by_branch(issue_num, repo=repo, env=env, github_user=github_user)
+    branch_result = await _search_prs_by_branch(issue_num, repo=repo, env=env, github_user=github_user)
+    if isinstance(branch_result, PRInfo):
+        _find_pr_cache[cache_key] = (now, branch_result)
+        return branch_result
+
+    # Only cache negative result when at least one search succeeded
+    body_ok = body_result is not _SEARCH_FAILED
+    branch_ok = branch_result is not _SEARCH_FAILED
+    if body_ok or branch_ok:
+        _find_pr_cache[cache_key] = (now, None)
+    return None
 
 
 async def _search_prs_by_body(
     issue_num: str, *, repo: str, env: dict[str, str], github_user: str = ""
-) -> PRInfo | None:
+) -> PRInfo | None | object:
+    """Return PRInfo on match, None on successful empty search, _SEARCH_FAILED on API error."""
     result = await run(
         "gh",
         "pr",
@@ -236,15 +260,19 @@ async def _search_prs_by_body(
     _track_gh_rate_limit(result, github_user)
     if not result.success:
         log.warning("git.find_pr_for_issue.body_search_failed", stderr=result.stderr[:200])
-        return None
+        return _SEARCH_FAILED
 
     return _match_pr_results(result.stdout, issue_num)
 
 
 async def _search_prs_by_branch(
     issue_num: str, *, repo: str, env: dict[str, str], github_user: str = ""
-) -> PRInfo | None:
-    async def _lookup(prefix: str) -> PRInfo | None:
+) -> PRInfo | None | object:
+    """Return PRInfo on match, None on successful empty search, _SEARCH_FAILED if all lookups fail."""
+    any_succeeded = False
+
+    async def _lookup(prefix: str) -> PRInfo | None | object:
+        nonlocal any_succeeded
         result = await run(
             "gh",
             "pr",
@@ -263,17 +291,23 @@ async def _search_prs_by_branch(
         )
         _track_gh_rate_limit(result, github_user)
         if not result.success:
-            return None
+            return _SEARCH_FAILED
         try:
             prs = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return None
+            return _SEARCH_FAILED
+        any_succeeded = True
         if prs:
             return PRInfo.from_gh_json(prs[0])
         return None
 
     results = await asyncio.gather(*(_lookup(prefix) for prefix in ("feat/issue-", "fix/issue-", "issue-")))
-    return next((r for r in results if r), None)
+    found = next((r for r in results if isinstance(r, PRInfo)), None)
+    if found:
+        return found
+    if not any_succeeded:
+        return _SEARCH_FAILED
+    return None
 
 
 def _match_pr_results(stdout: str, issue_num: str) -> PRInfo | None:

@@ -96,7 +96,7 @@ def _extract_label_priority(labels: list[str]) -> int:
 
 _PHASE_RE = re.compile(r"(?:Phase\s*|P)(\d+)", re.IGNORECASE)
 
-_QUEUE_CACHE_TTL = 30  # seconds
+_QUEUE_CACHE_TTL = 120  # seconds
 _queue_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
@@ -116,7 +116,7 @@ async def get_priority_queue(project_dir: Path | None = None) -> list[dict]:
 
     Uses the GitHub adapter via the project's sova.toml config.
     Returns a list of dicts with: priority, issue, title, state, action, labels, url, last_run.
-    Results are cached for 30 seconds per project to reduce API calls.
+    Results are cached for 120 seconds per project to reduce API calls.
     """
     cache_key = str(project_dir or "")
     now = time.monotonic()

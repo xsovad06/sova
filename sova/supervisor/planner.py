@@ -12,7 +12,6 @@ warning spam).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -255,56 +255,23 @@ class SupervisorPlanner:
 
     async def _get_open_prs(self) -> str:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                self._config.github_repo,
-                "--json",
-                "number,title,reviewDecision,statusCheckRollup,mergeable,headRefName",
-                "--limit",
-                "20",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            try:
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-            except asyncio.TimeoutError:
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.communicate()
-                return "## Open PRs\nPR data unavailable (timeout)"
-            if proc.returncode != 0:
-                return "## Open PRs\nPR data unavailable"
-
-            prs = json.loads(stdout.decode())
+            prs = await list_open_prs_with_state(project_dir=self._project_dir, raise_on_error=True)
             if not prs:
                 return "## Open PRs\nNo open PRs"
 
             lines = [
                 "## Open PRs",
-                "| # | Title | Review | CI | Mergeable |",
-                "|---|-------|--------|----|-----------|",
+                "| # | Title | State | Author |",
+                "|---|-------|-------|--------|",
             ]
             for pr in prs:
-                ci_status = "unknown"
-                checks = pr.get("statusCheckRollup") or []
-                if checks:
-                    states = [c.get("conclusion") or c.get("status", "") for c in checks]
-                    if all(s == "SUCCESS" for s in states):
-                        ci_status = "passing"
-                    elif any(s == "FAILURE" for s in states):
-                        ci_status = "failing"
-                    else:
-                        ci_status = "pending"
                 lines.append(
-                    f"| #{pr['number']} | {pr.get('title', '')[:50]} | "
-                    f"{pr.get('reviewDecision', 'NONE')} | {ci_status} | "
-                    f"{pr.get('mergeable', 'UNKNOWN')} |"
+                    f"| #{pr.get('number', '')} | {pr.get('title', '')[:50]} | "
+                    f"{pr.get('computed_state', 'unknown')} | {pr.get('author', '')} |"
                 )
             return "\n".join(lines)
         except Exception:
+            log.warning("planner.open_prs_failed", exc_info=True)
             return "## Open PRs\nPR data unavailable"
 
     async def _get_issue_counts(self, adapter: TaskAdapter) -> str:
