@@ -407,9 +407,10 @@ async def rebase_with_conflict_resolution(
                 consensus_resolved = False
 
         if not consensus_resolved:
-            still_conflicted = await _get_conflicted_files(cwd=cwd)
-            if still_conflicted:
-                conflicted = still_conflicted
+            if use_consensus and providers is not None:
+                still_conflicted = await _get_conflicted_files(cwd=cwd)
+                if still_conflicted:
+                    conflicted = still_conflicted
             remaining_list: list[str] = []
             for attempt in range(1, max_attempts + 1):
                 log.info("git.rebase.resolving_conflicts", files=conflicted, commit=commit_idx + 1, attempt=attempt)
