@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +10,7 @@ import httpx
 import pytest
 
 from sova.config.models import ProjectConfig, SupervisorConfig
+from sova.dashboard.services.pr_service import list_open_prs_with_state
 from sova.supervisor.planner import (
     _VALID_ACTIONS,
     DeferredAction,
@@ -473,106 +472,38 @@ class TestGetResourceSnapshot:
 class TestGetOpenPRs:
     async def test_successful_pr_list(self, planner: SupervisorPlanner) -> None:
         pr_data = [
-            {
-                "number": 42,
-                "title": "feat: add feature",
-                "reviewDecision": "APPROVED",
-                "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "completed"}],
-                "mergeable": "MERGEABLE",
-                "headRefName": "feat/42",
-            }
+            {"number": 42, "title": "feat: add feature", "computed_state": "approved_ci_green", "author": "user1"},
         ]
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(json.dumps(pr_data).encode(), b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        with patch(
+            "sova.supervisor.planner.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            spec=list_open_prs_with_state,
+            return_value=pr_data,
+        ):
             result = await planner._get_open_prs()
 
         assert "## Open PRs" in result
         assert "#42" in result
-        assert "passing" in result
-
-    async def test_pr_list_with_failing_ci(self, planner: SupervisorPlanner) -> None:
-        pr_data = [
-            {
-                "number": 10,
-                "title": "fix: something",
-                "reviewDecision": "NONE",
-                "statusCheckRollup": [{"conclusion": "FAILURE", "status": "completed"}],
-                "mergeable": "UNKNOWN",
-            }
-        ]
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(json.dumps(pr_data).encode(), b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            result = await planner._get_open_prs()
-
-        assert "failing" in result
-
-    async def test_pr_list_with_pending_ci(self, planner: SupervisorPlanner) -> None:
-        pr_data = [
-            {
-                "number": 10,
-                "title": "fix: something",
-                "statusCheckRollup": [{"status": "QUEUED"}],
-                "mergeable": "UNKNOWN",
-            }
-        ]
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(json.dumps(pr_data).encode(), b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            result = await planner._get_open_prs()
-
-        assert "pending" in result
+        assert "approved_ci_green" in result
 
     async def test_no_open_prs(self, planner: SupervisorPlanner) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"[]", b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        with patch(
+            "sova.supervisor.planner.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            spec=list_open_prs_with_state,
+            return_value=[],
+        ):
             result = await planner._get_open_prs()
 
         assert "No open PRs" in result
 
-    async def test_gh_command_failure(self, planner: SupervisorPlanner) -> None:
-        mock_proc = AsyncMock()
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"error"))
-        mock_proc.returncode = 1
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            result = await planner._get_open_prs()
-
-        assert "PR data unavailable" in result
-
-    async def test_timeout_kills_process(self, planner: SupervisorPlanner) -> None:
-        mock_proc = AsyncMock()
-        call_count = 0
-
-        async def _communicate_side_effect() -> tuple[bytes, bytes]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                raise asyncio.TimeoutError()
-            return (b"", b"")
-
-        mock_proc.communicate = _communicate_side_effect
-        mock_proc.returncode = None
-        mock_proc.kill = MagicMock()
-
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            result = await planner._get_open_prs()
-
-        assert "timeout" in result
-        mock_proc.kill.assert_called_once()
-
     async def test_exception_returns_unavailable(self, planner: SupervisorPlanner) -> None:
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, side_effect=OSError("no gh")):
+        with patch(
+            "sova.supervisor.planner.list_open_prs_with_state",
+            new_callable=AsyncMock,
+            spec=list_open_prs_with_state,
+            side_effect=OSError("fail"),
+        ):
             result = await planner._get_open_prs()
 
         assert "PR data unavailable" in result

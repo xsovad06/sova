@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1445,7 +1446,7 @@ class TestRecordStateTransitions:
         pr_service._last_known_states.clear()
 
         prs = [{"number": 10, "computed_state": "approved"}]
-        await _record_state_transitions(prs, repo="owner/repo")
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
         # No exception = success, no events written because prev is None
 
     @pytest.mark.asyncio
@@ -1458,7 +1459,7 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "approved"
 
         prs = [{"number": 10, "computed_state": "approved", "updated_at": "2026-08-01T12:00:00Z"}]
-        await _record_state_transitions(prs, repo="owner/repo")
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
         # No exception = success, no events written because state unchanged
 
     @pytest.mark.asyncio
@@ -1471,7 +1472,7 @@ class TestRecordStateTransitions:
         pr_service._last_known_states[10] = "some_old_state"
 
         prs = [{"number": 10, "computed_state": "unknown_state", "updated_at": "2026-08-01T12:00:00Z"}]
-        await _record_state_transitions(prs, repo="owner/repo")
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=Path("/tmp"))
         # No exception = success, no events written because no mapping
 
     @pytest.mark.asyncio
@@ -1479,8 +1480,6 @@ class TestRecordStateTransitions:
         """Test lines 555-556: individual event write exception is logged but doesn't fail."""
         from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
-
-        monkeypatch.setattr("sova.dashboard.project_context.get_project_dir", lambda: tmp_path)
 
         # Mock get_session to raise on commit
         async def mock_session(*args, **kwargs):
@@ -1514,25 +1513,21 @@ class TestRecordStateTransitions:
         ]
 
         # Should not raise despite DB error
-        await _record_state_transitions(prs, repo="owner/repo")
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)
 
     @pytest.mark.asyncio
-    async def test_handles_outer_exception_gracefully(self, monkeypatch) -> None:
-        """Test lines 557-558: outer exception handler catches all."""
+    async def test_handles_session_exception_gracefully(self, monkeypatch, tmp_path) -> None:
+        """Test outer exception handler catches session errors."""
         from sova.dashboard.services import pr_service
         from sova.dashboard.services.pr_service import _record_state_transitions
 
-        # Make get_project_dir raise
-        def _raise_outer() -> None:
-            raise RuntimeError("outer error")
+        async def _raise_session(*args, **kwargs):
+            raise RuntimeError("session error")
 
-        monkeypatch.setattr(
-            "sova.dashboard.project_context.get_project_dir",
-            _raise_outer,
-        )
+        monkeypatch.setattr("sova.db.session.get_session", _raise_session)
 
         pr_service._last_known_states[10] = "draft"
         prs = [{"number": 10, "computed_state": "approved_ci_green", "updated_at": "2026-08-01T12:00:00Z"}]
 
         # Should not raise
-        await _record_state_transitions(prs, repo="owner/repo")
+        await _record_state_transitions(prs, repo="owner/repo", project_dir=tmp_path)

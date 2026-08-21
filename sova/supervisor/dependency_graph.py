@@ -15,7 +15,7 @@ from sova.utils.markdown import extract_section
 
 log = get_logger(component="supervisor.dependency_graph")
 
-_GRAPH_CACHE_TTL = 120.0  # 2 minutes
+_GRAPH_CACHE_TTL = 180.0  # 3 minutes
 _graph_cache: dict[str, tuple[float, DependencyGraph]] = {}  # repo -> (monotonic_ts, graph)
 
 _DEP_PATTERN = re.compile(r"#(\d+)")
@@ -128,7 +128,7 @@ class DependencyGraph:
     """DAG of issue dependencies with readiness checks and traversal.
 
     Built from issue bodies via the adapter layer.  No DB tables. Graphs are
-    cached per-repo for ``_GRAPH_CACHE_TTL`` seconds (120s) and invalidated
+    cached per-repo for ``_GRAPH_CACHE_TTL`` seconds (180s) and invalidated
     on agent spawn or epic close. Milestone-filtered builds bypass the cache.
     """
 

@@ -74,7 +74,10 @@ async def test_cache_expires_after_ttl():
         patch("sova.dashboard.services.queue_service._get_last_runs_by_issue", new_callable=AsyncMock, return_value={}),
     ):
         result1 = await queue_service.get_priority_queue(Path("/proj"))
-        queue_service._queue_cache[str(Path("/proj"))] = (time.monotonic() - 31, result1)
+        queue_service._queue_cache[str(Path("/proj"))] = (
+            time.monotonic() - queue_service._QUEUE_CACHE_TTL - 1,
+            result1,
+        )
         result2 = await queue_service.get_priority_queue(Path("/proj"))
 
     assert mock_adapter.list_tasks.call_count == 2

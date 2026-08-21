@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -603,7 +604,7 @@ class TestStateTransitionRecording:
         from sova.dashboard.services.pr_service import _last_known_states
 
         _last_known_states[500] = "awaiting_review"
-        await _record_state_transitions(prs, repo="o/r")
+        await _record_state_transitions(prs, repo="o/r", project_dir=Path("/tmp"))
         _last_known_states.pop(500, None)
 
     async def test_record_state_no_transition(self) -> None:
@@ -611,7 +612,7 @@ class TestStateTransitionRecording:
 
         _last_known_states[501] = "approved"
         prs = [{"number": 501, "computed_state": "approved", "updated_at": "", "author": "u"}]
-        await _record_state_transitions(prs, repo="o/r")
+        await _record_state_transitions(prs, repo="o/r", project_dir=Path("/tmp"))
         _last_known_states.pop(501, None)
 
     async def test_record_state_first_seen(self) -> None:
@@ -619,7 +620,7 @@ class TestStateTransitionRecording:
 
         _last_known_states.pop(502, None)
         prs = [{"number": 502, "computed_state": "approved", "updated_at": "", "author": "u"}]
-        await _record_state_transitions(prs, repo="o/r")
+        await _record_state_transitions(prs, repo="o/r", project_dir=Path("/tmp"))
         assert _last_known_states[502] == "approved"
         _last_known_states.pop(502, None)
 
@@ -628,5 +629,5 @@ class TestStateTransitionRecording:
 
         _last_known_states[503] = "approved"
         prs = [{"number": 503, "computed_state": "draft", "updated_at": "", "author": "u"}]
-        await _record_state_transitions(prs, repo="o/r")
+        await _record_state_transitions(prs, repo="o/r", project_dir=Path("/tmp"))
         _last_known_states.pop(503, None)
