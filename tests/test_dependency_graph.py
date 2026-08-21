@@ -625,7 +625,7 @@ class TestGetSpecMeta:
 
     def test_returns_none_when_no_spec_file(self) -> None:
         """Returns None when read_spec finds no file for the issue."""
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+        with patch("sova.core.spec_utils.read_spec", return_value=None):
             result = _get_spec_meta(42, project_dir=self._dummy_dir)
         assert result is None
 
@@ -641,7 +641,7 @@ class TestGetSpecMeta:
             "complexity": "medium",
             "open_questions": [{"id": 0, "text": "Q1", "answer": ""}],
         }
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             result = _get_spec_meta(42, project_dir=self._dummy_dir)
         assert result is not None
         assert result["url"] == "/spec/42"
@@ -652,7 +652,7 @@ class TestGetSpecMeta:
     def test_open_questions_count_zero_when_none(self) -> None:
         """open_questions is 0 when spec has no open questions."""
         spec = {"status": "approved", "complexity": "low", "open_questions": []}
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             result = _get_spec_meta(7, project_dir=self._dummy_dir)
         assert result is not None
         assert result["open_questions"] == 0
@@ -660,14 +660,14 @@ class TestGetSpecMeta:
     def test_passes_project_dir_to_read_spec(self) -> None:
         """project_dir is forwarded to spec_service.read_spec."""
         sentinel = Path("/custom/project")
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None) as mock_read:
+        with patch("sova.core.spec_utils.read_spec", return_value=None) as mock_read:
             _get_spec_meta(10, project_dir=sentinel)
         mock_read.assert_called_once_with("10", sentinel)
 
     def test_defaults_to_approved_status(self) -> None:
         """Status defaults to 'draft' when spec dict has no status key."""
         spec = {"complexity": "high", "open_questions": []}
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             result = _get_spec_meta(1, project_dir=self._dummy_dir)
         assert result is not None
         assert result["status"] == "draft"
@@ -684,7 +684,7 @@ class TestToDict_SpecEnrichment:
     def test_researched_without_spec_keeps_developer_action(self) -> None:
         """RESEARCHED node with no spec file keeps the default 'Run Developer' action."""
         tasks = [_task(1, state=TaskState.RESEARCHED)]
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=None):
+        with patch("sova.core.spec_utils.read_spec", return_value=None):
             d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         assert any(a.get("role") == "developer" for a in node["available_actions"])
@@ -694,7 +694,7 @@ class TestToDict_SpecEnrichment:
         """RESEARCHED node with a spec file gets three spec-aware actions instead of developer."""
         tasks = [_task(1, state=TaskState.RESEARCHED)]
         spec = {"status": "draft", "complexity": "medium", "open_questions": []}
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         action_ids = [a["id"] for a in node["available_actions"]]
@@ -711,7 +711,7 @@ class TestToDict_SpecEnrichment:
             "complexity": "high",
             "open_questions": [{"id": 0, "text": "something?", "answer": ""}],
         }
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         assert "spec_meta" in node
@@ -725,7 +725,7 @@ class TestToDict_SpecEnrichment:
         for state in (TaskState.TRIAGED, TaskState.IN_PROGRESS, TaskState.IN_REVIEW, TaskState.DONE):
             tasks = [_task(1, state=state)]
             spec = {"status": "draft", "complexity": "low", "open_questions": []}
-            with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+            with patch("sova.core.spec_utils.read_spec", return_value=spec):
                 d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
             node = d["nodes"][0]
             assert "spec_meta" not in node, f"spec_meta should be absent for state {state}"
@@ -734,7 +734,7 @@ class TestToDict_SpecEnrichment:
         """If _get_spec_meta raises, the node falls back to the default developer action."""
         tasks = [_task(1, state=TaskState.RESEARCHED)]
         with patch(
-            "sova.dashboard.services.spec_service.read_spec",
+            "sova.core.spec_utils.read_spec",
             side_effect=RuntimeError("disk error"),
         ):
             d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
@@ -746,7 +746,7 @@ class TestToDict_SpecEnrichment:
         """View-spec link URL and API action URLs contain the correct issue ID."""
         tasks = [_task(99, state=TaskState.RESEARCHED)]
         spec = {"status": "draft", "complexity": "low", "open_questions": []}
-        with patch("sova.dashboard.services.spec_service.read_spec", return_value=spec):
+        with patch("sova.core.spec_utils.read_spec", return_value=spec):
             d = DependencyGraph(tasks).to_dict(project_dir=self._dummy_dir)
         node = d["nodes"][0]
         actions_by_id = {a["id"]: a for a in node["available_actions"]}
