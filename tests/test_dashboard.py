@@ -14426,6 +14426,125 @@ class TestLivenessSweepMergeCheck:
             refreshed = await session.get(TaskRun, run_id)
             assert refreshed.status == "paused", "paused run should not be reclassified by sweep"
 
+    async def test_sweep_retries_on_db_locked(self) -> None:
+        """Phase 3 write retries up to _SWEEP_WRITE_RETRY_ATTEMPTS times on 'database is locked'."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy.exc import OperationalError as SAOperationalError
+
+        from sova.db.session import get_session as real_get_session
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="99",
+                    role="developer",
+                    status="running",
+                    pid=999989,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+                run_id = run.id
+
+        call_count = 0
+
+        async def _counting_get_session(project_dir=None):  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                # Phase 3 first attempt: return a session whose begin().__aexit__ raises
+                locked_txn = AsyncMock()
+                locked_txn.__aenter__ = AsyncMock(return_value=locked_txn)
+                locked_txn.__aexit__ = AsyncMock(
+                    side_effect=SAOperationalError("UPDATE task_runs ...", None, Exception("database is locked"))
+                )
+                execute_result = MagicMock()
+                execute_result.scalars.return_value.all.return_value = []
+                mock_session = AsyncMock()
+                mock_session.begin = MagicMock(return_value=locked_txn)  # not awaited
+                mock_session.execute = AsyncMock(return_value=execute_result)
+                mock_cm = AsyncMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_cm.__aexit__ = AsyncMock(return_value=None)
+                return mock_cm
+            return await real_get_session()
+
+        with (
+            patch("sova.db.session.get_session", _counting_get_session),
+            patch("sova.dashboard.services.control_service._is_process_alive", return_value=False),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            await _liveness_sweep_once(None, is_multi=False)
+
+        # Retry sleep was called with the configured delay
+        mock_sleep.assert_called_once_with(1.0)
+
+        # Run was eventually marked interrupted after successful retry
+        async with await real_get_session() as session:
+            refreshed = await session.get(TaskRun, run_id)
+            assert refreshed.status == "interrupted"
+            assert "died" in (refreshed.error_message or "").lower()
+
+    async def test_sweep_propagates_non_lock_operational_error(self) -> None:
+        """OperationalError that is not 'database is locked' should propagate, not retry."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy.exc import OperationalError as SAOperationalError
+
+        from sova.db.session import get_session as real_get_session
+
+        async with await real_get_session() as session:
+            async with session.begin():
+                run = TaskRun(
+                    issue_number="100",
+                    role="developer",
+                    status="running",
+                    pid=999988,
+                    project_slug="test",
+                )
+                session.add(run)
+                await session.flush()
+
+        call_count = 0
+
+        async def _always_fail_get_session(project_dir=None):  # noqa: ARG001
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                locked_txn = AsyncMock()
+                locked_txn.__aenter__ = AsyncMock(return_value=locked_txn)
+                locked_txn.__aexit__ = AsyncMock(
+                    side_effect=SAOperationalError(
+                        "no such table: task_runs", None, Exception("no such table: task_runs")
+                    )
+                )
+                execute_result = MagicMock()
+                execute_result.scalars.return_value.all.return_value = []
+                mock_session = AsyncMock()
+                mock_session.begin = MagicMock(return_value=locked_txn)  # not awaited
+                mock_session.execute = AsyncMock(return_value=execute_result)
+                mock_cm = AsyncMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
+                mock_cm.__aexit__ = AsyncMock(return_value=None)
+                return mock_cm
+            return await real_get_session()
+
+        with (
+            patch("sova.db.session.get_session", _always_fail_get_session),
+            patch("sova.dashboard.services.control_service._is_process_alive", return_value=False),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            from sova.dashboard.app import _liveness_sweep_once
+
+            with pytest.raises(SAOperationalError):
+                await _liveness_sweep_once(None, is_multi=False)
+
+        # No retry sleep for non-lock errors
+        mock_sleep.assert_not_called()
+
 
 class TestWaitAndFinalizeOutputWriter:
     """Cover the output_writer.close() try/except in _wait_and_finalize."""

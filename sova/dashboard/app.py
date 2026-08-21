@@ -90,6 +90,8 @@ BASE = Path(__file__).parent
 _AGENTS_URL = "/agents"
 _SWEEP_INTERVAL = 5  # seconds
 _RECOVERY_INTERVAL = 300  # 5 minutes
+_SWEEP_WRITE_RETRY_ATTEMPTS = 3
+_SWEEP_WRITE_RETRY_DELAY = 1.0  # seconds between retry attempts on SQLite write lock
 
 
 def _try_load_config(project_path: Path) -> ProjectConfig | None:
@@ -155,6 +157,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
     from datetime import datetime, timezone
 
     from sqlalchemy import select
+    from sqlalchemy.exc import OperationalError
 
     from sova.dashboard.services.agent_lifecycle import _MERGE_ROLES, _check_pr_merged_on_failure
     from sova.dashboard.services.agent_recovery import _MERGE_CHECK_TIMEOUT, _RECOVERY_TOTAL_TIMEOUT
@@ -230,25 +233,37 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
             except asyncio.TimeoutError:
                 log.warning("sweep.merge_checks_timed_out", total_timeout=_RECOVERY_TOTAL_TIMEOUT, exc_info=True)
 
-        # Phase 3: single write transaction with terminal-status re-check.
+        # Phase 3: write transaction with retry on transient SQLite lock contention.
         # Re-reading inside the transaction ensures we see any status change
         # committed by _wait_and_finalize between Phase 1 and now.
+        # "database is locked" is a transient error: another writer held the lock past
+        # the 30s busy timeout. Retrying is safe because the terminal-status re-check
+        # inside the transaction is idempotent.
         now = datetime.now(timezone.utc)
-        async with await get_session(project_dir=d) as session:
-            async with session.begin():
-                stmt = select(TaskRun).where(TaskRun.id.in_([r["run_id"] for r in dead_runs]))
-                result = await session.execute(stmt)
-                runs_by_id = {r.id: r for r in result.scalars().all()}
+        for _attempt in range(_SWEEP_WRITE_RETRY_ATTEMPTS):
+            try:
+                async with await get_session(project_dir=d) as session:
+                    async with session.begin():
+                        stmt = select(TaskRun).where(TaskRun.id.in_([r["run_id"] for r in dead_runs]))
+                        result = await session.execute(stmt)
+                        runs_by_id = {r.id: r for r in result.scalars().all()}
 
-                for rec in dead_runs:
-                    run = runs_by_id.get(rec["run_id"])
-                    if run is None:
-                        continue
-                    if run.status in _TERMINAL:
-                        continue  # finalized by concurrent writer between Phase 1 and Phase 3
-                    run.status = rec["final_status"]
-                    run.error_message = rec["error_msg"]
-                    run.ended_at = now
+                        for rec in dead_runs:
+                            run = runs_by_id.get(rec["run_id"])
+                            if run is None:
+                                continue
+                            if run.status in _TERMINAL:
+                                continue  # finalized by concurrent writer between Phase 1 and Phase 3
+                            run.status = rec["final_status"]
+                            run.error_message = rec["error_msg"]
+                            run.ended_at = now
+                break  # write committed successfully
+            except OperationalError as exc:
+                if _attempt < _SWEEP_WRITE_RETRY_ATTEMPTS - 1 and "database is locked" in str(exc).lower():
+                    log.debug("sweep.write_locked_retry", attempt=_attempt + 1, directory=str(d))
+                    await asyncio.sleep(_SWEEP_WRITE_RETRY_DELAY)
+                else:
+                    raise
 
 
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
