@@ -88,6 +88,7 @@ class LLMConfig(BaseSettings):
     batch_gcs_prefix: str = "sova-batch"
     batch_poll_interval: int = Field(60, gt=0)
     batch_timeout: int = Field(86400, gt=0)
+    cli_timeout: int = Field(900, gt=0)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_LLM_")
 
@@ -286,17 +287,9 @@ class SpecConfig(BaseSettings):
     """Specification step configuration."""
 
     threshold: Literal["always", "trivial", "simple", "moderate", "complex", "never"] = "moderate"
-    auto_approve_threshold: Literal["none", "simple", "moderate", "complex"] = "simple"
+    auto_approve_simple: bool = True
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SPEC_")
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_auto_approve_simple(cls, data: object) -> object:
-        if isinstance(data, dict) and "auto_approve_simple" in data:
-            if not data["auto_approve_simple"] and "auto_approve_threshold" not in data:
-                data["auto_approve_threshold"] = "none"
-        return data
 
 
 class PipelineConfig(BaseSettings):
@@ -304,7 +297,6 @@ class PipelineConfig(BaseSettings):
 
     auto_handoff: bool = True
     auto_address_review: bool = True
-    auto_integrate: bool = False
     max_address_review_cycles: int = Field(2, ge=0)
 
     # Deprecated: auto-retry system removed in v0.x. These fields are accepted
@@ -540,7 +532,6 @@ class SupervisorConfig(BaseSettings):
     auto_triage: bool = False
     auto_research: bool = False
     auto_develop: bool = False
-    auto_review: bool = True
     auto_address_review: bool = False
     auto_integrate: bool = False
     auto_rebase: bool = False
@@ -553,6 +544,7 @@ class SupervisorConfig(BaseSettings):
     poll_interval_seconds: int = Field(120, gt=0)
     log_retention_days: int = Field(30, gt=0)
     max_researcher_failures: int = Field(3, ge=0)
+    max_developer_failures: int = Field(3, ge=0)
     ci_warn_minutes: int = Field(200, ge=0)
     ci_block_minutes: int = Field(50, ge=0)
     persona_path: str = ""
@@ -573,6 +565,16 @@ class SupervisorConfig(BaseSettings):
         return v
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_SUPERVISOR_")
+
+
+class ConflictResolutionConfig(BaseSettings):
+    """Multi-model consensus for rebase conflict resolution."""
+
+    models: list[str] = Field(default_factory=list)
+    consensus_threshold: float = Field(0.66, ge=0.0, le=1.0)
+    prompt_templates: dict[str, str] = Field(default_factory=dict)
+
+    model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_CONFLICT_RESOLUTION_")
 
 
 class A2AConfig(BaseSettings):
@@ -715,6 +717,7 @@ class ProjectConfig(BaseSettings):
     awareness: AwarenessConfig = Field(default_factory=AwarenessConfig)
     oversight: OversightConfig = Field(default_factory=OversightConfig)
     a2a: A2AConfig = Field(default_factory=A2AConfig)
+    conflict_resolution: ConflictResolutionConfig = Field(default_factory=ConflictResolutionConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_")
 

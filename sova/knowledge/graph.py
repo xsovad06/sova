@@ -221,7 +221,6 @@ async def _fetch_memories_with_embeddings(category: str | None) -> list[tuple[in
     """Fetch non-superseded memories that have embeddings, optionally filtered by category.
 
     Returns list of (id, category, embedding) tuples to avoid detached instance errors.
-    Ordered by ID for deterministic batch composition.
     """
     async with await get_session() as session:
         async with session.begin():
@@ -231,7 +230,6 @@ async def _fetch_memories_with_embeddings(category: str | None) -> list[tuple[in
             )
             if category is not None:
                 stmt = stmt.where(Memory.category == category)
-            stmt = stmt.order_by(Memory.id)
             result = await session.execute(stmt)
             return [(m.id, m.category, m.embedding) for m in result.scalars().all()]
 

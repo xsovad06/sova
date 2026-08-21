@@ -156,7 +156,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             value_str = "true" if raw else "false"
         else:
             value_str = str(raw)
-        result = await settings_service.update_config(project_dir, key=req.key, value=value_str)
+        result = settings_service.update_config(project_dir, key=req.key, value=value_str)
         if result.get("status") == "ok":
             if req.key == "max_parallel_agents":
                 from sova.dashboard.services.agent_pool import sync_max_concurrent

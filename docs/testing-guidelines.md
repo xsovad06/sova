@@ -23,7 +23,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 ```
 
-`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically, so no `@pytest.mark.asyncio` is needed. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `httpx` (ASGI testing), `aiosqlite`.
+`asyncio_mode = "auto"` means all `async def test_*` functions are async tests automatically -- no `@pytest.mark.asyncio` needed. Dependencies: `pytest`, `pytest-asyncio`, `pytest-cov`, `httpx` (ASGI testing), `aiosqlite`.
 
 ## Test File Layout
 
@@ -113,7 +113,7 @@ When a module was split with a re-export facade, patch the actual submodule:
 # Correct
 patch.object(agent_lifecycle, "_get_project_agents", return_value=pa)
 
-# Wrong: only patches the facade's attribute
+# Wrong -- only patches the facade's attribute
 patch.object(control_service, "_get_project_agents", return_value=pa)
 ```
 

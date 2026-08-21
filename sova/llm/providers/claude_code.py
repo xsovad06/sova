@@ -35,7 +35,7 @@ class ClaudeCodeProvider(LLMProvider):
         fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
-        timeout: float | None = 600,
+        timeout: float | None = None,
     ) -> LLMResult:
         args = _build_args(
             prompt,

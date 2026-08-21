@@ -165,7 +165,6 @@ class TestCollectDbData:
 
                 def patched_execute(sql, *a, **kw):
                     self._call_count += 1
-                    # Let PRAGMAs through (first 2 calls), fail on schema check
                     if self._call_count > 2:
                         raise TypeError("simulated non-OperationalError")
                     return original_execute(sql, *a, **kw)

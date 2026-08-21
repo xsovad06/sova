@@ -24,7 +24,7 @@ Issues without a milestone show as `--` (gray) in a "No phase" section at the bo
 | Phase 5: ... | Phase 5 | Green | Release gate / polish |
 | Phase 6: ... | Phase 6 | Light blue | Future / deferred |
 | Phase 7: ... | Phase 7 | Gray | Backlog / someday |
-| (none) | - | Dark gray | Unphased (contributor issues, etc.) |
+| (none) | -- | Dark gray | Unphased (contributor issues, etc.) |
 
 ## Naming Convention
 
@@ -99,10 +99,10 @@ The adapter ABC's `_parse_issue()` method extracts the milestone string. The das
 
 - **Keep it simple**: 3-4 active phases is enough. More than 7 dilutes the visual signal.
 - **Move issues, don't rename phases**: when work shifts priority, change the issue's milestone, not the phase name.
-- **Leave contributor issues unphased**: good-first-issues and external contributor tasks work best without a phase milestone. They appear in the neutral "No phase" section.
+- **Leave contributor issues unphased**: good-first-issues and external contributor tasks work best without a phase milestone -- they appear in the neutral "No phase" section.
 - **Close completed phases**: when all issues in a phase are done, close the milestone via the GitHub UI. This keeps the milestone picker clean.
 - **Pair with the supervisor dashboard**: the `/supervisor` page shows an interactive D3.js dependency graph alongside milestones for the full picture.
-- **One source of truth**: milestones drive the dashboard. Don't also use GitHub Projects V2 "Phase" field, as it causes confusion (the dashboard ignores it).
+- **One source of truth**: milestones drive the dashboard. Don't also use GitHub Projects V2 "Phase" field -- it causes confusion (the dashboard ignores it).
 
 ## Integration Points
 

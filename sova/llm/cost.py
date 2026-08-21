@@ -32,7 +32,7 @@ async def record_cost(
     record = CostRecord(
         task_run_id=task_run_id,
         phase=phase,
-        issue=issue,
+        issue=issue.lstrip("#") if issue else issue,
         model=result.model,
         input_tokens=result.input_tokens,
         output_tokens=result.output_tokens,

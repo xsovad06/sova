@@ -24,8 +24,8 @@ if TYPE_CHECKING:
     from sova.supervisor.daemon import SupervisorDaemon
     from sova.supervisor.watchdog import AgentWatchdog
 
-from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -680,8 +680,6 @@ def _setup_multi_project(app: FastAPI, templates: Jinja2Templates) -> None:
 
     @app.post("/api/projects/uninstall")
     async def api_uninstall_project(req: UninstallRequest) -> dict[str, bool]:
-        from fastapi import HTTPException
-
         from sova.config.registry import get_project_path
 
         slug = req.slug.lower()
@@ -1025,9 +1023,6 @@ def _register_a2a_routes(app: FastAPI) -> None:
 
     @app.get("/.well-known/agent.json")
     async def well_known_agent_card(request: Request) -> Response:
-        from fastapi import HTTPException
-        from fastapi.responses import JSONResponse
-
         from sova.a2a.agent_card import generate_agent_card
         from sova.config.context import get_project_dir
         from sova.config.loader import load_config

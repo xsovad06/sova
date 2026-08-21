@@ -42,6 +42,7 @@ GROUPS: dict[str, str] = {
     "awareness": "Awareness",
     "oversight": "Oversight Agent",
     "a2a": "A2A Protocol",
+    "conflict_resolution": "Conflict Resolution",
 }
 
 GROUP_ORDER: list[str] = [
@@ -70,6 +71,7 @@ GROUP_ORDER: list[str] = [
     "awareness",
     "oversight",
     "a2a",
+    "conflict_resolution",
 ]
 
 _REGISTRY: list[SettingMeta] = [
@@ -173,6 +175,13 @@ _REGISTRY: list[SettingMeta] = [
         "llm",
         "number",
     ),
+    SettingMeta(
+        "llm.cli_timeout",
+        "CLI timeout",
+        "Default timeout for LLM CLI calls in seconds (default 900 = 15 min)",
+        "llm",
+        "number",
+    ),
     # -- Agent --
     SettingMeta(
         "agent.runtime",
@@ -235,13 +244,6 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
-        "pipeline.auto_integrate",
-        "Auto-integrate PR",
-        "Automatically run integration pipeline when Reviewer approves PR (no actionable findings)",
-        "pipeline",
-        "boolean",
-    ),
-    SettingMeta(
         "pipeline.max_address_review_cycles",
         "Max address-review cycles",
         "Maximum auto address-review runs per PR before requiring manual intervention (0 = unlimited)",
@@ -256,11 +258,11 @@ _REGISTRY: list[SettingMeta] = [
         "spec",
     ),
     SettingMeta(
-        "spec.auto_approve_threshold",
-        "Auto-approve threshold",
-        "Auto-approve specs at or below this complexity threshold when they have no open questions "
-        "(none/simple/moderate/complex)",
+        "spec.auto_approve_simple",
+        "Auto-approve simple specs",
+        "Automatically approve specs for simple tasks with no open questions",
         "spec",
+        "boolean",
     ),
     # -- Task Source --
     SettingMeta("task_source.type", "Source type", "Where tasks come from (github, jira, linear)", "task_source"),
@@ -1037,13 +1039,6 @@ _REGISTRY: list[SettingMeta] = [
         "boolean",
     ),
     SettingMeta(
-        "supervisor.auto_review",
-        "Auto-review",
-        "Automatically spawn reviewer for IN_REVIEW issues with no SOVA review verdict",
-        "supervisor",
-        "boolean",
-    ),
-    SettingMeta(
         "supervisor.auto_address_review",
         "Auto-address review",
         "Automatically spawn address-review agent when SOVA review verdict is revise or block",
@@ -1124,6 +1119,13 @@ _REGISTRY: list[SettingMeta] = [
         "supervisor.max_researcher_failures",
         "Max researcher failures",
         "Block researcher spawn after this many consecutive failures (0 = unlimited)",
+        "supervisor",
+        "number",
+    ),
+    SettingMeta(
+        "supervisor.max_developer_failures",
+        "Max developer failures",
+        "Block developer spawn after this many consecutive failures (0 = unlimited)",
         "supervisor",
         "number",
     ),
@@ -1443,6 +1445,28 @@ _REGISTRY: list[SettingMeta] = [
         "Endpoint base URL",
         "Base URL for A2A Agent Card (e.g. http://localhost:8111). Auto-detected if empty.",
         "a2a",
+    ),
+    # -- Conflict Resolution --
+    SettingMeta(
+        "conflict_resolution.models",
+        "Models",
+        "LiteLLM model IDs for multi-model consensus conflict resolution (e.g. claude-sonnet-4-6, gemini/gemini-pro)",
+        "conflict_resolution",
+        "list",
+    ),
+    SettingMeta(
+        "conflict_resolution.consensus_threshold",
+        "Consensus threshold",
+        "Fraction of models that must agree for auto-apply (0.0-1.0, default 0.66)",
+        "conflict_resolution",
+        "number",
+    ),
+    SettingMeta(
+        "conflict_resolution.prompt_templates",
+        "Prompt templates",
+        "Per-model prompt templates keyed by model ID prefix (e.g. gemini, claude).",
+        "conflict_resolution",
+        "object",
     ),
 ]
 
