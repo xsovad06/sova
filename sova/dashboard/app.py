@@ -88,8 +88,8 @@ class UninstallRequest(BaseModel):
 BASE = Path(__file__).parent
 
 _AGENTS_URL = "/agents"
-_SWEEP_INTERVAL = 5  # seconds
-_RECOVERY_INTERVAL = 300  # 5 minutes
+_SWEEP_INTERVAL_SECONDS = 5
+_RECOVERY_INTERVAL_SECONDS = 300  # 5 minutes
 _SWEEP_WRITE_RETRY_ATTEMPTS = 3
 _SWEEP_WRITE_RETRY_DELAY = 1.0  # seconds between retry attempts on SQLite write lock
 
@@ -269,7 +269,7 @@ async def _liveness_sweep_once(project_dir: Path | None, *, is_multi: bool) -> N
 async def _liveness_sweep_loop(project_dir: Path | None, is_multi: bool) -> None:
     """Periodically check for dead agent processes and mark their TaskRuns."""
     while True:
-        await asyncio.sleep(_SWEEP_INTERVAL)
+        await asyncio.sleep(_SWEEP_INTERVAL_SECONDS)
         try:
             await _liveness_sweep_once(project_dir, is_multi=is_multi)
         except asyncio.CancelledError:
@@ -286,7 +286,7 @@ async def _periodic_recovery_loop(project_dir: Path | None, is_multi: bool) -> N
     to decide between "done" and "interrupted" outcomes.
     """
     while True:
-        await asyncio.sleep(_RECOVERY_INTERVAL)
+        await asyncio.sleep(_RECOVERY_INTERVAL_SECONDS)
         try:
             for d in _collect_sweep_dirs(project_dir, is_multi=is_multi):
                 await recover_stale_runs(d)

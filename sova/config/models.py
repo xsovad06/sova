@@ -9,6 +9,8 @@ from typing import ClassVar, Literal
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from sova.const import DEFAULT_SERVER_PORT
+
 _VALID_TASK_STATES = frozenset(
     {
         "backlog",
@@ -244,7 +246,7 @@ class ServerConfig(BaseSettings):
     """Server daemon configuration."""
 
     host: str = "127.0.0.1"
-    port: int = 8111
+    port: int = DEFAULT_SERVER_PORT
     pid_file: str = ""
     scheduler_enabled: bool = True
     log_max_bytes: int = 10_485_760
@@ -372,7 +374,7 @@ class DashboardConfig(BaseSettings):
     kanban_columns: Literal["step_based", "role_based"] = "step_based"
     confirm_model: Literal["complex_only", "always", "never"] = "complex_only"
     gc_on_startup: bool = False
-    port: int = 8111
+    port: int = DEFAULT_SERVER_PORT
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_DASHBOARD_")
 

@@ -24,6 +24,7 @@ from sova.cli.commands.server import app as server_app
 from sova.cli.commands.supervisor import app as supervisor_app
 from sova.cli.commands.triage import triage
 from sova.config.loader import load_config
+from sova.const import DEFAULT_SERVER_PORT
 
 app = typer.Typer(
     name="sova",
@@ -156,7 +157,7 @@ def init_db_cmd(
 def dashboard(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
+    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = DEFAULT_SERVER_PORT,
     reload: Annotated[bool, typer.Option("--reload", help="Auto-reload on source changes.")] = False,
 ) -> None:
     """Start the SOVA dashboard web UI."""

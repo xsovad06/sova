@@ -8,6 +8,8 @@ from typing import Annotated, Optional
 import typer
 from rich.console import Console
 
+from sova.const import DEFAULT_SERVER_PORT
+
 app = typer.Typer(
     name="server",
     help="Manage the SOVA server daemon (dashboard + scheduler).",
@@ -57,7 +59,7 @@ def _start_server(project: Path | None, host: str, port: int, no_scheduler: bool
 def start(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
+    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = DEFAULT_SERVER_PORT,
     no_scheduler: Annotated[bool, typer.Option("--no-scheduler", help="Start dashboard only, no watch loop.")] = False,
     multi: Annotated[
         Optional[bool],
@@ -118,7 +120,7 @@ def status(
 def restart(
     project: Annotated[Optional[Path], typer.Option("--project", "-p", help="Project directory.")] = None,
     host: Annotated[str, typer.Option("--host", help="Host to bind to.")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = 8111,
+    port: Annotated[int, typer.Option("--port", help="Port to serve on.")] = DEFAULT_SERVER_PORT,
     no_scheduler: Annotated[bool, typer.Option("--no-scheduler", help="Start dashboard only, no watch loop.")] = False,
     multi: Annotated[
         Optional[bool],
@@ -208,7 +210,7 @@ After=network.target
 Type=simple
 Environment=HOME=%h
 Environment=SOVA_PROJECT_DIR={resolved_dir}
-ExecStart={sova_bin} server start --host 127.0.0.1 --port 8111 --project {resolved_dir}
+ExecStart={sova_bin} server start --host 127.0.0.1 --port {DEFAULT_SERVER_PORT} --project {resolved_dir}
 ExecStop={sova_bin} server stop --project {resolved_dir}
 StandardOutput=journal
 StandardError=journal
@@ -249,7 +251,7 @@ WantedBy=default.target
         <string>--host</string>
         <string>127.0.0.1</string>
         <string>--port</string>
-        <string>8111</string>
+        <string>{DEFAULT_SERVER_PORT}</string>
         <string>--project</string>
         <string>{resolved_dir_escaped}</string>
     </array>

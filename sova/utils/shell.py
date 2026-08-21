@@ -15,6 +15,10 @@ from sova.utils.logging import get_logger
 
 log = get_logger(component="shell")
 
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300
+_STDERR_LOG_LIMIT = 200
+_STDERR_ERROR_LIMIT = 500
+
 
 @dataclass
 class ShellResult:
@@ -40,7 +44,7 @@ class ShellResult:
 async def run(
     *args: str,
     cwd: Path | str | None = None,
-    timeout: float | None = 300,
+    timeout: float | None = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     capture: bool = True,
     env: dict[str, str] | None = None,
     stdin: str | None = None,
@@ -83,7 +87,7 @@ async def run(
     stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
 
     if proc.returncode != 0:
-        log.debug("shell.failed", cmd=args[0], returncode=proc.returncode, stderr=stderr[:200])
+        log.debug("shell.failed", cmd=args[0], returncode=proc.returncode, stderr=stderr[:_STDERR_LOG_LIMIT])
 
     return ShellResult(returncode=proc.returncode or 0, stdout=stdout, stderr=stderr)
 
@@ -91,7 +95,7 @@ async def run(
 async def run_checked(
     *args: str,
     cwd: Path | str | None = None,
-    timeout: float | None = 300,
+    timeout: float | None = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     env: dict[str, str] | None = None,
 ) -> ShellResult:
     """Run a command and raise on failure."""
@@ -103,9 +107,8 @@ async def run_checked(
 
 def subprocess_error(cmd: tuple[str, ...], result: ShellResult) -> RuntimeError:
     """Create a descriptive error for a failed subprocess."""
-    return RuntimeError(
-        f"Command failed: {' '.join(cmd)}\nExit code: {result.returncode}\nstderr: {result.stderr[:500]}"
-    )
+    stderr_excerpt = result.stderr[:_STDERR_ERROR_LIMIT]
+    return RuntimeError(f"Command failed: {' '.join(cmd)}\nExit code: {result.returncode}\nstderr: {stderr_excerpt}")
 
 
 @dataclass
