@@ -1,6 +1,6 @@
 # Security Guidelines
 
-Security conventions and guardrails specific to the SOVA codebase: credential handling, input sanitization, subprocess safety, and prompt injection mitigation.
+Security conventions and guardrails specific to the SOVA codebase -- credential handling, input sanitization, subprocess safety, and prompt injection mitigation.
 
 For vulnerability reporting, see [SECURITY.md](/SECURITY.md).
 
@@ -32,7 +32,7 @@ Every `gh` CLI call in `sova/adapters/github.py` and `sova/git/pr.py` passes `en
 
 ## Subprocess Execution Safety
 
-All subprocess calls go through `sova/utils/shell.py:run()`, which uses `asyncio.create_subprocess_exec(*args)`, with no shell expansion and no `shell=True`.
+All subprocess calls go through `sova/utils/shell.py:run()`, which uses `asyncio.create_subprocess_exec(*args)` -- no shell expansion, no `shell=True`.
 
 - Arguments are never concatenated into a shell string
 - Default timeout of 300s prevents hung processes
@@ -103,10 +103,10 @@ Prevents shell metacharacters, path traversal sequences, and spaces in branch na
 Jinja2's `{{ var }}` uses HTML escaping, not JavaScript string escaping. A value containing `'` or `</script>` can break the handler or become XSS when interpolated into inline JS.
 
 ```html
-<!-- Wrong: HTML-escaped, not JS-safe -->
+<!-- Wrong -- HTML-escaped, not JS-safe -->
 <button onclick="doThing('{{ slug }}')">
 
-<!-- Correct: pass via data attribute, read in handler -->
+<!-- Correct -- pass via data attribute, read in handler -->
 <button data-slug="{{ slug | e }}" onclick="doThing(this.dataset.slug)">
 ```
 

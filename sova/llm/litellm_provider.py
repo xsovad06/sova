@@ -59,16 +59,20 @@ class LiteLLMProvider(LLMProvider):
     LiteLLM uses API keys and model-level pricing instead.
     """
 
+    _DEFAULT_TIMEOUT: float = 300.0
+
     def __init__(
         self,
         model: str = "claude-sonnet-4-6",
         fallback_model: str | None = None,
         api_base: str | None = None,
+        timeout: float | None = None,
     ) -> None:
         _check_litellm()
         self.model = model
         self.fallback_model = fallback_model
         self.api_base = api_base
+        self.timeout = timeout or self._DEFAULT_TIMEOUT
 
     async def invoke(
         self,
@@ -78,13 +82,14 @@ class LiteLLMProvider(LLMProvider):
         fallback_model: str | None = None,
         cwd: Path | str | None = None,
         max_budget_usd: Decimal | None = None,
-        timeout: float | None = 600,
+        timeout: float | None = None,
     ) -> LLMResult:
         target_model = model or self.model
+        effective_timeout = timeout if timeout is not None else self.timeout
         start = time.monotonic()
 
         try:
-            return await self._call(target_model, prompt, timeout=timeout, start=start)
+            return await self._call(target_model, prompt, timeout=effective_timeout, start=start)
         except Exception as exc:
             if not self.fallback_model or target_model == self.fallback_model:
                 raise
@@ -96,7 +101,7 @@ class LiteLLMProvider(LLMProvider):
                 reason=reason,
             )
             start = time.monotonic()
-            return await self._call(self.fallback_model, prompt, timeout=timeout, start=start)
+            return await self._call(self.fallback_model, prompt, timeout=effective_timeout, start=start)
 
     async def invoke_streaming(
         self,

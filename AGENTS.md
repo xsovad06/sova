@@ -46,6 +46,7 @@ sova/
       services/                    # 39 services (run, cost, memory, control, feed, handoff, lifecycle, queue, batch, work, work_item, task, log, settings, setup, agent_lifecycle, agent_output, agent_recovery, agent_handoff, agent_pool, agent_db, agent_status, agent_context, agent_progress, agent_validation, output, role, spec, pr, pr_metrics, resource, llm_suggestion, output_stream, fleet, fleet_manager, supervisor, oversight, telemetry_push, merge_queue_monitor)
       templates/                   # Jinja2 HTML (Catppuccin dark + Tailwind)
       static/                      # JS + CSS + favicon + logo
+    a2a/                           # A2A (Agent-to-Agent) protocol: agent card generation, task state mapping
     mcp/                           # MCP server (provider-agnostic agent tools via Model Context Protocol)
     awareness/                     # Awareness subsystem (AwarenessProvider ABC, AwarenessItem, ItemCategory, provider registry, BriefingService aggregation engine, rendering models)
     oversight/                     # Oversight agent: background daemon, operations persona (user-maintained LLM guidance)
@@ -65,7 +66,7 @@ sova/
     KNOWLEDGE.md                   # 4-tier knowledge management system
   templates/                       # Project scaffolding templates
   deploy/                          # systemd + launchd service files
-  tests/                           # pytest suite (3200+ tests, 6399 at last count)
+  tests/                           # pytest suite (3200+ tests, 6573 at last count)
   docs/
     VISION.md                      # Product vision and roadmap
     ARCHITECTURE.md                # Architecture overview (points to .claude/rules/)

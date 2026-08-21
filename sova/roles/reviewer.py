@@ -607,7 +607,6 @@ class ReviewerRole(AgentRole):
                     ),
                 )
             else:
-                auto = ctx.config.pipeline.auto_integrate
                 actions.append(
                     HandoffAction(
                         id="integrate",
@@ -617,7 +616,6 @@ class ReviewerRole(AgentRole):
                         mode="claude-command",
                         command=f"/integrate-pr {ctx.pr_number}",
                         args={"issue": ctx.issue_number, "pr": ctx.pr_number},
-                        auto_execute=auto,
                     ),
                 )
 

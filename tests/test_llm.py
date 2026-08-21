@@ -411,6 +411,136 @@ class TestInvokeCommand:
         prompt_idx = call_args.index("-p") + 1
         assert "/review" in call_args[prompt_idx]
 
+    async def test_invoke_command_timeout(self, mock_run: AsyncMock) -> None:
+        """Test that asyncio.timeout context manager enforces timeout."""
+        import asyncio
+
+        from sova.llm.client import invoke_command
+
+        async def slow_operation(*_args: str, **_kwargs: object) -> None:
+            await asyncio.sleep(10)
+
+        mock_run.side_effect = slow_operation
+
+        with pytest.raises(TimeoutError):
+            await invoke_command("/develop", timeout=0.1)
+
+    async def test_invoke_command_uses_resolved_timeout(self, mock_run: AsyncMock) -> None:
+        """Test that _resolve_timeout is called and used."""
+        from sova.llm.client import invoke_command
+        from sova.utils.shell import ShellResult
+
+        mock_run.return_value = ShellResult(
+            returncode=0,
+            stdout=_make_cli_json(),
+            stderr="",
+        )
+
+        # Explicit timeout should be used
+        await invoke_command("/review", timeout=300.0)
+
+        assert mock_run.call_args[1]["timeout"] == 300.0
+
+
+# ---------------------------------------------------------------------------
+# Client: _resolve_timeout()
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTimeout:
+    def test_explicit_timeout_returned(self) -> None:
+        from sova.llm.client import _resolve_timeout
+
+        assert _resolve_timeout(120.0) == 120.0
+
+    def test_config_timeout_used_when_none(self, tmp_path: Path) -> None:
+        from sova.llm.client import _resolve_timeout
+
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[llm]\ncli_timeout = 600\n")
+
+        result = _resolve_timeout(None, cwd=tmp_path)
+        assert result == 600.0
+
+    def test_fallback_when_config_load_fails(self) -> None:
+        from sova.llm.client import _resolve_timeout
+
+        # No config file, should use hardcoded fallback
+        result = _resolve_timeout(None, cwd=Path("/nonexistent"))
+        assert result == 900.0
+
+    def test_fallback_when_config_invalid(self, tmp_path: Path) -> None:
+        from sova.llm.client import _resolve_timeout
+
+        # Invalid TOML should fall back to default
+        toml_file = tmp_path / "sova.toml"
+        toml_file.write_text("[llm]\ncli_timeout = invalid\n")
+
+        result = _resolve_timeout(None, cwd=tmp_path)
+        assert result == 900.0
+
+
+# ---------------------------------------------------------------------------
+# Client: invoke_batch()
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeBatch:
+    async def test_empty_requests_returns_empty(self) -> None:
+        from sova.llm.client import invoke_batch
+
+        result = await invoke_batch([])
+        assert result == []
+
+    async def test_invoke_batch_uses_batch_provider(self) -> None:
+        from sova.llm.client import invoke_batch
+        from sova.llm.models import BatchRequest, BatchResult, LLMResult
+
+        req = BatchRequest(custom_id="req-1", prompt="hello")
+        mock_batch_result = [
+            BatchResult(
+                request=req,
+                result=LLMResult(text="response 1", model="opus"),
+            )
+        ]
+
+        with patch("sova.llm.providers.anthropic_batch.create_batch_provider") as mock_create:
+            mock_provider = AsyncMock()
+            mock_provider.invoke_batch = AsyncMock(return_value=mock_batch_result)
+            mock_create.return_value = mock_provider
+
+            result = await invoke_batch([req], gcs_bucket="test-bucket")
+
+            assert result == mock_batch_result
+            mock_create.assert_called_once_with(gcs_bucket="test-bucket", gcs_prefix="sova-batch")
+            mock_provider.invoke_batch.assert_awaited_once_with([req], poll_interval=60, timeout=86400)
+
+    async def test_invoke_batch_falls_back_to_provider(self) -> None:
+        from sova.llm.client import invoke_batch
+        from sova.llm.models import BatchRequest, BatchResult, LLMResult
+
+        req = BatchRequest(custom_id="req-1", prompt="hello")
+        mock_result = [
+            BatchResult(
+                request=req,
+                result=LLMResult(text="sequential response", model="sonnet"),
+            )
+        ]
+
+        with (
+            patch("sova.llm.providers.anthropic_batch.create_batch_provider", return_value=None),
+            patch("sova.llm.client.get_provider") as mock_get_provider,
+        ):
+            mock_provider = AsyncMock()
+            mock_provider.invoke_batch = AsyncMock(return_value=mock_result)
+            mock_get_provider.return_value = mock_provider
+
+            result = await invoke_batch([req])
+
+            assert result == mock_result
+            mock_get_provider.assert_called_once_with()
+            mock_provider.invoke_batch.assert_awaited_once_with([req], poll_interval=60, timeout=86400)
+
 
 # ---------------------------------------------------------------------------
 # Client: resolve_model()
@@ -858,6 +988,25 @@ class TestRecordCost:
         assert record.cache_tokens == 100
         assert record.cache_read_tokens == 100
         assert record.cache_write_tokens == 0
+
+    async def test_record_cost_normalizes_prefixed_issue(self) -> None:
+        from sqlalchemy import select
+
+        from sova.db.models import CostRecord
+        from sova.db.session import get_session
+        from sova.llm.cost import record_cost
+        from sova.llm.models import LLMResult
+
+        result = LLMResult(text="output", model="sonnet", cost_usd=Decimal("0.10"))
+
+        record = await record_cost(result=result, phase="develop", issue="#42")
+
+        assert record.issue == "42"
+
+        async with await get_session() as session:
+            stmt = select(CostRecord).where(CostRecord.issue == "42")
+            rows = (await session.execute(stmt)).scalars().all()
+            assert any(r.cost_usd == Decimal("0.10") for r in rows)
 
 
 # ---------------------------------------------------------------------------

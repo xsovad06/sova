@@ -347,7 +347,7 @@ class SpecStep(BaseStep):
 
         try:
             spec_path = _write_spec_file(ctx.issue_number, task.title, spec_content, ctx.project_dir)
-        except IOError as exc:
+        except OSError as exc:
             return StepResult(
                 success=False,
                 summary="Failed to write spec file",
@@ -361,57 +361,61 @@ class SpecStep(BaseStep):
         has_questions = _text_has_open_questions(text)
         spec_complexity = _extract_complexity(text)
 
-        # Auto-approve specs at or below threshold when they have no open questions.
+        # Auto-approve simple specs without open questions.
         # Auto-approved specs chain directly to developer via handoff with auto_execute=True,
         # exiting the researcher pipeline early (skip-to-role pattern).
-        threshold = ctx.config.spec.auto_approve_threshold
-        if threshold != "none" and not has_questions:
-            if _complexity_rank(spec_complexity) <= _complexity_rank(threshold):
-                # Mark as approved in the spec file
-                if not re.search(r"\*\*Status\*\*:\s*\w+", text):
-                    return StepResult(
-                        success=False,
-                        summary="Auto-approval failed: status line not found in spec",
-                        error="Could not find **Status**: <value> pattern in spec file",
-                    )
-                updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
-                try:
-                    spec_path.write_text(updated)
-                except IOError as exc:
-                    return StepResult(
-                        success=False,
-                        summary="Failed to update spec file",
-                        error=str(exc),
-                    )
-                log.info(
-                    "step.spec.auto_approved",
-                    issue=ctx.issue_number,
-                    complexity=spec_complexity,
-                )
-                return await write_step_handoff(
-                    ctx,
-                    role="researcher",
-                    phase="spec",
-                    summary=f"Spec auto-approved for #{ctx.issue_number} (complexity: {spec_complexity})",
-                    agent_summary="Spec auto-approved, spawning developer",
-                    next_action="develop",
-                    actions=[
-                        HandoffAction(
-                            id="develop",
-                            label="Develop",
-                            description=f"Start development for #{ctx.issue_number}",
-                            style="approve",
-                            mode="agent",
-                            command="",
-                            args={"issue": ctx.issue_number, "role": "developer"},
-                            auto_execute=True,
-                        ),
-                    ],
-                    notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
-                    notification_subtitle=f"Researcher finished #{ctx.issue_number}",
-                    result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
+        can_auto_approve = (
+            ctx.config.spec.auto_approve_simple
+            and not has_questions
+            and _complexity_rank(spec_complexity) <= _complexity_rank("simple")
+        )
+        if can_auto_approve:
+            if not re.search(r"\*\*Status\*\*:\s*\w+", text):
+                return StepResult(
+                    success=False,
+                    summary="Auto-approval failed: status line not found in spec",
+                    error="Could not find **Status**: <value> pattern in spec file",
                     cost_usd=result.cost_usd,
                 )
+            updated = re.sub(r"\*\*Status\*\*:\s*\w+", "**Status**: approved", text, count=1)
+            try:
+                spec_path.write_text(updated)
+            except OSError as exc:
+                return StepResult(
+                    success=False,
+                    summary="Failed to update spec file",
+                    error=str(exc),
+                    cost_usd=result.cost_usd,
+                )
+            log.info(
+                "step.spec.auto_approved",
+                issue=ctx.issue_number,
+                complexity=spec_complexity,
+            )
+            return await write_step_handoff(
+                ctx,
+                role="researcher",
+                phase="spec",
+                summary=f"Spec auto-approved for #{ctx.issue_number} (complexity: {spec_complexity})",
+                agent_summary="Spec auto-approved, spawning developer",
+                next_action="develop",
+                actions=[
+                    HandoffAction(
+                        id="develop",
+                        label="Develop",
+                        description=f"Start development for #{ctx.issue_number}",
+                        style="approve",
+                        mode="agent",
+                        command="",
+                        args={"issue": ctx.issue_number, "role": "developer"},
+                        auto_execute=True,
+                    ),
+                ],
+                notification_message=f"Spec auto-approved for #{ctx.issue_number}, starting developer",
+                notification_subtitle=f"Researcher finished #{ctx.issue_number}",
+                result_summary=f"Spec auto-approved (complexity: {spec_complexity}), handed off to developer",
+                cost_usd=result.cost_usd,
+            )
 
         # Needs human review -- write handoff and pause pipeline
         return await self._write_approval_handoff(ctx, spec_complexity, has_questions, cost_usd=result.cost_usd)

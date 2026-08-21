@@ -14,11 +14,11 @@ ORM conventions, session management, and migration patterns for SOVA's async SQL
 Always acquire sessions with the async context manager pattern:
 
 ```python
-# CORRECT: auto-closes on exit
+# CORRECT -- auto-closes on exit
 async with await get_session() as session:
     result = await session.execute(select(TaskRun))
 
-# WRONG: leaks sessions on exception
+# WRONG -- leaks sessions on exception
 session = await get_session()
 result = await session.execute(select(TaskRun))
 await session.close()
@@ -69,7 +69,7 @@ Two related frozensets in `sova/core/state.py`:
 # State machine terminals (3 states)
 _TERMINAL = frozenset({TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.REJECTED})
 
-# DB query terminals (4 states, includes "interrupted")
+# DB query terminals (4 states -- includes "interrupted")
 TASK_RUN_TERMINAL = frozenset({"done", "failed", "rejected", "interrupted"})
 ```
 
@@ -94,19 +94,19 @@ task_run.status = status
 | **Tests** | `init_db(run_migrations=False)` using `create_all` | In-memory DBs; dispose destroys data |
 | **Production** | `init_db(run_migrations=True)` using Alembic | Adds columns to existing tables |
 
-`create_all` only creates missing tables. It never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
+`create_all` only creates missing tables -- it never adds columns to existing ones. Adding a column without a migration causes `OperationalError: no such column`.
 
 ### SQLite WAL mode and busy timeout
 
 Before running migrations, `init_db()` calls `_enable_sqlite_wal(engine)` which runs
-`PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set, so all
+`PRAGMA journal_mode=WAL`. WAL mode persists in the DB file after the first set -- all
 subsequent connections automatically use WAL without re-running the PRAGMA.
 
 All SQLite engines are also created with `connect_args={"check_same_thread": False, "timeout": 30}`.
 The `timeout` maps to `sqlite3.connect(timeout=30)` (Python's busy-wait duration in seconds).
 This prevents instant `SQLITE_BUSY` failures when the old and new uvicorn workers briefly
 overlap during a `--reload` restart. `PRAGMA busy_timeout` is redundant with `connect_args`
-timeout; only the latter is needed since it applies to all pooled connections.
+timeout -- only the latter is needed since it applies to all pooled connections.
 
 ### Engine disposal after migrations
 
@@ -120,7 +120,7 @@ head), neither disposal nor backup runs, saving one connection round-trip (~300 
 1. **Use `batch_alter_table`** for all SQLite DDL (env.py has `render_as_batch=True`)
 2. **Idempotent checks**: use `_column_exists()`, `_table_exists()`, `_index_exists()` helpers (defined in migrations 006, 008)
 3. **Sequential numbering**: `001` through `018` (not Alembic UUIDs)
-4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak`, only when DDL ran
+4. **Pre-migration backup**: `_backup_db()` copies `.db` to `.db.bak` -- only when DDL ran
 5. **Self-healing fallback**: if Alembic fails, drops corrupted `alembic_version`, runs `create_all` + stamps at head
 
 ### The five alembic_version cases

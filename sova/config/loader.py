@@ -91,6 +91,7 @@ _NESTED_SECTIONS = (
     "awareness",
     "oversight",
     "a2a",
+    "conflict_resolution",
 )
 
 
@@ -201,3 +202,9 @@ def _migrate_deprecated_keys(flat: dict[str, Any]) -> None:
         old_val = commit.pop("no_ai_coauthor")
         if "ai_coauthor" not in commit:
             commit["ai_coauthor"] = not old_val
+
+    spec = flat.get("spec")
+    if isinstance(spec, dict) and "auto_approve_threshold" in spec:
+        old_val = spec.pop("auto_approve_threshold")
+        if "auto_approve_simple" not in spec:
+            spec["auto_approve_simple"] = old_val not in ("never", "none")
