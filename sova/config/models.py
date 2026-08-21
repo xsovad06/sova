@@ -153,6 +153,8 @@ class ReviewConfig(BaseSettings):
 
     enabled: bool = True
     max_rounds: int = Field(2, gt=0)
+    challenger_enabled: bool = True
+    challenger_model: str = ""
     panel: ReviewPanelConfig = Field(default_factory=ReviewPanelConfig)
 
     model_config = SettingsConfigDict(extra="ignore", env_prefix="SOVA_REVIEW_")

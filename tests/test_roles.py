@@ -1246,6 +1246,7 @@ class TestReviewerRole:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=99)
+        ctx.config.review.challenger_enabled = False
 
         findings = [
             {
@@ -2975,6 +2976,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.config.review.challenger_enabled = False
 
         findings = [
             {
@@ -3071,6 +3073,7 @@ class TestReviewerLLMReview:
 
         adapter = _mock_adapter(TaskState.IN_REVIEW)
         ctx = _make_ctx(role="reviewer", state=TaskState.IN_REVIEW, adapter=adapter, pr_number=10)
+        ctx.config.review.challenger_enabled = False
 
         # Create a diff larger than DIFF_CHUNK_SIZE (100KB)
         large_diff = "diff --git a/a.py b/a.py\n" + ("+" + "x" * 200 + "\n") * 600

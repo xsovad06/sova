@@ -326,6 +326,19 @@ _REGISTRY: list[SettingMeta] = [
     SettingMeta("review.enabled", "Enabled", "Run automated code review after development", "review", "boolean"),
     SettingMeta("review.max_rounds", "Max rounds", "Maximum review-fix cycles before stopping", "review", "number"),
     SettingMeta(
+        "review.challenger_enabled",
+        "Challenger pass",
+        "Run a second LLM call to verify, calibrate, and deduplicate findings before posting",
+        "review",
+        "boolean",
+    ),
+    SettingMeta(
+        "review.challenger_model",
+        "Challenger model",
+        "Model for the challenger pass (empty = same as review model, e.g. sonnet)",
+        "review",
+    ),
+    SettingMeta(
         "review.panel.enabled",
         "Panel review",
         "Use parallel focused dimension reviewers instead of a single monolithic review (3-5x cost)",
