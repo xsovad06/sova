@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import os
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from sova.core.dag import DAGExecutor, _evaluate_condition, _get_start_command, _topological_sort, validate_dag
+from sova.core.dag import DAGExecutor, _evaluate_condition, _topological_sort, validate_dag
 from sova.db.session import close_db, init_db
 
 # -- Validation tests ----------------------------------------------------------
@@ -188,7 +188,7 @@ class TestShouldExecute:
         definition = MagicMock()
         definition.graph_json = graph
         ctx = MagicMock()
-        return DAGExecutor(definition, ctx)
+        return DAGExecutor(definition, ctx, command_dispatcher=AsyncMock())
 
     def test_entry_node_always_executes(self):
         graph = {"nodes": [{"id": "a", "command": "x"}], "edges": []}
@@ -269,21 +269,23 @@ class TestShouldExecute:
         assert exe._should_execute("b", {"a.done": "true", "result": "pass"}, set()) is True
 
 
-# -- Lazy import caching test -------------------------------------------------
+# -- Constructor validation tests ----------------------------------------------
 
 
-class TestGetStartCommand:
-    def test_lazy_import_caches(self):
-        import sova.core.dag as dag_module
+class TestDAGExecutorConstructor:
+    def test_raises_without_dispatcher(self):
+        definition = MagicMock()
+        definition.graph_json = {"nodes": [], "edges": []}
+        ctx = MagicMock()
+        with pytest.raises(TypeError):
+            DAGExecutor(definition, ctx)
 
-        original = dag_module._start_command_fn
-        try:
-            dag_module._start_command_fn = None
-            fn1 = _get_start_command()
-            fn2 = _get_start_command()
-            assert fn1 is fn2
-        finally:
-            dag_module._start_command_fn = original
+    def test_raises_with_none_dispatcher(self):
+        definition = MagicMock()
+        definition.graph_json = {"nodes": [], "edges": []}
+        ctx = MagicMock()
+        with pytest.raises(ValueError, match="cannot be None"):
+            DAGExecutor(definition, ctx, command_dispatcher=None)
 
 
 # -- DAG executor execution tests ---------------------------------------------
@@ -300,22 +302,21 @@ async def _dag_db():
 
 
 class TestDAGExecutorExecution:
-    def _make_executor(self, graph: dict) -> DAGExecutor:
+    def _make_executor(self, graph: dict, dispatcher: AsyncMock | None = None) -> DAGExecutor:
         definition = MagicMock()
         definition.graph_json = graph
         ctx = MagicMock()
         ctx.task_run_id = None
-        return DAGExecutor(definition, ctx)
+        return DAGExecutor(definition, ctx, command_dispatcher=dispatcher or AsyncMock())
 
     async def test_execute_single_node_success(self):
         graph = {
             "nodes": [{"id": "a", "command": "develop", "label": "Develop"}],
             "edges": [],
         }
-        exe = self._make_executor(graph)
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "done", "cost_usd": 0.5})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            result = await exe.execute()
+        exe = self._make_executor(graph, dispatcher=mock_cmd)
+        result = await exe.execute()
         assert result.success
         assert len(result.node_results) == 1
         assert result.node_results[0].success
@@ -329,10 +330,9 @@ class TestDAGExecutorExecution:
             ],
             "edges": [{"source": "a", "target": "b"}],
         }
-        exe = self._make_executor(graph)
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "done", "cost_usd": 0.1})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            result = await exe.execute()
+        exe = self._make_executor(graph, dispatcher=mock_cmd)
+        result = await exe.execute()
         assert result.success
         assert len(result.node_results) == 2
         assert result.total_cost_usd == Decimal("0.2")
@@ -345,10 +345,9 @@ class TestDAGExecutorExecution:
             ],
             "edges": [{"source": "a", "target": "b"}],
         }
-        exe = self._make_executor(graph)
         mock_cmd = AsyncMock(side_effect=RuntimeError("develop crashed"))
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            result = await exe.execute()
+        exe = self._make_executor(graph, dispatcher=mock_cmd)
+        result = await exe.execute()
         assert not result.success
         assert len(result.node_results) == 1
         assert "develop crashed" in result.error
@@ -368,60 +367,55 @@ class TestDAGExecutorExecution:
             ],
             "edges": [{"source": "a", "target": "b", "condition": "error == true"}],
         }
-        exe = self._make_executor(graph)
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "checked"})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            result = await exe.execute()
+        exe = self._make_executor(graph, dispatcher=mock_cmd)
+        result = await exe.execute()
         assert result.success
         assert len(result.node_results) == 1
         assert result.node_results[0].node_id == "a"
 
 
 class TestExecuteNodeDetails:
-    def _make_executor(self, *, task_run_id: int | None = None) -> DAGExecutor:
+    def _make_executor(self, *, task_run_id: int | None = None, dispatcher: AsyncMock | None = None) -> DAGExecutor:
         graph = {"nodes": [{"id": "a", "command": "develop"}], "edges": []}
         definition = MagicMock()
         definition.graph_json = graph
         ctx = MagicMock()
         ctx.task_run_id = task_run_id
-        return DAGExecutor(definition, ctx)
+        return DAGExecutor(definition, ctx, command_dispatcher=dispatcher or AsyncMock())
 
     async def test_node_with_cost_none(self):
         """cost_usd=None should not crash (the fix for the CodeRabbit finding)."""
-        exe = self._make_executor()
-        node = {"id": "a", "command": "develop"}
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "done", "cost_usd": None})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            nr = await exe._execute_node(node)
+        exe = self._make_executor(dispatcher=mock_cmd)
+        node = {"id": "a", "command": "develop"}
+        nr = await exe._execute_node(node)
         assert nr.success
         assert nr.cost_usd == Decimal("0")
 
     async def test_node_with_non_numeric_cost(self):
         """Non-numeric cost_usd should fall back to 0."""
-        exe = self._make_executor()
-        node = {"id": "a", "command": "develop"}
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "done", "cost_usd": "not-a-number"})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            nr = await exe._execute_node(node)
+        exe = self._make_executor(dispatcher=mock_cmd)
+        node = {"id": "a", "command": "develop"}
+        nr = await exe._execute_node(node)
         assert nr.success
         assert nr.cost_usd == Decimal("0")
 
     async def test_node_with_non_dict_result(self):
         """When the command returns a non-dict, success=True and cost=0."""
-        exe = self._make_executor()
-        node = {"id": "a", "command": "develop"}
         mock_cmd = AsyncMock(return_value="plain string result")
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            nr = await exe._execute_node(node)
+        exe = self._make_executor(dispatcher=mock_cmd)
+        node = {"id": "a", "command": "develop"}
+        nr = await exe._execute_node(node)
         assert nr.success
         assert nr.cost_usd == Decimal("0")
 
     async def test_node_exception_returns_failure(self):
-        exe = self._make_executor()
-        node = {"id": "a", "command": "develop"}
         mock_cmd = AsyncMock(side_effect=RuntimeError("boom"))
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            nr = await exe._execute_node(node)
+        exe = self._make_executor(dispatcher=mock_cmd)
+        node = {"id": "a", "command": "develop"}
+        nr = await exe._execute_node(node)
         assert not nr.success
         assert "boom" in nr.error
 
@@ -437,11 +431,10 @@ class TestExecuteNodeDetails:
                 await session.flush()
                 run_id = run.id
 
-        exe = self._make_executor(task_run_id=run_id)
-        node = {"id": "a", "command": "develop", "label": "Develop"}
         mock_cmd = AsyncMock(return_value={"status": "ok", "message": "done", "cost_usd": 0.1})
-        with patch("sova.core.dag._get_start_command", return_value=mock_cmd):
-            nr = await exe._execute_node(node)
+        exe = self._make_executor(task_run_id=run_id, dispatcher=mock_cmd)
+        node = {"id": "a", "command": "develop", "label": "Develop"}
+        nr = await exe._execute_node(node)
 
         assert nr.success
 

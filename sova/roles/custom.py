@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sova.adapters.base import Task, TaskState
 from sova.core.context import ExecutionContext
-from sova.core.dag import DAGExecutor
+from sova.core.dag import CommandDispatcher, DAGExecutor
 from sova.db.models import WorkflowDefinition
 from sova.roles.base import AgentRole, RoleResult, TaskAssessment
 from sova.utils.logging import get_logger
@@ -17,8 +17,11 @@ _STATE_MAP: dict[str, TaskState] = {s.value: s for s in TaskState}
 class CustomRole(AgentRole):
     """A role defined by a WorkflowDefinition DAG rather than hardcoded steps."""
 
-    def __init__(self, definition: WorkflowDefinition) -> None:
+    def __init__(self, definition: WorkflowDefinition, command_dispatcher: CommandDispatcher) -> None:
+        if command_dispatcher is None:
+            raise ValueError("command_dispatcher is required for custom roles")
         self._definition = definition
+        self._command_dispatcher = command_dispatcher
         self.name = definition.name
         self.description = definition.description or f"Custom role: {definition.name}"
 
@@ -55,7 +58,7 @@ class CustomRole(AgentRole):
 
         log.info("custom.start", label=ctx.display_label, role=self.name)
 
-        executor = DAGExecutor(self._definition, ctx)
+        executor = DAGExecutor(self._definition, ctx, command_dispatcher=self._command_dispatcher)
         dag_result = await executor.execute()
 
         if dag_result.success:
