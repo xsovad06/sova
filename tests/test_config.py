@@ -167,6 +167,38 @@ log_backup_count = 3
     assert cfg.server.log_backup_count == 3
 
 
+def test_default_server_port_constant() -> None:
+    """DEFAULT_SERVER_PORT is exported from sova.const."""
+    from sova.const import DEFAULT_SERVER_PORT
+
+    assert DEFAULT_SERVER_PORT == 8111
+
+
+def test_config_models_re_exports_default_server_port() -> None:
+    """config.models re-exports DEFAULT_SERVER_PORT for backward compatibility."""
+    from sova.config.models import DEFAULT_SERVER_PORT
+
+    assert DEFAULT_SERVER_PORT == 8111
+
+
+def test_server_config_uses_default_port() -> None:
+    """ServerConfig defaults to DEFAULT_SERVER_PORT."""
+    from sova.config.models import ServerConfig
+    from sova.const import DEFAULT_SERVER_PORT
+
+    cfg = ServerConfig()
+    assert cfg.port == DEFAULT_SERVER_PORT
+
+
+def test_dashboard_config_uses_default_port() -> None:
+    """DashboardConfig defaults to DEFAULT_SERVER_PORT."""
+    from sova.config.models import DashboardConfig
+    from sova.const import DEFAULT_SERVER_PORT
+
+    cfg = DashboardConfig()
+    assert cfg.port == DEFAULT_SERVER_PORT
+
+
 def test_fallback_models_loaded_from_toml(tmp_path: Path) -> None:
     """fallback_models list is loaded from [agent] section."""
     toml_content = """

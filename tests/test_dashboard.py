@@ -16761,3 +16761,24 @@ class TestCrashRecoveryCleanup:
         mock_get_branch.assert_not_awaited()
         mock_delete_branch.assert_not_awaited()
         mock_post_merge.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Dashboard constants
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardConstants:
+    """Tests for dashboard interval constants."""
+
+    def test_sweep_interval_constant_value(self) -> None:
+        """_SWEEP_INTERVAL_SECONDS has correct value."""
+        from sova.dashboard.app import _SWEEP_INTERVAL_SECONDS
+
+        assert _SWEEP_INTERVAL_SECONDS == 5
+
+    def test_recovery_interval_constant_value(self) -> None:
+        """_RECOVERY_INTERVAL_SECONDS has correct value."""
+        from sova.dashboard.app import _RECOVERY_INTERVAL_SECONDS
+
+        assert _RECOVERY_INTERVAL_SECONDS == 300
