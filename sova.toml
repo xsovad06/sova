@@ -60,6 +60,9 @@ auto_triage = true
 [server]
 scheduler_enabled = true
 
+[roles]
+researcher_model = "sonnet"
+
 [llm]
 routing = {triage = "haiku", extraction = "haiku", pr_body = "haiku"}
 
