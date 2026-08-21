@@ -11,6 +11,7 @@ from rich.table import Table
 
 import sova
 from sova.cli.commands.admin import cleanup, costs, status
+from sova.cli.commands.analyze_failures import app as analyze_failures_app
 from sova.cli.commands.commands import app as commands_app
 from sova.cli.commands.doctor import doctor
 from sova.cli.commands.harden import harden
@@ -71,6 +72,9 @@ app.add_typer(server_app)
 
 # Supervisor (subcommand group)
 app.add_typer(supervisor_app)
+
+# Failure analysis
+app.add_typer(analyze_failures_app, name="analyze-failures")
 
 console = Console(stderr=True)
 

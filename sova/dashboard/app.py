@@ -36,6 +36,7 @@ from sova.dashboard.routers import (
     control,
     costs,
     dependencies,
+    failure_analysis,
     feed,
     fleet_insights,
     handoff,
@@ -997,6 +998,7 @@ def _register_api_routers(app: FastAPI, *, prefix: str) -> None:
     app.include_router(oversight.router, prefix=prefix)
     app.include_router(feed.router, prefix=prefix)
     app.include_router(fleet_insights.router, prefix=prefix)
+    app.include_router(failure_analysis.router, prefix=prefix)
 
 
 def _register_telemetry_router(app: FastAPI) -> None:
