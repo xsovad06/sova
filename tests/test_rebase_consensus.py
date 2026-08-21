@@ -923,3 +923,5 @@ class TestTryConsensusResolutionMultiFile:
                 max_budget_usd=None,
             )
         assert success is False
+        assert f1.read_text() == resolved
+        assert "<<<<<<< HEAD" in f2.read_text()
