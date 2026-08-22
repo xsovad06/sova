@@ -52,10 +52,11 @@ def get_config_file_path(project_dir: Path | None = None) -> Path:
     return project_dir / "sova.toml"
 
 
-def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
-    """Update a single config key in sova.toml using tomlkit for round-trip.
+async def update_config(project_dir: Path | None = None, *, key: str, value: str) -> dict:
+    """Update a single config key in the DB and sova.toml.
 
-    Validates the value type against settings metadata before writing.
+    Writes to the DB first (authoritative store read by load_config),
+    then best-effort updates sova.toml for human readability.
     Only registered settings (present in settings_meta) can be updated.
     """
     from sova.dashboard.settings_meta import _META_BY_KEY
@@ -63,19 +64,50 @@ def update_config(project_dir: Path | None = None, *, key: str, value: str) -> d
     if key not in _META_BY_KEY:
         return {"error": f"Unknown setting: '{key}'"}
 
-    toml_path = get_config_file_path(project_dir)
-    if not toml_path.exists():
-        return {"error": "sova.toml not found"}
-
     validation_error = _validate_value_type(key, value)
     if validation_error:
         return {"error": validation_error}
+
+    cast = _cast_value(value)
+
+    db_ok = await _save_setting_to_db(project_dir, key, cast)
+    if not db_ok:
+        log.warning("settings.db_write_failed", key=key)
+
+    toml_ok = _save_setting_to_toml(project_dir, key, cast)
+    if not toml_ok:
+        log.debug("settings.toml_write_skipped", key=key)
+
+    if not db_ok and not toml_ok:
+        return {"error": "Failed to persist setting (neither DB nor TOML available)"}
+
+    return {"status": "ok", "key": key, "value": value}
+
+
+async def _save_setting_to_db(project_dir: Path | None, key: str, value: object) -> bool:
+    """Persist a setting to the database. Returns True on success."""
+    try:
+        from sova.config.db_loader import save_setting
+        from sova.db.session import get_session
+
+        async with await get_session(project_dir=project_dir) as session, session.begin():
+            await save_setting(session, key, value)
+        return True
+    except Exception:
+        log.warning("settings.db_save_failed", key=key, exc_info=True)
+        return False
+
+
+def _save_setting_to_toml(project_dir: Path | None, key: str, value: object) -> bool:
+    """Best-effort update of sova.toml. Returns True on success."""
+    toml_path = get_config_file_path(project_dir)
+    if not toml_path.exists():
+        return False
 
     try:
         import tomlkit
 
         doc = tomlkit.parse(toml_path.read_text())
-
         parts = key.split(".")
         target = doc
         for part in parts[:-1]:
@@ -83,17 +115,17 @@ def update_config(project_dir: Path | None = None, *, key: str, value: str) -> d
                 target[part] = tomlkit.table()
             target = target[part]
 
-        target[parts[-1]] = _cast_value(value)
+        target[parts[-1]] = value
         tmp_path = toml_path.with_suffix(".toml.tmp")
         tmp_path.write_text(tomlkit.dumps(doc))
         tmp_path.replace(toml_path)
-        return {"status": "ok", "key": key, "value": value}
+        return True
     except ImportError:
-        log.warning("tomlkit not available, skipping config update")
-        return {"error": "tomlkit not installed, cannot update config"}
+        log.debug("tomlkit not available")
+        return False
     except Exception:
-        log.warning("settings.config.write_failed", exc_info=True)
-        return {"error": "Failed to update sova.toml"}
+        log.warning("settings.toml_write_failed", exc_info=True)
+        return False
 
 
 def _validate_value_type(key: str, value: str) -> str | None:

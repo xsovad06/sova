@@ -26,7 +26,7 @@ def _reload_daemon_config(project_dir: Path | None) -> None:
         from sova.dashboard.routers.supervisor import _get_daemon
 
         cfg = load_config(project_dir)
-        daemon = _get_daemon()
+        daemon = _get_daemon(project_dir)
         if daemon is not None:
             daemon.reload_config(cfg)
     except Exception:
@@ -156,7 +156,7 @@ async def update_config(req: ConfigUpdateRequest) -> dict:
             value_str = "true" if raw else "false"
         else:
             value_str = str(raw)
-        result = settings_service.update_config(project_dir, key=req.key, value=value_str)
+        result = await settings_service.update_config(project_dir, key=req.key, value=value_str)
         if result.get("status") == "ok":
             if req.key == "max_parallel_agents":
                 from sova.dashboard.services.agent_pool import sync_max_concurrent

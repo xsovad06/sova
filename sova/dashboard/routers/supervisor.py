@@ -47,18 +47,44 @@ _start_lock = asyncio.Lock()
 _queue_lock = asyncio.Lock()
 
 
-def _get_daemon() -> Any | None:
-    """Get the daemon instance for the current project, if any."""
-    project_dir = get_project_dir()
-    if project_dir is None:
-        return None
-    return _daemon_registry.get(str(project_dir.resolve()))
+def _get_daemon(project_dir: Path | None = None) -> Any | None:
+    """Get the daemon instance for the current project, if any.
+
+    In single-project mode get_project_dir() returns None because no
+    multi-project middleware sets the context var.  Fall back to the sole
+    registry entry when exactly one daemon is registered.
+    """
+    pd = project_dir or get_project_dir()
+    if pd is not None:
+        return _daemon_registry.get(str(pd.resolve()))
+    if len(_daemon_registry) == 1:
+        return next(iter(_daemon_registry.values()))
+    return None
 
 
 def set_daemon_registry(registry: dict) -> None:
     """Called by app.py lifespan to share the daemon registry."""
     global _daemon_registry
     _daemon_registry = registry
+
+
+def _resolve_project_dir() -> Path:
+    """Return the active project directory or fall back to the sole registered daemon's path.
+
+    In single-project mode the context var is unset, so we infer from the
+    daemon registry (exactly one entry) or fall back to cwd.
+    """
+    pd = get_project_dir()
+    if pd is not None:
+        return pd
+    if len(_daemon_registry) == 1:
+        return Path(next(iter(_daemon_registry)))
+    from sova.dashboard.services.agent_pool import get_default_project_dir
+
+    ctrl = get_default_project_dir()
+    if ctrl is not None:
+        return ctrl
+    return Path.cwd().resolve()
 
 
 @router.get("/status")
@@ -119,18 +145,16 @@ async def start_supervisor() -> dict[str, Any]:
     from sova.db.session import get_session_factory
     from sova.supervisor.daemon import SupervisorDaemon
 
-    project_dir = get_project_dir()
-    if project_dir is None:
-        raise HTTPException(status_code=503, detail="No project context")
+    project_dir = _resolve_project_dir()
 
     async with _start_lock:
-        daemon = _get_daemon()
+        daemon = _get_daemon(project_dir)
         if daemon is not None and daemon.running:
             return {"started": False, "reason": "already running", **daemon.get_status()}
 
         cfg = load_config(project_dir)
         if not cfg.supervisor.enabled:
-            raise HTTPException(status_code=409, detail="supervisor.enabled is false in config — enable it first")
+            raise HTTPException(status_code=409, detail="supervisor.enabled is false in config, enable it first")
 
         session_factory = await get_session_factory(project_dir)
         new_daemon = SupervisorDaemon(config=cfg, project_dir=project_dir, session_factory=session_factory)
@@ -147,12 +171,10 @@ async def stop_supervisor() -> dict[str, Any]:
     Cancels the polling loop and removes the daemon from the registry.
     Config is not modified; re-enable via POST /supervisor/start.
     """
-    project_dir = get_project_dir()
-    if project_dir is None:
-        raise HTTPException(status_code=503, detail="No project context")
+    project_dir = _resolve_project_dir()
 
     async with _start_lock:
-        daemon = _get_daemon()
+        daemon = _get_daemon(project_dir)
         if daemon is None or not daemon.running:
             raise HTTPException(status_code=404, detail="Supervisor daemon is not running")
         await daemon.stop()
